@@ -21,8 +21,8 @@ function serializeAppointment(ap) {
 
   return {
     id: json._id?.toString?.() || json.id,
-    date: json.date, // "YYYY-MM-DD"
-    time: json.time, // "HH:mm"
+    date: json.date,              // "YYYY-MM-DD"
+    time: json.time,              // "HH:mm"
     service: json.service || "",
     status: json.status || "reserved",
     coach: json.coach || "",
@@ -48,7 +48,7 @@ function requiresApto(user) {
 
 /**
  * GET /appointments?from=YYYY-MM-DD&to=YYYY-MM-DD
- * 🔓 RUTA PÚBLICA: lista turnos por rango de fechas (agenda visible sin login)
+ * 🔓 RUTA PÚBLICA: lista turnos por rango de fechas
  */
 router.get("/", async (req, res) => {
   try {
@@ -63,7 +63,7 @@ router.get("/", async (req, res) => {
     }
 
     const list = await Appointment.find(query)
-      .populate("user", "name email") // 👈 acá traemos nombre y mail (AdminTurnos)
+      .populate("user", "name email") // 👈 nombre y mail (AdminTurnos)
       .lean();
 
     const normalized = list.map(serializeAppointment);
@@ -75,19 +75,13 @@ router.get("/", async (req, res) => {
 });
 
 /**
- * A partir de acá, rutas protegidas
- * (reservar / cancelar requieren estar logueado)
+ * ⛔ A partir de acá, TODO requiere estar logueado
  */
 router.use(protect);
 
 /**
  * POST /appointments
  * body: { date, time, service }
- *
- * - Chequea créditos / apto / suspensión SOLO para clientes.
- * - Admin puede reservar sin restricciones de créditos/apto.
- * - Resta 1 crédito a cliente al reservar.
- * - Usa el índice único del schema para evitar duplicados (date+time+service+status=reserved).
  */
 router.post("/", async (req, res) => {
   try {
@@ -172,10 +166,6 @@ router.post("/", async (req, res) => {
 /**
  * PATCH /appointments/:id/cancel
  * Cancela turno (solo dueño o admin)
- *
- * - Si cliente cancela con >24h: se marca "cancelled" y se devuelve 1 crédito.
- * - Admin puede cancelar siempre y también devuelve 1 crédito al dueño
- *   (si el dueño no es admin).
  */
 router.patch("/:id/cancel", async (req, res) => {
   try {
