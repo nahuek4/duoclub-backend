@@ -1,7 +1,6 @@
-// backend/src/index.js
+// src/index.js
 import express from "express";
 import dotenv from "dotenv";
-import cors from "cors";
 import path from "path";
 import { fileURLToPath } from "url";
 import helmet from "helmet";
@@ -11,13 +10,13 @@ import connectDB from "./config/db.js";
 import authRoutes from "./routes/auth.js";
 import userRoutes from "./routes/users.js";
 import appointmentRoutes from "./routes/appointments.js";
-import servicesRoutes from "./routes/services.js"; // si no lo tenés todavía, comentá esta línea
+import servicesRoutes from "./routes/services.js";
 
 dotenv.config();
 
 const app = express();
 
-// 🔹 En DEV por defecto 4000, en PROD seteás PORT=3000 en el .env del VPS
+// ��� En DEV por defecto 4000, en PROD seteás PORT=3000 en el .env del VPS
 const PORT =
   process.env.PORT ||
   (process.env.NODE_ENV === "production" ? 3000 : 4000);
@@ -46,31 +45,55 @@ app.use(
 // Body JSON
 app.use(express.json());
 
+/* =========================
+   CORS FORZADO (local + producción)
+   ========================= */
 
-// CORS (local + producción)
-app.use(
-  cors({
-    origin: [
-      "http://localhost:5173",
-      "http://127.0.0.1:5173",
-      "https://duoclub.ar",
-      "https://www.duoclub.ar",
-      "https://app.duoclub.ar",
-      "https://www.app.duoclub.ar",
-    ],
-    credentials: true,
-  })
-);
+// Lista de orígenes permitidos
+const allowedOrigins = [
+  "http://localhost:5173",
+  "http://127.0.0.1:5173",
+  "https://duoclub.ar",
+  "https://www.duoclub.ar",
+  "https://app.duoclub.ar",
+  "https://www.app.duoclub.ar",
+];
 
-// Rate limit básico para evitar abuso (login / reservas)
+// Middleware global CORS
+app.use((req, res, next) => {
+  const origin = req.headers.origin;
+
+  if (!origin || allowedOrigins.includes(origin)) {
+    res.header("Access-Control-Allow-Origin", origin || "*");
+    res.header("Access-Control-Allow-Credentials", "true");
+    res.header(
+      "Access-Control-Allow-Headers",
+      "Origin, X-Requested-With, Content-Type, Accept, Authorization"
+    );
+    res.header(
+      "Access-Control-Allow-Methods",
+      "GET,POST,PUT,PATCH,DELETE,OPTIONS"
+    );
+  }
+
+  if (req.method === "OPTIONS") {
+    return res.sendStatus(204);
+  }
+
+  next();
+});
+
+/* =========================
+   RATE LIMIT
+   ========================= */
+
 const apiLimiter = rateLimit({
   windowMs: 15 * 60 * 1000, // 15 minutos
-  max: 100,                 // máx 100 requests por IP en ese tiempo
+  max: 100,
   standardHeaders: true,
   legacyHeaders: false,
 });
 
-// Aplicamos limitador en rutas más sensibles
 app.use("/auth", apiLimiter);
 app.use("/appointments", apiLimiter);
 
@@ -102,8 +125,8 @@ app.use("/users", userRoutes);
 // Turnos (agenda)
 app.use("/appointments", appointmentRoutes);
 
-// Servicios (si tu front hace GET /services)
-app.use("/services", servicesRoutes); // si no existe el router, comentá esta línea
+// Servicios
+app.use("/services", servicesRoutes);
 
 /* =========================
    RUTA BASE
