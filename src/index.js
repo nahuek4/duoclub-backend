@@ -47,28 +47,16 @@ app.use(
 app.use(express.json());
 
 // CORS (local + producción)
-const allowedOrigins = [
-  "http://localhost:5173",    // front en Vite (dev)
-  "http://127.0.0.1:5173",
-  "https://duoclub.ar",       // dominio principal
-  "https://www.duoclub.ar",
-  "https://app.duoclub.ar",   // por si tenés subdominio para la app
-  "https://www.app.duoclub.ar",
-];
-
 app.use(
   cors({
-    origin: (origin, callback) => {
-      // Permitir herramientas tipo Postman/curl sin Origin
-      if (!origin) return callback(null, true);
-
-      if (allowedOrigins.includes(origin)) {
-        return callback(null, true);
-      }
-
-      console.warn("Origen bloqueado por CORS:", origin);
-      return callback(new Error("Origen no permitido por CORS"), false);
-    },
+    origin: [
+      "http://localhost:5173",
+      "http://127.0.0.1:5173",
+      "https://duoclub.ar",
+      "https://www.duoclub.ar",
+      "https://app.duoclub.ar",
+      "https://www.app.duoclub.ar",
+    ],
     credentials: true,
   })
 );
