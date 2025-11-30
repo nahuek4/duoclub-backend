@@ -6,9 +6,6 @@ import { protect } from "../middleware/auth.js";
 
 const router = express.Router();
 
-// Todas las rutas requieren estar logueado
-router.use(protect);
-
 /**
  * Normaliza un turno para el frontend
  */
@@ -24,8 +21,8 @@ function serializeAppointment(ap) {
 
   return {
     id: json._id?.toString?.() || json.id,
-    date: json.date,              // "YYYY-MM-DD"
-    time: json.time,              // "HH:mm"
+    date: json.date, // "YYYY-MM-DD"
+    time: json.time, // "HH:mm"
     service: json.service || "",
     status: json.status || "reserved",
     coach: json.coach || "",
@@ -51,7 +48,7 @@ function requiresApto(user) {
 
 /**
  * GET /appointments?from=YYYY-MM-DD&to=YYYY-MM-DD
- * Lista turnos por rango de fechas
+ * 🔓 RUTA PÚBLICA: lista turnos por rango de fechas (agenda visible sin login)
  */
 router.get("/", async (req, res) => {
   try {
@@ -66,7 +63,7 @@ router.get("/", async (req, res) => {
     }
 
     const list = await Appointment.find(query)
-      .populate("user", "name email") // 👈 acá traemos nombre y mail
+      .populate("user", "name email") // 👈 acá traemos nombre y mail (AdminTurnos)
       .lean();
 
     const normalized = list.map(serializeAppointment);
@@ -76,6 +73,12 @@ router.get("/", async (req, res) => {
     res.status(500).json({ error: "Error al obtener turnos." });
   }
 });
+
+/**
+ * A partir de acá, rutas protegidas
+ * (reservar / cancelar requieren estar logueado)
+ */
+router.use(protect);
 
 /**
  * POST /appointments

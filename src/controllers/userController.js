@@ -55,6 +55,25 @@ export const listUsers = async (req, res) => {
   }
 };
 
+// GET /users/:id
+export const getUserById = async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    const user = await User.findById(id);
+    if (!user) {
+      return res.status(404).json({ error: "Usuario no encontrado." });
+    }
+
+    // devolvemos normalizado para el front
+    res.json(serializeUser(user));
+  } catch (err) {
+    console.error("Error en getUserById:", err);
+    res.status(500).json({ error: "Error al obtener el usuario." });
+  }
+};
+
+
 // POST /users
 export const createUser = async (req, res) => {
   try {
@@ -375,3 +394,5 @@ export const rejectApto = async (req, res) => {
     res.status(500).json({ error: "Error al rechazar apto." });
   }
 };
+
+

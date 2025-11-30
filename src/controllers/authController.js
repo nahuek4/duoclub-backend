@@ -13,7 +13,7 @@ function serializeUser(u) {
     name: json.name || "",
     email: json.email || "",
     phone: json.phone || "",
-    dni: json.dni || "",
+    dni: json.dni ?? "",
     age: json.age ?? null,
     weight: json.weight ?? null,
     notes: json.notes || "",
@@ -96,7 +96,12 @@ export async function me(req, res) {
       return res.status(401).json({ error: "No autorizado." });
     }
 
-    return res.json(serializeUser(req.user));
+    const fresh = await User.findById(req.user._id);
+    if (!fresh) {
+      return res.status(401).json({ error: "Usuario no encontrado." });
+    }
+
+    return res.json(serializeUser(fresh));
   } catch (err) {
     console.error("Error en GET /auth/me:", err);
     return res.status(500).json({ error: "Error al obtener el usuario." });
@@ -140,7 +145,7 @@ export async function changePassword(req, res) {
     user.mustChangePassword = false;
     await user.save();
 
-    return res.json({ ok: true });
+    return res.json({ ok: true, message: "Contraseña actualizada correctamente." });
   } catch (err) {
     console.error("Error en POST /auth/change-password:", err);
     return res
@@ -149,4 +154,54 @@ export async function changePassword(req, res) {
   }
 }
 
-export { serializeUser };
+// ==========================
+//  POST /auth/force-change-password
+//  (primer login con pass temporal / sin pedir la vieja)
+// ==========================
+export async function forceChangePassword(req, res) {
+  try {
+    if (!req.user) {
+      return res.status(401).json({ error: "No autorizado." });
+    }
+
+    const { newPassword } = req.body || {};
+    if (!newPassword) {
+      return res
+        .status(400)
+        .json({ error: "Debés enviar la nueva contraseña." });
+    }
+
+    const user = await User.findById(req.user._id);
+    if (!user) {
+      return res.status(404).json({ error: "Usuario no encontrado." });
+    }
+
+    if (!user.mustChangePassword) {
+      return res.status(400).json({
+        error:
+          "Este usuario no requiere restablecer la contraseña de forma obligatoria.",
+      });
+    }
+
+    const hashed = await bcrypt.hash(newPassword, 10);
+    user.password = hashed;
+    user.mustChangePassword = false;
+    await user.save();
+
+    const token = signToken(user);
+
+    return res.json({
+      ok: true,
+      message: "Contraseña actualizada correctamente.",
+      token,
+      user: serializeUser(user),
+    });
+  } catch (err) {
+    console.error("Error en POST /auth/force-change-password:", err);
+    return res
+      .status(500)
+      .json({ error: "Error al restablecer la contraseña." });
+  }
+}
+
+export { serializeUser, signToken };

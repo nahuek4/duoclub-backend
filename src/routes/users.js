@@ -131,7 +131,9 @@ router.post("/", async (req, res) => {
 router.get("/", async (req, res) => {
   try {
     if (req.user.role !== "admin") {
-      return res.status(403).json({ error: "Solo un admin puede ver usuarios." });
+      return res
+        .status(403)
+        .json({ error: "Solo un admin puede ver usuarios." });
     }
 
     const list = await User.find().lean();
@@ -188,7 +190,7 @@ router.patch("/:id", async (req, res) => {
 });
 
 /* ============================================
-   DELETE ELIMINAR USUARIO
+   DELETE ELIMINAR USUARIO + SUS TURNOS
    ============================================ */
 router.delete("/:id", async (req, res) => {
   try {
@@ -197,13 +199,29 @@ router.delete("/:id", async (req, res) => {
     }
 
     const { id } = req.params;
-    const u = await User.findByIdAndDelete(id);
-    if (!u) return res.status(404).json({ error: "Usuario no encontrado." });
 
-    res.json({ ok: true });
+    // 1) Buscar usuario
+    const user = await User.findById(id);
+    if (!user) {
+      return res.status(404).json({ error: "Usuario no encontrado." });
+    }
+
+    // 2) Borrar TODOS los turnos asociados a este usuario
+    //    (el schema usa "user" como ObjectId del usuario)
+    await Appointment.deleteMany({ user: id });
+
+    // 3) Borrar el usuario
+    await user.deleteOne();
+
+    res.json({
+      ok: true,
+      message: "Usuario y turnos asociados eliminados correctamente.",
+    });
   } catch (err) {
     console.error("Error en DELETE /users/:id:", err);
-    res.status(500).json({ error: "Error interno." });
+    res
+      .status(500)
+      .json({ error: "Error al eliminar usuario y sus turnos." });
   }
 });
 
