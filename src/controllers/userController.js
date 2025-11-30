@@ -228,24 +228,35 @@ export const setSuspended = async (req, res) => {
 };
 
 // DELETE /users/:id
-export const deleteUser = async (req, res) => {
+export async function deleteUser(req, res) {
   try {
     const { id } = req.params;
 
-    const user = await User.findByIdAndDelete(id);
+    const user = await User.findById(id);
     if (!user) {
-      return res.status(404).json({ error: "Usuario no encontrado." });
+      return res.status(404).json({ error: "Usuario no encontrado" });
     }
 
-    // Borramos sus turnos
-    await Appointment.deleteMany({ user: id });
+    // 1) Borrar TODOS los turnos asociados a este usuario
+    // 👉 Usá el campo que tengas en tu modelo de Appointment:
+    //    - si tu schema tiene user: { type: ObjectId, ref: "User" } → { user: id }
+    //    - si tu schema usa userId: String → { userId: id }
+    await Appointment.deleteMany({ user: id }); // o { userId: id }
 
-    res.json({ message: "Usuario eliminado correctamente." });
+    // 2) Borrar el usuario
+    await user.deleteOne();
+
+    return res.json({
+      ok: true,
+      message: "Usuario y turnos asociados eliminados correctamente",
+    });
   } catch (err) {
-    console.error("Error en deleteUser:", err);
-    res.status(500).json({ error: "Error al eliminar usuario." });
+    console.error("Error al eliminar usuario:", err);
+    return res
+      .status(500)
+      .json({ error: "Error al eliminar usuario y sus turnos" });
   }
-};
+}
 
 /* =========================
    APTOS (PDF)
