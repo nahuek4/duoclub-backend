@@ -46,6 +46,7 @@ app.use(
 // Body JSON
 app.use(express.json());
 
+
 // CORS (local + producción)
 app.use(
   cors({
