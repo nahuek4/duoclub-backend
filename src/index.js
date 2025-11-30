@@ -4,6 +4,8 @@ import dotenv from "dotenv";
 import cors from "cors";
 import path from "path";
 import { fileURLToPath } from "url";
+import helmet from "helmet";
+import rateLimit from "express-rate-limit";
 
 import connectDB from "./config/db.js";
 import authRoutes from "./routes/auth.js";
@@ -14,7 +16,7 @@ import servicesRoutes from "./routes/services.js"; // si no lo tenés todavía, 
 dotenv.config();
 
 const app = express();
-const PORT = process.env.PORT || 4000;
+const PORT = process.env.PORT || 3000;
 
 // Necesario para path.join en ESModules
 const __filename = fileURLToPath(import.meta.url);
@@ -26,22 +28,67 @@ const __dirname = path.dirname(__filename);
 await connectDB();
 
 /* =========================
-   MIDDLEWARES
+   MIDDLEWARES BASE
    ========================= */
 
-// JSON
+// Seguridad básica (headers)
+app.use(
+  helmet({
+    // Para no romper carga de imágenes/pdf desde otros dominios
+    crossOriginResourcePolicy: { policy: "cross-origin" },
+  })
+);
+
+// Body JSON
 app.use(express.json());
 
-// CORS para tu front en Vite
+// CORS (local + producción)
+const allowedOrigins = [
+  "http://localhost:5173",     // front en Vite
+  "https://duoclub.ar",        // dominio principal
+  "https://www.duoclub.ar",
+  "https://app.duoclub.ar",    // por si tenés subdominio para la app
+  "https://www.app.duoclub.ar"
+];
+
 app.use(
   cors({
-    origin: "http://localhost:5173",
+    origin: (origin, callback) => {
+      // Permitir tools tipo Postman/curl sin origin
+      if (!origin) return callback(null, true);
+      if (allowedOrigins.includes(origin)) return callback(null, true);
+      return callback(new Error("Origen no permitido por CORS"), false);
+    },
     credentials: true,
   })
 );
 
+// Rate limit básico para evitar abuso
+const apiLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000, // 15 minutos
+  max: 100,                  // máx 100 requests por IP en ese tiempo
+  standardHeaders: true,
+  legacyHeaders: false,
+});
+
+// Aplicamos limitador en rutas más sensibles
+app.use("/auth", apiLimiter);
+app.use("/appointments", apiLimiter);
+
 // Servir archivos estáticos de uploads (apto PDFs)
 app.use("/uploads", express.static(path.join(__dirname, "..", "uploads")));
+
+/* =========================
+   RUTA HEALTH
+   ========================= */
+app.get("/health", (req, res) => {
+  res.status(200).json({
+    status: "ok",
+    message: "API DUO funcionando",
+    env: process.env.NODE_ENV || "development",
+    timestamp: new Date().toISOString(),
+  });
+});
 
 /* =========================
    RUTAS
@@ -77,5 +124,5 @@ app.use((req, res) => {
    START SERVER
    ========================= */
 app.listen(PORT, () => {
-  console.log(`Servidor escuchando en http://localhost:${PORT}`);
+  console.log(`✅ Servidor escuchando en http://localhost:${PORT}`);
 });
