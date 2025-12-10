@@ -25,6 +25,8 @@ function serializeUser(u) {
     role: json.role || "client",
     aptoPath: json.aptoPath || "",
     aptoStatus: json.aptoStatus || "",
+    photoPath: json.photoPath || "",
+    initialForm: json.initialForm || null,
     createdAt: json.createdAt || null,
   };
 }
@@ -176,9 +178,8 @@ export const userHistory = async (req, res) => {
     const { id } = req.params;
 
     // 🔹 Ordenamos por "orden de creación" (orden de llegada)
-    //    Si tu esquema tiene timestamps, createdAt refleja eso.
     const appointments = await Appointment.find({ user: id })
-      .sort({ createdAt: 1, _id: 1 }) // primero el más viejo, último el más nuevo
+      .sort({ createdAt: 1, _id: 1 })
       .lean();
 
     const history = appointments.map((ap) => ({
@@ -256,13 +257,8 @@ export async function deleteUser(req, res) {
       return res.status(404).json({ error: "Usuario no encontrado" });
     }
 
-    // 1) Borrar TODOS los turnos asociados a este usuario
-    // 👉 Usá el campo que tengas en tu modelo de Appointment:
-    //    - si tu schema tiene user: { type: ObjectId, ref: "User" } → { user: id }
-    //    - si tu schema usa userId: String → { userId: id }
-    await Appointment.deleteMany({ user: id }); // o { userId: id }
+    await Appointment.deleteMany({ user: id });
 
-    // 2) Borrar el usuario
     await user.deleteOne();
 
     return res.json({
@@ -297,7 +293,6 @@ export const uploadUserApto = async (req, res) => {
       return res.status(404).json({ error: "Usuario no encontrado." });
     }
 
-    // Ruta accesible desde el frontend
     const fileUrl = `/uploads/apto/${req.file.filename}`;
 
     user.aptoPath = fileUrl;
@@ -324,7 +319,6 @@ export const deleteUserApto = async (req, res) => {
       return res.status(404).json({ error: "Usuario no encontrado." });
     }
 
-    // Si querés borrar también el archivo físico:
     if (user.aptoPath) {
       const filePath = path.join(
         process.cwd(),
@@ -352,7 +346,6 @@ export const deleteUserApto = async (req, res) => {
 };
 
 // Opcionalmente, si querés aprobar / rechazar aptos desde admin:
-
 export const approveApto = async (req, res) => {
   try {
     const { id } = req.params;
@@ -394,5 +387,3 @@ export const rejectApto = async (req, res) => {
     res.status(500).json({ error: "Error al rechazar apto." });
   }
 };
-
-

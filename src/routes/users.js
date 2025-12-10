@@ -31,10 +31,10 @@ if (!fs.existsSync(uploadDir)) {
 }
 
 /* ============================================
-   CONFIGURACIÓN DE MULTER PARA SUBIR APTOS
+   MULTER PARA APTOS (PDF)
    ============================================ */
 
-const storage = multer.diskStorage({
+const aptoStorage = multer.diskStorage({
   destination: (req, file, cb) => {
     cb(null, uploadDir);
   },
@@ -45,10 +45,38 @@ const storage = multer.diskStorage({
   },
 });
 
-const upload = multer({
-  storage,
+const uploadApto = multer({
+  storage: aptoStorage,
   limits: {
     fileSize: 10 * 1024 * 1024, // 10 MB
+  },
+});
+
+/* ============================================
+   MULTER PARA FOTO DE PACIENTE (AVATAR)
+   ============================================ */
+
+const avatarStorage = multer.diskStorage({
+  destination: (req, file, cb) => {
+    cb(null, uploadDir);
+  },
+  filename: (req, file, cb) => {
+    const ext = path.extname(file.originalname) || ".jpg";
+    const base = "avatar-" + req.params.id + "-" + Date.now();
+    cb(null, base + ext);
+  },
+});
+
+const avatarUpload = multer({
+  storage: avatarStorage,
+  limits: {
+    fileSize: 5 * 1024 * 1024, // 5 MB
+  },
+  fileFilter: (req, file, cb) => {
+    if (!file.mimetype.startsWith("image/")) {
+      return cb(new Error("Solo se permiten archivos de imagen."));
+    }
+    cb(null, true);
   },
 });
 
@@ -151,15 +179,27 @@ router.get("/:id", async (req, res) => {
   try {
     const { id } = req.params;
 
-    if (req.user.role !== "admin" && req.user._id.toString() !== id) {
+    const isAdmin = req.user.role === "admin";
+    const isSelf = req.user._id.toString() === id;
+
+    if (!isAdmin && !isSelf) {
       return res.status(403).json({
         error: "No tenés permiso para ver este usuario.",
       });
     }
 
-    const u = await User.findById(id);
+    const u = await User.findById(id).lean();
     if (!u) return res.status(404).json({ error: "Usuario no encontrado." });
 
+    // 🔐 El paciente NO ve la historia clínica (clinicalNotes)
+    if (!isAdmin) {
+      // quitamos clinicalNotes del objeto
+      // eslint-disable-next-line no-unused-vars
+      const { clinicalNotes, ...safeUser } = u;
+      return res.json(safeUser);
+    }
+
+    // Admin ve todo, incluyendo clinicalNotes
     res.json(u);
   } catch (err) {
     console.error("Error en GET /users/:id:", err);
@@ -168,7 +208,7 @@ router.get("/:id", async (req, res) => {
 });
 
 /* ============================================
-   PATCH EDITAR USUARIO
+   PATCH EDITAR USUARIO (ADMIN)
    ============================================ */
 router.patch("/:id", async (req, res) => {
   try {
@@ -190,7 +230,7 @@ router.patch("/:id", async (req, res) => {
 });
 
 /* ============================================
-   DELETE ELIMINAR USUARIO + SUS TURNOS
+   DELETE ELIMINAR USUARIO + SUS TURNOS (ADMIN)
    ============================================ */
 router.delete("/:id", async (req, res) => {
   try {
@@ -207,7 +247,6 @@ router.delete("/:id", async (req, res) => {
     }
 
     // 2) Borrar TODOS los turnos asociados a este usuario
-    //    (el schema usa "user" como ObjectId del usuario)
     await Appointment.deleteMany({ user: id });
 
     // 3) Borrar el usuario
@@ -263,7 +302,72 @@ router.get("/:id/history", async (req, res) => {
 });
 
 /* ============================================
-   CRÉDITOS
+   HISTORIA CLÍNICA (SOLO ADMIN)
+   ============================================ */
+
+// GET /users/:id/clinical-notes
+router.get("/:id/clinical-notes", async (req, res) => {
+  try {
+    if (req.user.role !== "admin") {
+      return res
+        .status(403)
+        .json({ error: "Solo un admin puede ver historia clínica." });
+    }
+
+    const { id } = req.params;
+    const user = await User.findById(id).lean();
+    if (!user) {
+      return res.status(404).json({ error: "Paciente no encontrado." });
+    }
+
+    res.json(user.clinicalNotes || []);
+  } catch (err) {
+    console.error("Error en GET /users/:id/clinical-notes:", err);
+    res.status(500).json({ error: "Error al obtener historia clínica." });
+  }
+});
+
+// POST /users/:id/clinical-notes  { text }
+router.post("/:id/clinical-notes", async (req, res) => {
+  try {
+    if (req.user.role !== "admin") {
+      return res
+        .status(403)
+        .json({ error: "Solo un admin puede editar historia clínica." });
+    }
+
+    const { id } = req.params;
+    const { text } = req.body || {};
+
+    if (!text || !String(text).trim()) {
+      return res
+        .status(400)
+        .json({ error: "El texto de la nota clínica es obligatorio." });
+    }
+
+    const user = await User.findById(id);
+    if (!user) {
+      return res.status(404).json({ error: "Paciente no encontrado." });
+    }
+
+    user.clinicalNotes = user.clinicalNotes || [];
+    user.clinicalNotes.push({
+      date: new Date(),
+      author: req.user.name || req.user.email || "Admin",
+      text: String(text).trim(),
+    });
+
+    await user.save();
+
+    res.json({ ok: true, clinicalNotes: user.clinicalNotes });
+  } catch (err) {
+    console.error("Error en POST /users/:id/clinical-notes:", err);
+    res.status(500).json({ error: "Error al guardar historia clínica." });
+  }
+});
+
+/* ============================================
+   CRÉDITOS (ADMIN)
    ============================================ */
 async function updateCredits(req, res) {
   try {
@@ -298,7 +402,7 @@ router.patch("/:id/credits", updateCredits);
 router.post("/:id/credits", updateCredits);
 
 /* ============================================
-   🚨 RESET PASSWORD (ADMIN)
+   RESET PASSWORD (ADMIN)
    ============================================ */
 router.post("/:id/reset-password", async (req, res) => {
   try {
@@ -326,9 +430,8 @@ router.post("/:id/reset-password", async (req, res) => {
 });
 
 /* ============================================
-   🚨 SUSPENDER / REACTIVAR USUARIO (ADMIN)
+   SUSPENDER / REACTIVAR USUARIO (ADMIN)
    PATCH /users/:id/suspend
-   Body: { suspended: boolean }
    ============================================ */
 router.patch("/:id/suspend", async (req, res) => {
   try {
@@ -355,9 +458,9 @@ router.patch("/:id/suspend", async (req, res) => {
 });
 
 /* ============================================
-   SUBIR APTO
+   SUBIR APTO (PDF)
    ============================================ */
-router.post("/:id/apto", upload.single("apto"), async (req, res) => {
+router.post("/:id/apto", uploadApto.single("apto"), async (req, res) => {
   try {
     const { id } = req.params;
 
@@ -379,6 +482,7 @@ router.post("/:id/apto", upload.single("apto"), async (req, res) => {
     const user = await User.findById(id);
     if (!user) return res.status(404).json({ error: "Usuario no encontrado." });
 
+    // borrar apto anterior si existía
     if (user.aptoPath) {
       try {
         const old = path.join(
@@ -407,7 +511,7 @@ router.post("/:id/apto", upload.single("apto"), async (req, res) => {
 });
 
 /* ============================================
-   VER APTO
+   VER APTOS
    ============================================ */
 router.get("/:id/apto", async (req, res) => {
   try {
@@ -480,6 +584,60 @@ router.delete("/:id/apto", async (req, res) => {
   } catch (err) {
     console.error("Error en DELETE /users/:id/apto:", err);
     res.status(500).json({ error: "Error al borrar apto." });
+  }
+});
+
+/* ============================================
+   FOTO DEL PACIENTE (AVATAR)
+   Admin o el propio usuario
+   ============================================ */
+router.post("/:id/photo", avatarUpload.single("photo"), async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    const isAdmin = req.user.role === "admin";
+    const isSelf = req.user._id.toString() === id;
+
+    // ⬅️ CAMBIO IMPORTANTE: ahora también puede el propio usuario
+    if (!isAdmin && !isSelf) {
+      return res.status(403).json({
+        error: "Solo el paciente o un admin pueden subir la foto.",
+      });
+    }
+
+    if (!req.file) {
+      return res.status(400).json({ error: "No se recibió ninguna imagen." });
+    }
+
+    const user = await User.findById(id);
+    if (!user) {
+      return res.status(404).json({ error: "Usuario no encontrado." });
+    }
+
+    // borrar foto anterior si existía
+    if (user.photoPath) {
+      try {
+        const old = path.join(
+          __dirname,
+          "..",
+          "..",
+          user.photoPath.replace(/^\//, "")
+        );
+        if (fs.existsSync(old)) fs.unlinkSync(old);
+      } catch {}
+    }
+
+    const relativePath = "/uploads/" + req.file.filename;
+    user.photoPath = relativePath;
+    await user.save();
+
+    res.json({
+      ok: true,
+      photoPath: user.photoPath,
+    });
+  } catch (err) {
+    console.error("Error en POST /users/:id/photo:", err);
+    res.status(500).json({ error: "Error al subir foto del paciente." });
   }
 });
 

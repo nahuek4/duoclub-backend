@@ -47,6 +47,24 @@ function requiresApto(user) {
 }
 
 /**
+ * Determina el turno según la hora
+ * - "maniana" (07–12)
+ * - "tarde"   (14–17)
+ * - "noche"   (18–20)
+ * - ""        si está fuera de rango
+ */
+function getTurnoFromTime(time) {
+  if (!time) return "";
+  const [hStr] = time.split(":");
+  const h = Number(hStr);
+
+  if (h >= 7 && h < 13) return "maniana";
+  if (h >= 14 && h < 18) return "tarde";
+  if (h >= 18 && h <= 20) return "noche";
+  return "";
+}
+
+/**
  * GET /appointments?from=YYYY-MM-DD&to=YYYY-MM-DD
  * 🔓 RUTA PÚBLICA: lista turnos por rango de fechas
  */
@@ -82,6 +100,14 @@ router.use(protect);
 /**
  * POST /appointments
  * body: { date, time, service }
+ *
+ * Reglas de capacidad por horario (date+time):
+ * - Mañana / Noche:
+ *   - EP: máx 4
+ *   - resto: máx 3
+ *   - total: máx 7
+ * - Tarde:
+ *   - solo EP: máx 7
  */
 router.post("/", async (req, res) => {
   try {
@@ -90,6 +116,23 @@ router.post("/", async (req, res) => {
     if (!date || !time || !service) {
       return res.status(400).json({
         error: "Faltan campos: date, time y service son obligatorios.",
+      });
+    }
+
+    // Determinar turno a partir de la hora
+    const turno = getTurnoFromTime(time);
+    if (!turno) {
+      return res.status(400).json({
+        error: "Horario fuera del rango permitido para turnos.",
+      });
+    }
+
+    const isEpService = service === "Entrenamiento Personal";
+
+    // En turno TARDE solo se permite Entrenamiento Personal (por ahora)
+    if (turno === "tarde" && !isEpService) {
+      return res.status(400).json({
+        error: "En el turno tarde solo se puede reservar Entrenamiento Personal.",
       });
     }
 
@@ -122,7 +165,65 @@ router.post("/", async (req, res) => {
       }
     }
 
-    // Creamos el turno
+    // 📊 Cálculo de capacidad del horario (date+time)
+    const existingAtSlot = await Appointment.find({
+      date,
+      time,
+      status: "reserved",
+    }).lean();
+
+    const totalCount = existingAtSlot.length;
+    const epCount = existingAtSlot.filter(
+      (a) => a.service === "Entrenamiento Personal"
+    ).length;
+    const otherCount = totalCount - epCount;
+
+    let maxEp = Infinity;
+    let maxOther = Infinity;
+    let maxTotal = Infinity;
+
+    if (turno === "maniana" || turno === "noche") {
+      maxEp = 4;
+      maxOther = 3;
+      maxTotal = 7;
+    } else if (turno === "tarde") {
+      maxEp = 7;
+      maxOther = 0; // no usamos por ahora
+      maxTotal = 7;
+    }
+
+    // Regla de cupo total
+    if (totalCount >= maxTotal) {
+      return res.status(409).json({
+        error: "Se alcanzó el cupo total disponible para este horario.",
+      });
+    }
+
+    // Reglas por tipo de servicio
+    if (turno === "maniana" || turno === "noche") {
+      if (isEpService && epCount >= maxEp) {
+        return res.status(409).json({
+          error:
+            "Se alcanzó el cupo de Entrenamiento Personal para este horario.",
+        });
+      }
+
+      if (!isEpService && otherCount >= maxOther) {
+        return res.status(409).json({
+          error: "Se alcanzó el cupo disponible para este horario.",
+        });
+      }
+    } else if (turno === "tarde") {
+      // tarde solo EP
+      if (epCount >= maxEp) {
+        return res.status(409).json({
+          error:
+            "Se alcanzó el cupo de Entrenamiento Personal para este horario.",
+        });
+      }
+    }
+
+    // ✅ Si llegamos hasta acá, hay cupo => creamos el turno
     const ap = await Appointment.create({
       date,
       time,
@@ -152,11 +253,12 @@ router.post("/", async (req, res) => {
   } catch (err) {
     console.error("Error en POST /appointments:", err);
 
-    // Error de índice único (slot ya reservado)
+    // Si por alguna razón queda algún índice único viejo y explota:
     if (err?.code === 11000) {
-      return res
-        .status(409)
-        .json({ error: "Ese servicio en ese horario ya está reservado." });
+      return res.status(409).json({
+        error:
+          "No se pudo reservar el turno por un conflicto interno. Avisá al administrador para revisar índices de la base de datos.",
+      });
     }
 
     res.status(500).json({ error: "Error al crear el turno." });

@@ -20,6 +20,40 @@ const userSchema = new mongoose.Schema(
 
     aptoPath: { type: String, default: "" },
     aptoStatus: { type: String, default: "" }, // "uploaded" | "approved" | "rejected"
+
+    // 🔹 Foto del paciente (avatar)
+    photoPath: { type: String, default: "" },
+
+    // 🔹 Datos del formulario inicial (más completo)
+    initialForm: {
+      birthDate: { type: String, default: "" }, // "YYYY-MM-DD"
+      dni: { type: String, default: "" },
+      phone: { type: String, default: "" },
+      emergencyContactName: { type: String, default: "" },
+      emergencyContactPhone: { type: String, default: "" },
+
+      injuries: { type: String, default: "" },
+      surgeries: { type: String, default: "" },
+      medications: { type: String, default: "" },
+      allergies: { type: String, default: "" },
+      diseases: { type: String, default: "" },
+      cardiacHistory: { type: String, default: "" },
+
+      sportBackground: { type: String, default: "" },
+      trainingFrequency: { type: String, default: "" },
+      goals: { type: String, default: "" },
+
+      observations: { type: String, default: "" },
+    },
+
+    // 🔹 Historia clínica interna (solo equipo)
+    clinicalNotes: [
+      {
+        date: { type: Date, default: Date.now },
+        author: { type: String, default: "" }, // nombre del admin / profesional
+        text: { type: String, required: true },
+      },
+    ],
   },
   {
     timestamps: true, // createdAt / updatedAt
