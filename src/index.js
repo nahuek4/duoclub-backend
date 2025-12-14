@@ -21,6 +21,9 @@ const PORT =
   process.env.PORT ||
   (process.env.NODE_ENV === "production" ? 3000 : 4000);
 
+app.set("trust proxy", 1);
+
+
 // Necesario para path.join en ESModules
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
