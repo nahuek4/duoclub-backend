@@ -24,19 +24,21 @@ const userSchema = new mongoose.Schema(
     // 🔹 Foto del paciente (avatar)
     photoPath: { type: String, default: "" },
 
-    // ✅ Registro público: verificación + aprobación
+    // =========================
+    // ✅ Registro + Verificación + Aprobación Admin
+    // =========================
     emailVerified: { type: Boolean, default: false },
-    approved: { type: Boolean, default: false },
+
     approvalStatus: {
       type: String,
-      default: "pending",
       enum: ["pending", "approved", "rejected"],
+      default: "pending",
     },
 
     emailVerifyTokenHash: { type: String, default: "" },
-    emailVerifyExpiresAt: { type: Date, default: null },
+    emailVerifyTokenExpires: { type: Date, default: null },
 
-    // 🔹 Datos del formulario inicial (más completo)
+    // 🔹 Datos del formulario inicial
     initialForm: {
       birthDate: { type: String, default: "" }, // "YYYY-MM-DD"
       dni: { type: String, default: "" },
@@ -62,13 +64,13 @@ const userSchema = new mongoose.Schema(
     clinicalNotes: [
       {
         date: { type: Date, default: Date.now },
-        author: { type: String, default: "" }, // nombre del admin / profesional
+        author: { type: String, default: "" },
         text: { type: String, required: true },
       },
     ],
   },
   {
-    timestamps: true, // createdAt / updatedAt
+    timestamps: true,
   }
 );
 

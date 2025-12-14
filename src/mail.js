@@ -1,6 +1,5 @@
 // backend/src/mail.js
 import nodemailer from "nodemailer";
-import { db } from "./models/store.js";
 
 let transporter = null;
 
@@ -18,7 +17,7 @@ function getTransporter() {
   transporter = nodemailer.createTransport({
     host: SMTP_HOST,
     port: Number(SMTP_PORT || 587),
-    secure: SMTP_SECURE === "true",
+    secure: String(SMTP_SECURE) === "true",
     auth: {
       user: SMTP_USER,
       pass: SMTP_PASS,
@@ -38,48 +37,23 @@ async function sendMail(to, subject, text) {
   await tx.sendMail({ from, to, subject, text });
 }
 
-async function sendMailHtml(to, subject, html) {
-  const tx = getTransporter();
-  if (!tx) {
-    console.log("[MAIL MOCK HTML]", { to, subject, html });
-    return;
-  }
-  const from = process.env.MAIL_FROM || process.env.SMTP_USER;
-  await tx.sendMail({ from, to, subject, html });
+/** ✅ Verificación de email */
+export async function sendVerifyEmail(user, verifyUrl) {
+  if (!user?.email) return;
+  const lines = [
+    `Hola ${user.name || ""}`.trim() + ",",
+    "",
+    "Gracias por registrarte en DUO.",
+    "",
+    "Para validar tu email, ingresá a este link:",
+    verifyUrl,
+    "",
+    "Si vos no creaste esta cuenta, ignorá este correo.",
+  ];
+  await sendMail(user.email, "Verificá tu email en DUO", lines.join("\n"));
 }
 
-/** ✅ Verificación de email (registro público) */
-export async function sendVerifyEmail(toEmail, token) {
-  if (!toEmail) return;
-
-  // FRONT URL (donde vive tu React)
-  const APP_URL = process.env.APP_URL || "http://localhost:5173";
-  const verifyUrl = `${APP_URL}/verify-email?token=${encodeURIComponent(token)}`;
-
-  const html = `
-    <div style="font-family:Arial,sans-serif;line-height:1.5">
-      <h2 style="margin:0 0 10px">Verificación de email</h2>
-      <p style="margin:0 0 14px">
-        Para activar tu cuenta, verificá tu email haciendo click en el botón:
-      </p>
-
-      <p style="margin:18px 0">
-        <a href="${verifyUrl}"
-           style="display:inline-block;padding:10px 14px;border-radius:10px;background:#111;color:#fff;text-decoration:none">
-          Verificar email
-        </a>
-      </p>
-
-      <p style="font-size:12px;color:#666;margin-top:18px">
-        Si no pediste este registro, podés ignorar este mensaje.
-      </p>
-    </div>
-  `;
-
-  await sendMailHtml(toEmail, "Verificá tu email", html);
-}
-
-/** Bienvenida al crear usuario */
+/** Bienvenida al crear usuario (admin) */
 export async function sendUserWelcomeEmail(user, tempPassword) {
   if (!user?.email) return;
   const lines = [
@@ -96,6 +70,29 @@ export async function sendUserWelcomeEmail(user, tempPassword) {
     "Cualquier duda, respondé a este correo.",
   ];
   await sendMail(user.email, "Tu usuario en DUO está listo", lines.join("\n"));
+}
+
+/** ✅ Aprobación / Rechazo (opcional pero recomendado) */
+export async function sendAccountApprovedEmail(user) {
+  if (!user?.email) return;
+  const lines = [
+    `Hola ${user.name || ""}`.trim() + ",",
+    "",
+    "Tu cuenta fue aprobada.",
+    "Ya podés iniciar sesión en DUO.",
+  ];
+  await sendMail(user.email, "Tu cuenta fue aprobada", lines.join("\n"));
+}
+
+export async function sendAccountRejectedEmail(user) {
+  if (!user?.email) return;
+  const lines = [
+    `Hola ${user.name || ""}`.trim() + ",",
+    "",
+    "Tu cuenta fue rechazada por el administrador.",
+    "Si creés que es un error, respondé este correo.",
+  ];
+  await sendMail(user.email, "Tu cuenta fue rechazada", lines.join("\n"));
 }
 
 /** Turno agendado */

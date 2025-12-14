@@ -237,6 +237,55 @@ router.get("/", async (req, res) => {
   }
 });
 
+
+// ✅ LISTAR PENDIENTES (solo admin)
+// GET /users/pending
+router.get("/pending", async (req, res) => {
+  try {
+    if (req.user.role !== "admin") {
+      return res.status(403).json({ error: "No autorizado." });
+    }
+
+    const pending = await User.find({ approvalStatus: "pending" })
+      .sort({ createdAt: -1 })
+      .lean();
+
+    res.json(pending);
+  } catch (err) {
+    console.error("Error en GET /users/pending:", err);
+    res.status(500).json({ error: "Error al obtener pendientes." });
+  }
+});
+
+// ✅ APROBAR / RECHAZAR (solo admin)
+// PATCH /users/:id/approval  body: { status: "approved" | "rejected" }
+router.patch("/:id/approval", async (req, res) => {
+  try {
+    if (req.user.role !== "admin") {
+      return res.status(403).json({ error: "No autorizado." });
+    }
+
+    const { id } = req.params;
+    const { status } = req.body || {};
+
+    if (!["approved", "rejected"].includes(String(status))) {
+      return res.status(400).json({ error: "Estado inválido." });
+    }
+
+    const user = await User.findById(id);
+    if (!user) return res.status(404).json({ error: "Usuario no encontrado." });
+
+    user.approvalStatus = status;
+    await user.save();
+
+    res.json({ ok: true, approvalStatus: user.approvalStatus });
+  } catch (err) {
+    console.error("Error en PATCH /users/:id/approval:", err);
+    res.status(500).json({ error: "Error al actualizar aprobación." });
+  }
+});
+
+
 /* ============================================
    GET UN USUARIO
    ============================================ */

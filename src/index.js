@@ -86,6 +86,36 @@ app.use((req, res, next) => {
   next();
 });
 
+// 👇 PRE-FLIGHT GLOBAL (ANTES DE TODO)
+app.options("*", (req, res) => {
+  const origin = req.headers.origin;
+
+  const allowedOrigins = [
+    "http://localhost:5173",
+    "http://127.0.0.1:5173",
+    "https://duoclub.ar",
+    "https://www.duoclub.ar",
+    "https://app.duoclub.ar",
+    "https://www.app.duoclub.ar",
+  ];
+
+  if (!origin || allowedOrigins.includes(origin)) {
+    res.header("Access-Control-Allow-Origin", origin || "*");
+    res.header("Access-Control-Allow-Credentials", "true");
+    res.header(
+      "Access-Control-Allow-Headers",
+      "Origin, X-Requested-With, Content-Type, Accept, Authorization"
+    );
+    res.header(
+      "Access-Control-Allow-Methods",
+      "GET,POST,PUT,PATCH,DELETE,OPTIONS"
+    );
+  }
+
+  return res.sendStatus(204);
+});
+
+
 /* =========================
    RATE LIMIT
    ========================= */
@@ -97,7 +127,10 @@ const apiLimiter = rateLimit({
   legacyHeaders: false,
 });
 
-app.use("/auth", apiLimiter);
+app.use("/auth", (req, res, next) => {
+  if (req.method === "OPTIONS") return res.sendStatus(204);
+  return apiLimiter(req, res, next);
+});
 app.use("/appointments", apiLimiter);
 
 // Servir archivos estáticos de uploads (apto PDFs, etc.)
