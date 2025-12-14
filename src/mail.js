@@ -1,3 +1,4 @@
+// backend/src/mail.js
 import nodemailer from "nodemailer";
 import { db } from "./models/store.js";
 
@@ -6,7 +7,7 @@ let transporter = null;
 function getTransporter() {
   if (transporter) return transporter;
 
-  const { SMTP_HOST, SMTP_PORT, SMTP_USER, SMTP_PASS, SMTP_SECURE, MAIL_FROM } =
+  const { SMTP_HOST, SMTP_PORT, SMTP_USER, SMTP_PASS, SMTP_SECURE } =
     process.env || {};
 
   if (!SMTP_HOST || !SMTP_USER || !SMTP_PASS) {
@@ -35,6 +36,47 @@ async function sendMail(to, subject, text) {
   }
   const from = process.env.MAIL_FROM || process.env.SMTP_USER;
   await tx.sendMail({ from, to, subject, text });
+}
+
+async function sendMailHtml(to, subject, html) {
+  const tx = getTransporter();
+  if (!tx) {
+    console.log("[MAIL MOCK HTML]", { to, subject, html });
+    return;
+  }
+  const from = process.env.MAIL_FROM || process.env.SMTP_USER;
+  await tx.sendMail({ from, to, subject, html });
+}
+
+/** ✅ Verificación de email (registro público) */
+export async function sendVerifyEmail(toEmail, token) {
+  if (!toEmail) return;
+
+  // FRONT URL (donde vive tu React)
+  const APP_URL = process.env.APP_URL || "http://localhost:5173";
+  const verifyUrl = `${APP_URL}/verify-email?token=${encodeURIComponent(token)}`;
+
+  const html = `
+    <div style="font-family:Arial,sans-serif;line-height:1.5">
+      <h2 style="margin:0 0 10px">Verificación de email</h2>
+      <p style="margin:0 0 14px">
+        Para activar tu cuenta, verificá tu email haciendo click en el botón:
+      </p>
+
+      <p style="margin:18px 0">
+        <a href="${verifyUrl}"
+           style="display:inline-block;padding:10px 14px;border-radius:10px;background:#111;color:#fff;text-decoration:none">
+          Verificar email
+        </a>
+      </p>
+
+      <p style="font-size:12px;color:#666;margin-top:18px">
+        Si no pediste este registro, podés ignorar este mensaje.
+      </p>
+    </div>
+  `;
+
+  await sendMailHtml(toEmail, "Verificá tu email", html);
 }
 
 /** Bienvenida al crear usuario */

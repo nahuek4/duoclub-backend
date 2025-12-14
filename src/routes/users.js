@@ -85,6 +85,71 @@ const avatarUpload = multer({
    ============================================ */
 router.use(protect);
 
+// ============================================
+// ✅ ADMIN - REGISTRACIONES PENDIENTES
+// ============================================
+
+// GET /users/registrations/list?status=pending|approved|rejected
+router.get("/registrations/list", async (req, res) => {
+  try {
+    if (req.user.role !== "admin") {
+      return res.status(403).json({ error: "No autorizado." });
+    }
+
+    const status = String(req.query.status || "pending");
+    const query = {};
+
+    if (status === "pending") query.approvalStatus = "pending";
+    if (status === "approved") query.approvalStatus = "approved";
+    if (status === "rejected") query.approvalStatus = "rejected";
+
+    const users = await User.find(query).sort({ createdAt: -1 }).lean();
+    return res.json(users);
+  } catch (err) {
+    console.error("Error en GET /users/registrations/list:", err);
+    return res.status(500).json({ error: "Error al obtener registraciones." });
+  }
+});
+
+// PATCH /users/:id/approval  { approved: true|false }
+router.patch("/:id/approval", async (req, res) => {
+  try {
+    if (req.user.role !== "admin") {
+      return res.status(403).json({ error: "No autorizado." });
+    }
+
+    const { id } = req.params;
+    const approved = !!req.body?.approved;
+
+    const user = await User.findById(id);
+    if (!user) return res.status(404).json({ error: "Usuario no encontrado." });
+
+    // Opcional recomendado: no aprobar si no verificó email
+    if (approved && !user.emailVerified) {
+      return res.status(400).json({ error: "No se puede aprobar: el email no está verificado." });
+    }
+
+    user.approved = approved;
+    user.approvalStatus = approved ? "approved" : "rejected";
+
+    // Si rechazás, podés suspender automáticamente
+    if (!approved) user.suspended = true;
+
+    await user.save();
+
+    return res.json({
+      ok: true,
+      approved: user.approved,
+      approvalStatus: user.approvalStatus,
+      suspended: user.suspended,
+    });
+  } catch (err) {
+    console.error("Error en PATCH /users/:id/approval:", err);
+    return res.status(500).json({ error: "Error al actualizar aprobación." });
+  }
+});
+
+
 /* ============================================
    POST: CREAR USUARIO NUEVO (ADMIN)
    ============================================ */

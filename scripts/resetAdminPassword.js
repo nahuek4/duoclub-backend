@@ -2,13 +2,13 @@
 import dotenv from "dotenv";
 import mongoose from "mongoose";
 import bcrypt from "bcryptjs";
-import User from "./src/models/User.js";
+import User from "../src/models/User.js";
 
-dotenv.config(); // lee .env (MONGO_URI)
+dotenv.config({ path: "../.env" }); // í±ˆ carga el .env correcto
 
-// ðŸš¨ AjustÃ¡ estos dos si querÃ©s otro mail/clave
-const email = "admin@duoclub.ar";   // ðŸ‘ˆ el mail que quieras
-const plainPassword = "Duoclub123"; // ðŸ‘ˆ la clave que quieras
+// íº¨ AjustÃ¡ estos dos si querÃ©s otro mail/clave
+const email = "admin@duoclub.ar";   // í±ˆ el mail que quieras
+const plainPassword = "Duoclub123"; // í±ˆ la clave que quieras
 
 async function main() {
   try {
@@ -33,8 +33,8 @@ async function main() {
     const hash = await bcrypt.hash(plainPassword, 10);
 
     user.password = hash;
-    user.mustChangePassword = false;   // o true si querÃ©s obligar a cambiarla al entrar
-    user.role = "admin";               // aseguramos que sea admin
+    user.mustChangePassword = false;
+    user.role = "admin";
 
     await user.save();
 

@@ -24,6 +24,18 @@ const userSchema = new mongoose.Schema(
     // 🔹 Foto del paciente (avatar)
     photoPath: { type: String, default: "" },
 
+    // ✅ Registro público: verificación + aprobación
+    emailVerified: { type: Boolean, default: false },
+    approved: { type: Boolean, default: false },
+    approvalStatus: {
+      type: String,
+      default: "pending",
+      enum: ["pending", "approved", "rejected"],
+    },
+
+    emailVerifyTokenHash: { type: String, default: "" },
+    emailVerifyExpiresAt: { type: Date, default: null },
+
     // 🔹 Datos del formulario inicial (más completo)
     initialForm: {
       birthDate: { type: String, default: "" }, // "YYYY-MM-DD"
