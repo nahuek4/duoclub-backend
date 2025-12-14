@@ -27,16 +27,15 @@ const userSchema = new mongoose.Schema(
     // =========================
     // ✅ Registro + Verificación + Aprobación Admin
     // =========================
-    emailVerified: { type: Boolean, default: false },
+      emailVerified: { type: Boolean, default: false },
+      approvalStatus: {
+        type: String,
+        enum: ["pending", "approved", "rejected"],
+        default: "pending",
+      },
+      emailVerificationToken: { type: String, default: "" },
+      emailVerificationExpires: { type: Date, default: null },
 
-    approvalStatus: {
-      type: String,
-      enum: ["pending", "approved", "rejected"],
-      default: "pending",
-    },
-
-    emailVerifyTokenHash: { type: String, default: "" },
-    emailVerifyTokenExpires: { type: Date, default: null },
 
     // 🔹 Datos del formulario inicial
     initialForm: {
