@@ -15,7 +15,6 @@ function getTransporter() {
     SMTP_USER,
     SMTP_PASS,
     SMTP_SECURE,
-    MAIL_FROM,
   } = process.env || {};
 
   if (!SMTP_HOST || !SMTP_USER || !SMTP_PASS) {
@@ -36,29 +35,36 @@ function getTransporter() {
   return transporter;
 }
 
-// ✅ EXPORT NAMED (así lo podés importar desde auth.js)
-export async function sendMail(to, subject, text) {
+// ✅ ahora soporta HTML (mantiene compatibilidad con llamadas viejas)
+export async function sendMail(to, subject, text, html) {
   const tx = getTransporter();
 
   if (!tx) {
-    console.log("[MAIL MOCK]", { to, subject, text });
+    console.log("[MAIL MOCK]", { to, subject, text, html });
     return;
   }
 
   const from = process.env.MAIL_FROM || process.env.SMTP_USER;
-  await tx.sendMail({ from, to, subject, text });
+
+  const payload = { from, to, subject };
+
+  // mandamos ambos si existen (mejor deliverability + fallback)
+  if (text) payload.text = text;
+  if (html) payload.html = html;
+
+  await tx.sendMail(payload);
 }
 
-/** ✅ Verificación de email */
+/** ✅ Verificación de email (HTML + texto) */
 export async function sendVerifyEmail(user, verifyUrl) {
   if (!user?.email) return;
 
-  const lines = [
+  const textLines = [
     `Hola ${user.name || ""}`.trim() + ",",
     "",
     "Gracias por registrarte en DUO.",
     "",
-    "Para continuar, verificá tu email haciendo click en el siguiente link:",
+    "Para continuar, verificá tu email en este link (si no abre, copiá y pegá en el navegador):",
     "",
     verifyUrl,
     "",
@@ -67,7 +73,29 @@ export async function sendVerifyEmail(user, verifyUrl) {
     "Si vos no creaste esta cuenta, podés ignorar este email.",
   ];
 
-  await sendMail(user.email, "Verificá tu email - DUO", lines.join("\n"));
+  const html = `
+  <div style="font-family: Arial, sans-serif; line-height: 1.4; color:#111;">
+    <h2 style="margin:0 0 12px;">Verificación de email</h2>
+    <p>Hola ${user.name || ""},</p>
+    <p>Gracias por registrarte en <b>DUO</b>.</p>
+    <p>Para continuar, hacé click en el botón:</p>
+    <p style="margin:18px 0;">
+      <a href="${verifyUrl}"
+         style="background:#111; color:#fff; padding:12px 16px; border-radius:8px; text-decoration:none; display:inline-block;">
+        Verificar email
+      </a>
+    </p>
+    <p style="font-size:12px; color:#444;">
+      Si el botón no funciona, copiá y pegá este link en el navegador:
+    </p>
+    <p style="font-size:12px; word-break:break-all;">
+      <a href="${verifyUrl}">${verifyUrl}</a>
+    </p>
+    <p style="font-size:12px; color:#444;">Este link vence en 24 horas.</p>
+  </div>
+  `;
+
+  await sendMail(user.email, "Verificá tu email - DUO", textLines.join("\n"), html);
 }
 
 /** Bienvenida al crear usuario (admin flow) */
@@ -103,11 +131,7 @@ export async function sendAppointmentBookedEmail(user, ap, serviceName) {
     "",
     "Si no podés asistir, recordá cancelarlo con anticipación desde tu perfil.",
   ];
-  await sendMail(
-    user.email,
-    "Tu turno fue reservado",
-    lines.filter(Boolean).join("\n")
-  );
+  await sendMail(user.email, "Tu turno fue reservado", lines.filter(Boolean).join("\n"));
 }
 
 /** Turno cancelado */
@@ -124,11 +148,7 @@ export async function sendAppointmentCancelledEmail(user, ap, serviceName) {
     "",
     "Si fue un error, podés volver a reservar desde la agenda.",
   ];
-  await sendMail(
-    user.email,
-    "Tu turno fue cancelado",
-    lines.filter(Boolean).join("\n")
-  );
+  await sendMail(user.email, "Tu turno fue cancelado", lines.filter(Boolean).join("\n"));
 }
 
 /** Recordatorio 24 hs antes */
@@ -145,11 +165,7 @@ export async function sendAppointmentReminderEmail(user, ap, serviceName) {
     "",
     "Te esperamos. Si no podés asistir, cancelá el turno para liberar el espacio.",
   ];
-  await sendMail(
-    user.email,
-    "Recordatorio de turno",
-    lines.filter(Boolean).join("\n")
-  );
+  await sendMail(user.email, "Recordatorio de turno", lines.filter(Boolean).join("\n"));
 }
 
 /** Aviso de apto vencido */
@@ -164,9 +180,5 @@ export async function sendAptoExpiredEmail(user) {
     "",
     "Podés subirlo desde tu perfil dentro de la plataforma.",
   ];
-  await sendMail(
-    user.email,
-    "Es necesario actualizar tu apto médico",
-    lines.join("\n")
-  );
+  await sendMail(user.email, "Es necesario actualizar tu apto médico", lines.join("\n"));
 }

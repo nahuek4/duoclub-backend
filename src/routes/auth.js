@@ -5,9 +5,13 @@ import jwt from "jsonwebtoken";
 import crypto from "crypto";
 import User from "../models/User.js";
 import { protect } from "../middleware/auth.js";
-import { sendMail } from "../mail.js";
+import { sendVerifyEmail } from "../mail.js";
 
 const router = express.Router();
+
+/* ============================================
+   HELPERS
+   ============================================ */
 
 function signToken(user) {
   return jwt.sign({ id: user._id }, process.env.JWT_SECRET, {
@@ -16,26 +20,28 @@ function signToken(user) {
 }
 
 function serializeUser(u) {
+  if (!u) return null;
   return {
     id: u._id.toString(),
     name: u.name,
     email: u.email,
     role: u.role,
     credits: u.credits,
-    suspended: !!u.suspended,
-    mustChangePassword: !!u.mustChangePassword,
+    suspended: u.suspended,
+    mustChangePassword: u.mustChangePassword,
     aptoStatus: u.aptoStatus || "",
     emailVerified: !!u.emailVerified,
     approvalStatus: u.approvalStatus || "pending",
   };
 }
 
-const sha256 = (str) =>
-  crypto.createHash("sha256").update(str).digest("hex");
+function sha256(str) {
+  return crypto.createHash("sha256").update(str).digest("hex");
+}
 
-// ===============================
-// LOGIN
-// ===============================
+/* ============================================
+   POST /auth/login
+   ============================================ */
 router.post("/login", async (req, res) => {
   try {
     const { email, password } = req.body || {};
@@ -43,54 +49,73 @@ router.post("/login", async (req, res) => {
       return res.status(400).json({ error: "Email y password son obligatorios." });
     }
 
-    const user = await User.findOne({ email: email.toLowerCase() });
+    const user = await User.findOne({ email: String(email).toLowerCase() });
     if (!user) return res.status(401).json({ error: "Email o contraseña incorrectos." });
 
-    const ok = await bcrypt.compare(password, user.password);
-    if (!ok) return res.status(401).json({ error: "Email o contraseña incorrectos." });
+    const match = await bcrypt.compare(password, user.password);
+    if (!match) return res.status(401).json({ error: "Email o contraseña incorrectos." });
 
+    // 🔒 ORDEN CORRECTO
     if (!user.emailVerified) {
-      return res.status(403).json({ error: "Tenés que verificar tu email antes de iniciar sesión." });
+      return res.status(403).json({
+        error: "Tenés que verificar tu email antes de iniciar sesión.",
+      });
     }
 
     if (user.approvalStatus === "pending") {
-      return res.status(403).json({ error: "Tu cuenta está pendiente de aprobación por el administrador." });
+      return res.status(403).json({
+        error: "Tu cuenta está pendiente de aprobación por el administrador.",
+      });
     }
 
     if (user.approvalStatus === "rejected") {
-      return res.status(403).json({ error: "Tu cuenta fue rechazada. Contactá al administrador." });
+      return res.status(403).json({
+        error: "Tu cuenta fue rechazada. Contactá al administrador.",
+      });
     }
 
     if (user.suspended) {
-      return res.status(403).json({ error: "Cuenta suspendida. Contactá al administrador." });
+      return res.status(403).json({
+        error: "Cuenta suspendida. Contactá al administrador.",
+      });
     }
 
     const token = signToken(user);
-    res.json({ token, user: serializeUser(user) });
+    return res.json({ token, user: serializeUser(user) });
   } catch (err) {
-    console.error("Error login:", err);
-    res.status(500).json({ error: "Error al iniciar sesión." });
+    console.error("Error en POST /auth/login:", err);
+    return res.status(500).json({ error: "Error al iniciar sesión." });
   }
 });
 
-// ===============================
-// REGISTER
-// ===============================
+/* ============================================
+   POST /auth/register
+   ============================================ */
 router.post("/register", async (req, res) => {
   try {
     const { name, email, password } = req.body || {};
+
     if (!name || !email || !password) {
-      return res.status(400).json({ error: "Datos incompletos." });
+      return res.status(400).json({
+        error: "Nombre, email y contraseña son obligatorios.",
+      });
     }
 
-    if (password.length < 8) {
-      return res.status(400).json({ error: "La contraseña debe tener al menos 8 caracteres." });
+    if (String(password).length < 8) {
+      return res.status(400).json({
+        error: "La contraseña debe tener al menos 8 caracteres.",
+      });
     }
 
-    const emailLower = email.toLowerCase();
-    if (await User.findOne({ email: emailLower })) {
-      return res.status(409).json({ error: "Ya existe una cuenta con ese email." });
+    const emailLower = String(email).toLowerCase();
+    const exists = await User.findOne({ email: emailLower });
+    if (exists) {
+      return res.status(409).json({
+        error: "Ya existe una cuenta con ese email.",
+      });
     }
+
+    const hashedPass = await bcrypt.hash(password, 10);
 
     const rawToken = crypto.randomBytes(32).toString("hex");
     const tokenHash = sha256(rawToken);
@@ -98,39 +123,43 @@ router.post("/register", async (req, res) => {
     const user = await User.create({
       name,
       email: emailLower,
-      password: await bcrypt.hash(password, 10),
+      password: hashedPass,
       role: "client",
+
       suspended: true,
       approvalStatus: "pending",
       emailVerified: false,
+
       emailVerificationToken: tokenHash,
       emailVerificationExpires: new Date(Date.now() + 24 * 60 * 60 * 1000),
     });
 
-    const verifyUrl = `${process.env.FRONTEND_URL}/verificar-email?token=${rawToken}`;
+    const frontend = process.env.FRONTEND_URL || "https://duoclub.ar";
+    const verifyUrl = `${frontend}/verificar-email?token=${rawToken}`;
 
-    await sendMail(
-      user.email,
-      "Verificá tu email - DUO",
-      `Hola ${user.name}\n\nVerificá tu email acá:\n${verifyUrl}`
-    );
+    await sendVerifyEmail(user, verifyUrl);
 
-    res.status(201).json({
+    return res.status(201).json({
       ok: true,
-      message: "Registro exitoso. Revisá tu email para verificar la cuenta.",
+      message:
+        "Registro exitoso. Te enviamos un email para verificar tu cuenta.",
     });
   } catch (err) {
-    console.error("Error register:", err);
-    res.status(500).json({ error: "Error al registrarse." });
+    console.error("Error en /auth/register:", err);
+    return res.status(500).json({ error: "Error al registrarse." });
   }
 });
 
-// ===============================
-// VERIFY EMAIL
-// ===============================
+/* ============================================
+   GET /auth/verify-email
+   ============================================ */
 router.get("/verify-email", async (req, res) => {
   try {
     const rawToken = String(req.query.token || "");
+    if (!rawToken) {
+      return res.status(400).json({ error: "Token inválido." });
+    }
+
     const tokenHash = sha256(rawToken);
 
     const user = await User.findOne({
@@ -139,29 +168,94 @@ router.get("/verify-email", async (req, res) => {
     });
 
     if (!user) {
-      return res.status(400).json({ error: "Token inválido o expirado." });
+      return res.status(400).json({
+        error: "Token inválido o expirado. Pedí un nuevo correo de verificación.",
+      });
     }
 
+    // ✅ SOLO verificamos email
     user.emailVerified = true;
     user.emailVerificationToken = "";
     user.emailVerificationExpires = null;
+
     await user.save();
 
-    res.json({
+    return res.json({
       ok: true,
-      message: "Email verificado. Quedás pendiente de aprobación.",
+      message:
+        "Email verificado correctamente. Tu cuenta será revisada por un administrador.",
     });
   } catch (err) {
     console.error("Error verify-email:", err);
-    res.status(500).json({ error: "Error al verificar email." });
+    return res.status(500).json({ error: "Error al verificar email." });
   }
 });
 
-// ===============================
-// ME
-// ===============================
+/* ============================================
+   POST /auth/resend-verification
+   ============================================ */
+router.post("/resend-verification", async (req, res) => {
+  try {
+    const { email } = req.body || {};
+    const emailLower = String(email || "").toLowerCase();
+    if (!emailLower) {
+      return res.status(400).json({ error: "Email requerido." });
+    }
+
+    const user = await User.findOne({ email: emailLower });
+
+    if (!user) {
+      return res.json({
+        ok: true,
+        message: "Si el email existe, te enviamos un correo.",
+      });
+    }
+
+    if (user.emailVerified) {
+      return res.json({
+        ok: true,
+        message: "Tu email ya está verificado.",
+      });
+    }
+
+    const rawToken = crypto.randomBytes(32).toString("hex");
+    const tokenHash = sha256(rawToken);
+
+    user.emailVerificationToken = tokenHash;
+    user.emailVerificationExpires = new Date(Date.now() + 24 * 60 * 60 * 1000);
+    await user.save();
+
+    const frontend = process.env.FRONTEND_URL || "https://duoclub.ar";
+    const verifyUrl = `${frontend}/verificar-email?token=${rawToken}`;
+
+    await sendVerifyEmail(user, verifyUrl);
+
+    return res.json({
+      ok: true,
+      message: "Te reenviamos el correo de verificación.",
+    });
+  } catch (err) {
+    console.error("Error resend-verification:", err);
+    return res.status(500).json({
+      error: "No se pudo reenviar el correo.",
+    });
+  }
+});
+
+/* ============================================
+   GET /auth/me
+   ============================================ */
 router.get("/me", protect, async (req, res) => {
-  res.json(serializeUser(req.user));
+  try {
+    const user = await User.findById(req.user._id);
+    if (!user) {
+      return res.status(401).json({ error: "Usuario no encontrado." });
+    }
+    return res.json(serializeUser(user));
+  } catch (err) {
+    console.error("Error en GET /auth/me:", err);
+    return res.status(500).json({ error: "Error al obtener el usuario." });
+  }
 });
 
 export default router;
