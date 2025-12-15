@@ -19,10 +19,7 @@ async function protect(req, res, next) {
       console.warn("⚠️ JWT_SECRET no definido en .env, usando 'dev_secret'");
     }
 
-    const decoded = jwt.verify(
-      token,
-      process.env.JWT_SECRET || "dev_secret"
-    );
+    const decoded = jwt.verify(token, process.env.JWT_SECRET || "dev_secret");
 
     // decoded.id viene de signToken({ id: user._id })
     const userId = decoded.id || decoded._id;
@@ -46,6 +43,14 @@ async function protect(req, res, next) {
   }
 }
 
+// ✅ Solo admin
+function adminOnly(req, res, next) {
+  if (!req.user || req.user.role !== "admin") {
+    return res.status(403).json({ error: "No autorizado. Solo administradores." });
+  }
+  next();
+}
+
 // Exportamos como named y como default para evitar líos con los imports
-export { protect };
+export { protect, adminOnly };
 export default protect;

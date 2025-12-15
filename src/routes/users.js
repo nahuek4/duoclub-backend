@@ -8,7 +8,7 @@ import bcrypt from "bcryptjs";
 
 import User from "../models/User.js";
 import Appointment from "../models/Appointment.js";
-import { protect } from "../middleware/auth.js";
+import { protect, adminOnly } from "../middleware/auth.js";
 
 import multer from "multer";
 
@@ -18,14 +18,11 @@ const router = express.Router();
    CONFIGURACIÓN DE RUTAS / PATHS
    ============================================ */
 
-// Resolver rutas correctamente en ESModules
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-// Carpeta de uploads (debe existir)
 const uploadDir = path.join(__dirname, "..", "..", "uploads");
 
-// Crear carpeta si no existe
 if (!fs.existsSync(uploadDir)) {
   fs.mkdirSync(uploadDir, { recursive: true });
 }
@@ -48,7 +45,7 @@ const aptoStorage = multer.diskStorage({
 const uploadApto = multer({
   storage: aptoStorage,
   limits: {
-    fileSize: 10 * 1024 * 1024, // 10 MB
+    fileSize: 10 * 1024 * 1024,
   },
 });
 
@@ -70,7 +67,7 @@ const avatarStorage = multer.diskStorage({
 const avatarUpload = multer({
   storage: avatarStorage,
   limits: {
-    fileSize: 5 * 1024 * 1024, // 5 MB
+    fileSize: 5 * 1024 * 1024,
   },
   fileFilter: (req, file, cb) => {
     if (!file.mimetype.startsWith("image/")) {
@@ -90,12 +87,8 @@ router.use(protect);
 // ============================================
 
 // GET /users/registrations/list?status=pending|approved|rejected
-router.get("/registrations/list", async (req, res) => {
+router.get("/registrations/list", adminOnly, async (req, res) => {
   try {
-    if (req.user.role !== "admin") {
-      return res.status(403).json({ error: "No autorizado." });
-    }
-
     const status = String(req.query.status || "pending");
     const query = {};
 
@@ -111,54 +104,11 @@ router.get("/registrations/list", async (req, res) => {
   }
 });
 
-// PATCH /users/:id/approval  { approved: true|false }
-router.patch("/:id/approval", async (req, res) => {
-  try {
-    if (req.user.role !== "admin") {
-      return res.status(403).json({ error: "No autorizado." });
-    }
-
-    const { id } = req.params;
-    const approved = !!req.body?.approved;
-
-    const user = await User.findById(id);
-    if (!user) return res.status(404).json({ error: "Usuario no encontrado." });
-
-    // Opcional recomendado: no aprobar si no verificó email
-    if (approved && !user.emailVerified) {
-      return res.status(400).json({ error: "No se puede aprobar: el email no está verificado." });
-    }
-
-    user.approved = approved;
-    user.approvalStatus = approved ? "approved" : "rejected";
-
-    // Si rechazás, podés suspender automáticamente
-    if (!approved) user.suspended = true;
-
-    await user.save();
-
-    return res.json({
-      ok: true,
-      approved: user.approved,
-      approvalStatus: user.approvalStatus,
-      suspended: user.suspended,
-    });
-  } catch (err) {
-    console.error("Error en PATCH /users/:id/approval:", err);
-    return res.status(500).json({ error: "Error al actualizar aprobación." });
-  }
-});
-
-
 /* ============================================
    POST: CREAR USUARIO NUEVO (ADMIN)
    ============================================ */
-router.post("/", async (req, res) => {
+router.post("/", adminOnly, async (req, res) => {
   try {
-    if (req.user.role !== "admin") {
-      return res.status(403).json({ error: "No autorizado." });
-    }
-
     const {
       name,
       email,
@@ -221,14 +171,8 @@ router.post("/", async (req, res) => {
 /* ============================================
    GET: LISTAR TODOS LOS USUARIOS (ADMIN)
    ============================================ */
-router.get("/", async (req, res) => {
+router.get("/", adminOnly, async (req, res) => {
   try {
-    if (req.user.role !== "admin") {
-      return res
-        .status(403)
-        .json({ error: "Solo un admin puede ver usuarios." });
-    }
-
     const list = await User.find().lean();
     res.json(list);
   } catch (err) {
@@ -237,15 +181,10 @@ router.get("/", async (req, res) => {
   }
 });
 
-
 // ✅ LISTAR PENDIENTES (solo admin)
 // GET /users/pending
-router.get("/pending", async (req, res) => {
+router.get("/pending", adminOnly, async (req, res) => {
   try {
-    if (req.user.role !== "admin") {
-      return res.status(403).json({ error: "No autorizado." });
-    }
-
     const pending = await User.find({ approvalStatus: "pending" })
       .sort({ createdAt: -1 })
       .lean();
@@ -259,12 +198,8 @@ router.get("/pending", async (req, res) => {
 
 // ✅ APROBAR / RECHAZAR (solo admin)
 // PATCH /users/:id/approval  body: { status: "approved" | "rejected" }
-router.patch("/:id/approval", async (req, res) => {
+router.patch("/:id/approval", adminOnly, async (req, res) => {
   try {
-    if (req.user.role !== "admin") {
-      return res.status(403).json({ error: "No autorizado." });
-    }
-
     const { id } = req.params;
     const { status } = req.body || {};
 
@@ -275,16 +210,34 @@ router.patch("/:id/approval", async (req, res) => {
     const user = await User.findById(id);
     if (!user) return res.status(404).json({ error: "Usuario no encontrado." });
 
+    // No aprobar si no verificó email
+    if (status === "approved" && !user.emailVerified) {
+      return res
+        .status(400)
+        .json({ error: "No se puede aprobar: el email no está verificado." });
+    }
+
     user.approvalStatus = status;
+
+    // ✅ regla del sistema:
+    // - approved => habilitado
+    // - rejected => bloqueado
+    if (status === "approved") user.suspended = false;
+    if (status === "rejected") user.suspended = true;
+
     await user.save();
 
-    res.json({ ok: true, approvalStatus: user.approvalStatus });
+    res.json({
+      ok: true,
+      approvalStatus: user.approvalStatus,
+      suspended: user.suspended,
+      emailVerified: user.emailVerified,
+    });
   } catch (err) {
     console.error("Error en PATCH /users/:id/approval:", err);
     res.status(500).json({ error: "Error al actualizar aprobación." });
   }
 });
-
 
 /* ============================================
    GET UN USUARIO
@@ -305,15 +258,12 @@ router.get("/:id", async (req, res) => {
     const u = await User.findById(id).lean();
     if (!u) return res.status(404).json({ error: "Usuario no encontrado." });
 
-    // 🔐 El paciente NO ve la historia clínica (clinicalNotes)
     if (!isAdmin) {
-      // quitamos clinicalNotes del objeto
       // eslint-disable-next-line no-unused-vars
       const { clinicalNotes, ...safeUser } = u;
       return res.json(safeUser);
     }
 
-    // Admin ve todo, incluyendo clinicalNotes
     res.json(u);
   } catch (err) {
     console.error("Error en GET /users/:id:", err);
@@ -324,12 +274,8 @@ router.get("/:id", async (req, res) => {
 /* ============================================
    PATCH EDITAR USUARIO (ADMIN)
    ============================================ */
-router.patch("/:id", async (req, res) => {
+router.patch("/:id", adminOnly, async (req, res) => {
   try {
-    if (req.user.role !== "admin") {
-      return res.status(403).json({ error: "No autorizado." });
-    }
-
     const { id } = req.params;
     const updates = req.body || {};
 
@@ -346,24 +292,16 @@ router.patch("/:id", async (req, res) => {
 /* ============================================
    DELETE ELIMINAR USUARIO + SUS TURNOS (ADMIN)
    ============================================ */
-router.delete("/:id", async (req, res) => {
+router.delete("/:id", adminOnly, async (req, res) => {
   try {
-    if (req.user.role !== "admin") {
-      return res.status(403).json({ error: "No autorizado." });
-    }
-
     const { id } = req.params;
 
-    // 1) Buscar usuario
     const user = await User.findById(id);
     if (!user) {
       return res.status(404).json({ error: "Usuario no encontrado." });
     }
 
-    // 2) Borrar TODOS los turnos asociados a este usuario
     await Appointment.deleteMany({ user: id });
-
-    // 3) Borrar el usuario
     await user.deleteOne();
 
     res.json({
@@ -419,21 +357,13 @@ router.get("/:id/history", async (req, res) => {
    HISTORIA CLÍNICA (SOLO ADMIN)
    ============================================ */
 
-// GET /users/:id/clinical-notes
-router.get("/:id/clinical-notes", async (req, res) => {
+router.get("/:id/clinical-notes", adminOnly, async (req, res) => {
   try {
-    if (req.user.role !== "admin") {
-      return res
-        .status(403)
-        .json({ error: "Solo un admin puede ver historia clínica." });
-    }
-
     const { id } = req.params;
     const user = await User.findById(id).lean();
     if (!user) {
       return res.status(404).json({ error: "Paciente no encontrado." });
     }
-
     res.json(user.clinicalNotes || []);
   } catch (err) {
     console.error("Error en GET /users/:id/clinical-notes:", err);
@@ -441,15 +371,8 @@ router.get("/:id/clinical-notes", async (req, res) => {
   }
 });
 
-// POST /users/:id/clinical-notes  { text }
-router.post("/:id/clinical-notes", async (req, res) => {
+router.post("/:id/clinical-notes", adminOnly, async (req, res) => {
   try {
-    if (req.user.role !== "admin") {
-      return res
-        .status(403)
-        .json({ error: "Solo un admin puede editar historia clínica." });
-    }
-
     const { id } = req.params;
     const { text } = req.body || {};
 
@@ -485,10 +408,6 @@ router.post("/:id/clinical-notes", async (req, res) => {
    ============================================ */
 async function updateCredits(req, res) {
   try {
-    if (req.user.role !== "admin") {
-      return res.status(403).json({ error: "No autorizado." });
-    }
-
     const { id } = req.params;
     const { credits, delta } = req.body || {};
 
@@ -512,18 +431,14 @@ async function updateCredits(req, res) {
   }
 }
 
-router.patch("/:id/credits", updateCredits);
-router.post("/:id/credits", updateCredits);
+router.patch("/:id/credits", adminOnly, updateCredits);
+router.post("/:id/credits", adminOnly, updateCredits);
 
 /* ============================================
    RESET PASSWORD (ADMIN)
    ============================================ */
-router.post("/:id/reset-password", async (req, res) => {
+router.post("/:id/reset-password", adminOnly, async (req, res) => {
   try {
-    if (req.user.role !== "admin") {
-      return res.status(403).json({ error: "No autorizado." });
-    }
-
     const { id } = req.params;
 
     const user = await User.findById(id);
@@ -545,14 +460,9 @@ router.post("/:id/reset-password", async (req, res) => {
 
 /* ============================================
    SUSPENDER / REACTIVAR USUARIO (ADMIN)
-   PATCH /users/:id/suspend
    ============================================ */
-router.patch("/:id/suspend", async (req, res) => {
+router.patch("/:id/suspend", adminOnly, async (req, res) => {
   try {
-    if (req.user.role !== "admin") {
-      return res.status(403).json({ error: "No autorizado." });
-    }
-
     const { id } = req.params;
     const { suspended } = req.body || {};
 
@@ -596,7 +506,6 @@ router.post("/:id/apto", uploadApto.single("apto"), async (req, res) => {
     const user = await User.findById(id);
     if (!user) return res.status(404).json({ error: "Usuario no encontrado." });
 
-    // borrar apto anterior si existía
     if (user.aptoPath) {
       try {
         const old = path.join(
@@ -703,7 +612,6 @@ router.delete("/:id/apto", async (req, res) => {
 
 /* ============================================
    FOTO DEL PACIENTE (AVATAR)
-   Admin o el propio usuario
    ============================================ */
 router.post("/:id/photo", avatarUpload.single("photo"), async (req, res) => {
   try {
@@ -712,7 +620,6 @@ router.post("/:id/photo", avatarUpload.single("photo"), async (req, res) => {
     const isAdmin = req.user.role === "admin";
     const isSelf = req.user._id.toString() === id;
 
-    // ⬅️ CAMBIO IMPORTANTE: ahora también puede el propio usuario
     if (!isAdmin && !isSelf) {
       return res.status(403).json({
         error: "Solo el paciente o un admin pueden subir la foto.",
@@ -728,7 +635,6 @@ router.post("/:id/photo", avatarUpload.single("photo"), async (req, res) => {
       return res.status(404).json({ error: "Usuario no encontrado." });
     }
 
-    // borrar foto anterior si existía
     if (user.photoPath) {
       try {
         const old = path.join(
