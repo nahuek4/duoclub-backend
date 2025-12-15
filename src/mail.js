@@ -1,13 +1,22 @@
 // backend/src/mail.js
 import nodemailer from "nodemailer";
+import dotenv from "dotenv";
+
+dotenv.config();
 
 let transporter = null;
 
 function getTransporter() {
   if (transporter) return transporter;
 
-  const { SMTP_HOST, SMTP_PORT, SMTP_USER, SMTP_PASS, SMTP_SECURE } =
-    process.env || {};
+  const {
+    SMTP_HOST,
+    SMTP_PORT,
+    SMTP_USER,
+    SMTP_PASS,
+    SMTP_SECURE,
+    MAIL_FROM,
+  } = process.env || {};
 
   if (!SMTP_HOST || !SMTP_USER || !SMTP_PASS) {
     console.log("[MAIL] SMTP no configurado. Se hará log en consola.");
@@ -27,12 +36,15 @@ function getTransporter() {
   return transporter;
 }
 
-async function sendMail(to, subject, text) {
+// ✅ EXPORT NAMED (así lo podés importar desde auth.js)
+export async function sendMail(to, subject, text) {
   const tx = getTransporter();
+
   if (!tx) {
     console.log("[MAIL MOCK]", { to, subject, text });
     return;
   }
+
   const from = process.env.MAIL_FROM || process.env.SMTP_USER;
   await tx.sendMail({ from, to, subject, text });
 }
@@ -40,20 +52,25 @@ async function sendMail(to, subject, text) {
 /** ✅ Verificación de email */
 export async function sendVerifyEmail(user, verifyUrl) {
   if (!user?.email) return;
+
   const lines = [
     `Hola ${user.name || ""}`.trim() + ",",
     "",
     "Gracias por registrarte en DUO.",
     "",
-    "Para validar tu email, ingresá a este link:",
+    "Para continuar, verificá tu email haciendo click en el siguiente link:",
+    "",
     verifyUrl,
     "",
-    "Si vos no creaste esta cuenta, ignorá este correo.",
+    "Este link vence en 24 horas.",
+    "",
+    "Si vos no creaste esta cuenta, podés ignorar este email.",
   ];
-  await sendMail(user.email, "Verificá tu email en DUO", lines.join("\n"));
+
+  await sendMail(user.email, "Verificá tu email - DUO", lines.join("\n"));
 }
 
-/** Bienvenida al crear usuario (admin) */
+/** Bienvenida al crear usuario (admin flow) */
 export async function sendUserWelcomeEmail(user, tempPassword) {
   if (!user?.email) return;
   const lines = [
@@ -70,29 +87,6 @@ export async function sendUserWelcomeEmail(user, tempPassword) {
     "Cualquier duda, respondé a este correo.",
   ];
   await sendMail(user.email, "Tu usuario en DUO está listo", lines.join("\n"));
-}
-
-/** ✅ Aprobación / Rechazo (opcional pero recomendado) */
-export async function sendAccountApprovedEmail(user) {
-  if (!user?.email) return;
-  const lines = [
-    `Hola ${user.name || ""}`.trim() + ",",
-    "",
-    "Tu cuenta fue aprobada.",
-    "Ya podés iniciar sesión en DUO.",
-  ];
-  await sendMail(user.email, "Tu cuenta fue aprobada", lines.join("\n"));
-}
-
-export async function sendAccountRejectedEmail(user) {
-  if (!user?.email) return;
-  const lines = [
-    `Hola ${user.name || ""}`.trim() + ",",
-    "",
-    "Tu cuenta fue rechazada por el administrador.",
-    "Si creés que es un error, respondé este correo.",
-  ];
-  await sendMail(user.email, "Tu cuenta fue rechazada", lines.join("\n"));
 }
 
 /** Turno agendado */

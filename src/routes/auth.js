@@ -5,7 +5,7 @@ import jwt from "jsonwebtoken";
 import crypto from "crypto";
 import User from "../models/User.js";
 import { protect } from "../middleware/auth.js";
-import { sendVerifyEmail } from "../mail.js";
+import { sendMail } from "../mail.js";
 
 const router = express.Router();
 
@@ -24,17 +24,55 @@ function serializeUser(u) {
     suspended: u.suspended,
     mustChangePassword: u.mustChangePassword,
     aptoStatus: u.aptoStatus || "",
-
-    // ✅ nuevos
     emailVerified: !!u.emailVerified,
     approvalStatus: u.approvalStatus || "pending",
   };
 }
 
-// helpers token
 function sha256(str) {
   return crypto.createHash("sha256").update(str).digest("hex");
 }
+
+/**
+ * POST /auth/login
+ */
+router.post("/login", async (req, res) => {
+  try {
+    const { email, password } = req.body || {};
+    if (!email || !password) {
+      return res.status(400).json({ error: "Email y password son obligatorios." });
+    }
+
+    const user = await User.findOne({ email: String(email).toLowerCase() });
+    if (!user) return res.status(401).json({ error: "Email o contraseña incorrectos." });
+
+    const match = await bcrypt.compare(password, user.password);
+    if (!match) return res.status(401).json({ error: "Email o contraseña incorrectos." });
+
+    if (user.suspended) {
+      return res.status(403).json({ error: "Cuenta suspendida. Contactá al administrador." });
+    }
+
+    if (!user.emailVerified) {
+      return res.status(403).json({ error: "Tenés que verificar tu email antes de iniciar sesión." });
+    }
+
+    if (user.approvalStatus === "pending") {
+      return res.status(403).json({
+        error: "Tu cuenta está pendiente de aprobación por el administrador.",
+      });
+    }
+    if (user.approvalStatus === "rejected") {
+      return res.status(403).json({ error: "Tu cuenta fue rechazada. Contactá al administrador." });
+    }
+
+    const token = signToken(user);
+    return res.json({ token, user: serializeUser(user) });
+  } catch (err) {
+    console.error("Error en POST /auth/login:", err);
+    return res.status(500).json({ error: "Error al iniciar sesión." });
+  }
+});
 
 /**
  * POST /auth/register
@@ -44,68 +82,65 @@ router.post("/register", async (req, res) => {
   try {
     const { name, email, password } = req.body || {};
 
-    if (!email || !password) {
-      return res
-        .status(400)
-        .json({ error: "Email y contraseña son obligatorios." });
+    if (!name || !email || !password) {
+      return res.status(400).json({ error: "Nombre, email y contraseña son obligatorios." });
+    }
+    if (String(password).length < 8) {
+      return res.status(400).json({ error: "La contraseña debe tener al menos 8 caracteres." });
     }
 
-    if (String(password).trim().length < 6) {
-      return res
-        .status(400)
-        .json({ error: "La contraseña debe tener al menos 6 caracteres." });
-    }
-
-    const exists = await User.findOne({ email: String(email).toLowerCase() });
+    const emailLower = String(email).toLowerCase();
+    const exists = await User.findOne({ email: emailLower });
     if (exists) {
-      // no revelamos demasiado
-      return res.status(400).json({ error: "No se pudo registrar el usuario." });
+      return res.status(409).json({ error: "Ya existe una cuenta con ese email." });
     }
 
-    const hashedPass = await bcrypt.hash(String(password).trim(), 10);
+    const hashedPass = await bcrypt.hash(password, 10);
 
-    // token verificación
+    // ✅ token crudo para enviar por email
     const rawToken = crypto.randomBytes(32).toString("hex");
+    // ✅ hash para guardar en DB
     const tokenHash = sha256(rawToken);
-    const expires = new Date(Date.now() + 1000 * 60 * 60 * 24); // 24hs
 
     const user = await User.create({
-      name: name || "",
-      email: String(email).toLowerCase(),
+      name,
+      email: emailLower,
       password: hashedPass,
       role: "client",
-      credits: 0,
 
+      // ✅ quedan “bloqueados” hasta verificación + aprobación
       suspended: true,
-      mustChangePassword: false,
-
-      // ✅ flujo nuevo
-      emailVerified: false,
       approvalStatus: "pending",
-      emailVerifyTokenHash: tokenHash,
-      emailVerifyTokenExpires: expires,
+      emailVerified: false,
+
+      emailVerificationToken: tokenHash,
+      emailVerificationExpires: new Date(Date.now() + 24 * 60 * 60 * 1000), // 24hs
     });
 
-    const FRONTEND_URL =
-      process.env.FRONTEND_URL || "https://app.duoclub.ar";
+    const frontend = process.env.FRONTEND_URL || "https://duoclub.ar";
+    const verifyUrl = `${frontend}/verificar-email?token=${rawToken}`;
 
-    const verifyUrl = `${FRONTEND_URL}/verify-email?token=${rawToken}`;
+    await sendMail(
+      user.email,
+      "Verificá tu email - DUO",
+      `Hola ${user.name},
 
-    // mandamos mail (si smtp falla, no rompemos registro)
-    try {
-      await sendVerifyEmail(user, verifyUrl);
-    } catch (e) {
-      console.warn("[MAIL] No se pudo enviar verificación:", e?.message);
-    }
+Gracias por registrarte en DUO.
+
+Para continuar, verificá tu email haciendo click en este link:
+
+${verifyUrl}
+
+Este link vence en 24 horas.`
+    );
 
     return res.status(201).json({
       ok: true,
-      message:
-        "Registro exitoso. Revisá tu correo para verificar el email. Luego el admin debe aprobar tu cuenta.",
+      message: "Registro exitoso. Te enviamos un email para verificar tu cuenta.",
     });
   } catch (err) {
-    console.error("Error en POST /auth/register:", err);
-    return res.status(500).json({ error: "Error al registrar usuario." });
+    console.error("Error en /auth/register:", err);
+    return res.status(500).json({ error: "Error al registrarse." });
   }
 });
 
@@ -114,14 +149,14 @@ router.post("/register", async (req, res) => {
  */
 router.get("/verify-email", async (req, res) => {
   try {
-    const token = String(req.query.token || "");
-    if (!token) return res.status(400).json({ error: "Token faltante." });
+    const rawToken = String(req.query.token || "");
+    if (!rawToken) return res.status(400).json({ error: "Token inválido." });
 
-    const tokenHash = sha256(token);
+    const tokenHash = sha256(rawToken);
 
     const user = await User.findOne({
-      emailVerifyTokenHash: tokenHash,
-      emailVerifyTokenExpires: { $gt: new Date() },
+      emailVerificationToken: tokenHash,
+      emailVerificationExpires: { $gt: new Date() },
     });
 
     if (!user) {
@@ -131,75 +166,69 @@ router.get("/verify-email", async (req, res) => {
     }
 
     user.emailVerified = true;
-    user.emailVerifyTokenHash = "";
-    user.emailVerifyTokenExpires = null;
+    user.emailVerificationToken = "";
+    user.emailVerificationExpires = null;
+
+    // ✅ ahora sí está verificado, pero sigue pendiente de aprobación
+    // (no lo des-suspendemos hasta que el admin lo apruebe)
     await user.save();
 
     return res.json({
       ok: true,
-      message: "Email verificado correctamente. Tu cuenta queda pendiente de aprobación.",
+      message: "Email verificado correctamente. Tu cuenta será revisada por un administrador.",
     });
   } catch (err) {
-    console.error("Error en GET /auth/verify-email:", err);
-    return res.status(500).json({ error: "Error al verificar el email." });
+    console.error("Error verify-email:", err);
+    return res.status(500).json({ error: "Error al verificar email." });
   }
 });
 
 /**
- * POST /auth/login
- * body: { email, password }
+ * POST /auth/resend-verification
+ * body: { email }
  */
-router.post("/login", async (req, res) => {
+router.post("/resend-verification", async (req, res) => {
   try {
-    const { email, password } = req.body || {};
-    if (!email || !password) {
-      return res
-        .status(400)
-        .json({ error: "Email y password son obligatorios." });
-    }
+    const { email } = req.body || {};
+    const emailLower = String(email || "").toLowerCase();
+    if (!emailLower) return res.status(400).json({ error: "Email requerido." });
 
-    const user = await User.findOne({ email: String(email).toLowerCase() });
+    const user = await User.findOne({ email: emailLower });
     if (!user) {
-      return res.status(401).json({ error: "Email o contraseña incorrectos." });
+      // no revelamos existencia
+      return res.json({ ok: true, message: "Si el email existe, te enviamos un correo." });
     }
 
-    const match = await bcrypt.compare(password, user.password);
-    if (!match) {
-      return res.status(401).json({ error: "Email o contraseña incorrectos." });
+    if (user.emailVerified) {
+      return res.json({ ok: true, message: "Tu email ya está verificado." });
     }
 
-    if (user.suspended) {
-      return res
-        .status(403)
-        .json({ error: "Cuenta suspendida. Contactá al administrador." });
-    }
+    const rawToken = crypto.randomBytes(32).toString("hex");
+    const tokenHash = sha256(rawToken);
 
-    // ✅ Validación de email
-    if (!user.emailVerified) {
-      return res.status(403).json({
-        error: "Tenés que verificar tu email antes de iniciar sesión.",
-      });
-    }
+    user.emailVerificationToken = tokenHash;
+    user.emailVerificationExpires = new Date(Date.now() + 24 * 60 * 60 * 1000);
+    await user.save();
 
-    // ✅ Aprobación admin
-    if (user.approvalStatus === "pending") {
-      return res.status(403).json({
-        error: "Tu cuenta está pendiente de aprobación por el administrador.",
-      });
-    }
-    if (user.approvalStatus === "rejected") {
-      return res.status(403).json({
-        error: "Tu cuenta fue rechazada. Contactá al administrador.",
-      });
-    }
+    const frontend = process.env.FRONTEND_URL || "https://duoclub.ar";
+    const verifyUrl = `${frontend}/verificar-email?token=${rawToken}`;
 
-    const token = signToken(user);
-    const safeUser = serializeUser(user);
+    await sendMail(
+      user.email,
+      "Verificá tu email - DUO",
+      `Hola ${user.name},
 
-    return res.json({ token, user: safeUser });
+Te reenviamos el link de verificación:
+
+${verifyUrl}
+
+Este link vence en 24 horas.`
+    );
+
+    return res.json({ ok: true, message: "Te reenviamos el correo de verificación." });
   } catch (err) {
-    console.error("Error en POST /auth/login:", err);
-    return res.status(500).json({ error: "Error al iniciar sesión." });
+    console.error("Error resend-verification:", err);
+    return res.status(500).json({ error: "No se pudo reenviar el correo." });
   }
 });
 
@@ -224,18 +253,14 @@ router.post("/change-password", protect, async (req, res) => {
   try {
     const { currentPassword, newPassword } = req.body || {};
     if (!currentPassword || !newPassword) {
-      return res
-        .status(400)
-        .json({ error: "Debés enviar contraseña actual y nueva." });
+      return res.status(400).json({ error: "Debés enviar contraseña actual y nueva." });
     }
 
     const user = await User.findById(req.user._id);
     if (!user) return res.status(401).json({ error: "Usuario no encontrado." });
 
     const match = await bcrypt.compare(currentPassword, user.password);
-    if (!match) {
-      return res.status(401).json({ error: "Contraseña actual incorrecta." });
-    }
+    if (!match) return res.status(401).json({ error: "Contraseña actual incorrecta." });
 
     const salt = await bcrypt.genSalt(10);
     user.password = await bcrypt.hash(newPassword, salt);
@@ -255,17 +280,14 @@ router.post("/change-password", protect, async (req, res) => {
 router.post("/force-change-password", protect, async (req, res) => {
   try {
     const { newPassword } = req.body || {};
-    if (!newPassword) {
-      return res.status(400).json({ error: "Debés enviar la nueva contraseña." });
-    }
+    if (!newPassword) return res.status(400).json({ error: "Debés enviar la nueva contraseña." });
 
     const user = await User.findById(req.user._id);
     if (!user) return res.status(401).json({ error: "Usuario no encontrado." });
 
     if (!user.mustChangePassword) {
       return res.status(400).json({
-        error:
-          "Este usuario no requiere restablecer la contraseña de forma obligatoria.",
+        error: "Este usuario no requiere restablecer la contraseña de forma obligatoria.",
       });
     }
 
@@ -275,12 +297,7 @@ router.post("/force-change-password", protect, async (req, res) => {
     await user.save();
 
     const token = signToken(user);
-    return res.json({
-      ok: true,
-      message: "Contraseña actualizada correctamente.",
-      token,
-      user: serializeUser(user),
-    });
+    return res.json({ ok: true, message: "Contraseña actualizada correctamente.", token, user: serializeUser(user) });
   } catch (err) {
     console.error("Error en POST /auth/force-change-password:", err);
     return res.status(500).json({ error: "Error al restablecer la contraseña." });
