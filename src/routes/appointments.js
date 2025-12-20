@@ -21,8 +21,8 @@ function serializeAppointment(ap) {
 
   return {
     id: json._id?.toString?.() || json.id,
-    date: json.date,              // "YYYY-MM-DD"
-    time: json.time,              // "HH:mm"
+    date: json.date, // "YYYY-MM-DD"
+    time: json.time, // "HH:mm"
     service: json.service || "",
     status: json.status || "reserved",
     coach: json.coach || "",
@@ -64,6 +64,40 @@ function getTurnoFromTime(time) {
   return "";
 }
 
+function buildSlotDate(dateStr, timeStr) {
+  if (!dateStr || !timeStr) return null;
+  const [year, month, day] = dateStr.split("-").map(Number);
+  const [hour, minute] = timeStr.split(":").map(Number);
+  if (!year || !month || !day) return null;
+  return new Date(year, month - 1, day, hour || 0, minute || 0);
+}
+
+/**
+ * ✅ Equilibrador (regla final)
+ * Capacidad total del horario: 7
+ *
+ * Servicios:
+ * - EP = "Entrenamiento Personal"
+ * - Otros (RF/RA/AR) tienen cupo 1 cada uno (si se reservó, desaparece)
+ *
+ * Regla EP:
+ * - Si faltan > 12hs para el horario: EP máx 4 (pero nunca supera 7 - otrosReservados)
+ * - Si faltan <= 12hs: EP máx = 7 - otrosReservados
+ */
+const TOTAL_CAP = 7;
+const EP_KEY = "Entrenamiento Personal";
+const OTHER_SERVICES = new Set([
+  "Reeducacion Funcional",
+  "Rehabilitacion Activa",
+  "Alto Rendimiento",
+]);
+
+function calcEpCap({ hoursToStart, otherReservedCount }) {
+  const base = hoursToStart > 12 ? 4 : 7;
+  const dynamic = TOTAL_CAP - otherReservedCount; // lo que queda libre si los otros ya ocuparon
+  return Math.max(0, Math.min(base, dynamic));
+}
+
 /**
  * GET /appointments?from=YYYY-MM-DD&to=YYYY-MM-DD
  * 🔓 RUTA PÚBLICA: lista turnos por rango de fechas
@@ -81,7 +115,7 @@ router.get("/", async (req, res) => {
     }
 
     const list = await Appointment.find(query)
-      .populate("user", "name email") // 👈 nombre y mail (AdminTurnos)
+      .populate("user", "name email")
       .lean();
 
     const normalized = list.map(serializeAppointment);
@@ -101,13 +135,7 @@ router.use(protect);
  * POST /appointments
  * body: { date, time, service }
  *
- * Reglas de capacidad por horario (date+time):
- * - Mañana / Noche:
- *   - EP: máx 4
- *   - resto: máx 3
- *   - total: máx 7
- * - Tarde:
- *   - solo EP: máx 7
+ * ✅ Blindado por backend con el “equilibrador”.
  */
 router.post("/", async (req, res) => {
   try {
@@ -127,14 +155,24 @@ router.post("/", async (req, res) => {
       });
     }
 
-    const isEpService = service === "Entrenamiento Personal";
-
-    // En turno TARDE solo se permite Entrenamiento Personal (por ahora)
-    if (turno === "tarde" && !isEpService) {
-      return res.status(400).json({
-        error: "En el turno tarde solo se puede reservar Entrenamiento Personal.",
-      });
+    const slotDate = buildSlotDate(date, time);
+    if (!slotDate) {
+      return res.status(400).json({ error: "Fecha/hora inválida." });
     }
+
+    const diffMs = slotDate.getTime() - Date.now();
+    const hoursToStart = diffMs / (1000 * 60 * 60);
+
+    if (hoursToStart < 0) {
+      return res.status(400).json({ error: "No se puede reservar un turno pasado." });
+    }
+
+    const isEpService = service === EP_KEY;
+    const isOtherService = OTHER_SERVICES.has(service);
+
+    // Si llega un service que no está en tu set permitido, lo dejamos igual (por compat),
+    // pero lo tratamos como "otro" con cupo 1 (así no rompe la lógica)
+    const treatAsOther = !isEpService;
 
     // Usuario del token
     const userId = req.user._id || req.user.id;
@@ -165,7 +203,22 @@ router.post("/", async (req, res) => {
       }
     }
 
-    // 📊 Cálculo de capacidad del horario (date+time)
+    // ⛔ Evitar que el mismo usuario reserve 2 servicios en el mismo date+time (status reserved)
+    // (Admin lo dejamos pasar si querés, pero por defecto también lo bloqueamos para que sea consistente)
+    const alreadyByUser = await Appointment.findOne({
+      date,
+      time,
+      user: user._id,
+      status: "reserved",
+    }).lean();
+
+    if (alreadyByUser) {
+      return res.status(409).json({
+        error: "Ya tenés un turno reservado en ese horario.",
+      });
+    }
+
+    // 📊 Tomamos todos los reservados del slot
     const existingAtSlot = await Appointment.find({
       date,
       time,
@@ -173,52 +226,41 @@ router.post("/", async (req, res) => {
     }).lean();
 
     const totalCount = existingAtSlot.length;
-    const epCount = existingAtSlot.filter(
-      (a) => a.service === "Entrenamiento Personal"
-    ).length;
-    const otherCount = totalCount - epCount;
 
-    let maxEp = Infinity;
-    let maxOther = Infinity;
-    let maxTotal = Infinity;
+    const epCount = existingAtSlot.filter((a) => a.service === EP_KEY).length;
 
-    if (turno === "maniana" || turno === "noche") {
-      maxEp = 4;
-      maxOther = 3;
-      maxTotal = 7;
-    } else if (turno === "tarde") {
-      maxEp = 7;
-      maxOther = 0; // no usamos por ahora
-      maxTotal = 7;
-    }
+    // otros = cualquier cosa que NO sea EP (así incluye RF/RA/AR y también futuros servicios)
+    const otherReservedCount = totalCount - epCount;
 
-    // Regla de cupo total
-    if (totalCount >= maxTotal) {
+    // Regla cupo total
+    if (totalCount >= TOTAL_CAP) {
       return res.status(409).json({
         error: "Se alcanzó el cupo total disponible para este horario.",
       });
     }
 
-    // Reglas por tipo de servicio
-    if (turno === "maniana" || turno === "noche") {
-      if (isEpService && epCount >= maxEp) {
+    // Regla: servicios no-EP cupo 1 c/u (si ya hay uno de ese service, no entra)
+    if (treatAsOther) {
+      const alreadyService = existingAtSlot.some((a) => a.service === service);
+      if (alreadyService) {
         return res.status(409).json({
-          error:
-            "Se alcanzó el cupo de Entrenamiento Personal para este horario.",
+          error: "Ese servicio ya está ocupado en este horario.",
         });
       }
+    }
 
-      if (!isEpService && otherCount >= maxOther) {
-        return res.status(409).json({
-          error: "Se alcanzó el cupo disponible para este horario.",
-        });
-      }
-    } else if (turno === "tarde") {
-      // tarde solo EP
-      if (epCount >= maxEp) {
+    // ✅ Regla equilibrador para EP
+    if (isEpService) {
+      const epCap = calcEpCap({ hoursToStart, otherReservedCount });
+
+      if (epCount >= epCap) {
+        // antes de 12hs => cap 4 (o menos si otros ya reservaron)
+        // después de 12hs => cap 7 - otrosReservados
         return res.status(409).json({
           error:
-            "Se alcanzó el cupo de Entrenamiento Personal para este horario.",
+            hoursToStart > 12
+              ? "Se alcanzó el cupo de Entrenamiento Personal (máx 4 hasta 12hs antes)."
+              : "Se alcanzó el cupo de Entrenamiento Personal para este horario.",
         });
       }
     }
@@ -236,7 +278,7 @@ router.post("/", async (req, res) => {
     if (!isAdmin) {
       user.credits = (user.credits || 0) - 1;
 
-      // Historial en el user
+      // Historial en el user (si existiera)
       user.history = user.history || [];
       user.history.push({
         action: "reservado",
@@ -253,11 +295,10 @@ router.post("/", async (req, res) => {
   } catch (err) {
     console.error("Error en POST /appointments:", err);
 
-    // Si por alguna razón queda algún índice único viejo y explota:
     if (err?.code === 11000) {
       return res.status(409).json({
         error:
-          "No se pudo reservar el turno por un conflicto interno. Avisá al administrador para revisar índices de la base de datos.",
+          "Ese turno ya fue reservado (conflicto). Actualizá y probá de nuevo.",
       });
     }
 
@@ -305,7 +346,6 @@ router.patch("/:id/cancel", async (req, res) => {
       });
     }
 
-    // Marcamos como cancelado
     ap.status = "cancelled";
     await ap.save();
 

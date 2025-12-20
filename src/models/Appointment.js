@@ -18,14 +18,14 @@ const appointmentSchema = new mongoose.Schema(
       type: String,
       required: true,
     },
-    // Servicio: "Entrenamiento Personal", "Running", etc.
+    // Servicio
     service: {
       type: String,
       required: true,
     },
     status: {
       type: String,
-      enum: ["reserved", "cancelled"], // 👈 usamos SIEMPRE estos dos valores
+      enum: ["reserved", "cancelled"],
       default: "reserved",
     },
     coach: {
@@ -36,9 +36,15 @@ const appointmentSchema = new mongoose.Schema(
   { timestamps: true }
 );
 
-// índice para evitar duplicados por día+hora+servicio+estado reservado
+// ✅ Evita duplicado por día+hora+servicio (solo si status="reserved")
 appointmentSchema.index(
   { date: 1, time: 1, service: 1, status: 1 },
+  { unique: true, partialFilterExpression: { status: "reserved" } }
+);
+
+// ✅ NUEVO: evita que el mismo usuario reserve 2 veces el mismo horario (cualquier servicio)
+appointmentSchema.index(
+  { date: 1, time: 1, user: 1, status: 1 },
   { unique: true, partialFilterExpression: { status: "reserved" } }
 );
 

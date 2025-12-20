@@ -11,6 +11,10 @@ import authRoutes from "./routes/auth.js";
 import userRoutes from "./routes/users.js";
 import appointmentRoutes from "./routes/appointments.js";
 import servicesRoutes from "./routes/services.js";
+import pricingRoutes from "./routes/pricing.js";
+import ordersRoutes from "./routes/orders.js";
+import mpWebhookRoutes from "./routes/mpWebhook.js";
+
 
 dotenv.config();
 
@@ -161,6 +165,14 @@ app.use("/appointments", appointmentRoutes);
 
 // Servicios
 app.use("/services", servicesRoutes);
+
+app.use("/pricing", pricingRoutes);
+
+app.use("/orders", ordersRoutes);
+
+// webhook MP (NO protect)
+app.use("/payments", mpWebhookRoutes);
+
 
 /* =========================
    RUTA BASE

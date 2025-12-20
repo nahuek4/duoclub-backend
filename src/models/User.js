@@ -12,7 +12,17 @@ const userSchema = new mongoose.Schema(
     notes: { type: String, default: "" },
 
     credits: { type: Number, default: 0 },
+
+    // ✅ permisos
     role: { type: String, default: "client" }, // "admin" | "client"
+
+    // ✅ plan comercial (independiente del role)
+    plan: {
+      type: String,
+      enum: ["basic", "plus"],
+      default: "basic",
+    },
+
 
     password: { type: String, required: true },
     mustChangePassword: { type: Boolean, default: false },
@@ -24,18 +34,28 @@ const userSchema = new mongoose.Schema(
     // 🔹 Foto del paciente (avatar)
     photoPath: { type: String, default: "" },
 
+    history: [
+      {
+        action: { type: String, default: "" },
+        date: { type: String, default: "" },
+        time: { type: String, default: "" },
+        service: { type: String, default: "" },
+        createdAt: { type: Date, default: Date.now },
+      },
+    ],
+
+
     // =========================
     // ✅ Registro + Verificación + Aprobación Admin
     // =========================
-      emailVerified: { type: Boolean, default: false },
-      approvalStatus: {
-        type: String,
-        enum: ["pending", "approved", "rejected"],
-        default: "pending",
-      },
-      emailVerificationToken: { type: String, default: "" },
-      emailVerificationExpires: { type: Date, default: null },
-
+    emailVerified: { type: Boolean, default: false },
+    approvalStatus: {
+      type: String,
+      enum: ["pending", "approved", "rejected"],
+      default: "pending",
+    },
+    emailVerificationToken: { type: String, default: "" },
+    emailVerificationExpires: { type: Date, default: null },
 
     // 🔹 Datos del formulario inicial
     initialForm: {
