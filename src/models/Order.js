@@ -5,8 +5,23 @@ const orderSchema = new mongoose.Schema(
   {
     user: { type: mongoose.Schema.Types.ObjectId, ref: "User", required: true },
 
-    serviceKey: { type: String, required: true, uppercase: true, trim: true }, // EP/RF/AR/RA/NUT
-    credits: { type: Number, required: true, min: 1 },
+    // ✅ Tipo de orden
+    kind: {
+      type: String,
+      enum: ["CREDITS", "MEMBERSHIP"],
+      default: "CREDITS",
+      uppercase: true,
+      trim: true,
+    },
+
+    // ===== ORDEN DE CRÉDITOS =====
+    serviceKey: { type: String, default: "", uppercase: true, trim: true }, // EP/RF/AR/RA/NUT
+    credits: { type: Number, default: 0, min: 0 },
+
+    // ===== ORDEN DE MEMBRESÍA =====
+    membershipTier: { type: String, default: "", uppercase: true, trim: true }, // "PLUS"
+    membershipDays: { type: Number, default: 0, min: 0 }, // se setea desde MembershipPlan.durationDays
+
     payMethod: {
       type: String,
       required: true,
@@ -15,7 +30,7 @@ const orderSchema = new mongoose.Schema(
       enum: ["CASH", "MP"],
     },
 
-    // ✅ Precio final calculado SOLO en backend (por DB pricing)
+    // ✅ Precio final calculado SOLO en backend (por DB pricing / membership plan)
     price: { type: Number, required: true, min: 0 },
     label: { type: String, default: "" },
 
@@ -27,6 +42,9 @@ const orderSchema = new mongoose.Schema(
 
     // Para evitar acreditar 2 veces si entra webhook repetido
     creditsApplied: { type: Boolean, default: false },
+
+    // ✅ Para evitar activar membresía 2 veces
+    membershipApplied: { type: Boolean, default: false },
 
     // MercadoPago data
     mpPreferenceId: { type: String, default: "" },

@@ -1,10 +1,20 @@
-// backend/src/models/User.js
 import mongoose from "mongoose";
+
+const historySchema = new mongoose.Schema(
+  {
+    action: { type: String, default: "" },
+    date: { type: String, default: "" }, // YYYY-MM-DD
+    time: { type: String, default: "" }, // HH:mm
+    service: { type: String, default: "" },
+    createdAt: { type: Date, default: Date.now },
+  },
+  { _id: false }
+);
 
 const userSchema = new mongoose.Schema(
   {
     name: { type: String, default: "" },
-    email: { type: String, required: true, unique: true, lowercase: true },
+    email: { type: String, required: true, unique: true, lowercase: true, trim: true },
     phone: { type: String, default: "" },
     dni: { type: String, default: "" },
     age: { type: Number, default: null },
@@ -12,17 +22,7 @@ const userSchema = new mongoose.Schema(
     notes: { type: String, default: "" },
 
     credits: { type: Number, default: 0 },
-
-    // ✅ permisos
     role: { type: String, default: "client" }, // "admin" | "client"
-
-    // ✅ plan comercial (independiente del role)
-    plan: {
-      type: String,
-      enum: ["basic", "plus"],
-      default: "basic",
-    },
-
 
     password: { type: String, required: true },
     mustChangePassword: { type: Boolean, default: false },
@@ -31,66 +31,43 @@ const userSchema = new mongoose.Schema(
     aptoPath: { type: String, default: "" },
     aptoStatus: { type: String, default: "" }, // "uploaded" | "approved" | "rejected"
 
-    // 🔹 Foto del paciente (avatar)
     photoPath: { type: String, default: "" },
 
-    history: [
-      {
-        action: { type: String, default: "" },
-        date: { type: String, default: "" },
-        time: { type: String, default: "" },
-        service: { type: String, default: "" },
-        createdAt: { type: Date, default: Date.now },
-      },
-    ],
+    history: { type: [historySchema], default: [] },
 
-
-    // =========================
-    // ✅ Registro + Verificación + Aprobación Admin
-    // =========================
-    emailVerified: { type: Boolean, default: false },
-    approvalStatus: {
-      type: String,
-      enum: ["pending", "approved", "rejected"],
-      default: "pending",
-    },
-    emailVerificationToken: { type: String, default: "" },
-    emailVerificationExpires: { type: Date, default: null },
-
-    // 🔹 Datos del formulario inicial
-    initialForm: {
-      birthDate: { type: String, default: "" }, // "YYYY-MM-DD"
-      dni: { type: String, default: "" },
-      phone: { type: String, default: "" },
-      emergencyContactName: { type: String, default: "" },
-      emergencyContactPhone: { type: String, default: "" },
-
-      injuries: { type: String, default: "" },
-      surgeries: { type: String, default: "" },
-      medications: { type: String, default: "" },
-      allergies: { type: String, default: "" },
-      diseases: { type: String, default: "" },
-      cardiacHistory: { type: String, default: "" },
-
-      sportBackground: { type: String, default: "" },
-      trainingFrequency: { type: String, default: "" },
-      goals: { type: String, default: "" },
-
-      observations: { type: String, default: "" },
+    /* =========================
+       DUO+ (membresía mensual)
+       ========================= */
+    plus: {
+      active: { type: Boolean, default: false },
+      autoRenew: { type: Boolean, default: false }, // (luego lo conectamos a suscripción MP)
+      startedAt: { type: Date, default: null },
+      expiresAt: { type: Date, default: null }, // vence en 30 días
     },
 
-    // 🔹 Historia clínica interna (solo equipo)
-    clinicalNotes: [
-      {
-        date: { type: Date, default: Date.now },
-        author: { type: String, default: "" },
-        text: { type: String, required: true },
+      // dentro de userSchema (agregar este bloque)
+      membership: {
+        tier: { type: String, default: "", uppercase: true, trim: true }, // "PLUS" o ""
+        active: { type: Boolean, default: false },
+        expiresAt: { type: Date, default: null },
+
+        // reglas
+        cancelMinHours: { type: Number, default: 24 }, // BASIC=24, PLUS=12
+        cancelLimit: { type: Number, default: 1 },     // BASIC=1, PLUS=2
+        cancelsUsed: { type: Number, default: 0 },
+
+        creditsExpireDays: { type: Number, default: 30 }, // BASIC=30, PLUS=40
+
+        // para reset mensual de cancelsUsed
+        cycleStartAt: { type: Date, default: null },
       },
-    ],
+
+
+    // cancelaciones en ventana de 30 días
+    cancelationsUsed: { type: Number, default: 0 },
+    cancelationsPeriodStart: { type: Date, default: null },
   },
-  {
-    timestamps: true,
-  }
+  { timestamps: true }
 );
 
 const User = mongoose.model("User", userSchema);

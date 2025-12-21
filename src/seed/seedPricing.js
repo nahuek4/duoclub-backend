@@ -1,75 +1,114 @@
 // backend/src/seed/seedPricing.js
+import mongoose from "mongoose";
 import dotenv from "dotenv";
-import connectDB from "../config/db.js";
 import PricingPlan from "../models/PricingPlan.js";
 
 dotenv.config();
 
-const plans = [
-  // MP - EP
-  { serviceKey: "EP", payMethod: "MP", credits: 4, price: 70000 },
-  { serviceKey: "EP", payMethod: "MP", credits: 8, price: 120000 },
-  { serviceKey: "EP", payMethod: "MP", credits: 12, price: 180000 },
+const MONGO_URI = process.env.MONGO_URI;
 
-  // MP - RF
-  { serviceKey: "RF", payMethod: "MP", credits: 4, price: 90000 },
-  { serviceKey: "RF", payMethod: "MP", credits: 8, price: 160000 },
-  { serviceKey: "RF", payMethod: "MP", credits: 12, price: 240000 },
+if (!MONGO_URI) {
+  console.error("❌ MONGO_URI no definido en .env");
+  process.exit(1);
+}
 
-  // MP - AR
-  { serviceKey: "AR", payMethod: "MP", credits: 4, price: 110000 },
-  { serviceKey: "AR", payMethod: "MP", credits: 8, price: 200000 },
-  { serviceKey: "AR", payMethod: "MP", credits: 12, price: 300000 },
+/**
+ * ⚙️ ACÁ DEFINÍS LOS PLANES QUE QUERÉS SEMBRAR / ACTUALIZAR.
+ * - Si el plan existe (mismo serviceKey + payMethod + credits) => lo actualiza
+ * - Si no existe => lo crea
+ *
+ * ✅ Para DUO+ usamos:
+ * serviceKey: "PLUS"
+ * credits: 1
+ * price: 20000
+ */
+const PLANS = [
+  // =========================
+  // DUO+ Membresía Mensual
+  // =========================
+  {
+    serviceKey: "PLUS",
+    payMethod: "CASH",
+    credits: 1,
+    price: 20000,
+    label: "DUO+ mensual",
+    active: true,
+  },
+  {
+    serviceKey: "PLUS",
+    payMethod: "MP",
+    credits: 1,
+    price: 20000,
+    label: "DUO+ mensual",
+    active: true,
+  },
 
-  // MP - RA
-  { serviceKey: "RA", payMethod: "MP", credits: 1, price: 35000 },
-  { serviceKey: "RA", payMethod: "MP", credits: 5, price: 150000 },
-  { serviceKey: "RA", payMethod: "MP", credits: 10, price: 250000 },
-
-  // MP - NUT
-  { serviceKey: "NUT", payMethod: "MP", credits: 1, price: 30000, label: "Sesión" },
-
-  // CASH - EP
-  { serviceKey: "EP", payMethod: "CASH", credits: 4, price: 60000 },
-  { serviceKey: "EP", payMethod: "CASH", credits: 8, price: 100000 },
-  { serviceKey: "EP", payMethod: "CASH", credits: 12, price: 150000 },
-
-  // CASH - RF
-  { serviceKey: "RF", payMethod: "CASH", credits: 4, price: 80000 },
-  { serviceKey: "RF", payMethod: "CASH", credits: 8, price: 140000 },
-  { serviceKey: "RF", payMethod: "CASH", credits: 12, price: 210000 },
-
-  // CASH - AR
-  { serviceKey: "AR", payMethod: "CASH", credits: 4, price: 100000 },
-  { serviceKey: "AR", payMethod: "CASH", credits: 8, price: 160000 },
-  { serviceKey: "AR", payMethod: "CASH", credits: 12, price: 240000 },
-
-  // CASH - RA
-  { serviceKey: "RA", payMethod: "CASH", credits: 1, price: 30000 },
-  { serviceKey: "RA", payMethod: "CASH", credits: 5, price: 137500 },
-  { serviceKey: "RA", payMethod: "CASH", credits: 10, price: 250000 },
-
-  // CASH - NUT
-  { serviceKey: "NUT", payMethod: "CASH", credits: 1, price: 30000, label: "Sesión" },
+  // =========================
+  // (Opcional) Ejemplo: otros planes
+  // Descomentá y poné tus precios reales si querés.
+  // =========================
+  // {
+  //   serviceKey: "EP",
+  //   payMethod: "CASH",
+  //   credits: 8,
+  //   price: 100000,
+  //   label: "8 créditos",
+  //   active: true,
+  // },
+  // {
+  //   serviceKey: "EP",
+  //   payMethod: "MP",
+  //   credits: 8,
+  //   price: 110000,
+  //   label: "8 créditos",
+  //   active: true,
+  // },
 ];
 
 async function run() {
-  await connectDB();
+  console.log("🔌 Conectando a MongoDB...");
+  await mongoose.connect(MONGO_URI);
+  console.log("✅ Conectado");
 
-  // upsert para no duplicar
-  for (const p of plans) {
-    await PricingPlan.findOneAndUpdate(
-      { serviceKey: p.serviceKey, payMethod: p.payMethod, credits: p.credits },
-      { $set: { ...p, active: true } },
-      { upsert: true, new: true }
+  let upserts = 0;
+
+  for (const p of PLANS) {
+    const serviceKey = String(p.serviceKey || "").toUpperCase().trim();
+    const payMethod = String(p.payMethod || "").toUpperCase().trim();
+    const credits = Number(p.credits);
+
+    if (!serviceKey || !payMethod || !credits) {
+      console.warn("⚠️ Plan inválido (saltado):", p);
+      continue;
+    }
+
+    const patch = {
+      serviceKey,
+      payMethod,
+      credits,
+      price: Number(p.price || 0),
+      label: p.label || "",
+      active: Boolean(p.active),
+    };
+
+    await PricingPlan.updateOne(
+      { serviceKey, payMethod, credits },
+      { $set: patch },
+      { upsert: true }
+    );
+
+    upserts++;
+    console.log(
+      `✅ Upsert: ${serviceKey} | ${payMethod} | credits=${credits} | price=${patch.price} | active=${patch.active}`
     );
   }
 
-  console.log("✅ Pricing seed completado.");
-  process.exit(0);
+  console.log(`\n🎉 Listo. Upserts realizados: ${upserts}`);
+  await mongoose.disconnect();
+  console.log("🔌 Desconectado");
 }
 
-run().catch((e) => {
-  console.error("❌ Seed error:", e);
+run().catch((err) => {
+  console.error("❌ Error en seedPricing:", err);
   process.exit(1);
 });
