@@ -4,6 +4,7 @@ import { protect, adminOnly } from "../middleware/auth.js";
 import PricingPlan from "../models/PricingPlan.js";
 import Order from "../models/Order.js";
 import User from "../models/User.js";
+import mongoose from "mongoose";
 
 const router = express.Router();
 
@@ -378,27 +379,22 @@ router.patch("/:id/mark-paid", protect, adminOnly, async (req, res) => {
     }
 
     const order = await Order.findById(id);
-    if (!order) {
-      return res.status(404).json({ error: "Orden no encontrada" });
-    }
+    if (!order) return res.status(404).json({ error: "Orden no encontrada" });
 
     const pm = String(order.payMethod || "").toUpperCase();
     if (pm !== "CASH") {
-      return res.status(400).json({ error: "Solo órdenes en efectivo pueden marcarse manualmente" });
+      return res.status(400).json({ error: "Solo CASH puede marcarse manualmente" });
     }
 
     const st = String(order.status || "").toLowerCase();
-    if (st === "paid") {
-      return res.json({ ok: true, message: "La orden ya estaba pagada" });
-    }
+    if (st === "paid") return res.json({ ok: true, message: "Ya estaba pagada" });
 
     order.status = "paid";
-    order.paidAt = new Date(); // (opcional, ver nota abajo)
     await order.save();
 
     return res.json({ ok: true });
   } catch (err) {
-    console.error("mark-paid error:", err);
+    console.error("PATCH /orders/:id/mark-paid error:", err);
     return res.status(500).json({
       error: "Error interno al marcar como pagada",
       detail: err?.message || String(err),
