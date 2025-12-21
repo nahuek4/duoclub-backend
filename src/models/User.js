@@ -35,32 +35,28 @@ const userSchema = new mongoose.Schema(
 
     history: { type: [historySchema], default: [] },
 
-    /* =========================
-       DUO+ (membresía mensual)
-       ========================= */
-    plus: {
-      active: { type: Boolean, default: false },
-      autoRenew: { type: Boolean, default: false }, // (luego lo conectamos a suscripción MP)
-      startedAt: { type: Date, default: null },
-      expiresAt: { type: Date, default: null }, // vence en 30 días
+    // ===== Membresía DUO+ (usuario, no servicio) =====
+    membership: {
+      tier: { type: String, default: "basic", enum: ["basic", "plus"] },
+      activeUntil: { type: Date, default: null },
+
+      cancelHours: { type: Number, default: 24 },   // basic 24 | plus 12
+      cancelsLeft: { type: Number, default: 1 },    // basic 1 | plus 2
+      creditsExpireDays: { type: Number, default: 30 }, // basic 30 | plus 40
     },
 
-      // dentro de userSchema (agregar este bloque)
-      membership: {
-        tier: { type: String, default: "", uppercase: true, trim: true }, // "PLUS" o ""
-        active: { type: Boolean, default: false },
+    // ===== Créditos por lote (para vencimiento real) =====
+    // cada compra crea un lote con remaining + expiresAt
+    creditLots: [
+      {
+        amount: { type: Number, default: 0 },
+        remaining: { type: Number, default: 0 },
         expiresAt: { type: Date, default: null },
-
-        // reglas
-        cancelMinHours: { type: Number, default: 24 }, // BASIC=24, PLUS=12
-        cancelLimit: { type: Number, default: 1 },     // BASIC=1, PLUS=2
-        cancelsUsed: { type: Number, default: 0 },
-
-        creditsExpireDays: { type: Number, default: 30 }, // BASIC=30, PLUS=40
-
-        // para reset mensual de cancelsUsed
-        cycleStartAt: { type: Date, default: null },
+        source: { type: String, default: "" }, // "mp" | "cash" | "refund" | etc
+        orderId: { type: mongoose.Schema.Types.ObjectId, ref: "Order", default: null },
+        createdAt: { type: Date, default: Date.now },
       },
+    ],
 
 
     // cancelaciones en ventana de 30 días

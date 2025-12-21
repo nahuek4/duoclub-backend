@@ -8,41 +8,39 @@ const appointmentSchema = new mongoose.Schema(
       ref: "User",
       required: true,
     },
-    // Fecha en formato "YYYY-MM-DD"
-    date: {
-      type: String,
-      required: true,
-    },
-    // Hora en formato "HH:mm"
-    time: {
-      type: String,
-      required: true,
-    },
-    // Servicio
-    service: {
-      type: String,
-      required: true,
-    },
+
+    date: { type: String, required: true }, // "YYYY-MM-DD"
+    time: { type: String, required: true }, // "HH:mm"
+
+    service: { type: String, required: true },
+
     status: {
       type: String,
       enum: ["reserved", "cancelled"],
       default: "reserved",
     },
-    coach: {
-      type: String,
-      default: "",
+
+    coach: { type: String, default: "" },
+
+    // ✅ NUEVO: de qué lote se descontó el crédito (para devolverlo al cancelar)
+    creditLotId: {
+      type: mongoose.Schema.Types.ObjectId,
+      default: null,
     },
+
+    // ✅ NUEVO: vencimiento del crédito usado (debug/UI)
+    creditExpiresAt: { type: Date, default: null },
   },
   { timestamps: true }
 );
 
-// ✅ Evita duplicado por día+hora+servicio (solo si status="reserved")
+// Evita duplicado por día+hora+servicio (solo reserved)
 appointmentSchema.index(
   { date: 1, time: 1, service: 1, status: 1 },
   { unique: true, partialFilterExpression: { status: "reserved" } }
 );
 
-// ✅ NUEVO: evita que el mismo usuario reserve 2 veces el mismo horario (cualquier servicio)
+// Evita que el mismo usuario reserve 2 veces el mismo horario
 appointmentSchema.index(
   { date: 1, time: 1, user: 1, status: 1 },
   { unique: true, partialFilterExpression: { status: "reserved" } }
