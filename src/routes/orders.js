@@ -369,87 +369,48 @@ router.get("/", protect, adminOnly, async (req, res) => {
 
 // PATCH /orders/:id/mark-paid (solo CASH)
 // ✅ marca paid + aplica items
-router.patch("/:id/mark-paid", protect, adminOnly, async (req, res) => {
+router.patch("/orders/:id/mark-paid", protect, async (req, res) => {
   try {
-    const order = await Order.findById(req.params.id);
-    if (!order) return res.status(404).json({ error: "Orden no encontrada." });
+    const { id } = req.params;
 
-    if (String(order.payMethod).toUpperCase() !== "CASH") {
-      return res.status(400).json({ error: "Solo podés marcar pagadas órdenes en efectivo." });
-    }
-    if (order.status === "paid") return res.status(400).json({ error: "Ya está pagada." });
-
-    const user = await User.findById(order.user);
-    if (!user) return res.status(404).json({ error: "Usuario no encontrado." });
-
-    // ✅ NUEVO flujo con items[]
-    const hasItems = Array.isArray(order.items) && order.items.length > 0;
-
-    if (hasItems) {
-      if (order.applied) return res.status(400).json({ error: "Esta orden ya fue aplicada." });
-
-      // 1) si compró membership en esta orden, activamos primero
-      const hasPlus = order.items.some((it) => String(it.kind).toUpperCase() === "MEMBERSHIP");
-      if (hasPlus) activatePlus(user);
-      else ensureBasicIfExpired(user);
-
-      // 2) acreditamos créditos
-      for (const it of order.items) {
-        if (String(it.kind).toUpperCase() !== "CREDITS") continue;
-        const qty = Math.max(1, Number(it.qty) || 1);
-        const amount = Math.max(0, Number(it.credits) || 0) * qty;
-        if (amount > 0) {
-          addCreditLot(user, { amount, source: "cash", orderId: order._id });
-        }
-      }
-
-      user.history = user.history || [];
-      user.history.push({
-        action: hasPlus ? "compra_checkout_cash_plus" : "compra_checkout_cash",
-        date: new Date().toISOString().slice(0, 10),
-        time: new Date().toTimeString().slice(0, 5),
-        service: `Compra checkout`,
-        createdAt: new Date(),
-      });
-
-      await user.save();
-
-      order.status = "paid";
-      order.applied = true;
-      await order.save();
-
-      return res.json({ ok: true });
+    // 1) Validación id
+    if (!mongoose.Types.ObjectId.isValid(id)) {
+      return res.status(400).json({ error: "ID de orden inválido" });
     }
 
-    // ✅ LEGACY (órdenes viejas)
-    if (order.plusIncluded) activatePlus(user);
-    else ensureBasicIfExpired(user);
-
-    if (!order.creditsApplied && Number(order.credits || 0) > 0) {
-      addCreditLot(user, { amount: order.credits, source: "cash", orderId: order._id });
-      order.creditsApplied = true;
-    } else {
-      recalcCreditsCache(user);
+    // 2) Buscar orden
+    const order = await Order.findById(id);
+    if (!order) {
+      return res.status(404).json({ error: "Orden no encontrada" });
     }
 
-    user.history = user.history || [];
-    user.history.push({
-      action: order.plusIncluded ? "compra_creditos_cash_plus" : "compra_creditos_cash",
-      date: new Date().toISOString().slice(0, 10),
-      time: new Date().toTimeString().slice(0, 5),
-      service: `Compra ${order.serviceKey}`,
-      createdAt: new Date(),
-    });
+    // 3) Regla: solo efectivo se marca manual (opcional pero recomendado)
+    const pm = String(order.payMethod || "").toUpperCase();
+    if (pm !== "CASH") {
+      return res.status(400).json({ error: "Solo órdenes en efectivo pueden marcarse manualmente" });
+    }
 
-    await user.save();
+    // 4) Ya pagada
+    const st = String(order.status || "").toLowerCase();
+    if (st === "paid") {
+      return res.status(200).json({ ok: true, message: "La orden ya estaba pagada" });
+    }
 
+    // 5) Marcar pagado
     order.status = "paid";
+    order.paidAt = new Date();
+    // si manejás approved en vez de paid:
+    // order.status = "approved";
+
     await order.save();
 
     return res.json({ ok: true });
   } catch (err) {
-    console.error("PATCH /orders/:id/mark-paid", err);
-    return res.status(500).json({ error: "Error al marcar pagado." });
+    console.error("mark-paid error:", err);
+    return res.status(500).json({
+      error: "Error interno al marcar como pagada",
+      detail: err?.message || String(err),
+    });
   }
 });
 
