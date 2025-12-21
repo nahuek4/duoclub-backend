@@ -369,39 +369,31 @@ router.get("/", protect, adminOnly, async (req, res) => {
 
 // PATCH /orders/:id/mark-paid (solo CASH)
 // ✅ marca paid + aplica items
-router.patch("/orders/:id/mark-paid", protect, async (req, res) => {
+router.patch("/:id/mark-paid", protect, adminOnly, async (req, res) => {
   try {
     const { id } = req.params;
 
-    // 1) Validación id
     if (!mongoose.Types.ObjectId.isValid(id)) {
       return res.status(400).json({ error: "ID de orden inválido" });
     }
 
-    // 2) Buscar orden
     const order = await Order.findById(id);
     if (!order) {
       return res.status(404).json({ error: "Orden no encontrada" });
     }
 
-    // 3) Regla: solo efectivo se marca manual (opcional pero recomendado)
     const pm = String(order.payMethod || "").toUpperCase();
     if (pm !== "CASH") {
       return res.status(400).json({ error: "Solo órdenes en efectivo pueden marcarse manualmente" });
     }
 
-    // 4) Ya pagada
     const st = String(order.status || "").toLowerCase();
     if (st === "paid") {
-      return res.status(200).json({ ok: true, message: "La orden ya estaba pagada" });
+      return res.json({ ok: true, message: "La orden ya estaba pagada" });
     }
 
-    // 5) Marcar pagado
     order.status = "paid";
-    order.paidAt = new Date();
-    // si manejás approved en vez de paid:
-    // order.status = "approved";
-
+    order.paidAt = new Date(); // (opcional, ver nota abajo)
     await order.save();
 
     return res.json({ ok: true });

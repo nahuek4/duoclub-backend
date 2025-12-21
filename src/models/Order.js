@@ -60,6 +60,9 @@ const orderSchema = new mongoose.Schema(
     mpInitPoint: { type: String, default: "" },
     mpPaymentId: { type: String, default: "" },
     mpMerchantOrderId: { type: String, default: "" },
+    
+    paidAt: { type: Date, default: null },
+
 
     notes: { type: String, default: "" },
 
@@ -79,6 +82,7 @@ const orderSchema = new mongoose.Schema(
   },
   { timestamps: true }
 );
+
 
 orderSchema.index({ user: 1, createdAt: -1 });
 orderSchema.index({ createdAt: -1 });
