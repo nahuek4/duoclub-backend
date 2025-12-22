@@ -1,4 +1,3 @@
-// backend/src/models/User.js
 import mongoose from "mongoose";
 
 const historySchema = new mongoose.Schema(
@@ -14,7 +13,9 @@ const historySchema = new mongoose.Schema(
 
 const userSchema = new mongoose.Schema(
   {
-    name: { type: String, default: "" },
+    name: { type: String, required: true, trim: true, default: "" },
+    lastName: { type: String, required: true, trim: true, default: "" },
+
     email: {
       type: String,
       required: true,
@@ -22,7 +23,9 @@ const userSchema = new mongoose.Schema(
       lowercase: true,
       trim: true,
     },
-    phone: { type: String, default: "" },
+
+    phone: { type: String, required: true, trim: true, default: "" },
+
     dni: { type: String, default: "" },
     age: { type: Number, default: null },
     weight: { type: Number, default: null },
@@ -42,9 +45,8 @@ const userSchema = new mongoose.Schema(
 
     history: { type: [historySchema], default: [] },
 
-    // ✅ Verificación y aprobación (NECESARIO para el token de verificación)
+    // ✅ Verificación y aprobación
     emailVerified: { type: Boolean, default: false },
-
     approvalStatus: {
       type: String,
       enum: ["pending", "approved", "rejected"],
@@ -54,24 +56,23 @@ const userSchema = new mongoose.Schema(
     emailVerificationToken: { type: String, default: "" },
     emailVerificationExpires: { type: Date, default: null },
 
-    // ===== Membresía DUO+ (usuario, no servicio) =====
+    // ===== Membresía DUO+ =====
     membership: {
       tier: { type: String, default: "basic", enum: ["basic", "plus"] },
       activeUntil: { type: Date, default: null },
 
-      cancelHours: { type: Number, default: 24 }, // basic 24 | plus 12
-      cancelsLeft: { type: Number, default: 1 }, // basic 1 | plus 2
-      creditsExpireDays: { type: Number, default: 30 }, // basic 30 | plus 40
+      cancelHours: { type: Number, default: 24 },
+      cancelsLeft: { type: Number, default: 1 },
+      creditsExpireDays: { type: Number, default: 30 },
     },
 
-    // ===== Créditos por lote (para vencimiento real) =====
-    // cada compra crea un lote con remaining + expiresAt
+    // ===== Créditos por lote =====
     creditLots: [
       {
         amount: { type: Number, default: 0 },
         remaining: { type: Number, default: 0 },
         expiresAt: { type: Date, default: null },
-        source: { type: String, default: "" }, // "mp" | "cash" | "refund" | etc
+        source: { type: String, default: "" },
         orderId: {
           type: mongoose.Schema.Types.ObjectId,
           ref: "Order",
@@ -81,7 +82,6 @@ const userSchema = new mongoose.Schema(
       },
     ],
 
-    // cancelaciones en ventana de 30 días
     cancelationsUsed: { type: Number, default: 0 },
     cancelationsPeriodStart: { type: Date, default: null },
   },

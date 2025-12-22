@@ -1,4 +1,3 @@
-// backend/src/routes/auth.js
 import express from "express";
 import bcrypt from "bcryptjs";
 import jwt from "jsonwebtoken";
@@ -23,8 +22,10 @@ function serializeUser(u) {
   if (!u) return null;
   return {
     id: u._id.toString(),
-    name: u.name,
+    name: u.name || "",
+    lastName: u.lastName || "",
     email: u.email,
+    phone: u.phone || "",
     role: u.role,
     credits: u.credits,
     suspended: u.suspended,
@@ -32,11 +33,21 @@ function serializeUser(u) {
     aptoStatus: u.aptoStatus || "",
     emailVerified: !!u.emailVerified,
     approvalStatus: u.approvalStatus || "pending",
+    createdAt: u.createdAt || null,
   };
 }
 
 function sha256(str) {
   return crypto.createHash("sha256").update(str).digest("hex");
+}
+
+function normText(v) {
+  return String(v || "").trim();
+}
+
+function normPhone(v) {
+  // muy liviano: deja +, números y espacios
+  return String(v || "").trim().replace(/[^\d+\s()-]/g, "");
 }
 
 /* ============================================
@@ -46,18 +57,14 @@ router.post("/login", async (req, res) => {
   try {
     const { email, password } = req.body || {};
     if (!email || !password) {
-      return res
-        .status(400)
-        .json({ error: "Email y password son obligatorios." });
+      return res.status(400).json({ error: "Email y password son obligatorios." });
     }
 
     const user = await User.findOne({ email: String(email).toLowerCase() });
-    if (!user)
-      return res.status(401).json({ error: "Email o contraseña incorrectos." });
+    if (!user) return res.status(401).json({ error: "Email o contraseña incorrectos." });
 
     const match = await bcrypt.compare(password, user.password);
-    if (!match)
-      return res.status(401).json({ error: "Email o contraseña incorrectos." });
+    if (!match) return res.status(401).json({ error: "Email o contraseña incorrectos." });
 
     // 🔒 ORDEN CORRECTO
     if (!user.emailVerified) {
@@ -97,12 +104,16 @@ router.post("/login", async (req, res) => {
    ============================================ */
 router.post("/register", async (req, res) => {
   try {
-    const { name, email, password } = req.body || {};
+    const { name, lastName, phone, email, password } = req.body || {};
 
-    // ✅ name es opcional (como tu frontend)
-    if (!email || !password) {
+    const n = normText(name);
+    const ln = normText(lastName);
+    const ph = normPhone(phone);
+    const em = normText(email).toLowerCase();
+
+    if (!n || !ln || !ph || !em || !password) {
       return res.status(400).json({
-        error: "Email y contraseña son obligatorios.",
+        error: "Nombre, apellido, teléfono, email y contraseña son obligatorios.",
       });
     }
 
@@ -112,26 +123,27 @@ router.post("/register", async (req, res) => {
       });
     }
 
-    const emailLower = String(email).toLowerCase().trim();
-    const exists = await User.findOne({ email: emailLower });
+    const exists = await User.findOne({ email: em });
     if (exists) {
       return res.status(409).json({
         error: "Ya existe una cuenta con ese email.",
       });
     }
 
-    const hashedPass = await bcrypt.hash(String(password), 10);
+    const hashedPass = await bcrypt.hash(password, 10);
 
     const rawToken = crypto.randomBytes(32).toString("hex");
     const tokenHash = sha256(rawToken);
 
     const user = await User.create({
-      name: (name || "").trim(),
-      email: emailLower,
+      name: n,
+      lastName: ln,
+      phone: ph,
+
+      email: em,
       password: hashedPass,
       role: "client",
 
-      // ✅ por defecto: no puede entrar hasta que verifique + apruebe admin
       suspended: true,
       approvalStatus: "pending",
       emailVerified: false,
@@ -140,7 +152,6 @@ router.post("/register", async (req, res) => {
       emailVerificationExpires: new Date(Date.now() + 24 * 60 * 60 * 1000),
     });
 
-    // ⚠️ Tu env usa FRONTEND_URL. Mantengo eso.
     const frontend = process.env.FRONTEND_URL || "https://duoclub.ar";
     const verifyUrl = `${frontend}/verificar-email?token=${rawToken}`;
 
@@ -161,7 +172,7 @@ router.post("/register", async (req, res) => {
    ============================================ */
 router.get("/verify-email", async (req, res) => {
   try {
-    const rawToken = String(req.query.token || "");
+    const rawToken = String(req.query.token || "").trim();
     if (!rawToken) {
       return res.status(400).json({ error: "Token inválido." });
     }
@@ -210,7 +221,6 @@ router.post("/resend-verification", async (req, res) => {
 
     const user = await User.findOne({ email: emailLower });
 
-    // por seguridad, no revelamos si existe o no
     if (!user) {
       return res.json({
         ok: true,
