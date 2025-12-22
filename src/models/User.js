@@ -14,8 +14,7 @@ const historySchema = new mongoose.Schema(
 
 const creditLotSchema = new mongoose.Schema(
   {
-    // ✅ NUEVO: servicio asociado al lote
-    // EP/RF/AR/RA/NUT o ALL (si algún día vendés créditos “multi-servicio”)
+    // ✅ servicio asociado al lote: EP/RF/AR/RA/NUT o ALL
     serviceKey: { type: String, default: "EP", uppercase: true, trim: true },
 
     amount: { type: Number, default: 0 },
@@ -74,6 +73,7 @@ const userSchema = new mongoose.Schema(
       default: "pending",
     },
 
+    // ✅ Tokens de verificación de email (necesarios para /auth/verify-email)
     emailVerificationToken: { type: String, default: "" },
     emailVerificationExpires: { type: Date, default: null },
 
@@ -95,6 +95,9 @@ const userSchema = new mongoose.Schema(
   },
   { timestamps: true }
 );
+
+// (opcional) si querés asegurar index aparte (igual ya lo hace `unique: true`)
+// userSchema.index({ email: 1 }, { unique: true });
 
 const User = mongoose.model("User", userSchema);
 export default User;
