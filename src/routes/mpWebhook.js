@@ -23,7 +23,9 @@ async function fetchMpPayment(paymentId) {
   return data;
 }
 
-// ===== Helpers (mismos que antes) =====
+/* =======================
+   Helpers membresía / créditos
+======================= */
 function isPlusActive(user) {
   const m = user?.membership || {};
   if (m.tier !== "plus") return false;
@@ -50,6 +52,7 @@ function ensureBasicIfExpired(user) {
 
   if (!user.membership.tier) {
     user.membership.tier = "basic";
+    user.membership.activeUntil = null;
     user.membership.cancelHours = 24;
     user.membership.cancelsLeft = 1;
     user.membership.creditsExpireDays = 30;
@@ -79,7 +82,7 @@ function recalcCreditsCache(user) {
   }, 0);
 }
 
-function addCreditLot(user, { amount, source, orderId }) {
+function addCreditLot(user, { amount, source, orderId, serviceKey }) {
   const now = new Date();
   ensureBasicIfExpired(user);
 
@@ -89,6 +92,7 @@ function addCreditLot(user, { amount, source, orderId }) {
 
   user.creditLots = user.creditLots || [];
   user.creditLots.push({
+    serviceKey: String(serviceKey || "EP").toUpperCase().trim(),
     amount: Number(amount || 0),
     remaining: Number(amount || 0),
     expiresAt: exp,
@@ -98,6 +102,78 @@ function addCreditLot(user, { amount, source, orderId }) {
   });
 
   recalcCreditsCache(user);
+}
+
+/* =======================
+   Aplicar orden (idempotente)
+======================= */
+async function applyOrderIfNeeded(order) {
+  if (!order) return { ok: false, error: "Orden inválida" };
+  if (order.applied) return { ok: true, message: "Ya aplicada" };
+
+  const user = await User.findById(order.user);
+  if (!user) return { ok: false, error: "Usuario no encontrado" };
+
+  const hasItems = Array.isArray(order.items) && order.items.length > 0;
+
+  // 1) primero activar plus si corresponde (para que los lotes expiren en 40)
+  if (hasItems) {
+    const hasPlus = order.items.some((it) => String(it.kind).toUpperCase() === "MEMBERSHIP");
+    if (hasPlus) activatePlus(user);
+    else ensureBasicIfExpired(user);
+  } else {
+    // legacy
+    if (order.plusIncluded) activatePlus(user);
+    else ensureBasicIfExpired(user);
+  }
+
+  // 2) acreditar créditos
+  if (hasItems) {
+    for (const it of order.items) {
+      if (String(it.kind).toUpperCase() !== "CREDITS") continue;
+      const qty = Math.max(1, Number(it.qty) || 1);
+      const creditsPer = Math.max(0, Number(it.credits) || 0);
+      const amount = creditsPer * qty;
+
+      if (amount > 0) {
+        addCreditLot(user, {
+          amount,
+          source: "mp",
+          orderId: order._id,
+          serviceKey: it.serviceKey || "EP",
+        });
+      }
+    }
+  } else {
+    const amount = Math.max(0, Number(order.credits) || 0);
+    if (amount > 0) {
+      addCreditLot(user, {
+        amount,
+        source: "mp-legacy",
+        orderId: order._id,
+        serviceKey: order.serviceKey || "EP",
+      });
+    } else {
+      recalcCreditsCache(user);
+    }
+  }
+
+  user.history = user.history || [];
+  user.history.push({
+    action: "order_applied_mp",
+    date: new Date().toISOString().slice(0, 10),
+    time: new Date().toTimeString().slice(0, 5),
+    service: "MercadoPago",
+    createdAt: new Date(),
+  });
+
+  await user.save();
+
+  order.applied = true;
+  order.creditsApplied = true; // compat legacy
+  await order.save();
+
+  return { ok: true };
 }
 
 /**
@@ -120,14 +196,15 @@ router.post("/mercadopago/webhook", async (req, res) => {
 
     // Guardar datos del pago
     order.mpPaymentId = String(payment.id || "");
-    order.mpMerchantOrderId = String(payment.order?.id || "");
+    order.mpMerchantOrderId = String(payment.order?.id || payment.merchant_order_id || "");
 
     const paidAmount = Number(payment.transaction_amount || 0);
-
-    // ✅ total esperado
     const expected = Number(order.total || order.price || 0);
 
-    if (paidAmount !== expected) {
+    // tolerancia mínima por redondeo (si querés, dejala en 0)
+    const EPS = 0;
+
+    if (Math.abs(paidAmount - expected) > EPS) {
       order.notes = `Monto no coincide. Paid=${paidAmount} Order=${expected}`;
       await order.save();
       return res.status(200).json({ ok: true });
@@ -140,80 +217,24 @@ router.post("/mercadopago/webhook", async (req, res) => {
     }
 
     // ✅ Pago aprobado
-    order.status = "paid";
-
-    const hasItems = Array.isArray(order.items) && order.items.length > 0;
-
-    if (hasItems) {
-      if (order.applied) {
-        await order.save();
-        return res.status(200).json({ ok: true });
-      }
-
-      const user = await User.findById(order.user);
-      if (user) {
-        // 1) activar plus si está en el checkout
-        const hasPlus = order.items.some((it) => String(it.kind).toUpperCase() === "MEMBERSHIP");
-        if (hasPlus) activatePlus(user);
-        else ensureBasicIfExpired(user);
-
-        // 2) acreditar créditos
-        for (const it of order.items) {
-          if (String(it.kind).toUpperCase() !== "CREDITS") continue;
-          const qty = Math.max(1, Number(it.qty) || 1);
-          const amount = Math.max(0, Number(it.credits) || 0) * qty;
-          if (amount > 0) addCreditLot(user, { amount, source: "mp", orderId: order._id });
-        }
-
-        user.history = user.history || [];
-        user.history.push({
-          action: hasPlus ? "compra_checkout_mp_plus" : "compra_checkout_mp",
-          date: new Date().toISOString().slice(0, 10),
-          time: new Date().toTimeString().slice(0, 5),
-          service: `Compra checkout`,
-          createdAt: new Date(),
-        });
-
-        await user.save();
-      }
-
-      order.applied = true;
-      await order.save();
-      return res.status(200).json({ ok: true });
+    if (String(order.status || "") !== "paid") {
+      order.status = "paid";
+      order.paidAt = new Date();
     }
 
-    // ✅ LEGACY (órdenes viejas)
-    if (!order.creditsApplied) {
-      const user = await User.findById(order.user);
-      if (user) {
-        if (order.plusIncluded) activatePlus(user);
-        else ensureBasicIfExpired(user);
-
-        if (Number(order.credits || 0) > 0) {
-          addCreditLot(user, { amount: order.credits, source: "mp", orderId: order._id });
-        } else {
-          recalcCreditsCache(user);
-        }
-
-        user.history = user.history || [];
-        user.history.push({
-          action: order.plusIncluded ? "compra_creditos_mp_plus" : "compra_creditos_mp",
-          date: new Date().toISOString().slice(0, 10),
-          time: new Date().toTimeString().slice(0, 5),
-          service: `Compra ${order.serviceKey}`,
-          createdAt: new Date(),
-        });
-
-        await user.save();
-      }
-
-      order.creditsApplied = true;
+    // ✅ aplicar orden (plus + créditos) de forma idempotente
+    const applied = await applyOrderIfNeeded(order);
+    if (!applied.ok) {
+      order.notes = applied.error || "No se pudo aplicar orden";
+      await order.save();
+      return res.status(200).json({ ok: true });
     }
 
     await order.save();
     return res.status(200).json({ ok: true });
   } catch (err) {
     console.error("MP webhook error:", err);
+    // MP requiere 200 para no reintentar infinito
     return res.status(200).json({ ok: true });
   }
 });

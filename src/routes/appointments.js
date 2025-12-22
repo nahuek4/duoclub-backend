@@ -39,6 +39,61 @@ function serviceToKey(serviceName) {
   return "EP";
 }
 
+function startOfDay(d) {
+  return new Date(d.getFullYear(), d.getMonth(), d.getDate());
+}
+
+// suma 1 mes exacto: 21→21 (si no existe, clampa)
+function addOneMonthExact(d) {
+  const base = new Date(d);
+  const day = base.getDate();
+
+  const next = new Date(base);
+  next.setDate(1);
+  next.setMonth(next.getMonth() + 1);
+
+  const lastDay = new Date(next.getFullYear(), next.getMonth() + 1, 0).getDate();
+  next.setDate(Math.min(day, lastDay));
+  return next;
+}
+
+function getMonthlyCancelLimit(user) {
+  const tier = String(user?.membership?.tier || "basic");
+  return tier === "plus" ? 2 : 1;
+}
+
+// ✅ resetea cancelsLeft si empezó un nuevo período mensual
+function ensureMonthlyCancels(user) {
+  user.membership = user.membership || {};
+  const now = new Date();
+
+  const limit = getMonthlyCancelLimit(user);
+
+  const start = user.cancelationsPeriodStart
+    ? startOfDay(new Date(user.cancelationsPeriodStart))
+    : null;
+
+  if (!start) {
+    user.cancelationsPeriodStart = startOfDay(now);
+    user.membership.cancelsLeft = limit;
+    user.cancelationsUsed = 0;
+    return;
+  }
+
+  const periodEnd = addOneMonthExact(start);
+  if (now >= periodEnd) {
+    user.cancelationsPeriodStart = startOfDay(now);
+    user.membership.cancelsLeft = limit;
+    user.cancelationsUsed = 0;
+    return;
+  }
+
+  // si ya estaba, aseguramos que no supere límite (por cambios de plan)
+  const current = Number(user.membership.cancelsLeft ?? limit);
+  user.membership.cancelsLeft = Math.min(current, limit);
+}
+
+
 function getMembershipEffective(user) {
   const m = user?.membership || {};
   const now = nowDate();
@@ -438,14 +493,17 @@ router.patch("/:id/cancel", async (req, res) => {
         });
       }
 
-      const left = Number(
-        user.membership?.cancelsLeft ?? (mem.tier === "plus" ? 2 : 1)
-      );
+     ensureMonthlyCancels(user);
+
+      const left = Number(user.membership?.cancelsLeft ?? (mem.tier === "plus" ? 2 : 1));
       if (left <= 0) {
         return res.status(400).json({
           error: "No tenés cancelaciones disponibles en este período.",
         });
       }
+
+      user.membership.cancelsLeft = left - 1;
+      user.cancelationsUsed = Number(user.cancelationsUsed || 0) + 1;
 
       user.membership.cancelsLeft = left - 1;
     }

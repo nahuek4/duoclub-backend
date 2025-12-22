@@ -10,13 +10,14 @@ const router = express.Router();
 
 // ✅ DUO+ mensual (server authority)
 const PLUS_PRICE = Number(process.env.PLUS_PRICE || 20000);
+const PLUS_DISCOUNT_PCT = 15;
 
 /* =======================
    Helpers membresía / créditos
 ======================= */
 function isPlusActive(user) {
   const m = user?.membership || {};
-  if (m.tier !== "plus") return false;
+  if (String(m.tier || "").toLowerCase() !== "plus") return false;
   if (!m.activeUntil) return false;
   return new Date(m.activeUntil) > new Date();
 }
@@ -26,7 +27,7 @@ function ensureBasicIfExpired(user) {
   user.membership = user.membership || {};
 
   const expired =
-    user.membership.tier === "plus" &&
+    String(user.membership.tier || "").toLowerCase() === "plus" &&
     user.membership.activeUntil &&
     new Date(user.membership.activeUntil) <= now;
 
@@ -46,29 +47,29 @@ function ensureBasicIfExpired(user) {
   }
 }
 
-function activatePlus(user) {
+// ✅ NUEVO: suma 30 días sobre activeUntil si todavía está activo, sino sobre hoy
+function addPlusMonths(user, months = 1) {
   const now = new Date();
-
   user.membership = user.membership || {};
 
-  // si ya estaba activo, extendemos desde el activeUntil, si no desde hoy
-  const base =
-    user.membership.tier === "plus" &&
-    user.membership.activeUntil &&
-    new Date(user.membership.activeUntil) > now
-      ? new Date(user.membership.activeUntil)
-      : now;
+  const curUntil = user.membership.activeUntil ? new Date(user.membership.activeUntil) : null;
+  const base = curUntil && curUntil > now ? curUntil : now;
 
   const until = new Date(base);
-  until.setDate(until.getDate() + 30);
+  until.setDate(until.getDate() + 30 * Math.max(1, Number(months) || 1));
 
   user.membership.tier = "plus";
   user.membership.activeUntil = until;
 
-  // reglas Plus
+  // ✅ reglas Plus
   user.membership.cancelHours = 12;
   user.membership.cancelsLeft = 2;
   user.membership.creditsExpireDays = 40;
+}
+
+// compat: si querés “comprar DUO+” y también sume, usamos lo mismo
+function activatePlus(user) {
+  addPlusMonths(user, 1);
 }
 
 function recalcCreditsCache(user) {
@@ -82,26 +83,18 @@ function recalcCreditsCache(user) {
   user.credits = sum;
 }
 
-function addCreditLot(user, { amount, serviceKey, source, orderId }) {
+function addCreditLot(user, { amount, source, orderId, serviceKey }) {
   const now = new Date();
   ensureBasicIfExpired(user);
 
-  // si querés que sea configurable por membership:
-  const expireDays =
-    Number(user?.membership?.creditsExpireDays) > 0
-      ? Number(user.membership.creditsExpireDays)
-      : isPlusActive(user)
-      ? 40
-      : 30;
+  const expireDays = isPlusActive(user) ? 40 : 30;
 
   const exp = new Date(now);
   exp.setDate(exp.getDate() + expireDays);
 
-  const sk = String(serviceKey || "EP").toUpperCase().trim();
-
   user.creditLots = user.creditLots || [];
   user.creditLots.push({
-    serviceKey: sk, // ✅ CLAVE PARA REGLA EP/OTROS
+    serviceKey: String(serviceKey || "EP").toUpperCase().trim(),
     amount: Number(amount || 0),
     remaining: Number(amount || 0),
     expiresAt: exp,
@@ -111,6 +104,98 @@ function addCreditLot(user, { amount, serviceKey, source, orderId }) {
   });
 
   recalcCreditsCache(user);
+}
+
+/* =======================
+   Aplicar una orden (idempotente)
+   - activa/EXTIENDE plus si viene MEMBERSHIP plus
+   - suma lotes por cada item CREDITS
+======================= */
+async function applyOrderIfNeeded(order) {
+  if (!order) return { ok: false, error: "Orden inválida." };
+
+  if (order.applied) {
+    return { ok: true, message: "Orden ya aplicada." };
+  }
+
+  const user = await User.findById(order.user);
+  if (!user) return { ok: false, error: "Usuario no encontrado." };
+
+  const hasItems = Array.isArray(order.items) && order.items.length > 0;
+
+  // 1) membership primero (para que créditos expiren 40 si corresponde)
+  if (hasItems) {
+    const membershipItems = order.items.filter(
+      (it) => String(it.kind || "").toUpperCase() === "MEMBERSHIP"
+    );
+
+    if (membershipItems.length > 0) {
+      // Sumamos meses según qty (y según action)
+      let monthsToAdd = 0;
+
+      for (const it of membershipItems) {
+        const qty = Math.max(1, Number(it.qty) || 1);
+        const action = String(it.action || "BUY").toUpperCase();
+
+        // BUY: si no era plus -> activa 1 mes; si ya era plus -> también suma (mejor UX)
+        // EXTEND: siempre suma
+        if (action === "EXTEND") {
+          monthsToAdd += qty;
+        } else {
+          // BUY
+          monthsToAdd += qty;
+        }
+      }
+
+      if (monthsToAdd > 0) addPlusMonths(user, monthsToAdd);
+    } else {
+      ensureBasicIfExpired(user);
+    }
+  } else {
+    // legacy
+    if (order.plusIncluded) activatePlus(user);
+    else ensureBasicIfExpired(user);
+  }
+
+  // 2) créditos
+  if (hasItems) {
+    for (const it of order.items) {
+      const kind = String(it.kind || "").toUpperCase();
+      if (kind !== "CREDITS") continue;
+
+      const qty = Math.max(1, Number(it.qty) || 1);
+      const creditsPer = Math.max(0, Number(it.credits) || 0);
+      const totalCredits = creditsPer * qty;
+
+      if (totalCredits > 0) {
+        addCreditLot(user, {
+          amount: totalCredits,
+          source: "order",
+          orderId: order._id,
+          serviceKey: it.serviceKey || "EP",
+        });
+      }
+    }
+  } else {
+    // legacy: credits + serviceKey
+    const totalCredits = Math.max(0, Number(order.credits) || 0);
+    if (totalCredits > 0) {
+      addCreditLot(user, {
+        amount: totalCredits,
+        source: "order-legacy",
+        orderId: order._id,
+        serviceKey: order.serviceKey || "EP",
+      });
+    }
+  }
+
+  await user.save();
+
+  order.applied = true;
+  order.creditsApplied = true; // legacy compat
+  await order.save();
+
+  return { ok: true };
 }
 
 /* =======================
@@ -124,13 +209,16 @@ async function createMpPreference({ order, user }) {
 
   const FRONT_BASE = process.env.FRONT_BASE_URL || "https://app.duoclub.ar";
 
+  // ✅ si guardamos totalFinal, MercadoPago debe cobrar eso
+  const amountToCharge = Number(order.totalFinal ?? order.total ?? order.price ?? 0);
+
   const body = {
     items: [
       {
         title: `DUO - Compra`,
         quantity: 1,
         currency_id: "ARS",
-        unit_price: Number(order.total || order.price || 0),
+        unit_price: amountToCharge,
       },
     ],
     external_reference: String(order._id),
@@ -139,6 +227,9 @@ async function createMpPreference({ order, user }) {
       userId: String(user._id),
       payMethod: order.payMethod,
       itemsCount: Array.isArray(order.items) ? order.items.length : 0,
+      discountPercent: Number(order.discountPercent || 0),
+      discountAmount: Number(order.discountAmount || 0),
+      totalFinal: amountToCharge,
     },
     back_urls: {
       success: `${FRONT_BASE}/?mp=success`,
@@ -205,7 +296,10 @@ function resolveMembershipItem() {
 }
 
 /* =========================================================
-   ✅ NUEVO: POST /orders/checkout
+   POST /orders/checkout
+   - Soporta action (BUY/EXTEND) en MEMBERSHIP
+   - Soporta qty en MEMBERSHIP (suma meses)
+   - Aplica 15% off si el usuario YA es PLUS activo (solo sobre CREDITS)
 ========================================================= */
 router.post("/checkout", protect, async (req, res) => {
   try {
@@ -219,8 +313,12 @@ router.post("/checkout", protect, async (req, res) => {
       return res.status(400).json({ error: "Carrito vacío." });
     }
 
-    // armar items server-authority
+    // 🔥 importante: detectar PLUS real del usuario (server side)
+    const freshUser = await User.findById(req.user._id).lean();
+    const plusActiveNow = isPlusActive(freshUser);
+
     const items = [];
+
     for (const it of rawItems) {
       const kind = String(it?.kind || "").toUpperCase();
       const qty = Math.max(1, Number(it?.qty) || 1);
@@ -238,18 +336,24 @@ router.post("/checkout", protect, async (req, res) => {
           credits: base.credits,
           label: base.label,
           qty,
-          basePrice: base.basePrice,
-          price: base.basePrice * qty,
+          basePrice: base.basePrice, // precio unitario
+          price: base.basePrice * qty, // subtotal
         });
       } else if (kind === "MEMBERSHIP") {
         const base = resolveMembershipItem();
+
+        const action = String(it?.action || "BUY").toUpperCase(); // BUY / EXTEND
+        // Para MEMBERSHIP dejamos qty (meses) (si no querés, ponelo fijo a 1)
+        const monthsQty = Math.max(1, Number(it?.qty) || 1);
+
         items.push({
           kind: "MEMBERSHIP",
           membershipTier: "plus",
           label: base.label,
-          qty: 1,
-          basePrice: base.basePrice,
-          price: base.basePrice,
+          action,
+          qty: monthsQty,
+          basePrice: base.basePrice, // unitario mensual
+          price: base.basePrice * monthsQty, // subtotal
         });
       } else {
         return res.status(400).json({ error: "Ítem inválido en el carrito." });
@@ -260,14 +364,34 @@ router.post("/checkout", protect, async (req, res) => {
       (acc, x) => acc + Number(x.basePrice || 0) * (Number(x.qty) || 1),
       0
     );
+
     const total = items.reduce((acc, x) => acc + Number(x.price || 0), 0);
+
+    // ✅ descuento PLUS: 15% sobre CREDITS únicamente (seguro)
+    // Si querés que descuente TODO (también membership), cambiá creditsSubtotal -> total.
+    const creditsSubtotal = items
+      .filter((x) => String(x.kind || "").toUpperCase() === "CREDITS")
+      .reduce((acc, x) => acc + Number(x.price || 0), 0);
+
+    const discountPercent = plusActiveNow ? PLUS_DISCOUNT_PCT : 0;
+    const discountAmount = plusActiveNow
+      ? Math.round(creditsSubtotal * (PLUS_DISCOUNT_PCT / 100))
+      : 0;
+
+    const totalFinal = Math.max(0, Math.round(total - discountAmount));
 
     const order = await Order.create({
       user: req.user._id,
       payMethod: pm,
       items,
+
       totalBase,
       total,
+
+      discountPercent,
+      discountAmount,
+      totalFinal,
+
       status: "pending",
       applied: false,
     });
@@ -277,6 +401,9 @@ router.post("/checkout", protect, async (req, res) => {
         ok: true,
         orderId: order._id,
         status: "pending",
+        totalFinal,
+        discountPercent,
+        discountAmount,
       });
     }
 
@@ -295,12 +422,13 @@ router.post("/checkout", protect, async (req, res) => {
       ok: true,
       init_point: mp.init_point,
       orderId: order._id,
+      totalFinal,
+      discountPercent,
+      discountAmount,
     });
   } catch (err) {
     console.error("POST /orders/checkout", err);
-    return res
-      .status(500)
-      .json({ error: err?.message || "Error creando orden." });
+    return res.status(500).json({ error: err?.message || "Error creando orden." });
   }
 });
 
@@ -337,7 +465,6 @@ router.post("/", protect, async (req, res) => {
     const order = await Order.create({
       user: req.user._id,
       payMethod: pm,
-      // legacy fields
       serviceKey: sk,
       credits: cr,
       basePrice,
@@ -347,17 +474,15 @@ router.post("/", protect, async (req, res) => {
       label: plan.label || "",
       status: "pending",
       creditsApplied: false,
-      applied: false, // por consistencia
+      applied: false,
     });
 
     if (pm === "CASH") {
-      return res
-        .status(201)
-        .json({ ok: true, orderId: order._id, status: "pending" });
+      return res.status(201).json({ ok: true, orderId: order._id, status: "pending" });
     }
 
     const mp = await createMpPreference({
-      order: { ...order.toObject(), total: total },
+      order: { ...order.toObject(), totalFinal: total, total: total },
       user: req.user,
     });
 
@@ -371,9 +496,7 @@ router.post("/", protect, async (req, res) => {
     order.mpInitPoint = mp.init_point;
     await order.save();
 
-    return res
-      .status(201)
-      .json({ ok: true, init_point: mp.init_point, orderId: order._id });
+    return res.status(201).json({ ok: true, init_point: mp.init_point, orderId: order._id });
   } catch (err) {
     console.error("POST /orders", err);
     return res.status(500).json({ error: "Error creando orden." });
@@ -393,16 +516,14 @@ router.get("/me", protect, async (req, res) => {
 ======================= */
 router.get("/", protect, adminOnly, async (req, res) => {
   const list = await Order.find()
-    .populate("user", "name email role membership credits")
+    .populate("user", "name email")
     .sort({ createdAt: -1 })
     .lean();
   res.json(list);
 });
 
-/* =========================================================
-   ✅ PATCH /orders/:id/mark-paid (solo CASH)
-   ✅ marca paid + aplica items/legacy (idempotente)
-========================================================= */
+// PATCH /orders/:id/mark-paid (solo CASH)
+// ✅ marca paid + aplica items (plus + créditos)
 router.patch("/:id/mark-paid", protect, adminOnly, async (req, res) => {
   try {
     const { id } = req.params;
@@ -416,78 +537,20 @@ router.patch("/:id/mark-paid", protect, adminOnly, async (req, res) => {
 
     const pm = String(order.payMethod || "").toUpperCase();
     if (pm !== "CASH") {
-      return res
-        .status(400)
-        .json({ error: "Solo CASH puede marcarse manualmente" });
+      return res.status(400).json({ error: "Solo CASH puede marcarse manualmente" });
     }
 
     const st = String(order.status || "").toLowerCase();
-    if (st === "paid" && order.applied) {
-      return res.json({ ok: true, message: "Ya estaba pagada y aplicada" });
+    if (st !== "paid") {
+      order.status = "paid";
+      order.paidAt = new Date();
+      await order.save();
     }
 
-    const user = await User.findById(order.user);
-    if (!user) return res.status(404).json({ error: "Usuario no encontrado" });
-
-    // 1) marcar pagada
-    order.status = "paid";
-    order.paidAt = order.paidAt || new Date();
-
-    // 2) aplicar una sola vez
-    if (!order.applied) {
-      ensureBasicIfExpired(user);
-
-      const items = Array.isArray(order.items) ? order.items : [];
-
-      const hasItems = items.length > 0;
-
-      if (hasItems) {
-        // === APLICAR ITEMS NUEVOS
-        for (const it of items) {
-          const kind = String(it.kind || "").toUpperCase();
-
-          if (kind === "MEMBERSHIP") {
-            // hoy solo plus
-            activatePlus(user);
-          }
-
-          if (kind === "CREDITS") {
-            const qty = Math.max(1, Number(it.qty) || 1);
-            const credits = Math.max(0, Number(it.credits) || 0);
-            const totalCredits = credits * qty;
-
-            if (totalCredits > 0) {
-              addCreditLot(user, {
-                amount: totalCredits,
-                serviceKey: it.serviceKey || "EP",
-                source: "order",
-                orderId: order._id,
-              });
-            }
-          }
-        }
-      } else {
-        // === APLICAR LEGACY
-        if (order.plusIncluded) {
-          activatePlus(user);
-        }
-
-        const legacyCredits = Math.max(0, Number(order.credits) || 0);
-        if (legacyCredits > 0) {
-          addCreditLot(user, {
-            amount: legacyCredits,
-            serviceKey: order.serviceKey || "EP",
-            source: "order_legacy",
-            orderId: order._id,
-          });
-        }
-      }
-
-      order.applied = true;
-      await user.save();
+    const applied = await applyOrderIfNeeded(order);
+    if (!applied.ok) {
+      return res.status(500).json({ error: applied.error || "No se pudo aplicar." });
     }
-
-    await order.save();
 
     return res.json({ ok: true });
   } catch (err) {
