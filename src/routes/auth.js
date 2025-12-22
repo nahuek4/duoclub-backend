@@ -46,7 +46,7 @@ function normText(v) {
 }
 
 function normPhone(v) {
-  // muy liviano: deja +, números y espacios
+  // deja +, números, espacios y algunos símbolos comunes
   return String(v || "").trim().replace(/[^\d+\s()-]/g, "");
 }
 
@@ -66,7 +66,7 @@ router.post("/login", async (req, res) => {
     const match = await bcrypt.compare(password, user.password);
     if (!match) return res.status(401).json({ error: "Email o contraseña incorrectos." });
 
-    // 🔒 ORDEN CORRECTO
+    // 🔒 orden correcto de validaciones
     if (!user.emailVerified) {
       return res.status(403).json({
         error: "Tenés que verificar tu email antes de iniciar sesión.",
@@ -144,6 +144,7 @@ router.post("/register", async (req, res) => {
       password: hashedPass,
       role: "client",
 
+      // regla: hasta que admin apruebe, bloqueado
       suspended: true,
       approvalStatus: "pending",
       emailVerified: false,
@@ -163,6 +164,10 @@ router.post("/register", async (req, res) => {
     });
   } catch (err) {
     console.error("Error en /auth/register:", err);
+    // clave duplicada
+    if (err?.code === 11000 && err?.keyPattern?.email) {
+      return res.status(409).json({ error: "Ya existe una cuenta con ese email." });
+    }
     return res.status(500).json({ error: "Error al registrarse." });
   }
 });
@@ -190,7 +195,7 @@ router.get("/verify-email", async (req, res) => {
       });
     }
 
-    // ✅ SOLO verificamos email
+    // ✅ solo verificamos email
     user.emailVerified = true;
     user.emailVerificationToken = "";
     user.emailVerificationExpires = null;
@@ -199,8 +204,7 @@ router.get("/verify-email", async (req, res) => {
 
     return res.json({
       ok: true,
-      message:
-        "Email verificado correctamente. Tu cuenta será revisada por un administrador.",
+      message: "Email verificado correctamente. Tu cuenta será revisada por un administrador.",
     });
   } catch (err) {
     console.error("Error verify-email:", err);
@@ -222,17 +226,11 @@ router.post("/resend-verification", async (req, res) => {
     const user = await User.findOne({ email: emailLower });
 
     if (!user) {
-      return res.json({
-        ok: true,
-        message: "Si el email existe, te enviamos un correo.",
-      });
+      return res.json({ ok: true, message: "Si el email existe, te enviamos un correo." });
     }
 
     if (user.emailVerified) {
-      return res.json({
-        ok: true,
-        message: "Tu email ya está verificado.",
-      });
+      return res.json({ ok: true, message: "Tu email ya está verificado." });
     }
 
     const rawToken = crypto.randomBytes(32).toString("hex");
@@ -247,15 +245,10 @@ router.post("/resend-verification", async (req, res) => {
 
     await sendVerifyEmail(user, verifyUrl);
 
-    return res.json({
-      ok: true,
-      message: "Te reenviamos el correo de verificación.",
-    });
+    return res.json({ ok: true, message: "Te reenviamos el correo de verificación." });
   } catch (err) {
     console.error("Error resend-verification:", err);
-    return res.status(500).json({
-      error: "No se pudo reenviar el correo.",
-    });
+    return res.status(500).json({ error: "No se pudo reenviar el correo." });
   }
 });
 

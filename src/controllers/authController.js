@@ -1,4 +1,3 @@
-// backend/src/controllers/authController.js
 import bcrypt from "bcryptjs";
 import jwt from "jsonwebtoken";
 import User from "../models/User.js";
@@ -11,6 +10,7 @@ function serializeUser(u) {
   return {
     id: json._id?.toString?.() || json.id,
     name: json.name || "",
+    lastName: json.lastName || "",
     email: json.email || "",
     phone: json.phone || "",
     dni: json.dni ?? "",
@@ -23,6 +23,8 @@ function serializeUser(u) {
     mustChangePassword: !!json.mustChangePassword,
     aptoPath: json.aptoPath || "",
     aptoStatus: json.aptoStatus || "",
+    emailVerified: !!json.emailVerified,
+    approvalStatus: json.approvalStatus || "pending",
     createdAt: json.createdAt || null,
   };
 }
@@ -47,43 +49,35 @@ export async function login(req, res) {
     const { email, password } = req.body || {};
 
     if (!email || !password) {
-      return res
-        .status(400)
-        .json({ error: "Email y contraseña son obligatorios." });
+      return res.status(400).json({ error: "Email y contraseña son obligatorios." });
     }
 
-    const user = await User.findOne({ email: email.toLowerCase() });
-    if (!user) {
-      return res
-        .status(401)
-        .json({ error: "Email o contraseña incorrectos." });
-    }
+    const user = await User.findOne({ email: String(email).toLowerCase() });
+    if (!user) return res.status(401).json({ error: "Email o contraseña incorrectos." });
 
     const match = await bcrypt.compare(password, user.password);
-    if (!match) {
-      return res
-        .status(401)
-        .json({ error: "Email o contraseña incorrectos." });
-    }
+    if (!match) return res.status(401).json({ error: "Email o contraseña incorrectos." });
 
+    // mismo orden que auth.js
+    if (!user.emailVerified) {
+      return res.status(403).json({ error: "Tenés que verificar tu email antes de iniciar sesión." });
+    }
+    if (user.approvalStatus === "pending") {
+      return res.status(403).json({ error: "Tu cuenta está pendiente de aprobación por el administrador." });
+    }
+    if (user.approvalStatus === "rejected") {
+      return res.status(403).json({ error: "Tu cuenta fue rechazada. Contactá al administrador." });
+    }
     if (user.suspended) {
-      return res.status(403).json({
-        error:
-          "Tu usuario está suspendido. Contactá con el administrador para más información.",
-      });
+      return res.status(403).json({ error: "Cuenta suspendida. Contactá al administrador." });
     }
 
     const token = signToken(user);
 
-    return res.json({
-      token,
-      user: serializeUser(user),
-    });
+    return res.json({ token, user: serializeUser(user) });
   } catch (err) {
     console.error("Error en POST /auth/login:", err);
-    return res
-      .status(500)
-      .json({ error: "Error interno en el login. Revisá el servidor." });
+    return res.status(500).json({ error: "Error interno en el login. Revisá el servidor." });
   }
 }
 
@@ -92,14 +86,10 @@ export async function login(req, res) {
 // ==========================
 export async function me(req, res) {
   try {
-    if (!req.user) {
-      return res.status(401).json({ error: "No autorizado." });
-    }
+    if (!req.user) return res.status(401).json({ error: "No autorizado." });
 
     const fresh = await User.findById(req.user._id);
-    if (!fresh) {
-      return res.status(401).json({ error: "Usuario no encontrado." });
-    }
+    if (!fresh) return res.status(401).json({ error: "Usuario no encontrado." });
 
     return res.json(serializeUser(fresh));
   } catch (err) {
@@ -110,35 +100,25 @@ export async function me(req, res) {
 
 // ==========================
 //  POST /auth/change-password
-//  (acepta oldPassword o currentPassword)
 // ==========================
 export async function changePassword(req, res) {
   try {
-    if (!req.user) {
-      return res.status(401).json({ error: "No autorizado." });
-    }
+    if (!req.user) return res.status(401).json({ error: "No autorizado." });
 
     const { oldPassword, currentPassword, newPassword } = req.body || {};
     const current = oldPassword || currentPassword;
 
     if (!current || !newPassword) {
       return res.status(400).json({
-        error:
-          "Debés enviar la contraseña actual (oldPassword/currentPassword) y la nueva (newPassword).",
+        error: "Debés enviar la contraseña actual (oldPassword/currentPassword) y la nueva (newPassword).",
       });
     }
 
     const user = await User.findById(req.user._id);
-    if (!user) {
-      return res.status(404).json({ error: "Usuario no encontrado." });
-    }
+    if (!user) return res.status(404).json({ error: "Usuario no encontrado." });
 
     const match = await bcrypt.compare(current, user.password);
-    if (!match) {
-      return res
-        .status(401)
-        .json({ error: "La contraseña actual no es correcta." });
-    }
+    if (!match) return res.status(401).json({ error: "La contraseña actual no es correcta." });
 
     const hashed = await bcrypt.hash(newPassword, 10);
     user.password = hashed;
@@ -148,38 +128,26 @@ export async function changePassword(req, res) {
     return res.json({ ok: true, message: "Contraseña actualizada correctamente." });
   } catch (err) {
     console.error("Error en POST /auth/change-password:", err);
-    return res
-      .status(500)
-      .json({ error: "Error al cambiar la contraseña." });
+    return res.status(500).json({ error: "Error al cambiar la contraseña." });
   }
 }
 
 // ==========================
 //  POST /auth/force-change-password
-//  (primer login con pass temporal / sin pedir la vieja)
 // ==========================
 export async function forceChangePassword(req, res) {
   try {
-    if (!req.user) {
-      return res.status(401).json({ error: "No autorizado." });
-    }
+    if (!req.user) return res.status(401).json({ error: "No autorizado." });
 
     const { newPassword } = req.body || {};
-    if (!newPassword) {
-      return res
-        .status(400)
-        .json({ error: "Debés enviar la nueva contraseña." });
-    }
+    if (!newPassword) return res.status(400).json({ error: "Debés enviar la nueva contraseña." });
 
     const user = await User.findById(req.user._id);
-    if (!user) {
-      return res.status(404).json({ error: "Usuario no encontrado." });
-    }
+    if (!user) return res.status(404).json({ error: "Usuario no encontrado." });
 
     if (!user.mustChangePassword) {
       return res.status(400).json({
-        error:
-          "Este usuario no requiere restablecer la contraseña de forma obligatoria.",
+        error: "Este usuario no requiere restablecer la contraseña de forma obligatoria.",
       });
     }
 
@@ -198,9 +166,7 @@ export async function forceChangePassword(req, res) {
     });
   } catch (err) {
     console.error("Error en POST /auth/force-change-password:", err);
-    return res
-      .status(500)
-      .json({ error: "Error al restablecer la contraseña." });
+    return res.status(500).json({ error: "Error al restablecer la contraseña." });
   }
 }
 

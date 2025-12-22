@@ -13,8 +13,8 @@ const historySchema = new mongoose.Schema(
 
 const userSchema = new mongoose.Schema(
   {
-    name: { type: String, required: true, trim: true, default: "" },
-    lastName: { type: String, required: true, trim: true, default: "" },
+    name: { type: String, required: true, trim: true },
+    lastName: { type: String, required: true, trim: true },
 
     email: {
       type: String,
@@ -24,7 +24,7 @@ const userSchema = new mongoose.Schema(
       trim: true,
     },
 
-    phone: { type: String, required: true, trim: true, default: "" },
+    phone: { type: String, required: true, trim: true },
 
     dni: { type: String, default: "" },
     age: { type: Number, default: null },

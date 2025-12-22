@@ -111,6 +111,7 @@ router.post("/", adminOnly, async (req, res) => {
   try {
     const {
       name,
+      lastName,
       email,
       phone,
       dni,
@@ -122,8 +123,15 @@ router.post("/", adminOnly, async (req, res) => {
       password,
     } = req.body || {};
 
-    if (!email) {
-      return res.status(400).json({ error: "El email es obligatorio." });
+    const n = String(name || "").trim();
+    const ln = String(lastName || "").trim();
+    const em = String(email || "").trim().toLowerCase();
+    const ph = String(phone || "").trim();
+
+    if (!n || !ln || !em || !ph) {
+      return res.status(400).json({
+        error: "Nombre, apellido, teléfono y email son obligatorios.",
+      });
     }
 
     const plainPassword =
@@ -134,9 +142,10 @@ router.post("/", adminOnly, async (req, res) => {
     const hashed = await bcrypt.hash(plainPassword, 10);
 
     const user = await User.create({
-      name: name || "",
-      email: email.toLowerCase(),
-      phone: phone || "",
+      name: n,
+      lastName: ln,
+      email: em,
+      phone: ph,
       dni: dni || "",
       age: age ?? null,
       weight: weight ?? null,
@@ -145,7 +154,12 @@ router.post("/", adminOnly, async (req, res) => {
       role: role || "client",
       password: hashed,
       mustChangePassword: true,
+
+      // creados por admin: habilitados
       suspended: false,
+      emailVerified: true,
+      approvalStatus: "approved",
+
       aptoPath: "",
       aptoStatus: "",
     });
@@ -159,9 +173,7 @@ router.post("/", adminOnly, async (req, res) => {
     console.error("Error en POST /users:", err);
 
     if (err.code === 11000 && err.keyPattern?.email) {
-      return res
-        .status(400)
-        .json({ error: "Ya existe un usuario con ese email." });
+      return res.status(400).json({ error: "Ya existe un usuario con ese email." });
     }
 
     res.status(500).json({ error: "Error al crear usuario." });
