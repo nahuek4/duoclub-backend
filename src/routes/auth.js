@@ -1,3 +1,4 @@
+// backend/src/routes/auth.js
 import express from "express";
 import bcrypt from "bcryptjs";
 import jwt from "jsonwebtoken";
@@ -21,7 +22,7 @@ function signToken(user) {
 function serializeUser(u) {
   if (!u) return null;
 
-  const m = u.membership || null;
+  const m = u.membership || {};
 
   return {
     id: u._id.toString(),
@@ -38,22 +39,14 @@ function serializeUser(u) {
     approvalStatus: u.approvalStatus || "pending",
     createdAt: u.createdAt || null,
 
-    // ✅ NECESARIO para que el front sepa si sos Plus
-    membership: m
-      ? {
-          tier: m.tier || "basic",
-          activeUntil: m.activeUntil || null,
-          cancelHours: Number(m.cancelHours ?? 24),
-          cancelsLeft: Number(m.cancelsLeft ?? 1),
-          creditsExpireDays: Number(m.creditsExpireDays ?? 30),
-        }
-      : {
-          tier: "basic",
-          activeUntil: null,
-          cancelHours: 24,
-          cancelsLeft: 1,
-          creditsExpireDays: 30,
-        },
+    // ✅ CLAVE: enviar membresía para que el front calcule PLUS
+    membership: {
+      tier: String(m.tier || "basic").toLowerCase(),
+      activeUntil: m.activeUntil || null,
+      cancelHours: Number(m.cancelHours || 24),
+      cancelsLeft: Number(m.cancelsLeft || 1),
+      creditsExpireDays: Number(m.creditsExpireDays || 30),
+    },
   };
 }
 
@@ -66,7 +59,6 @@ function normText(v) {
 }
 
 function normPhone(v) {
-  // deja +, números, espacios y algunos símbolos comunes
   return String(v || "").trim().replace(/[^\d+\s()-]/g, "");
 }
 
@@ -86,29 +78,20 @@ router.post("/login", async (req, res) => {
     const match = await bcrypt.compare(password, user.password);
     if (!match) return res.status(401).json({ error: "Email o contraseña incorrectos." });
 
-    // 🔒 orden correcto de validaciones
     if (!user.emailVerified) {
-      return res.status(403).json({
-        error: "Tenés que verificar tu email antes de iniciar sesión.",
-      });
+      return res.status(403).json({ error: "Tenés que verificar tu email antes de iniciar sesión." });
     }
 
     if (user.approvalStatus === "pending") {
-      return res.status(403).json({
-        error: "Tu cuenta está pendiente de aprobación por el administrador.",
-      });
+      return res.status(403).json({ error: "Tu cuenta está pendiente de aprobación por el administrador." });
     }
 
     if (user.approvalStatus === "rejected") {
-      return res.status(403).json({
-        error: "Tu cuenta fue rechazada. Contactá al administrador.",
-      });
+      return res.status(403).json({ error: "Tu cuenta fue rechazada. Contactá al administrador." });
     }
 
     if (user.suspended) {
-      return res.status(403).json({
-        error: "Cuenta suspendida. Contactá al administrador.",
-      });
+      return res.status(403).json({ error: "Cuenta suspendida. Contactá al administrador." });
     }
 
     const token = signToken(user);
@@ -138,16 +121,12 @@ router.post("/register", async (req, res) => {
     }
 
     if (String(password).length < 8) {
-      return res.status(400).json({
-        error: "La contraseña debe tener al menos 8 caracteres.",
-      });
+      return res.status(400).json({ error: "La contraseña debe tener al menos 8 caracteres." });
     }
 
     const exists = await User.findOne({ email: em });
     if (exists) {
-      return res.status(409).json({
-        error: "Ya existe una cuenta con ese email.",
-      });
+      return res.status(409).json({ error: "Ya existe una cuenta con ese email." });
     }
 
     const hashedPass = await bcrypt.hash(password, 10);
@@ -159,25 +138,18 @@ router.post("/register", async (req, res) => {
       name: n,
       lastName: ln,
       phone: ph,
-
       email: em,
       password: hashedPass,
       role: "client",
-
-      // regla: hasta que admin apruebe, bloqueado
       suspended: true,
       approvalStatus: "pending",
       emailVerified: false,
-
       emailVerificationToken: tokenHash,
       emailVerificationExpires: new Date(Date.now() + 24 * 60 * 60 * 1000),
-
-      // membership default queda por schema (basic)
     });
 
     const frontend = process.env.FRONTEND_URL || "https://duoclub.ar";
     const verifyUrl = `${frontend}/verificar-email?token=${rawToken}`;
-
     await sendVerifyEmail(user, verifyUrl);
 
     return res.status(201).json({
@@ -199,9 +171,7 @@ router.post("/register", async (req, res) => {
 router.get("/verify-email", async (req, res) => {
   try {
     const rawToken = String(req.query.token || "").trim();
-    if (!rawToken) {
-      return res.status(400).json({ error: "Token inválido." });
-    }
+    if (!rawToken) return res.status(400).json({ error: "Token inválido." });
 
     const tokenHash = sha256(rawToken);
 
@@ -238,19 +208,13 @@ router.post("/resend-verification", async (req, res) => {
   try {
     const { email } = req.body || {};
     const emailLower = String(email || "").toLowerCase().trim();
-    if (!emailLower) {
-      return res.status(400).json({ error: "Email requerido." });
-    }
+    if (!emailLower) return res.status(400).json({ error: "Email requerido." });
 
     const user = await User.findOne({ email: emailLower });
 
-    if (!user) {
-      return res.json({ ok: true, message: "Si el email existe, te enviamos un correo." });
-    }
+    if (!user) return res.json({ ok: true, message: "Si el email existe, te enviamos un correo." });
 
-    if (user.emailVerified) {
-      return res.json({ ok: true, message: "Tu email ya está verificado." });
-    }
+    if (user.emailVerified) return res.json({ ok: true, message: "Tu email ya está verificado." });
 
     const rawToken = crypto.randomBytes(32).toString("hex");
     const tokenHash = sha256(rawToken);
@@ -277,9 +241,7 @@ router.post("/resend-verification", async (req, res) => {
 router.get("/me", protect, async (req, res) => {
   try {
     const user = await User.findById(req.user._id);
-    if (!user) {
-      return res.status(401).json({ error: "Usuario no encontrado." });
-    }
+    if (!user) return res.status(401).json({ error: "Usuario no encontrado." });
     return res.json(serializeUser(user));
   } catch (err) {
     console.error("Error en GET /auth/me:", err);
