@@ -57,9 +57,19 @@ function addOneMonthExact(d) {
   return next;
 }
 
+/* =========================
+   ✅ Membresía: plus ACTIVO (tier + activeUntil)
+========================= */
+function isPlusActive(user) {
+  const m = user?.membership || {};
+  if (String(m.tier) !== "plus") return false;
+  if (!m.activeUntil) return false;
+  return new Date(m.activeUntil) > new Date();
+}
+
 function getMonthlyCancelLimit(user) {
-  const tier = String(user?.membership?.tier || "basic");
-  return tier === "plus" ? 2 : 1;
+  // ✅ POR ACTIVIDAD, no solo tier
+  return isPlusActive(user) ? 2 : 1;
 }
 
 // ✅ resetea cancelsLeft si empezó un nuevo período mensual
@@ -88,33 +98,31 @@ function ensureMonthlyCancels(user) {
     return;
   }
 
-  // si ya estaba, aseguramos que no supere límite (por cambios de plan)
+  // ✅ clamp por si cambió de plan / venció
   const current = Number(user.membership.cancelsLeft ?? limit);
-  user.membership.cancelsLeft = Math.min(current, limit);
+  user.membership.cancelsLeft = Math.min(Math.max(current, 0), limit);
 }
-
 
 function getMembershipEffective(user) {
   const m = user?.membership || {};
-  const now = nowDate();
-
-  const plusActive =
-    m.tier === "plus" && m.activeUntil && new Date(m.activeUntil) > now;
+  const plusActive = isPlusActive(user);
 
   if (plusActive) {
     return {
       tier: "plus",
       cancelHours: Number(m.cancelHours || 12),
-      cancelsLeft: Number(m.cancelsLeft ?? 2),
+      // ✅ clamp max 2
+      cancelsLeft: Math.min(Math.max(Number(m.cancelsLeft ?? 2), 0), 2),
       creditsExpireDays: Number(m.creditsExpireDays || 40),
       activeUntil: m.activeUntil,
     };
   }
 
+  // ✅ BASIC: clamp max 1 aunque haya quedado 2 en DB
   return {
     tier: "basic",
     cancelHours: 24,
-    cancelsLeft: Number(m.cancelsLeft ?? 1),
+    cancelsLeft: Math.min(Math.max(Number(m.cancelsLeft ?? 1), 0), 1),
     creditsExpireDays: 30,
     activeUntil: null,
   };
@@ -381,7 +389,7 @@ router.post("/", async (req, res) => {
     let usedLotExp = null;
 
     if (!isAdmin) {
-      const sk = serviceToKey(service); // 👈 EP/RF/AR/RA/NUT
+      const sk = serviceToKey(service); // EP/RF/AR/RA/NUT
 
       const lot = pickLotToConsume(user, sk);
       if (!lot) {
@@ -476,14 +484,17 @@ router.patch("/:id/cancel", async (req, res) => {
     if (!isAdmin) {
       const mem = getMembershipEffective(user);
 
-      // si plus venció, forzamos basic defaults
+      // si plus venció, forzamos basic defaults (normaliza DB)
       if (mem.tier === "basic") {
         user.membership = user.membership || {};
         user.membership.tier = "basic";
         user.membership.activeUntil = null;
         user.membership.cancelHours = 24;
         user.membership.creditsExpireDays = 30;
-        if (user.membership.cancelsLeft == null) user.membership.cancelsLeft = 1;
+
+        // clamp a 1 en DB también
+        const cur = Number(user.membership.cancelsLeft ?? 1);
+        user.membership.cancelsLeft = Math.min(Math.max(cur, 0), 1);
       }
 
       const cancelHours = Number(mem.cancelHours || 24);
@@ -493,9 +504,12 @@ router.patch("/:id/cancel", async (req, res) => {
         });
       }
 
-     ensureMonthlyCancels(user);
+      ensureMonthlyCancels(user);
 
-      const left = Number(user.membership?.cancelsLeft ?? (mem.tier === "plus" ? 2 : 1));
+      const limitNow = getMonthlyCancelLimit(user);
+      const leftRaw = Number(user.membership?.cancelsLeft ?? limitNow);
+      const left = Math.min(Math.max(leftRaw, 0), limitNow);
+
       if (left <= 0) {
         return res.status(400).json({
           error: "No tenés cancelaciones disponibles en este período.",
@@ -504,8 +518,6 @@ router.patch("/:id/cancel", async (req, res) => {
 
       user.membership.cancelsLeft = left - 1;
       user.cancelationsUsed = Number(user.cancelationsUsed || 0) + 1;
-
-      user.membership.cancelsLeft = left - 1;
     }
 
     // cancelar turno
@@ -532,7 +544,7 @@ router.patch("/:id/cancel", async (req, res) => {
 
         user.creditLots = user.creditLots || [];
         user.creditLots.push({
-          serviceKey: sk, // ✅ devolvemos al mismo servicio
+          serviceKey: sk,
           amount: 1,
           remaining: 1,
           expiresAt: exp,
