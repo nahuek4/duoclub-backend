@@ -189,6 +189,37 @@ router.post("/register", async (req, res) => {
   }
 });
 
+
+router.post("/force-change-password", protect, async (req, res) => {
+  try {
+    const { newPassword } = req.body || {};
+    const np = String(newPassword || "").trim();
+
+    if (!np) {
+      return res.status(400).json({ error: "Ingresá una contraseña nueva." });
+    }
+    if (np.length < 8) {
+      return res.status(400).json({
+        error: "La contraseña debe tener al menos 8 caracteres.",
+      });
+    }
+
+    const user = await User.findById(req.user._id);
+    if (!user) return res.status(404).json({ error: "Usuario no encontrado." });
+
+    // ✅ Este archivo YA usa bcrypt en login/register, así que acá hasheamos igual
+    user.password = await bcrypt.hash(np, 10);
+    user.mustChangePassword = false;
+
+    await user.save();
+
+    return res.json({ ok: true });
+  } catch (err) {
+    console.error("Error en POST /auth/force-change-password:", err);
+    return res.status(500).json({ error: "No se pudo actualizar la contraseña." });
+  }
+});
+
 /* ============================================
    GET /auth/verify-email
    ============================================ */
