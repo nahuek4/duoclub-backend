@@ -68,7 +68,6 @@ function isPlusActive(user) {
 }
 
 function getMonthlyCancelLimit(user) {
-  // ✅ POR ACTIVIDAD, no solo tier
   return isPlusActive(user) ? 2 : 1;
 }
 
@@ -98,7 +97,6 @@ function ensureMonthlyCancels(user) {
     return;
   }
 
-  // ✅ clamp por si cambió de plan / venció
   const current = Number(user.membership.cancelsLeft ?? limit);
   user.membership.cancelsLeft = Math.min(Math.max(current, 0), limit);
 }
@@ -111,14 +109,12 @@ function getMembershipEffective(user) {
     return {
       tier: "plus",
       cancelHours: Number(m.cancelHours || 12),
-      // ✅ clamp max 2
       cancelsLeft: Math.min(Math.max(Number(m.cancelsLeft ?? 2), 0), 2),
       creditsExpireDays: Number(m.creditsExpireDays || 40),
       activeUntil: m.activeUntil,
     };
   }
 
-  // ✅ BASIC: clamp max 1 aunque haya quedado 2 en DB
   return {
     tier: "basic",
     cancelHours: 24,
@@ -138,11 +134,10 @@ function recalcUserCredits(user) {
     return acc + Number(lot.remaining || 0);
   }, 0);
 
-  user.credits = sum; // cache para UI
+  user.credits = sum;
 }
 
 function normalizeLotServiceKey(lot) {
-  // Compatibilidad con lotes viejos sin serviceKey => EP
   const raw = lot?.serviceKey;
   const sk = String(raw || "").toUpperCase().trim();
   return sk || "EP";
@@ -159,7 +154,6 @@ function pickLotToConsume(user, wantedServiceKey) {
     .filter((l) => !l.expiresAt || new Date(l.expiresAt) > now)
     .filter((l) => {
       const lk = normalizeLotServiceKey(l);
-      // "ALL" sirve para cualquier servicio
       return lk === "ALL" || lk === want;
     })
     .sort((a, b) => {
@@ -219,13 +213,29 @@ function requiresApto(user) {
   return days > 20 && !user.aptoPath;
 }
 
+function isSaturday(dateStr) {
+  const [y, m, d] = String(dateStr || "").split("-").map(Number);
+  if (!y || !m || !d) return false;
+  const dt = new Date(y, m - 1, d);
+  return dt.getDay() === 6;
+}
+
+/**
+ * ✅ Match con tu frontend:
+ * - mañana: 07..12
+ * - tarde: 14..17
+ * - noche: 18..19
+ * - bloque 13..14 fuera
+ * - 20 no se usa
+ */
 function getTurnoFromTime(time) {
   if (!time) return "";
   const [hStr] = time.split(":");
   const h = Number(hStr);
+
   if (h >= 7 && h < 13) return "maniana";
   if (h >= 14 && h < 18) return "tarde";
-  if (h >= 18 && h <= 20) return "noche";
+  if (h >= 18 && h < 20) return "noche";
   return "";
 }
 
@@ -237,7 +247,9 @@ function buildSlotDate(dateStr, timeStr) {
   return new Date(year, month - 1, day, hour || 0, minute || 0);
 }
 
-// Equilibrador
+// =========================
+// ✅ Equilibrador
+// =========================
 const TOTAL_CAP = 7;
 
 const EP_KEY = "Entrenamiento Personal";
@@ -248,8 +260,8 @@ const OTHER_SERVICES = new Set([
 ]);
 
 function calcEpCap({ hoursToStart, otherReservedCount }) {
-  const base = hoursToStart > 12 ? 4 : 7;
-  const dynamic = TOTAL_CAP - otherReservedCount;
+  const base = hoursToStart > 12 ? 4 : 7; // >12hs => máx 4, <=12hs => hasta 7
+  const dynamic = TOTAL_CAP - otherReservedCount; // no pisa otros servicios
   return Math.max(0, Math.min(base, dynamic));
 }
 
@@ -294,23 +306,43 @@ router.post("/", async (req, res) => {
     }
 
     const turno = getTurnoFromTime(time);
-    if (!turno)
+    if (!turno) {
       return res
         .status(400)
         .json({ error: "Horario fuera del rango permitido." });
+    }
+
+    // ✅ Sábado: solo 07..12 (mañana)
+    if (isSaturday(date) && turno !== "maniana") {
+      return res.status(400).json({
+        error: "Los sábados solo se puede reservar de 07:00 a 12:00.",
+      });
+    }
 
     const slotDate = buildSlotDate(date, time);
-    if (!slotDate)
+    if (!slotDate) {
       return res.status(400).json({ error: "Fecha/hora inválida." });
+    }
 
     const diffMs = slotDate.getTime() - Date.now();
     const hoursToStart = diffMs / (1000 * 60 * 60);
-    if (hoursToStart < 0)
+    if (hoursToStart < 0) {
       return res
         .status(400)
         .json({ error: "No se puede reservar un turno pasado." });
+    }
 
     const isEpService = service === EP_KEY;
+    const isOtherService = OTHER_SERVICES.has(service);
+
+    // ✅ tarde: SOLO EP (regla dura)
+    if (turno === "tarde" && !isEpService) {
+      return res.status(409).json({
+        error: "En el turno tarde solo está disponible Entrenamiento Personal.",
+      });
+    }
+
+    // si llega un servicio raro, lo tratamos como “otro” (1 cupo) pero igual se controla total
     const treatAsOther = !isEpService;
 
     const userId = req.user._id || req.user.id;
@@ -355,8 +387,23 @@ router.post("/", async (req, res) => {
     }).lean();
 
     const totalCount = existingAtSlot.length;
+
     const epCount = existingAtSlot.filter((a) => a.service === EP_KEY).length;
-    const otherReservedCount = totalCount - epCount;
+    const rfTaken = existingAtSlot.some(
+      (a) => a.service === "Reeducacion Funcional"
+    )
+      ? 1
+      : 0;
+    const arTaken = existingAtSlot.some((a) => a.service === "Alto Rendimiento")
+      ? 1
+      : 0;
+    const raTaken = existingAtSlot.some(
+      (a) => a.service === "Rehabilitacion Activa"
+    )
+      ? 1
+      : 0;
+
+    const otherReservedCount = rfTaken + arTaken + raTaken;
 
     if (totalCount >= TOTAL_CAP) {
       return res.status(409).json({
@@ -364,14 +411,17 @@ router.post("/", async (req, res) => {
       });
     }
 
+    // ✅ Otros servicios: máximo 1 por servicio por hora
     if (treatAsOther) {
       const alreadyService = existingAtSlot.some((a) => a.service === service);
-      if (alreadyService)
+      if (alreadyService) {
         return res
           .status(409)
           .json({ error: "Ese servicio ya está ocupado en este horario." });
+      }
     }
 
+    // ✅ Entrenamiento personal: 4 antes de 12hs, y dentro de 12hs puede ocupar huecos hasta 7
     if (isEpService) {
       const epCap = calcEpCap({ hoursToStart, otherReservedCount });
       if (epCount >= epCap) {
@@ -437,12 +487,15 @@ router.post("/", async (req, res) => {
     res.status(201).json(serializeAppointment(populated));
   } catch (err) {
     console.error("Error en POST /appointments:", err);
+
+    // ✅ si salta índice único (por ejemplo RF/AR/RA duplicado, o user duplicado)
     if (err?.code === 11000) {
       return res.status(409).json({
         error:
-          "Ese turno ya fue reservado (conflicto). Actualizá y probá de nuevo.",
+          "Conflicto: ese turno o ese servicio ya fue reservado. Actualizá y probá de nuevo.",
       });
     }
+
     res.status(500).json({ error: "Error al crear el turno." });
   }
 });
@@ -492,7 +545,6 @@ router.patch("/:id/cancel", async (req, res) => {
         user.membership.cancelHours = 24;
         user.membership.creditsExpireDays = 30;
 
-        // clamp a 1 en DB también
         const cur = Number(user.membership.cancelsLeft ?? 1);
         user.membership.cancelsLeft = Math.min(Math.max(cur, 0), 1);
       }

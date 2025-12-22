@@ -1,6 +1,8 @@
 // backend/src/models/Appointment.js
 import mongoose from "mongoose";
 
+const EP_KEY = "Entrenamiento Personal";
+
 const appointmentSchema = new mongoose.Schema(
   {
     user: {
@@ -34,10 +36,25 @@ const appointmentSchema = new mongoose.Schema(
   { timestamps: true }
 );
 
-// Evita duplicado por día+hora+servicio (solo reserved)
+/**
+ * ✅ IMPORTANTE:
+ * Antes tenías un índice único por (date,time,service,status) que
+ * ROMPE Entrenamiento Personal, porque EP necesita múltiples cupos
+ * en el mismo horario con el mismo "service".
+ *
+ * Solución:
+ * - Mantener “1 por servicio” SOLO para los servicios NO EP
+ * - Permitir múltiples EP
+ */
 appointmentSchema.index(
   { date: 1, time: 1, service: 1, status: 1 },
-  { unique: true, partialFilterExpression: { status: "reserved" } }
+  {
+    unique: true,
+    partialFilterExpression: {
+      status: "reserved",
+      service: { $ne: EP_KEY },
+    },
+  }
 );
 
 // Evita que el mismo usuario reserve 2 veces el mismo horario
