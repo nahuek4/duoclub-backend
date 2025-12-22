@@ -22,13 +22,13 @@ const appointmentSchema = new mongoose.Schema(
 
     coach: { type: String, default: "" },
 
-    // ✅ NUEVO: de qué lote se descontó el crédito (para devolverlo al cancelar)
+    // ✅ de qué lote se descontó el crédito (para devolverlo al cancelar)
     creditLotId: {
       type: mongoose.Schema.Types.ObjectId,
       default: null,
     },
 
-    // ✅ NUEVO: vencimiento del crédito usado (debug/UI)
+    // ✅ vencimiento del crédito usado (debug/UI)
     creditExpiresAt: { type: Date, default: null },
   },
   { timestamps: true }

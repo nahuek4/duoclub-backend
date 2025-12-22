@@ -1,3 +1,4 @@
+// backend/src/models/User.js
 import mongoose from "mongoose";
 
 const historySchema = new mongoose.Schema(
@@ -9,6 +10,26 @@ const historySchema = new mongoose.Schema(
     createdAt: { type: Date, default: Date.now },
   },
   { _id: false }
+);
+
+const creditLotSchema = new mongoose.Schema(
+  {
+    // ✅ NUEVO: servicio asociado al lote
+    // EP/RF/AR/RA/NUT o ALL (si algún día vendés créditos “multi-servicio”)
+    serviceKey: { type: String, default: "EP", uppercase: true, trim: true },
+
+    amount: { type: Number, default: 0 },
+    remaining: { type: Number, default: 0 },
+    expiresAt: { type: Date, default: null },
+    source: { type: String, default: "" },
+    orderId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "Order",
+      default: null,
+    },
+    createdAt: { type: Date, default: Date.now },
+  },
+  { _id: true }
 );
 
 const userSchema = new mongoose.Schema(
@@ -67,20 +88,7 @@ const userSchema = new mongoose.Schema(
     },
 
     // ===== Créditos por lote =====
-    creditLots: [
-      {
-        amount: { type: Number, default: 0 },
-        remaining: { type: Number, default: 0 },
-        expiresAt: { type: Date, default: null },
-        source: { type: String, default: "" },
-        orderId: {
-          type: mongoose.Schema.Types.ObjectId,
-          ref: "Order",
-          default: null,
-        },
-        createdAt: { type: Date, default: Date.now },
-      },
-    ],
+    creditLots: { type: [creditLotSchema], default: [] },
 
     cancelationsUsed: { type: Number, default: 0 },
     cancelationsPeriodStart: { type: Date, default: null },

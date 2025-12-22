@@ -48,12 +48,24 @@ function ensureBasicIfExpired(user) {
 
 function activatePlus(user) {
   const now = new Date();
-  const until = new Date(now);
-  until.setDate(until.getDate() + 30);
 
   user.membership = user.membership || {};
+
+  // si ya estaba activo, extendemos desde el activeUntil, si no desde hoy
+  const base =
+    user.membership.tier === "plus" &&
+    user.membership.activeUntil &&
+    new Date(user.membership.activeUntil) > now
+      ? new Date(user.membership.activeUntil)
+      : now;
+
+  const until = new Date(base);
+  until.setDate(until.getDate() + 30);
+
   user.membership.tier = "plus";
   user.membership.activeUntil = until;
+
+  // reglas Plus
   user.membership.cancelHours = 12;
   user.membership.cancelsLeft = 2;
   user.membership.creditsExpireDays = 40;
@@ -70,17 +82,26 @@ function recalcCreditsCache(user) {
   user.credits = sum;
 }
 
-function addCreditLot(user, { amount, source, orderId }) {
+function addCreditLot(user, { amount, serviceKey, source, orderId }) {
   const now = new Date();
   ensureBasicIfExpired(user);
 
-  const expireDays = isPlusActive(user) ? 40 : 30;
+  // si querés que sea configurable por membership:
+  const expireDays =
+    Number(user?.membership?.creditsExpireDays) > 0
+      ? Number(user.membership.creditsExpireDays)
+      : isPlusActive(user)
+      ? 40
+      : 30;
 
   const exp = new Date(now);
   exp.setDate(exp.getDate() + expireDays);
 
+  const sk = String(serviceKey || "EP").toUpperCase().trim();
+
   user.creditLots = user.creditLots || [];
   user.creditLots.push({
+    serviceKey: sk, // ✅ CLAVE PARA REGLA EP/OTROS
     amount: Number(amount || 0),
     remaining: Number(amount || 0),
     expiresAt: exp,
@@ -185,8 +206,6 @@ function resolveMembershipItem() {
 
 /* =========================================================
    ✅ NUEVO: POST /orders/checkout
-   body: { payMethod, items:[{kind, qty, serviceKey, credits, membershipTier}] }
-   Crea 1 sola orden con items[]
 ========================================================= */
 router.post("/checkout", protect, async (req, res) => {
   try {
@@ -223,13 +242,12 @@ router.post("/checkout", protect, async (req, res) => {
           price: base.basePrice * qty,
         });
       } else if (kind === "MEMBERSHIP") {
-        // hoy solo plus
         const base = resolveMembershipItem();
         items.push({
           kind: "MEMBERSHIP",
           membershipTier: "plus",
           label: base.label,
-          qty: 1, // membership no tiene sentido con qty>1
+          qty: 1,
           basePrice: base.basePrice,
           price: base.basePrice,
         });
@@ -238,7 +256,10 @@ router.post("/checkout", protect, async (req, res) => {
       }
     }
 
-    const totalBase = items.reduce((acc, x) => acc + Number(x.basePrice || 0) * (Number(x.qty) || 1), 0);
+    const totalBase = items.reduce(
+      (acc, x) => acc + Number(x.basePrice || 0) * (Number(x.qty) || 1),
+      0
+    );
     const total = items.reduce((acc, x) => acc + Number(x.price || 0), 0);
 
     const order = await Order.create({
@@ -277,14 +298,15 @@ router.post("/checkout", protect, async (req, res) => {
     });
   } catch (err) {
     console.error("POST /orders/checkout", err);
-    return res.status(500).json({ error: err?.message || "Error creando orden." });
+    return res
+      .status(500)
+      .json({ error: err?.message || "Error creando orden." });
   }
 });
 
 /* =========================================================
-   LEGACY: POST /orders (lo dejo funcionando)
+   LEGACY: POST /orders
 ========================================================= */
-// body: { serviceKey, credits, payMethod, plus }
 router.post("/", protect, async (req, res) => {
   try {
     const { serviceKey, credits, payMethod, plus } = req.body || {};
@@ -294,8 +316,10 @@ router.post("/", protect, async (req, res) => {
     const cr = Number(credits);
     const wantsPlus = Boolean(plus);
 
-    if (!sk || !pm || !cr) return res.status(400).json({ error: "Datos incompletos." });
-    if (!["CASH", "MP"].includes(pm)) return res.status(400).json({ error: "Medio de pago inválido." });
+    if (!sk || !pm || !cr)
+      return res.status(400).json({ error: "Datos incompletos." });
+    if (!["CASH", "MP"].includes(pm))
+      return res.status(400).json({ error: "Medio de pago inválido." });
 
     const plan = await PricingPlan.findOne({
       serviceKey: sk,
@@ -323,14 +347,17 @@ router.post("/", protect, async (req, res) => {
       label: plan.label || "",
       status: "pending",
       creditsApplied: false,
+      applied: false, // por consistencia
     });
 
     if (pm === "CASH") {
-      return res.status(201).json({ ok: true, orderId: order._id, status: "pending" });
+      return res
+        .status(201)
+        .json({ ok: true, orderId: order._id, status: "pending" });
     }
 
     const mp = await createMpPreference({
-      order: { ...order.toObject(), total: total }, // fuerza total
+      order: { ...order.toObject(), total: total },
       user: req.user,
     });
 
@@ -344,7 +371,9 @@ router.post("/", protect, async (req, res) => {
     order.mpInitPoint = mp.init_point;
     await order.save();
 
-    return res.status(201).json({ ok: true, init_point: mp.init_point, orderId: order._id });
+    return res
+      .status(201)
+      .json({ ok: true, init_point: mp.init_point, orderId: order._id });
   } catch (err) {
     console.error("POST /orders", err);
     return res.status(500).json({ error: "Error creando orden." });
@@ -353,7 +382,9 @@ router.post("/", protect, async (req, res) => {
 
 // GET /orders/me
 router.get("/me", protect, async (req, res) => {
-  const list = await Order.find({ user: req.user._id }).sort({ createdAt: -1 }).lean();
+  const list = await Order.find({ user: req.user._id })
+    .sort({ createdAt: -1 })
+    .lean();
   res.json(list);
 });
 
@@ -362,14 +393,16 @@ router.get("/me", protect, async (req, res) => {
 ======================= */
 router.get("/", protect, adminOnly, async (req, res) => {
   const list = await Order.find()
-    .populate("user", "name email")
+    .populate("user", "name email role membership credits")
     .sort({ createdAt: -1 })
     .lean();
   res.json(list);
 });
 
-// PATCH /orders/:id/mark-paid (solo CASH)
-// ✅ marca paid + aplica items
+/* =========================================================
+   ✅ PATCH /orders/:id/mark-paid (solo CASH)
+   ✅ marca paid + aplica items/legacy (idempotente)
+========================================================= */
 router.patch("/:id/mark-paid", protect, adminOnly, async (req, res) => {
   try {
     const { id } = req.params;
@@ -383,13 +416,77 @@ router.patch("/:id/mark-paid", protect, adminOnly, async (req, res) => {
 
     const pm = String(order.payMethod || "").toUpperCase();
     if (pm !== "CASH") {
-      return res.status(400).json({ error: "Solo CASH puede marcarse manualmente" });
+      return res
+        .status(400)
+        .json({ error: "Solo CASH puede marcarse manualmente" });
     }
 
     const st = String(order.status || "").toLowerCase();
-    if (st === "paid") return res.json({ ok: true, message: "Ya estaba pagada" });
+    if (st === "paid" && order.applied) {
+      return res.json({ ok: true, message: "Ya estaba pagada y aplicada" });
+    }
 
+    const user = await User.findById(order.user);
+    if (!user) return res.status(404).json({ error: "Usuario no encontrado" });
+
+    // 1) marcar pagada
     order.status = "paid";
+    order.paidAt = order.paidAt || new Date();
+
+    // 2) aplicar una sola vez
+    if (!order.applied) {
+      ensureBasicIfExpired(user);
+
+      const items = Array.isArray(order.items) ? order.items : [];
+
+      const hasItems = items.length > 0;
+
+      if (hasItems) {
+        // === APLICAR ITEMS NUEVOS
+        for (const it of items) {
+          const kind = String(it.kind || "").toUpperCase();
+
+          if (kind === "MEMBERSHIP") {
+            // hoy solo plus
+            activatePlus(user);
+          }
+
+          if (kind === "CREDITS") {
+            const qty = Math.max(1, Number(it.qty) || 1);
+            const credits = Math.max(0, Number(it.credits) || 0);
+            const totalCredits = credits * qty;
+
+            if (totalCredits > 0) {
+              addCreditLot(user, {
+                amount: totalCredits,
+                serviceKey: it.serviceKey || "EP",
+                source: "order",
+                orderId: order._id,
+              });
+            }
+          }
+        }
+      } else {
+        // === APLICAR LEGACY
+        if (order.plusIncluded) {
+          activatePlus(user);
+        }
+
+        const legacyCredits = Math.max(0, Number(order.credits) || 0);
+        if (legacyCredits > 0) {
+          addCreditLot(user, {
+            amount: legacyCredits,
+            serviceKey: order.serviceKey || "EP",
+            source: "order_legacy",
+            orderId: order._id,
+          });
+        }
+      }
+
+      order.applied = true;
+      await user.save();
+    }
+
     await order.save();
 
     return res.json({ ok: true });
