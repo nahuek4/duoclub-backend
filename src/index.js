@@ -123,8 +123,8 @@ app.options("*", (req, res) => {
    ========================= */
 
 const apiLimiter = rateLimit({
-  windowMs: 60 * 1000, // 15 minutos
-  max: 300,
+  windowMs: 15 *60 * 1000, // 15 minutos
+  max: 200,
   standardHeaders: true,
   legacyHeaders: false,
 });
