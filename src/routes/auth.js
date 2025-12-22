@@ -20,6 +20,9 @@ function signToken(user) {
 
 function serializeUser(u) {
   if (!u) return null;
+
+  const m = u.membership || null;
+
   return {
     id: u._id.toString(),
     name: u.name || "",
@@ -34,6 +37,23 @@ function serializeUser(u) {
     emailVerified: !!u.emailVerified,
     approvalStatus: u.approvalStatus || "pending",
     createdAt: u.createdAt || null,
+
+    // ✅ NECESARIO para que el front sepa si sos Plus
+    membership: m
+      ? {
+          tier: m.tier || "basic",
+          activeUntil: m.activeUntil || null,
+          cancelHours: Number(m.cancelHours ?? 24),
+          cancelsLeft: Number(m.cancelsLeft ?? 1),
+          creditsExpireDays: Number(m.creditsExpireDays ?? 30),
+        }
+      : {
+          tier: "basic",
+          activeUntil: null,
+          cancelHours: 24,
+          cancelsLeft: 1,
+          creditsExpireDays: 30,
+        },
   };
 }
 
@@ -151,6 +171,8 @@ router.post("/register", async (req, res) => {
 
       emailVerificationToken: tokenHash,
       emailVerificationExpires: new Date(Date.now() + 24 * 60 * 60 * 1000),
+
+      // membership default queda por schema (basic)
     });
 
     const frontend = process.env.FRONTEND_URL || "https://duoclub.ar";
@@ -164,7 +186,6 @@ router.post("/register", async (req, res) => {
     });
   } catch (err) {
     console.error("Error en /auth/register:", err);
-    // clave duplicada
     if (err?.code === 11000 && err?.keyPattern?.email) {
       return res.status(409).json({ error: "Ya existe una cuenta con ese email." });
     }
@@ -195,11 +216,9 @@ router.get("/verify-email", async (req, res) => {
       });
     }
 
-    // ✅ solo verificamos email
     user.emailVerified = true;
     user.emailVerificationToken = "";
     user.emailVerificationExpires = null;
-
     await user.save();
 
     return res.json({

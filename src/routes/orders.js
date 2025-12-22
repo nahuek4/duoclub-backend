@@ -47,7 +47,7 @@ function ensureBasicIfExpired(user) {
   }
 }
 
-// ✅ NUEVO: suma 30 días sobre activeUntil si todavía está activo, sino sobre hoy
+// ✅ suma 30 días sobre activeUntil si todavía está activo, sino sobre hoy
 function addPlusMonths(user, months = 1) {
   const now = new Date();
   user.membership = user.membership || {};
@@ -67,7 +67,6 @@ function addPlusMonths(user, months = 1) {
   user.membership.creditsExpireDays = 40;
 }
 
-// compat: si querés “comprar DUO+” y también sume, usamos lo mismo
 function activatePlus(user) {
   addPlusMonths(user, 1);
 }
@@ -108,8 +107,6 @@ function addCreditLot(user, { amount, source, orderId, serviceKey }) {
 
 /* =======================
    Aplicar una orden (idempotente)
-   - activa/EXTIENDE plus si viene MEMBERSHIP plus
-   - suma lotes por cada item CREDITS
 ======================= */
 async function applyOrderIfNeeded(order) {
   if (!order) return { ok: false, error: "Orden inválida." };
@@ -123,28 +120,21 @@ async function applyOrderIfNeeded(order) {
 
   const hasItems = Array.isArray(order.items) && order.items.length > 0;
 
-  // 1) membership primero (para que créditos expiren 40 si corresponde)
+  // 1) membership primero
   if (hasItems) {
     const membershipItems = order.items.filter(
       (it) => String(it.kind || "").toUpperCase() === "MEMBERSHIP"
     );
 
     if (membershipItems.length > 0) {
-      // Sumamos meses según qty (y según action)
       let monthsToAdd = 0;
 
       for (const it of membershipItems) {
         const qty = Math.max(1, Number(it.qty) || 1);
         const action = String(it.action || "BUY").toUpperCase();
 
-        // BUY: si no era plus -> activa 1 mes; si ya era plus -> también suma (mejor UX)
-        // EXTEND: siempre suma
-        if (action === "EXTEND") {
-          monthsToAdd += qty;
-        } else {
-          // BUY
-          monthsToAdd += qty;
-        }
+        if (action === "EXTEND") monthsToAdd += qty;
+        else monthsToAdd += qty; // BUY
       }
 
       if (monthsToAdd > 0) addPlusMonths(user, monthsToAdd);
@@ -152,7 +142,6 @@ async function applyOrderIfNeeded(order) {
       ensureBasicIfExpired(user);
     }
   } else {
-    // legacy
     if (order.plusIncluded) activatePlus(user);
     else ensureBasicIfExpired(user);
   }
@@ -177,7 +166,6 @@ async function applyOrderIfNeeded(order) {
       }
     }
   } else {
-    // legacy: credits + serviceKey
     const totalCredits = Math.max(0, Number(order.credits) || 0);
     if (totalCredits > 0) {
       addCreditLot(user, {
@@ -192,7 +180,7 @@ async function applyOrderIfNeeded(order) {
   await user.save();
 
   order.applied = true;
-  order.creditsApplied = true; // legacy compat
+  order.creditsApplied = true;
   await order.save();
 
   return { ok: true };
@@ -208,8 +196,6 @@ async function createMpPreference({ order, user }) {
   }
 
   const FRONT_BASE = process.env.FRONT_BASE_URL || "https://app.duoclub.ar";
-
-  // ✅ si guardamos totalFinal, MercadoPago debe cobrar eso
   const amountToCharge = Number(order.totalFinal ?? order.total ?? order.price ?? 0);
 
   const body = {
@@ -297,9 +283,9 @@ function resolveMembershipItem() {
 
 /* =========================================================
    POST /orders/checkout
-   - Soporta action (BUY/EXTEND) en MEMBERSHIP
-   - Soporta qty en MEMBERSHIP (suma meses)
-   - Aplica 15% off si el usuario YA es PLUS activo (solo sobre CREDITS)
+   - descuento 15% SOLO si YA es PLUS activo (solo sobre CREDITS)
+   - DUO+ siempre full price
+   - ✅ NO devolver orderId al cliente
 ========================================================= */
 router.post("/checkout", protect, async (req, res) => {
   try {
@@ -313,7 +299,6 @@ router.post("/checkout", protect, async (req, res) => {
       return res.status(400).json({ error: "Carrito vacío." });
     }
 
-    // 🔥 importante: detectar PLUS real del usuario (server side)
     const freshUser = await User.findById(req.user._id).lean();
     const plusActiveNow = isPlusActive(freshUser);
 
@@ -336,14 +321,12 @@ router.post("/checkout", protect, async (req, res) => {
           credits: base.credits,
           label: base.label,
           qty,
-          basePrice: base.basePrice, // precio unitario
-          price: base.basePrice * qty, // subtotal
+          basePrice: base.basePrice,
+          price: base.basePrice * qty,
         });
       } else if (kind === "MEMBERSHIP") {
         const base = resolveMembershipItem();
-
-        const action = String(it?.action || "BUY").toUpperCase(); // BUY / EXTEND
-        // Para MEMBERSHIP dejamos qty (meses) (si no querés, ponelo fijo a 1)
+        const action = String(it?.action || "BUY").toUpperCase();
         const monthsQty = Math.max(1, Number(it?.qty) || 1);
 
         items.push({
@@ -352,8 +335,8 @@ router.post("/checkout", protect, async (req, res) => {
           label: base.label,
           action,
           qty: monthsQty,
-          basePrice: base.basePrice, // unitario mensual
-          price: base.basePrice * monthsQty, // subtotal
+          basePrice: base.basePrice,
+          price: base.basePrice * monthsQty,
         });
       } else {
         return res.status(400).json({ error: "Ítem inválido en el carrito." });
@@ -367,8 +350,6 @@ router.post("/checkout", protect, async (req, res) => {
 
     const total = items.reduce((acc, x) => acc + Number(x.price || 0), 0);
 
-    // ✅ descuento PLUS: 15% sobre CREDITS únicamente (seguro)
-    // Si querés que descuente TODO (también membership), cambiá creditsSubtotal -> total.
     const creditsSubtotal = items
       .filter((x) => String(x.kind || "").toUpperCase() === "CREDITS")
       .reduce((acc, x) => acc + Number(x.price || 0), 0);
@@ -384,26 +365,24 @@ router.post("/checkout", protect, async (req, res) => {
       user: req.user._id,
       payMethod: pm,
       items,
-
       totalBase,
       total,
-
       discountPercent,
       discountAmount,
       totalFinal,
-
       status: "pending",
       applied: false,
     });
 
     if (pm === "CASH") {
+      // ✅ sin orderId en respuesta
       return res.status(201).json({
         ok: true,
-        orderId: order._id,
         status: "pending",
         totalFinal,
         discountPercent,
         discountAmount,
+        message: "Pedido generado correctamente. Coordiná el pago con el staff.",
       });
     }
 
@@ -418,10 +397,10 @@ router.post("/checkout", protect, async (req, res) => {
     order.mpInitPoint = mp.init_point;
     await order.save();
 
+    // ✅ sin orderId en respuesta
     return res.status(201).json({
       ok: true,
       init_point: mp.init_point,
-      orderId: order._id,
       totalFinal,
       discountPercent,
       discountAmount,
@@ -434,6 +413,7 @@ router.post("/checkout", protect, async (req, res) => {
 
 /* =========================================================
    LEGACY: POST /orders
+   (lo dejo tal cual; si también querés ocultar orderId acá, decime si se usa)
 ========================================================= */
 router.post("/", protect, async (req, res) => {
   try {
@@ -478,7 +458,7 @@ router.post("/", protect, async (req, res) => {
     });
 
     if (pm === "CASH") {
-      return res.status(201).json({ ok: true, orderId: order._id, status: "pending" });
+      return res.status(201).json({ ok: true, status: "pending" });
     }
 
     const mp = await createMpPreference({
@@ -496,7 +476,7 @@ router.post("/", protect, async (req, res) => {
     order.mpInitPoint = mp.init_point;
     await order.save();
 
-    return res.status(201).json({ ok: true, init_point: mp.init_point, orderId: order._id });
+    return res.status(201).json({ ok: true, init_point: mp.init_point });
   } catch (err) {
     console.error("POST /orders", err);
     return res.status(500).json({ error: "Error creando orden." });
@@ -523,7 +503,6 @@ router.get("/", protect, adminOnly, async (req, res) => {
 });
 
 // PATCH /orders/:id/mark-paid (solo CASH)
-// ✅ marca paid + aplica items (plus + créditos)
 router.patch("/:id/mark-paid", protect, adminOnly, async (req, res) => {
   try {
     const { id } = req.params;
