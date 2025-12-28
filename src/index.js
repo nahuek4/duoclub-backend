@@ -14,6 +14,8 @@ import servicesRoutes from "./routes/services.js";
 import pricingRoutes from "./routes/pricing.js";
 import ordersRoutes from "./routes/orders.js";
 import mpWebhookRoutes from "./routes/mpWebhook.js";
+import admissionRoutes from "./routes/admission.js";
+
 
 
 dotenv.config();
@@ -172,6 +174,8 @@ app.use("/orders", ordersRoutes);
 
 // webhook MP (NO protect)
 app.use("/payments", mpWebhookRoutes);
+
+app.use("/admission", admissionRoutes);
 
 
 /* =========================
