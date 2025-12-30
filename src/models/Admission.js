@@ -2,62 +2,81 @@ import mongoose from "mongoose";
 
 const admissionSchema = new mongoose.Schema(
   {
-    publicId: { type: String, required: true, unique: true, index: true },
+    // ID público (para compartir / debug)
+    publicId: {
+      type: String,
+      required: true,
+      unique: true,
+      index: true,
+    },
 
+    // Estado de pasos
     step1Completed: { type: Boolean, default: false },
     step2Completed: { type: Boolean, default: false },
 
+    // ===============================
+    // STEP 1 (Formulario inicial)
+    // ===============================
     step1: {
-      fullName: { type: String, default: "" },
-      birthDay: { type: String, default: "" },
-      birthMonth: { type: String, default: "" },
-      birthYear: { type: String, default: "" },
-      height: { type: String, default: "" },
-      weight: { type: String, default: "" },
-      city: { type: String, default: "" },
-      cityOther: { type: String, default: "" },
-      phone: { type: String, default: "" },
-      email: { type: String, default: "" },
+      fullName: String,
+      birthDay: String,
+      birthMonth: String,
+      birthYear: String,
+      height: String,
+      weight: String,
+      city: String,
+      cityOther: String,
+      phone: String,
+      email: String,
 
-      fitnessLevel: { type: String, default: "" },
-      hasContraindication: { type: String, default: "" },
-      contraindicationDetail: { type: String, default: "" },
-      lastSupervisedTraining: { type: String, default: "" },
-      lastMedicalExam: { type: String, default: "" },
-      hasPain: { type: String, default: "" },
-      hasCondition: { type: String, default: "" },
-      conditionDetail: { type: String, default: "" },
-      hadInjuryLastYear: { type: String, default: "" },
-      injuryDetail: { type: String, default: "" },
+      fitnessLevel: String,
+      hasContraindication: String,
+      contraindicationDetail: String,
+      lastSupervisedTraining: String,
+      lastMedicalExam: String,
+      hasPain: String,
+      hasCondition: String,
+      conditionDetail: String,
+      hadInjuryLastYear: String,
+      injuryDetail: String,
 
-      diabetes: { type: String, default: "" },
-      diabetesType: { type: String, default: "" },
-      bloodPressure: { type: String, default: "" },
+      diabetes: String,
+      diabetesType: String,
+      bloodPressure: String,
 
-      smokes: { type: String, default: "" },
-      cigarettesPerDay: { type: String, default: "" },
+      smokes: String,
+      cigarettesPerDay: String,
 
-      heartProblems: { type: String, default: "" },
-      heartDetail: { type: String, default: "" },
+      heartProblems: String,
+      heartDetail: String,
 
-      oncologicTreatment: { type: String, default: "" },
+      oncologicTreatment: String,
 
-      orthoProblem: { type: String, default: "" },
-      orthoDetail: { type: String, default: "" },
+      orthoProblem: String,
+      orthoDetail: String,
 
-      pregnant: { type: String, default: "" },
-      pregnantWeeks: { type: String, default: "" },
+      pregnant: String,
+      pregnantWeeks: String,
 
-      relevantInfo: { type: String, default: "" },
+      lastBloodTest: String,
+      relevantInfo: String,
     },
 
-    step2: { type: Object, default: {} },
+    // ===============================
+    // STEP 2 (rehab / deporte / plan)
+    // ===============================
+    step2: {
+      type: Object,
+      default: {},
+    },
 
-    ip: { type: String, default: "" },
-    userAgent: { type: String, default: "" },
+    // Metadata útil
+    ip: String,
+    userAgent: String,
   },
-  { timestamps: true }
+  {
+    timestamps: true,
+  }
 );
 
-const Admission = mongoose.model("Admission", admissionSchema);
-export default Admission;
+export default mongoose.model("Admission", admissionSchema);
