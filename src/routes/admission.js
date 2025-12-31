@@ -1,3 +1,4 @@
+// backend/src/routes/admission.js
 import express from "express";
 import crypto from "crypto";
 import Admission from "../models/Admission.js";
@@ -54,7 +55,8 @@ router.patch("/:id/step2", async (req, res) => {
       { new: true, runValidators: true }
     );
 
-    if (!doc) return res.status(404).json({ ok: false, error: "No encontrado." });
+    if (!doc)
+      return res.status(404).json({ ok: false, error: "No encontrado." });
 
     return res.json({
       ok: true,
@@ -93,12 +95,32 @@ router.get("/admin", protect, adminOnly, async (req, res) => {
 router.get("/admin/:id", protect, adminOnly, async (req, res) => {
   try {
     const doc = await Admission.findById(req.params.id);
-    if (!doc) return res.status(404).json({ ok: false, error: "No encontrado." });
+    if (!doc)
+      return res.status(404).json({ ok: false, error: "No encontrado." });
 
     return res.json({ ok: true, item: doc });
   } catch (err) {
     console.error("GET /admission/admin/:id error:", err);
     return res.status(500).json({ ok: false, error: "No se pudo abrir." });
+  }
+});
+
+// ===============================
+// ADMIN: eliminar admisión
+// ===============================
+router.delete("/admin/:id", protect, adminOnly, async (req, res) => {
+  try {
+    const doc = await Admission.findById(req.params.id);
+    if (!doc)
+      return res.status(404).json({ ok: false, error: "No encontrado." });
+
+    await doc.deleteOne();
+    return res.json({ ok: true });
+  } catch (err) {
+    console.error("DELETE /admission/admin/:id error:", err);
+    return res
+      .status(500)
+      .json({ ok: false, error: "No se pudo eliminar la admisión." });
   }
 });
 
