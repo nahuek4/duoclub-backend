@@ -1,4 +1,3 @@
-// backend/src/routes/adminEvaluations.js
 import express from "express";
 import User from "../models/User.js";
 import Evaluation from "../models/Evaluation.js";
@@ -6,9 +5,6 @@ import { protect, adminOnly } from "../middleware/auth.js";
 
 const router = express.Router();
 
-/* =========================================================
-   HELPERS
-========================================================= */
 function safeInt(v, def) {
   const n = parseInt(v, 10);
   return Number.isFinite(n) ? n : def;
@@ -16,16 +12,17 @@ function safeInt(v, def) {
 
 /* =========================================================
    GET /admin/evaluations/users
-   Lista usuarios + count evaluaciones + última evaluación
+   Lista usuarios (SOLO clientes) + count eval + última eval
 ========================================================= */
 router.get("/users", protect, adminOnly, async (req, res) => {
   try {
     const q = (req.query.q || "").trim();
     const page = Math.max(1, safeInt(req.query.page, 1));
-    const limit = Math.min(50, Math.max(5, safeInt(req.query.limit, 20)));
+    const limit = Math.min(200, Math.max(5, safeInt(req.query.limit, 50)));
     const skip = (page - 1) * limit;
 
-    const query = { role: { $ne: "admin" } }; // evaluamos clientes (ajustable)
+    const query = { role: "client" }; // ✅ SOLO CLIENTES
+
     if (q) {
       query.$or = [
         { name: new RegExp(q, "i") },
@@ -38,23 +35,24 @@ router.get("/users", protect, adminOnly, async (req, res) => {
     const [total, users] = await Promise.all([
       User.countDocuments(query),
       User.find(query)
-        .select("name lastName email phone suspended approvalStatus")
-        .sort({ createdAt: -1 })
+        .select("name lastName email phone suspended approvalStatus createdAt")
+        .sort({ lastName: 1, name: 1 }) // ✅ ORDEN ALFABÉTICO
         .skip(skip)
         .limit(limit)
         .lean(),
     ]);
 
-    // Conteo + última evaluación por usuario (en 1 query con aggregate)
     const userIds = users.map((u) => u._id);
 
+    // ✅ Conteo + última evaluación REAL
     const stats = await Evaluation.aggregate([
       { $match: { user: { $in: userIds } } },
+      { $sort: { createdAt: -1 } },
       {
         $group: {
           _id: "$user",
           count: { $sum: 1 },
-          lastAt: { $max: "$createdAt" },
+          lastAt: { $first: "$createdAt" },
           lastType: { $first: "$type" },
         },
       },
@@ -87,12 +85,12 @@ router.get("/users", protect, adminOnly, async (req, res) => {
 
 /* =========================================================
    GET /admin/evaluations/user/:userId
-   Historial de evaluaciones del usuario
+   Historial (últimas N)
 ========================================================= */
 router.get("/user/:userId", protect, adminOnly, async (req, res) => {
   try {
     const { userId } = req.params;
-    const limit = Math.min(100, Math.max(1, safeInt(req.query.limit, 50)));
+    const limit = Math.min(200, Math.max(1, safeInt(req.query.limit, 50)));
 
     const items = await Evaluation.find({ user: userId })
       .select("type title notes createdBy createdAt updatedAt")
@@ -110,7 +108,7 @@ router.get("/user/:userId", protect, adminOnly, async (req, res) => {
 
 /* =========================================================
    POST /admin/evaluations/user/:userId
-   Crea una evaluación
+   Crear evaluación
 ========================================================= */
 router.post("/user/:userId", protect, adminOnly, async (req, res) => {
   try {
@@ -121,14 +119,15 @@ router.post("/user/:userId", protect, adminOnly, async (req, res) => {
       return res.status(400).json({ error: "type es requerido." });
     }
 
-    // Validación liviana: scoring debe ser objeto
     if (scoring && typeof scoring !== "object") {
       return res.status(400).json({ error: "scoring inválido." });
     }
 
-    // Verificar que exista el usuario a evaluar
-    const target = await User.findById(userId).select("_id").lean();
+    const target = await User.findById(userId).select("_id role").lean();
     if (!target) return res.status(404).json({ error: "Usuario no encontrado." });
+
+    // Si querés bloquear eval a no-client, descomentá:
+    // if (target.role !== "client") return res.status(400).json({ error: "Solo se evalúan clientes." });
 
     const ev = await Evaluation.create({
       user: userId,
@@ -148,7 +147,6 @@ router.post("/user/:userId", protect, adminOnly, async (req, res) => {
 
 /* =========================================================
    GET /admin/evaluations/:id
-   Trae una evaluación puntual
 ========================================================= */
 router.get("/:id", protect, adminOnly, async (req, res) => {
   try {
@@ -166,8 +164,7 @@ router.get("/:id", protect, adminOnly, async (req, res) => {
 });
 
 /* =========================================================
-   PATCH /admin/evaluations/:id
-   Edita evaluación (si querés permitirlo)
+   PATCH /admin/evaluations/:id (opcional)
 ========================================================= */
 router.patch("/:id", protect, adminOnly, async (req, res) => {
   try {
@@ -196,8 +193,7 @@ router.patch("/:id", protect, adminOnly, async (req, res) => {
 });
 
 /* =========================================================
-   DELETE /admin/evaluations/:id
-   Borra evaluación (opcional)
+   DELETE /admin/evaluations/:id (opcional)
 ========================================================= */
 router.delete("/:id", protect, adminOnly, async (req, res) => {
   try {
