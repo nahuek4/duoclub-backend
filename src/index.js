@@ -15,6 +15,7 @@ import pricingRoutes from "./routes/pricing.js";
 import ordersRoutes from "./routes/orders.js";
 import mpWebhookRoutes from "./routes/mpWebhook.js";
 import admissionRoutes from "./routes/admission.js";
+import adminEvaluationsRoutes from "./routes/adminEvaluations.js";
 
 
 
@@ -177,6 +178,7 @@ app.use("/payments", mpWebhookRoutes);
 
 app.use("/admission", admissionRoutes);
 
+app.use("/admin/evaluations", adminEvaluationsRoutes);
 
 /* =========================
    RUTA BASE

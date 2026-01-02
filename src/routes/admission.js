@@ -111,16 +111,13 @@ router.get("/admin/:id", protect, adminOnly, async (req, res) => {
 router.delete("/admin/:id", protect, adminOnly, async (req, res) => {
   try {
     const doc = await Admission.findById(req.params.id);
-    if (!doc)
-      return res.status(404).json({ ok: false, error: "No encontrado." });
+    if (!doc) return res.status(404).json({ ok: false, error: "No encontrado." });
 
     await doc.deleteOne();
     return res.json({ ok: true });
   } catch (err) {
     console.error("DELETE /admission/admin/:id error:", err);
-    return res
-      .status(500)
-      .json({ ok: false, error: "No se pudo eliminar la admisión." });
+    return res.status(500).json({ ok: false, error: "No se pudo eliminar la admisión." });
   }
 });
 
