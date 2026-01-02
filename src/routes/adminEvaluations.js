@@ -1,164 +1,237 @@
 import express from "express";
 import mongoose from "mongoose";
-import { protect, adminOnly } from "../middleware/auth.js";
 import User from "../models/User.js";
 import Evaluation from "../models/Evaluation.js";
+import { protect, adminOnly } from "../middleware/auth.js";
 
 const router = express.Router();
 
-// todo admin
-router.use(protect, adminOnly);
+function safeInt(v, def) {
+  const n = parseInt(v, 10);
+  return Number.isFinite(n) ? n : def;
+}
 
-function isValidId(id) {
+function isValidObjectId(id) {
   return mongoose.Types.ObjectId.isValid(String(id || ""));
 }
 
-/* =========================================
+/* =========================================================
    GET /admin/evaluations/users
-   Lista de clientes + info de última evaluación
-   - Solo role=client
-   - Ordenado alfabético
-   - Incluye evalCount y lastEval (fecha/tipo)
-   ========================================= */
-router.get("/users", async (req, res) => {
+   Lista usuarios (SOLO clientes) + count eval + última eval
+========================================================= */
+router.get("/users", protect, adminOnly, async (req, res) => {
   try {
-    const users = await User.find({ role: "client" })
-      .select("name lastName email phone role createdAt")
-      .lean();
+    const q = (req.query.q || "").trim();
+    const page = Math.max(1, safeInt(req.query.page, 1));
+    const limit = Math.min(200, Math.max(5, safeInt(req.query.limit, 50)));
+    const skip = (page - 1) * limit;
 
-    const ids = users.map((u) => u._id);
+    const query = { role: "client" }; // ✅ SOLO CLIENTES
 
-    // Traemos última evaluación por usuario (bulk)
-    const lastEvals = await Evaluation.aggregate([
-      { $match: { user: { $in: ids } } },
+    if (q) {
+      query.$or = [
+        { name: new RegExp(q, "i") },
+        { lastName: new RegExp(q, "i") },
+        { email: new RegExp(q, "i") },
+        { phone: new RegExp(q, "i") },
+      ];
+    }
+
+    const [total, users] = await Promise.all([
+      User.countDocuments(query),
+      User.find(query)
+        .select("name lastName email phone suspended approvalStatus createdAt")
+        .sort({ lastName: 1, name: 1 }) // ✅ ORDEN ALFABÉTICO
+        .skip(skip)
+        .limit(limit)
+        .lean(),
+    ]);
+
+    const userIds = users.map((u) => u._id);
+
+    // ✅ Conteo + última evaluación REAL
+    const stats = await Evaluation.aggregate([
+      { $match: { user: { $in: userIds } } },
       { $sort: { createdAt: -1 } },
       {
         $group: {
           _id: "$user",
-          lastCreatedAt: { $first: "$createdAt" },
+          count: { $sum: 1 },
+          lastAt: { $first: "$createdAt" },
           lastType: { $first: "$type" },
           lastTitle: { $first: "$title" },
         },
       },
     ]);
 
-    const counts = await Evaluation.aggregate([
-      { $match: { user: { $in: ids } } },
-      { $group: { _id: "$user", count: { $sum: 1 } } },
-    ]);
+    const statsMap = new Map(stats.map((s) => [String(s._id), s]));
 
-    const mapLast = new Map(lastEvals.map((x) => [String(x._id), x]));
-    const mapCount = new Map(counts.map((x) => [String(x._id), x.count]));
+    const items = users.map((u) => {
+      const s = statsMap.get(String(u._id));
+      return {
+        ...u,
+        evalCount: s?.count || 0,
+        lastEvalAt: s?.lastAt || null,
+        lastEvalType: s?.lastType || "",
+        lastEvalTitle: s?.lastTitle || "",
+      };
+    });
 
-    // ordenar alfabético por "Apellido Nombre"
-    const withMeta = users
-      .map((u) => {
-        const k = String(u._id);
-        return {
-          ...u,
-          id: k,
-          evalCount: mapCount.get(k) || 0,
-          lastEvalAt: mapLast.get(k)?.lastCreatedAt || null,
-          lastEvalType: mapLast.get(k)?.lastType || "",
-          lastEvalTitle: mapLast.get(k)?.lastTitle || "",
-        };
-      })
-      .sort((a, b) => {
-        const an = `${a.lastName || ""} ${a.name || ""}`.trim().toLowerCase();
-        const bn = `${b.lastName || ""} ${b.name || ""}`.trim().toLowerCase();
-        return an.localeCompare(bn, "es");
-      });
-
-    return res.json(withMeta);
+    return res.json({
+      page,
+      limit,
+      total,
+      pages: Math.ceil(total / limit),
+      items,
+    });
   } catch (err) {
     console.error("GET /admin/evaluations/users error:", err);
-    return res.status(500).json({ error: "Error al listar usuarios para evaluar." });
+    return res.status(500).json({ error: "Error al listar usuarios." });
   }
 });
 
-/* =========================================
+/* =========================================================
    GET /admin/evaluations/user/:userId
-   Historial de evaluaciones de un usuario
-   ========================================= */
-router.get("/user/:userId", async (req, res) => {
+   Historial (últimas N)
+========================================================= */
+router.get("/user/:userId", protect, adminOnly, async (req, res) => {
   try {
     const { userId } = req.params;
+    const limit = Math.min(200, Math.max(1, safeInt(req.query.limit, 50)));
 
-    if (!isValidId(userId)) {
+    if (!isValidObjectId(userId)) {
       return res.status(400).json({ error: "userId inválido." });
     }
 
     const items = await Evaluation.find({ user: userId })
+      .select("type title notes createdBy createdAt updatedAt")
+      .populate("createdBy", "name lastName email")
       .sort({ createdAt: -1 })
-      .select("type title createdAt notes")
+      .limit(limit)
       .lean();
 
-    return res.json(items);
+    return res.json({ items });
   } catch (err) {
     console.error("GET /admin/evaluations/user/:userId error:", err);
-    return res.status(500).json({ error: "Error al obtener historial de evaluaciones." });
+    return res.status(500).json({ error: "Error al traer historial." });
   }
 });
 
-/* =========================================
+/* =========================================================
    POST /admin/evaluations/user/:userId
-   Crear evaluación (SFMA etc)
-   body: { type, title, scoring, notes }
-   ========================================= */
-router.post("/user/:userId", async (req, res) => {
+   Crear evaluación
+========================================================= */
+router.post("/user/:userId", protect, adminOnly, async (req, res) => {
   try {
     const { userId } = req.params;
+    const { type, title = "", scoring = {}, notes = "" } = req.body || {};
 
-    if (!isValidId(userId)) {
+    if (!isValidObjectId(userId)) {
       return res.status(400).json({ error: "userId inválido." });
     }
 
-    const { type, title, scoring, notes } = req.body || {};
+    if (!type || typeof type !== "string") {
+      return res.status(400).json({ error: "type es requerido." });
+    }
 
-    const t = String(type || "").trim().toUpperCase();
-    if (!t) return res.status(400).json({ error: "type es obligatorio." });
+    if (scoring && typeof scoring !== "object") {
+      return res.status(400).json({ error: "scoring inválido." });
+    }
 
-    const user = await User.findById(userId).select("_id").lean();
-    if (!user) return res.status(404).json({ error: "Usuario no encontrado." });
+    const target = await User.findById(userId).select("_id role").lean();
+    if (!target) return res.status(404).json({ error: "Usuario no encontrado." });
 
-    const created = await Evaluation.create({
+    const ev = await Evaluation.create({
       user: userId,
-      type: t,
-      title: String(title || t),
+      type: String(type).toUpperCase().trim(),
+      title: String(title || "").trim(),
       scoring: scoring || {},
       notes: String(notes || ""),
-      createdBy: req.user?._id || null,
+      createdBy: req.user._id,
     });
 
-    return res.status(201).json({ ok: true, item: created });
+    return res.status(201).json({ item: ev });
   } catch (err) {
     console.error("POST /admin/evaluations/user/:userId error:", err);
-    return res.status(500).json({ error: "Error al guardar evaluación." });
+    return res.status(500).json({ error: "Error al crear evaluación." });
   }
 });
 
-/* =========================================
+/* =========================================================
    GET /admin/evaluations/:id
-   Ver una evaluación específica (para el botón VER)
-   ========================================= */
-router.get("/:id", async (req, res) => {
+========================================================= */
+router.get("/:id", protect, adminOnly, async (req, res) => {
   try {
     const { id } = req.params;
 
-    if (!isValidId(id)) {
+    if (!isValidObjectId(id)) {
       return res.status(400).json({ error: "id inválido." });
     }
 
-    const item = await Evaluation.findById(id)
+    const ev = await Evaluation.findById(id)
       .populate("user", "name lastName email phone")
+      .populate("createdBy", "name lastName email")
       .lean();
 
-    if (!item) return res.status(404).json({ error: "Evaluación no encontrada." });
-
-    return res.json({ ok: true, item });
+    if (!ev) return res.status(404).json({ error: "Evaluación no encontrada." });
+    return res.json({ item: ev });
   } catch (err) {
     console.error("GET /admin/evaluations/:id error:", err);
-    return res.status(500).json({ error: "Error al obtener evaluación." });
+    return res.status(500).json({ error: "Error al traer evaluación." });
+  }
+});
+
+/* =========================================================
+   PATCH /admin/evaluations/:id (opcional)
+========================================================= */
+router.patch("/:id", protect, adminOnly, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { title, scoring, notes } = req.body || {};
+
+    if (!isValidObjectId(id)) {
+      return res.status(400).json({ error: "id inválido." });
+    }
+
+    const patch = {};
+    if (title !== undefined) patch.title = String(title || "").trim();
+    if (notes !== undefined) patch.notes = String(notes || "");
+
+    if (scoring !== undefined) {
+      if (scoring && typeof scoring !== "object") {
+        return res.status(400).json({ error: "scoring inválido." });
+      }
+      patch.scoring = scoring || {};
+    }
+
+    const ev = await Evaluation.findByIdAndUpdate(id, patch, { new: true }).lean();
+    if (!ev) return res.status(404).json({ error: "Evaluación no encontrada." });
+
+    return res.json({ item: ev });
+  } catch (err) {
+    console.error("PATCH /admin/evaluations/:id error:", err);
+    return res.status(500).json({ error: "Error al actualizar evaluación." });
+  }
+});
+
+/* =========================================================
+   DELETE /admin/evaluations/:id (opcional)
+========================================================= */
+router.delete("/:id", protect, adminOnly, async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    if (!isValidObjectId(id)) {
+      return res.status(400).json({ error: "id inválido." });
+    }
+
+    const ev = await Evaluation.findByIdAndDelete(id).lean();
+    if (!ev) return res.status(404).json({ error: "Evaluación no encontrada." });
+
+    return res.json({ ok: true });
+  } catch (err) {
+    console.error("DELETE /admin/evaluations/:id error:", err);
+    return res.status(500).json({ error: "Error al eliminar evaluación." });
   }
 });
 

@@ -9,21 +9,29 @@ const evaluationSchema = new mongoose.Schema(
       index: true,
     },
 
-    type: { type: String, required: true, uppercase: true, trim: true }, // "SFMA_TOP_TIER", etc
-    title: { type: String, default: "" },
+    // Ej: "SFMA_TOP_TIER"
+    type: { type: String, required: true, uppercase: true, trim: true },
 
-    // scoring libre (SFMA: objeto con keys y L/R)
-    scoring: { type: mongoose.Schema.Types.Mixed, default: {} },
+    // Nombre amigable (UI)
+    title: { type: String, default: "", trim: true },
+
+    // Guarda TODA la data del formulario
+    // (en SFMA es un objeto grande con L/R)
+    scoring: { type: Object, default: {} },
 
     notes: { type: String, default: "" },
 
-    // (opcional) quien la creó (admin)
-    createdBy: { type: mongoose.Schema.Types.ObjectId, ref: "User", default: null },
+    createdBy: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "User",
+      required: true,
+    },
   },
   { timestamps: true }
 );
 
 evaluationSchema.index({ user: 1, createdAt: -1 });
+evaluationSchema.index({ type: 1, createdAt: -1 });
 
 const Evaluation = mongoose.model("Evaluation", evaluationSchema);
 export default Evaluation;
