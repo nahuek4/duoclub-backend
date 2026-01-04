@@ -1,5 +1,9 @@
+// backend/src/routes/adminEvaluations.js
 import express from "express";
 import mongoose from "mongoose";
+import crypto from "crypto";
+import bcrypt from "bcryptjs";
+
 import User from "../models/User.js";
 import Evaluation from "../models/Evaluation.js";
 import { protect, adminOnly } from "../middleware/auth.js";
@@ -15,6 +19,20 @@ function isValidObjectId(id) {
   return mongoose.Types.ObjectId.isValid(String(id || ""));
 }
 
+function cleanStr(v) {
+  return String(v || "").trim();
+}
+
+function titleCaseName(s) {
+  return String(s || "")
+    .trim()
+    .toLowerCase()
+    .split(/\s+/)
+    .filter(Boolean)
+    .map((w) => w.charAt(0).toUpperCase() + w.slice(1))
+    .join(" ");
+}
+
 /* =========================================================
    GET /admin/evaluations/users
    Lista usuarios (SOLO clientes) + count eval + última eval
@@ -26,7 +44,7 @@ router.get("/users", protect, adminOnly, async (req, res) => {
     const limit = Math.min(200, Math.max(5, safeInt(req.query.limit, 50)));
     const skip = (page - 1) * limit;
 
-    const query = { role: "client" }; // ✅ SOLO CLIENTES
+    const query = { role: "client" };
 
     if (q) {
       query.$or = [
@@ -40,8 +58,8 @@ router.get("/users", protect, adminOnly, async (req, res) => {
     const [total, users] = await Promise.all([
       User.countDocuments(query),
       User.find(query)
-        .select("name lastName email phone suspended approvalStatus createdAt")
-        .sort({ lastName: 1, name: 1 }) // ✅ ORDEN ALFABÉTICO
+        .select("name lastName email phone suspended approvalStatus createdAt role")
+        .sort({ lastName: 1, name: 1 })
         .skip(skip)
         .limit(limit)
         .lean(),
@@ -49,7 +67,6 @@ router.get("/users", protect, adminOnly, async (req, res) => {
 
     const userIds = users.map((u) => u._id);
 
-    // ✅ Conteo + última evaluación REAL
     const stats = await Evaluation.aggregate([
       { $match: { user: { $in: userIds } } },
       { $sort: { createdAt: -1 } },
@@ -91,8 +108,137 @@ router.get("/users", protect, adminOnly, async (req, res) => {
 });
 
 /* =========================================================
+   GET /admin/evaluations/guests
+   Lista invitados (SOLO role=guest) + count eval + última eval
+========================================================= */
+router.get("/guests", protect, adminOnly, async (req, res) => {
+  try {
+    const q = (req.query.q || "").trim();
+    const limit = Math.min(500, Math.max(1, safeInt(req.query.limit, 200)));
+
+    const query = { role: "guest" };
+
+    if (q) {
+      query.$or = [
+        { name: new RegExp(q, "i") },
+        { lastName: new RegExp(q, "i") },
+        { email: new RegExp(q, "i") },
+        { phone: new RegExp(q, "i") },
+      ];
+    }
+
+    const guests = await User.find(query)
+      .select("name lastName email phone suspended approvalStatus createdAt role")
+      .sort({ createdAt: -1 }) // ✅ los más nuevos arriba
+      .limit(limit)
+      .lean();
+
+    const guestIds = guests.map((u) => u._id);
+
+    const stats = await Evaluation.aggregate([
+      { $match: { user: { $in: guestIds } } },
+      { $sort: { createdAt: -1 } },
+      {
+        $group: {
+          _id: "$user",
+          count: { $sum: 1 },
+          lastAt: { $first: "$createdAt" },
+          lastType: { $first: "$type" },
+          lastTitle: { $first: "$title" },
+        },
+      },
+    ]);
+
+    const statsMap = new Map(stats.map((s) => [String(s._id), s]));
+
+    const items = guests.map((u) => {
+      const s = statsMap.get(String(u._id));
+      return {
+        ...u,
+        evalCount: s?.count || 0,
+        lastEvalAt: s?.lastAt || null,
+        lastEvalType: s?.lastType || "",
+        lastEvalTitle: s?.lastTitle || "",
+      };
+    });
+
+    return res.json({ items });
+  } catch (err) {
+    console.error("GET /admin/evaluations/guests error:", err);
+    return res.status(500).json({ error: "Error al listar invitados." });
+  }
+});
+
+/* =========================================================
+   POST /admin/evaluations/guest
+   Crea invitado y lo devuelve listo para abrir modal
+========================================================= */
+router.post("/guest", protect, adminOnly, async (req, res) => {
+  try {
+    const name = titleCaseName(cleanStr(req.body?.name));
+    const lastName = titleCaseName(cleanStr(req.body?.lastName));
+    const emailRaw = cleanStr(req.body?.email);
+    const phoneRaw = cleanStr(req.body?.phone);
+
+    if (!name || !lastName) {
+      return res.status(400).json({ error: "name y lastName son requeridos." });
+    }
+
+    // Email opcional. Si viene, validamos unicidad.
+    const email = emailRaw ? emailRaw.toLowerCase() : "";
+
+    if (email) {
+      const exists = await User.findOne({ email }).select("_id").lean();
+      if (exists) {
+        return res.status(409).json({ error: "Ese email ya existe." });
+      }
+    }
+
+    // ✅ password random + hash (aunque no se use)
+    const rawPassword = crypto.randomBytes(24).toString("hex");
+    const hashedPassword = await bcrypt.hash(rawPassword, 10);
+
+    const guest = await User.create({
+      name,
+      lastName,
+      email,              // "" si no viene
+      phone: phoneRaw || "",
+      role: "guest",
+
+      password: hashedPassword,  // ✅ cumple schema
+      mustChangePassword: true,
+      suspended: true,           // ✅ extra bloqueo
+
+      emailVerified: false,
+      approvalStatus: "approved",
+    });
+
+    // devolvemos el formato que usa el frontend (similar al listado)
+    return res.status(201).json({
+      item: {
+        _id: guest._id,
+        name: guest.name,
+        lastName: guest.lastName,
+        email: guest.email || "",
+        phone: guest.phone || "",
+        role: guest.role,
+        createdAt: guest.createdAt,
+
+        evalCount: 0,
+        lastEvalAt: null,
+        lastEvalType: "",
+        lastEvalTitle: "",
+      },
+    });
+  } catch (err) {
+    console.error("POST /admin/evaluations/guest error:", err);
+    return res.status(500).json({ error: "Error al crear invitado." });
+  }
+});
+
+/* =========================================================
    GET /admin/evaluations/user/:userId
-   Historial (últimas N)
+   Historial (últimas N) — sirve para client y guest
 ========================================================= */
 router.get("/user/:userId", protect, adminOnly, async (req, res) => {
   try {
@@ -169,7 +315,7 @@ router.get("/:id", protect, adminOnly, async (req, res) => {
     }
 
     const ev = await Evaluation.findById(id)
-      .populate("user", "name lastName email phone")
+      .populate("user", "name lastName email phone role")
       .populate("createdBy", "name lastName email")
       .lean();
 

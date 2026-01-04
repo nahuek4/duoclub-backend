@@ -14,9 +14,7 @@ const historySchema = new mongoose.Schema(
 
 const creditLotSchema = new mongoose.Schema(
   {
-    // ✅ servicio asociado al lote: EP/RF/AR/RA/NUT o ALL
-    serviceKey: { type: String, default: "EP", uppercase: true, trim: true },
-
+    serviceKey: { type: String, default: "EP", uppercase: true, trim: true }, // EP/RF/AR/RA/NUT o ALL
     amount: { type: Number, default: 0 },
     remaining: { type: Number, default: 0 },
     expiresAt: { type: Date, default: null },
@@ -31,20 +29,37 @@ const creditLotSchema = new mongoose.Schema(
   { _id: true }
 );
 
+// Helpers para required condicional (guest vs client/admin)
+function requiredIfNotGuest() {
+  // `this` es el doc
+  return this.role !== "guest";
+}
+
 const userSchema = new mongoose.Schema(
   {
     name: { type: String, required: true, trim: true },
     lastName: { type: String, required: true, trim: true },
 
+    // ✅ Email NO obligatorio (por pedido), pero:
+    // - para client/admin sigue siendo requerido
+    // - para guest puede ser "" o null
     email: {
       type: String,
-      required: true,
+      required: requiredIfNotGuest,
       unique: true,
+      sparse: true, // ✅ permite múltiples docs sin email
       lowercase: true,
       trim: true,
+      default: "",
     },
 
-    phone: { type: String, required: true, trim: true },
+    // ✅ Tel no obligatorio para guest
+    phone: {
+      type: String,
+      required: requiredIfNotGuest,
+      trim: true,
+      default: "",
+    },
 
     dni: { type: String, default: "" },
     age: { type: Number, default: null },
@@ -52,9 +67,14 @@ const userSchema = new mongoose.Schema(
     notes: { type: String, default: "" },
 
     credits: { type: Number, default: 0 },
-    role: { type: String, default: "client" }, // "admin" | "client"
 
-    password: { type: String, required: true },
+    // ✅ ahora agregamos guest
+    role: { type: String, default: "client", enum: ["admin", "client", "guest"] },
+
+    // ✅ password requerida para client/admin.
+    // Para guest la vamos a setear igual (random+hash) desde el endpoint.
+    password: { type: String, required: requiredIfNotGuest, default: "" },
+
     mustChangePassword: { type: Boolean, default: false },
     suspended: { type: Boolean, default: false },
 
@@ -65,7 +85,6 @@ const userSchema = new mongoose.Schema(
 
     history: { type: [historySchema], default: [] },
 
-    // ✅ Verificación y aprobación
     emailVerified: { type: Boolean, default: false },
     approvalStatus: {
       type: String,
@@ -73,11 +92,9 @@ const userSchema = new mongoose.Schema(
       default: "pending",
     },
 
-    // ✅ Tokens de verificación de email (necesarios para /auth/verify-email)
     emailVerificationToken: { type: String, default: "" },
     emailVerificationExpires: { type: Date, default: null },
 
-    // ===== Membresía DUO+ =====
     membership: {
       tier: { type: String, default: "basic", enum: ["basic", "plus"] },
       activeUntil: { type: Date, default: null },
@@ -87,7 +104,6 @@ const userSchema = new mongoose.Schema(
       creditsExpireDays: { type: Number, default: 30 },
     },
 
-    // ===== Créditos por lote =====
     creditLots: { type: [creditLotSchema], default: [] },
 
     cancelationsUsed: { type: Number, default: 0 },
@@ -96,8 +112,8 @@ const userSchema = new mongoose.Schema(
   { timestamps: true }
 );
 
-// (opcional) si querés asegurar index aparte (igual ya lo hace `unique: true`)
-// userSchema.index({ email: 1 }, { unique: true });
+// ✅ Index único real (sparse evita choque cuando email = "" / null)
+userSchema.index({ email: 1 }, { unique: true, sparse: true });
 
 const User = mongoose.model("User", userSchema);
 export default User;

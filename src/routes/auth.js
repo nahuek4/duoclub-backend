@@ -1,3 +1,4 @@
+// backend/src/routes/auth.js
 import express from "express";
 import bcrypt from "bcryptjs";
 import jwt from "jsonwebtoken";
@@ -27,7 +28,7 @@ function serializeUser(u) {
     id: u._id.toString(),
     name: u.name || "",
     lastName: u.lastName || "",
-    email: u.email,
+    email: u.email || "",
     phone: u.phone || "",
     role: u.role,
     credits: u.credits,
@@ -38,7 +39,6 @@ function serializeUser(u) {
     approvalStatus: u.approvalStatus || "pending",
     createdAt: u.createdAt || null,
 
-    // ✅ CLAVE: para que el front detecte PLUS y aplique 15%
     membership: {
       tier: m.tier || "basic",
       activeUntil: m.activeUntil || null,
@@ -68,18 +68,27 @@ router.post("/login", async (req, res) => {
   try {
     const { email, password } = req.body || {};
     if (!email || !password) {
-      return res
-        .status(400)
-        .json({ error: "Email y password son obligatorios." });
+      return res.status(400).json({ error: "Email y password son obligatorios." });
     }
 
     const user = await User.findOne({ email: String(email).toLowerCase() });
-    if (!user)
+    if (!user) {
       return res.status(401).json({ error: "Email o contraseña incorrectos." });
+    }
+
+    // ✅ BLOQUEO TOTAL PARA INVITADOS (guest)
+    // - no pueden loguearse
+    // - aunque tengan password
+    if (String(user.role || "").toLowerCase() === "guest") {
+      return res.status(403).json({
+        error: "Usuario invitado. Acceso no permitido.",
+      });
+    }
 
     const match = await bcrypt.compare(password, user.password);
-    if (!match)
+    if (!match) {
       return res.status(401).json({ error: "Email o contraseña incorrectos." });
+    }
 
     // 🔒 orden correcto de validaciones
     if (!user.emailVerified) {
@@ -128,8 +137,7 @@ router.post("/register", async (req, res) => {
 
     if (!n || !ln || !ph || !em || !password) {
       return res.status(400).json({
-        error:
-          "Nombre, apellido, teléfono, email y contraseña son obligatorios.",
+        error: "Nombre, apellido, teléfono, email y contraseña son obligatorios.",
       });
     }
 
@@ -175,21 +183,20 @@ router.post("/register", async (req, res) => {
 
     return res.status(201).json({
       ok: true,
-      message:
-        "Registro exitoso. Te enviamos un email para verificar tu cuenta.",
+      message: "Registro exitoso. Te enviamos un email para verificar tu cuenta.",
     });
   } catch (err) {
     console.error("Error en /auth/register:", err);
     if (err?.code === 11000 && err?.keyPattern?.email) {
-      return res
-        .status(409)
-        .json({ error: "Ya existe una cuenta con ese email." });
+      return res.status(409).json({ error: "Ya existe una cuenta con ese email." });
     }
     return res.status(500).json({ error: "Error al registrarse." });
   }
 });
 
-
+/* ============================================
+   POST /auth/force-change-password
+   ============================================ */
 router.post("/force-change-password", protect, async (req, res) => {
   try {
     const { newPassword } = req.body || {};
@@ -207,7 +214,11 @@ router.post("/force-change-password", protect, async (req, res) => {
     const user = await User.findById(req.user._id);
     if (!user) return res.status(404).json({ error: "Usuario no encontrado." });
 
-    // ✅ Este archivo YA usa bcrypt en login/register, así que acá hasheamos igual
+    // ✅ invitados no deberían usar esto; por seguridad lo bloqueamos
+    if (String(user.role || "").toLowerCase() === "guest") {
+      return res.status(403).json({ error: "Acción no permitida para invitados." });
+    }
+
     user.password = await bcrypt.hash(np, 10);
     user.mustChangePassword = false;
 
@@ -239,9 +250,13 @@ router.get("/verify-email", async (req, res) => {
 
     if (!user) {
       return res.status(400).json({
-        error:
-          "Token inválido o expirado. Pedí un nuevo correo de verificación.",
+        error: "Token inválido o expirado. Pedí un nuevo correo de verificación.",
       });
+    }
+
+    // ✅ invitados no usan verificación
+    if (String(user.role || "").toLowerCase() === "guest") {
+      return res.status(400).json({ error: "Usuario invitado inválido para verificación." });
     }
 
     user.emailVerified = true;
@@ -252,8 +267,7 @@ router.get("/verify-email", async (req, res) => {
 
     return res.json({
       ok: true,
-      message:
-        "Email verificado correctamente. Tu cuenta será revisada por un administrador.",
+      message: "Email verificado correctamente. Tu cuenta será revisada por un administrador.",
     });
   } catch (err) {
     console.error("Error verify-email:", err);
@@ -274,7 +288,16 @@ router.post("/resend-verification", async (req, res) => {
 
     const user = await User.findOne({ email: emailLower });
 
+    // respondemos igual por seguridad (no revelar existencia)
     if (!user) {
+      return res.json({
+        ok: true,
+        message: "Si el email existe, te enviamos un correo.",
+      });
+    }
+
+    // ✅ invitados no usan verificación
+    if (String(user.role || "").toLowerCase() === "guest") {
       return res.json({
         ok: true,
         message: "Si el email existe, te enviamos un correo.",
@@ -313,6 +336,9 @@ router.get("/me", protect, async (req, res) => {
     if (!user) {
       return res.status(401).json({ error: "Usuario no encontrado." });
     }
+
+    // ✅ si alguna vez un guest llegara acá con token (no debería),
+    // igual devolvemos el perfil (solo lectura), pero vos ya no les das token en login.
     return res.json(serializeUser(user));
   } catch (err) {
     console.error("Error en GET /auth/me:", err);
