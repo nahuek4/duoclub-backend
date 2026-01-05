@@ -252,6 +252,69 @@ router.patch("/:id/approval", adminOnly, async (req, res) => {
 });
 
 /* ============================================
+   ✅ PUT: EDITAR DATOS BÁSICOS (SELF o ADMIN)
+   - Para el Profile.jsx (guardar info personal)
+   - Permite actualizar SOLO: name, lastName, phone, dni
+   - Self: solo puede editarse a sí mismo
+   - Admin: puede editar cualquiera
+   ============================================ */
+router.put("/:id", async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    const isAdmin = req.user.role === "admin";
+    const isSelf = req.user._id.toString() === id;
+
+    if (!isAdmin && !isSelf) {
+      return res.status(403).json({
+        error: "No tenés permiso para editar este usuario.",
+      });
+    }
+
+    // ✅ whitelist estricta (no permitir tocar email, role, credits, membership, etc.)
+    const name = typeof req.body?.name === "string" ? req.body.name.trim() : undefined;
+    const lastName =
+      typeof req.body?.lastName === "string" ? req.body.lastName.trim() : undefined;
+    const phone = typeof req.body?.phone === "string" ? req.body.phone.trim() : undefined;
+    const dni = typeof req.body?.dni === "string" ? req.body.dni.trim() : undefined;
+
+    // Validación opcional DNI (ARG) 6-10 dígitos
+    if (dni !== undefined && dni !== "" && !/^\d{6,10}$/.test(dni)) {
+      return res.status(400).json({ error: "DNI inválido." });
+    }
+
+    const update = {};
+    if (name !== undefined) update.name = name;
+    if (lastName !== undefined) update.lastName = lastName;
+    if (phone !== undefined) update.phone = phone;
+    if (dni !== undefined) update.dni = dni;
+
+    if (Object.keys(update).length === 0) {
+      return res.status(400).json({ error: "No hay campos para actualizar." });
+    }
+
+    const u = await User.findByIdAndUpdate(id, update, {
+      new: true,
+      runValidators: true,
+    }).lean();
+
+    if (!u) return res.status(404).json({ error: "Usuario no encontrado." });
+
+    // Si NO es admin, ocultamos historia clínica por seguridad
+    if (!isAdmin) {
+      // eslint-disable-next-line no-unused-vars
+      const { clinicalNotes, ...safeUser } = u;
+      return res.json(safeUser);
+    }
+
+    return res.json(u);
+  } catch (err) {
+    console.error("Error en PUT /users/:id:", err);
+    return res.status(500).json({ error: "Error interno." });
+  }
+});
+
+/* ============================================
    GET UN USUARIO
    ============================================ */
 router.get("/:id", async (req, res) => {
