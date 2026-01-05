@@ -10,6 +10,9 @@ import { protect, adminOnly } from "../middleware/auth.js";
 
 const router = express.Router();
 
+/* =========================
+   HELPERS
+========================= */
 function safeInt(v, def) {
   const n = parseInt(v, 10);
   return Number.isFinite(n) ? n : def;
@@ -105,7 +108,6 @@ router.get("/users", protect, adminOnly, async (req, res) => {
     ]);
 
     const users = (usersRaw || []).map(serializeUserLite);
-
     const userIds = (usersRaw || []).map((u) => u._id);
 
     const stats = await Evaluation.aggregate([
@@ -118,7 +120,7 @@ router.get("/users", protect, adminOnly, async (req, res) => {
           lastAt: { $first: "$createdAt" },
           lastType: { $first: "$type" },
           lastTitle: { $first: "$title" },
-          lastEvalId: { $first: "$_id" }, // ✅ id de la última evaluación
+          lastEvalId: { $first: "$_id" },
         },
       },
     ]);
@@ -176,7 +178,6 @@ router.get("/guests", protect, adminOnly, async (req, res) => {
       .lean();
 
     const guests = (guestsRaw || []).map(serializeUserLite);
-
     const guestIds = (guestsRaw || []).map((u) => u._id);
 
     const stats = await Evaluation.aggregate([
@@ -369,7 +370,7 @@ router.post("/user/:userId", protect, adminOnly, async (req, res) => {
 
 /* =========================================================
    GET /admin/evaluations/:id
-   ✅ FIX: si no existe como evaluación, intenta como userId (última evaluación)
+   ✅ FIX REAL: SOLO evaluationId (SIN FALLBACK)
 ========================================================= */
 router.get("/:id", protect, adminOnly, async (req, res) => {
   try {
@@ -379,31 +380,12 @@ router.get("/:id", protect, adminOnly, async (req, res) => {
       return res.status(400).json({ error: "id inválido." });
     }
 
-    // 1) Caso normal: id = evaluationId
-    let ev = await Evaluation.findById(id)
+    const ev = await Evaluation.findById(id)
       .populate("user", "name lastName email phone role")
       .populate("createdBy", "name lastName email")
       .lean();
 
-    // 2) Fallback: id = userId -> devolver la última evaluación del usuario
-    if (!ev) {
-      ev = await Evaluation.findOne({ user: id })
-        .sort({ createdAt: -1 })
-        .populate("user", "name lastName email phone role")
-        .populate("createdBy", "name lastName email")
-        .lean();
-
-      if (!ev) return res.status(404).json({ error: "Evaluación no encontrada." });
-
-      return res.json({
-        item: {
-          ...serializeEvalLite(ev),
-          user: ev.user,
-          createdBy: ev.createdBy,
-          resolvedFrom: "userId",
-        },
-      });
-    }
+    if (!ev) return res.status(404).json({ error: "Evaluación no encontrada." });
 
     return res.json({
       item: {
