@@ -33,6 +33,46 @@ function titleCaseName(s) {
     .join(" ");
 }
 
+function toIdString(v) {
+  try {
+    return String(v);
+  } catch {
+    return "";
+  }
+}
+
+function serializeUserLite(u) {
+  if (!u) return null;
+  return {
+    id: toIdString(u._id),
+    _id: u._id,
+    name: u.name || "",
+    lastName: u.lastName || "",
+    email: u.email || "",
+    phone: u.phone || "",
+    suspended: !!u.suspended,
+    approvalStatus: u.approvalStatus || "",
+    createdAt: u.createdAt || null,
+    role: u.role || "",
+  };
+}
+
+function serializeEvalLite(e) {
+  if (!e) return null;
+  return {
+    id: toIdString(e._id),
+    _id: e._id,
+    type: e.type || "",
+    title: e.title || "",
+    notes: e.notes || "",
+    scoring: e.scoring || {},
+    createdBy: e.createdBy,
+    createdAt: e.createdAt || null,
+    updatedAt: e.updatedAt || null,
+    user: e.user,
+  };
+}
+
 /* =========================================================
    GET /admin/evaluations/users
 ========================================================= */
@@ -54,7 +94,7 @@ router.get("/users", protect, adminOnly, async (req, res) => {
       ];
     }
 
-    const [total, users] = await Promise.all([
+    const [total, usersRaw] = await Promise.all([
       User.countDocuments(query),
       User.find(query)
         .select("name lastName email phone suspended approvalStatus createdAt role")
@@ -64,7 +104,9 @@ router.get("/users", protect, adminOnly, async (req, res) => {
         .lean(),
     ]);
 
-    const userIds = users.map((u) => u._id);
+    const users = (usersRaw || []).map(serializeUserLite);
+
+    const userIds = (usersRaw || []).map((u) => u._id);
 
     const stats = await Evaluation.aggregate([
       { $match: { user: { $in: userIds } } },
@@ -76,6 +118,7 @@ router.get("/users", protect, adminOnly, async (req, res) => {
           lastAt: { $first: "$createdAt" },
           lastType: { $first: "$type" },
           lastTitle: { $first: "$title" },
+          lastEvalId: { $first: "$_id" }, // ✅ agregamos id de la última evaluación
         },
       },
     ]);
@@ -90,6 +133,7 @@ router.get("/users", protect, adminOnly, async (req, res) => {
         lastEvalAt: s?.lastAt || null,
         lastEvalType: s?.lastType || "",
         lastEvalTitle: s?.lastTitle || "",
+        lastEvalId: s?.lastEvalId ? String(s.lastEvalId) : "", // ✅ para linkear sin romper
       };
     });
 
@@ -125,13 +169,15 @@ router.get("/guests", protect, adminOnly, async (req, res) => {
       ];
     }
 
-    const guests = await User.find(query)
+    const guestsRaw = await User.find(query)
       .select("name lastName email phone suspended approvalStatus createdAt role")
       .sort({ createdAt: -1 })
       .limit(limit)
       .lean();
 
-    const guestIds = guests.map((u) => u._id);
+    const guests = (guestsRaw || []).map(serializeUserLite);
+
+    const guestIds = (guestsRaw || []).map((u) => u._id);
 
     const stats = await Evaluation.aggregate([
       { $match: { user: { $in: guestIds } } },
@@ -143,6 +189,7 @@ router.get("/guests", protect, adminOnly, async (req, res) => {
           lastAt: { $first: "$createdAt" },
           lastType: { $first: "$type" },
           lastTitle: { $first: "$title" },
+          lastEvalId: { $first: "$_id" },
         },
       },
     ]);
@@ -157,6 +204,7 @@ router.get("/guests", protect, adminOnly, async (req, res) => {
         lastEvalAt: s?.lastAt || null,
         lastEvalType: s?.lastType || "",
         lastEvalTitle: s?.lastTitle || "",
+        lastEvalId: s?.lastEvalId ? String(s.lastEvalId) : "",
       };
     });
 
@@ -199,31 +247,23 @@ router.post("/guest", protect, adminOnly, async (req, res) => {
       email,
       phone: phoneRaw || "",
       role: "guest",
-
       password: hashedPassword,
       mustChangePassword: true,
       suspended: true,
-
       emailVerified: false,
       approvalStatus: "approved",
     });
 
-    return res.status(201).json({
-      item: {
-        _id: guest._id,
-        name: guest.name,
-        lastName: guest.lastName,
-        email: guest.email || "",
-        phone: guest.phone || "",
-        role: guest.role,
-        createdAt: guest.createdAt,
+    const item = {
+      ...serializeUserLite(guest.toObject()),
+      evalCount: 0,
+      lastEvalAt: null,
+      lastEvalType: "",
+      lastEvalTitle: "",
+      lastEvalId: "",
+    };
 
-        evalCount: 0,
-        lastEvalAt: null,
-        lastEvalType: "",
-        lastEvalTitle: "",
-      },
-    });
+    return res.status(201).json({ item });
   } catch (err) {
     console.error("POST /admin/evaluations/guest error:", err);
     return res.status(500).json({ error: "Error al crear invitado." });
@@ -246,13 +286,12 @@ router.delete("/guest/:id", protect, adminOnly, async (req, res) => {
     if (!guest) return res.status(404).json({ error: "Invitado no encontrado." });
 
     if (guest.role !== "guest") {
-      return res.status(400).json({ error: "Solo se pueden eliminar usuarios guest desde esta ruta." });
+      return res.status(400).json({
+        error: "Solo se pueden eliminar usuarios guest desde esta ruta.",
+      });
     }
 
-    await Promise.all([
-      Evaluation.deleteMany({ user: id }),
-      User.findByIdAndDelete(id),
-    ]);
+    await Promise.all([Evaluation.deleteMany({ user: id }), User.findByIdAndDelete(id)]);
 
     return res.json({ ok: true });
   } catch (err) {
@@ -273,12 +312,14 @@ router.get("/user/:userId", protect, adminOnly, async (req, res) => {
       return res.status(400).json({ error: "userId inválido." });
     }
 
-    const items = await Evaluation.find({ user: userId })
-      .select("type title notes createdBy createdAt updatedAt")
+    const docs = await Evaluation.find({ user: userId })
+      .select("type title notes createdBy createdAt updatedAt scoring")
       .populate("createdBy", "name lastName email")
       .sort({ createdAt: -1 })
       .limit(limit)
       .lean();
+
+    const items = (docs || []).map(serializeEvalLite).filter(Boolean);
 
     return res.json({ items });
   } catch (err) {
@@ -319,7 +360,8 @@ router.post("/user/:userId", protect, adminOnly, async (req, res) => {
       createdBy: req.user._id,
     });
 
-    return res.status(201).json({ item: ev });
+    // ✅ devolvemos id además de _id
+    return res.status(201).json({ item: serializeEvalLite(ev.toObject()) });
   } catch (err) {
     console.error("POST /admin/evaluations/user/:userId error:", err);
     return res.status(500).json({ error: "Error al crear evaluación." });
@@ -343,7 +385,15 @@ router.get("/:id", protect, adminOnly, async (req, res) => {
       .lean();
 
     if (!ev) return res.status(404).json({ error: "Evaluación no encontrada." });
-    return res.json({ item: ev });
+
+    return res.json({
+      item: {
+        ...serializeEvalLite(ev),
+        // mantenemos poblados:
+        user: ev.user,
+        createdBy: ev.createdBy,
+      },
+    });
   } catch (err) {
     console.error("GET /admin/evaluations/:id error:", err);
     return res.status(500).json({ error: "Error al traer evaluación." });
@@ -376,7 +426,7 @@ router.patch("/:id", protect, adminOnly, async (req, res) => {
     const ev = await Evaluation.findByIdAndUpdate(id, patch, { new: true }).lean();
     if (!ev) return res.status(404).json({ error: "Evaluación no encontrada." });
 
-    return res.json({ item: ev });
+    return res.json({ item: serializeEvalLite(ev) });
   } catch (err) {
     console.error("PATCH /admin/evaluations/:id error:", err);
     return res.status(500).json({ error: "Error al actualizar evaluación." });
