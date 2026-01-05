@@ -33,11 +33,12 @@ function normPhone(v) {
 
 /* ============================================
    ✅ Servicios disponibles (UI) desde creditLots
+   - RF ELIMINADO
    ============================================ */
 
 const SERVICE_KEY_TO_NAME = {
   EP: "Entrenamiento Personal",
-  RF: "Reeducacion Funcional",
+  // RF: "Reeducacion Funcional", // ❌ eliminado
   AR: "Alto Rendimiento",
   RA: "Rehabilitacion Activa",
   NUT: "Nutricion",
@@ -45,7 +46,6 @@ const SERVICE_KEY_TO_NAME = {
 
 const ALL_UI_SERVICES = [
   "Entrenamiento Personal",
-  "Reeducacion Funcional",
   "Alto Rendimiento",
   "Rehabilitacion Activa",
 ];
@@ -55,7 +55,9 @@ function computeServiceAccessFromLots(u) {
   const lots = Array.isArray(u?.creditLots) ? u.creditLots : [];
 
   let universal = 0;
-  const byKey = { EP: 0, RF: 0, AR: 0, RA: 0, NUT: 0 };
+
+  // ✅ RF eliminado: lo ignoramos totalmente en el acceso
+  const byKey = { EP: 0, AR: 0, RA: 0, NUT: 0 };
 
   for (const lot of lots) {
     const remaining = Number(lot?.remaining || 0);
@@ -65,10 +67,13 @@ function computeServiceAccessFromLots(u) {
     if (exp && exp <= now) continue;
 
     const sk = String(lot?.serviceKey || "").toUpperCase().trim();
+
     if (sk === "ALL") {
       universal += remaining;
       continue;
     }
+
+    // ✅ solo keys válidas (RF queda afuera)
     if (byKey[sk] !== undefined) byKey[sk] += remaining;
   }
 
@@ -81,7 +86,7 @@ function computeServiceAccessFromLots(u) {
     allowedServices = Object.entries(byKey)
       .filter(([k, v]) => v > 0 && SERVICE_KEY_TO_NAME[k])
       .map(([k]) => SERVICE_KEY_TO_NAME[k])
-      .filter((name) => ALL_UI_SERVICES.includes(name)); // por las dudas
+      .filter((name) => ALL_UI_SERVICES.includes(name));
   }
 
   // serviceCredits SOLO dedicados (sin sumar ALL, para no mentir)
