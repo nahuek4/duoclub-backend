@@ -35,7 +35,6 @@ function titleCaseName(s) {
 
 /* =========================================================
    GET /admin/evaluations/users
-   Lista usuarios (SOLO clientes) + count eval + última eval
 ========================================================= */
 router.get("/users", protect, adminOnly, async (req, res) => {
   try {
@@ -109,7 +108,6 @@ router.get("/users", protect, adminOnly, async (req, res) => {
 
 /* =========================================================
    GET /admin/evaluations/guests
-   Lista invitados (SOLO role=guest) + count eval + última eval
 ========================================================= */
 router.get("/guests", protect, adminOnly, async (req, res) => {
   try {
@@ -129,7 +127,7 @@ router.get("/guests", protect, adminOnly, async (req, res) => {
 
     const guests = await User.find(query)
       .select("name lastName email phone suspended approvalStatus createdAt role")
-      .sort({ createdAt: -1 }) // ✅ los más nuevos arriba
+      .sort({ createdAt: -1 })
       .limit(limit)
       .lean();
 
@@ -171,7 +169,6 @@ router.get("/guests", protect, adminOnly, async (req, res) => {
 
 /* =========================================================
    POST /admin/evaluations/guest
-   Crea invitado y lo devuelve listo para abrir modal
 ========================================================= */
 router.post("/guest", protect, adminOnly, async (req, res) => {
   try {
@@ -184,7 +181,6 @@ router.post("/guest", protect, adminOnly, async (req, res) => {
       return res.status(400).json({ error: "name y lastName son requeridos." });
     }
 
-    // Email opcional. Si viene, validamos unicidad.
     const email = emailRaw ? emailRaw.toLowerCase() : "";
 
     if (email) {
@@ -194,26 +190,24 @@ router.post("/guest", protect, adminOnly, async (req, res) => {
       }
     }
 
-    // ✅ password random + hash (aunque no se use)
     const rawPassword = crypto.randomBytes(24).toString("hex");
     const hashedPassword = await bcrypt.hash(rawPassword, 10);
 
     const guest = await User.create({
       name,
       lastName,
-      email,              // "" si no viene
+      email,
       phone: phoneRaw || "",
       role: "guest",
 
-      password: hashedPassword,  // ✅ cumple schema
+      password: hashedPassword,
       mustChangePassword: true,
-      suspended: true,           // ✅ extra bloqueo
+      suspended: true,
 
       emailVerified: false,
       approvalStatus: "approved",
     });
 
-    // devolvemos el formato que usa el frontend (similar al listado)
     return res.status(201).json({
       item: {
         _id: guest._id,
@@ -237,8 +231,38 @@ router.post("/guest", protect, adminOnly, async (req, res) => {
 });
 
 /* =========================================================
+   DELETE /admin/evaluations/guest/:id
+   ✅ borra invitado + sus evaluaciones
+========================================================= */
+router.delete("/guest/:id", protect, adminOnly, async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    if (!isValidObjectId(id)) {
+      return res.status(400).json({ error: "id inválido." });
+    }
+
+    const guest = await User.findById(id).select("_id role").lean();
+    if (!guest) return res.status(404).json({ error: "Invitado no encontrado." });
+
+    if (guest.role !== "guest") {
+      return res.status(400).json({ error: "Solo se pueden eliminar usuarios guest desde esta ruta." });
+    }
+
+    await Promise.all([
+      Evaluation.deleteMany({ user: id }),
+      User.findByIdAndDelete(id),
+    ]);
+
+    return res.json({ ok: true });
+  } catch (err) {
+    console.error("DELETE /admin/evaluations/guest/:id error:", err);
+    return res.status(500).json({ error: "Error al eliminar invitado." });
+  }
+});
+
+/* =========================================================
    GET /admin/evaluations/user/:userId
-   Historial (últimas N) — sirve para client y guest
 ========================================================= */
 router.get("/user/:userId", protect, adminOnly, async (req, res) => {
   try {
@@ -265,7 +289,6 @@ router.get("/user/:userId", protect, adminOnly, async (req, res) => {
 
 /* =========================================================
    POST /admin/evaluations/user/:userId
-   Crear evaluación
 ========================================================= */
 router.post("/user/:userId", protect, adminOnly, async (req, res) => {
   try {
@@ -328,7 +351,7 @@ router.get("/:id", protect, adminOnly, async (req, res) => {
 });
 
 /* =========================================================
-   PATCH /admin/evaluations/:id (opcional)
+   PATCH /admin/evaluations/:id
 ========================================================= */
 router.patch("/:id", protect, adminOnly, async (req, res) => {
   try {
@@ -361,7 +384,7 @@ router.patch("/:id", protect, adminOnly, async (req, res) => {
 });
 
 /* =========================================================
-   DELETE /admin/evaluations/:id (opcional)
+   DELETE /admin/evaluations/:id
 ========================================================= */
 router.delete("/:id", protect, adminOnly, async (req, res) => {
   try {

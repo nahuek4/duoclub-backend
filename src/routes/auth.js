@@ -19,10 +19,93 @@ function signToken(user) {
   });
 }
 
+function sha256(str) {
+  return crypto.createHash("sha256").update(str).digest("hex");
+}
+
+function normText(v) {
+  return String(v || "").trim();
+}
+
+function normPhone(v) {
+  return String(v || "").trim().replace(/[^\d+\s()-]/g, "");
+}
+
+/* ============================================
+   ✅ Servicios disponibles (UI) desde creditLots
+   ============================================ */
+
+const SERVICE_KEY_TO_NAME = {
+  EP: "Entrenamiento Personal",
+  RF: "Reeducacion Funcional",
+  AR: "Alto Rendimiento",
+  RA: "Rehabilitacion Activa",
+  NUT: "Nutricion",
+};
+
+const ALL_UI_SERVICES = [
+  "Entrenamiento Personal",
+  "Reeducacion Funcional",
+  "Alto Rendimiento",
+  "Rehabilitacion Activa",
+];
+
+function computeServiceAccessFromLots(u) {
+  const now = new Date();
+  const lots = Array.isArray(u?.creditLots) ? u.creditLots : [];
+
+  let universal = 0;
+  const byKey = { EP: 0, RF: 0, AR: 0, RA: 0, NUT: 0 };
+
+  for (const lot of lots) {
+    const remaining = Number(lot?.remaining || 0);
+    if (remaining <= 0) continue;
+
+    const exp = lot?.expiresAt ? new Date(lot.expiresAt) : null;
+    if (exp && exp <= now) continue;
+
+    const sk = String(lot?.serviceKey || "").toUpperCase().trim();
+    if (sk === "ALL") {
+      universal += remaining;
+      continue;
+    }
+    if (byKey[sk] !== undefined) byKey[sk] += remaining;
+  }
+
+  // allowedServices con nombres tal cual el frontend
+  let allowedServices = [];
+
+  if (universal > 0) {
+    allowedServices = [...ALL_UI_SERVICES];
+  } else {
+    allowedServices = Object.entries(byKey)
+      .filter(([k, v]) => v > 0 && SERVICE_KEY_TO_NAME[k])
+      .map(([k]) => SERVICE_KEY_TO_NAME[k])
+      .filter((name) => ALL_UI_SERVICES.includes(name)); // por las dudas
+  }
+
+  // serviceCredits SOLO dedicados (sin sumar ALL, para no mentir)
+  const serviceCredits = {};
+  for (const k of Object.keys(byKey)) {
+    const name = SERVICE_KEY_TO_NAME[k];
+    if (!name) continue;
+    if (ALL_UI_SERVICES.includes(name) && byKey[k] > 0) {
+      serviceCredits[name] = byKey[k];
+    }
+  }
+
+  return {
+    allowedServices,
+    serviceCredits,
+    universalCredits: universal,
+  };
+}
+
 function serializeUser(u) {
   if (!u) return null;
 
   const m = u.membership || {};
+  const svc = computeServiceAccessFromLots(u);
 
   return {
     id: u._id.toString(),
@@ -35,9 +118,15 @@ function serializeUser(u) {
     suspended: u.suspended,
     mustChangePassword: u.mustChangePassword,
     aptoStatus: u.aptoStatus || "",
+    photoPath: u.photoPath || "",
     emailVerified: !!u.emailVerified,
     approvalStatus: u.approvalStatus || "pending",
     createdAt: u.createdAt || null,
+
+    // ✅ lo que necesita el front para filtrar servicios
+    allowedServices: svc.allowedServices,
+    serviceCredits: svc.serviceCredits,
+    universalCredits: svc.universalCredits,
 
     membership: {
       tier: m.tier || "basic",
@@ -47,18 +136,6 @@ function serializeUser(u) {
       creditsExpireDays: Number(m.creditsExpireDays ?? 30),
     },
   };
-}
-
-function sha256(str) {
-  return crypto.createHash("sha256").update(str).digest("hex");
-}
-
-function normText(v) {
-  return String(v || "").trim();
-}
-
-function normPhone(v) {
-  return String(v || "").trim().replace(/[^\d+\s()-]/g, "");
 }
 
 /* ============================================
@@ -76,9 +153,6 @@ router.post("/login", async (req, res) => {
       return res.status(401).json({ error: "Email o contraseña incorrectos." });
     }
 
-    // ✅ BLOQUEO TOTAL PARA INVITADOS (guest)
-    // - no pueden loguearse
-    // - aunque tengan password
     if (String(user.role || "").toLowerCase() === "guest") {
       return res.status(403).json({
         error: "Usuario invitado. Acceso no permitido.",
@@ -90,7 +164,6 @@ router.post("/login", async (req, res) => {
       return res.status(401).json({ error: "Email o contraseña incorrectos." });
     }
 
-    // 🔒 orden correcto de validaciones
     if (!user.emailVerified) {
       return res.status(403).json({
         error: "Tenés que verificar tu email antes de iniciar sesión.",
@@ -214,7 +287,6 @@ router.post("/force-change-password", protect, async (req, res) => {
     const user = await User.findById(req.user._id);
     if (!user) return res.status(404).json({ error: "Usuario no encontrado." });
 
-    // ✅ invitados no deberían usar esto; por seguridad lo bloqueamos
     if (String(user.role || "").toLowerCase() === "guest") {
       return res.status(403).json({ error: "Acción no permitida para invitados." });
     }
@@ -254,7 +326,6 @@ router.get("/verify-email", async (req, res) => {
       });
     }
 
-    // ✅ invitados no usan verificación
     if (String(user.role || "").toLowerCase() === "guest") {
       return res.status(400).json({ error: "Usuario invitado inválido para verificación." });
     }
@@ -288,7 +359,6 @@ router.post("/resend-verification", async (req, res) => {
 
     const user = await User.findOne({ email: emailLower });
 
-    // respondemos igual por seguridad (no revelar existencia)
     if (!user) {
       return res.json({
         ok: true,
@@ -296,7 +366,6 @@ router.post("/resend-verification", async (req, res) => {
       });
     }
 
-    // ✅ invitados no usan verificación
     if (String(user.role || "").toLowerCase() === "guest") {
       return res.json({
         ok: true,
@@ -336,9 +405,6 @@ router.get("/me", protect, async (req, res) => {
     if (!user) {
       return res.status(401).json({ error: "Usuario no encontrado." });
     }
-
-    // ✅ si alguna vez un guest llegara acá con token (no debería),
-    // igual devolvemos el perfil (solo lectura), pero vos ya no les das token en login.
     return res.json(serializeUser(user));
   } catch (err) {
     console.error("Error en GET /auth/me:", err);

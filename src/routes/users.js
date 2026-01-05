@@ -224,9 +224,9 @@ router.patch("/:id/approval", adminOnly, async (req, res) => {
 
     // No aprobar si no verificó email
     if (status === "approved" && !user.emailVerified) {
-      return res
-        .status(400)
-        .json({ error: "No se puede aprobar: el email no está verificado." });
+      return res.status(400).json({
+        error: "No se puede aprobar: el email no está verificado.",
+      });
     }
 
     user.approvalStatus = status;
@@ -322,9 +322,7 @@ router.delete("/:id", adminOnly, async (req, res) => {
     });
   } catch (err) {
     console.error("Error en DELETE /users/:id:", err);
-    res
-      .status(500)
-      .json({ error: "Error al eliminar usuario y sus turnos." });
+    res.status(500).json({ error: "Error al eliminar usuario y sus turnos." });
   }
 });
 
@@ -389,9 +387,9 @@ router.post("/:id/clinical-notes", adminOnly, async (req, res) => {
     const { text } = req.body || {};
 
     if (!text || !String(text).trim()) {
-      return res
-        .status(400)
-        .json({ error: "El texto de la nota clínica es obligatorio." });
+      return res.status(400).json({
+        error: "El texto de la nota clínica es obligatorio.",
+      });
     }
 
     const user = await User.findById(id);
@@ -520,12 +518,7 @@ router.post("/:id/apto", uploadApto.single("apto"), async (req, res) => {
 
     if (user.aptoPath) {
       try {
-        const old = path.join(
-          __dirname,
-          "..",
-          "..",
-          user.aptoPath.replace(/^\//, "")
-        );
+        const old = path.join(__dirname, "..", "..", user.aptoPath.replace(/^\//, ""));
         if (fs.existsSync(old)) fs.unlinkSync(old);
       } catch {}
     }
@@ -556,9 +549,7 @@ router.get("/:id/apto", async (req, res) => {
     const isSelf = req.user._id.toString() === id;
 
     if (!isAdmin && !isSelf) {
-      return res.status(403).json({
-        error: "No autorizado.",
-      });
+      return res.status(403).json({ error: "No autorizado." });
     }
 
     const user = await User.findById(id);
@@ -566,13 +557,7 @@ router.get("/:id/apto", async (req, res) => {
       return res.status(404).json({ error: "Apto no encontrado." });
     }
 
-    const filePath = path.join(
-      __dirname,
-      "..",
-      "..",
-      user.aptoPath.replace(/^\//, "")
-    );
-
+    const filePath = path.join(__dirname, "..", "..", user.aptoPath.replace(/^\//, ""));
     res.sendFile(filePath);
   } catch (err) {
     console.error("Error en GET /users/:id/apto:", err);
@@ -591,9 +576,7 @@ router.delete("/:id/apto", async (req, res) => {
     const isSelf = req.user._id.toString() === id;
 
     if (!isAdmin && !isSelf) {
-      return res.status(403).json({
-        error: "No autorizado.",
-      });
+      return res.status(403).json({ error: "No autorizado." });
     }
 
     const user = await User.findById(id);
@@ -601,12 +584,7 @@ router.delete("/:id/apto", async (req, res) => {
 
     if (user.aptoPath) {
       try {
-        const file = path.join(
-          __dirname,
-          "..",
-          "..",
-          user.aptoPath.replace(/^\//, "")
-        );
+        const file = path.join(__dirname, "..", "..", user.aptoPath.replace(/^\//, ""));
         if (fs.existsSync(file)) fs.unlinkSync(file);
       } catch {}
     }
@@ -649,12 +627,7 @@ router.post("/:id/photo", avatarUpload.single("photo"), async (req, res) => {
 
     if (user.photoPath) {
       try {
-        const old = path.join(
-          __dirname,
-          "..",
-          "..",
-          user.photoPath.replace(/^\//, "")
-        );
+        const old = path.join(__dirname, "..", "..", user.photoPath.replace(/^\//, ""));
         if (fs.existsSync(old)) fs.unlinkSync(old);
       } catch {}
     }

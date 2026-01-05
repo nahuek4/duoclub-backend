@@ -8,9 +8,9 @@ async function protect(req, res, next) {
     const authHeader = req.headers.authorization || req.headers.Authorization;
 
     if (!authHeader || !authHeader.startsWith("Bearer ")) {
-      return res
-        .status(401)
-        .json({ error: "No autorizado. Falta token de autenticación." });
+      return res.status(401).json({
+        error: "No autorizado. Falta token de autenticación.",
+      });
     }
 
     const token = authHeader.split(" ")[1];
@@ -37,9 +37,9 @@ async function protect(req, res, next) {
     next();
   } catch (err) {
     console.error("Error en middleware protect:", err);
-    return res
-      .status(401)
-      .json({ error: "Token inválido o expirado. Iniciá sesión de nuevo." });
+    return res.status(401).json({
+      error: "Token inválido o expirado. Iniciá sesión de nuevo.",
+    });
   }
 }
 
