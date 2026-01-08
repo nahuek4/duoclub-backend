@@ -63,6 +63,9 @@ const orderSchema = new mongoose.Schema(
 
     applied: { type: Boolean, default: false },
 
+    // ✅ NUEVO: evita mandar mail admin 2 veces (CASH + MP webhook reintentos)
+    adminNotifiedAt: { type: Date, default: null },
+
     // MercadoPago data
     mpPreferenceId: { type: String, default: "" },
     mpInitPoint: { type: String, default: "" },
@@ -101,12 +104,20 @@ orderSchema.pre("validate", function () {
   }
 
   // Si es legacy y no tiene total, usar price
-  if ((this.total === 0 || this.total == null) && this.price > 0 && (!this.items || this.items.length === 0)) {
+  if (
+    (this.total === 0 || this.total == null) &&
+    this.price > 0 &&
+    (!this.items || this.items.length === 0)
+  ) {
     this.total = Number(this.price || 0);
   }
 
   // Si es checkout y total quedó 0 por alguna razón, recalcular desde items
-  if ((this.total === 0 || this.total == null) && Array.isArray(this.items) && this.items.length > 0) {
+  if (
+    (this.total === 0 || this.total == null) &&
+    Array.isArray(this.items) &&
+    this.items.length > 0
+  ) {
     const sum = this.items.reduce((acc, it) => acc + Number(it.price || 0), 0);
     this.total = Math.round(sum);
   }

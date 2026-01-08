@@ -2,6 +2,7 @@
 import express from "express";
 import Order from "../models/Order.js";
 import User from "../models/User.js";
+import { sendAdminNewOrderEmail } from "../mail.js";
 
 const router = express.Router();
 
@@ -176,6 +177,24 @@ async function applyOrderIfNeeded(order) {
   return { ok: true };
 }
 
+/* =======================
+   ✅ Notificar admin (idempotente)
+======================= */
+async function notifyAdminIfNeeded(order) {
+  if (!order) return;
+  if (order.adminNotifiedAt) return;
+
+  try {
+    const u = await User.findById(order.user).lean().catch(() => null);
+    await sendAdminNewOrderEmail(order, u);
+    order.adminNotifiedAt = new Date();
+    await order.save();
+  } catch (e) {
+    console.warn("MP webhook: no se pudo enviar mail admin:", e?.message || e);
+    // no marcamos adminNotifiedAt si falló el mail
+  }
+}
+
 /**
  * POST /payments/mercadopago/webhook
  * idempotente
@@ -199,7 +218,7 @@ router.post("/mercadopago/webhook", async (req, res) => {
     order.mpMerchantOrderId = String(payment.order?.id || payment.merchant_order_id || "");
 
     const paidAmount = Number(payment.transaction_amount || 0);
-    const expected = Number(order.total || order.price || 0);
+    const expected = Number(order.totalFinal ?? order.total ?? order.price ?? 0);
 
     // tolerancia mínima por redondeo (si querés, dejala en 0)
     const EPS = 0;
@@ -229,6 +248,9 @@ router.post("/mercadopago/webhook", async (req, res) => {
       await order.save();
       return res.status(200).json({ ok: true });
     }
+
+    // ✅ Mail al admin SOLO cuando está approved (y solo 1 vez)
+    await notifyAdminIfNeeded(order);
 
     await order.save();
     return res.status(200).json({ ok: true });

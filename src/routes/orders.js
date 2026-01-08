@@ -5,6 +5,7 @@ import PricingPlan from "../models/PricingPlan.js";
 import Order from "../models/Order.js";
 import User from "../models/User.js";
 import mongoose from "mongoose";
+import { sendAdminNewOrderEmail } from "../mail.js";
 
 const router = express.Router();
 
@@ -125,7 +126,6 @@ function safeServiceFromOrder(order) {
     if (kinds.includes("MEMBERSHIP") && kinds.includes("CREDITS")) return "MEMBERSHIP+CREDITS";
     if (kinds.includes("MEMBERSHIP")) return "MEMBERSHIP";
     if (kinds.includes("CREDITS")) {
-      // si hay un único serviceKey en credits, lo mostramos
       const sks = order.items
         .filter((it) => String(it?.kind || "").toUpperCase() === "CREDITS")
         .map((it) => String(it?.serviceKey || "").toUpperCase().trim())
@@ -138,6 +138,23 @@ function safeServiceFromOrder(order) {
     return "ITEMS";
   }
   return String(order?.serviceKey || "ORDER").toUpperCase().trim() || "ORDER";
+}
+
+/* =======================
+   ✅ Notificar admin (idempotente)
+======================= */
+async function notifyAdminIfNeeded(order) {
+  if (!order) return;
+  if (order.adminNotifiedAt) return;
+
+  try {
+    const u = await User.findById(order.user).lean().catch(() => null);
+    await sendAdminNewOrderEmail(order, u);
+    order.adminNotifiedAt = new Date();
+    await order.save();
+  } catch (e) {
+    console.warn("ORDERS: no se pudo enviar mail admin:", e?.message || e);
+  }
 }
 
 /* =======================
@@ -157,7 +174,6 @@ async function applyCreditsOnlyIfNeeded(order) {
 
   const hasItems = Array.isArray(order.items) && order.items.length > 0;
 
-  // Asegura estado membresía (por expiración)
   ensureBasicIfExpired(user);
 
   if (hasItems) {
@@ -179,7 +195,6 @@ async function applyCreditsOnlyIfNeeded(order) {
       }
     }
   } else {
-    // legacy
     const totalCredits = Math.max(0, Number(order.credits) || 0);
     if (totalCredits > 0) {
       addCreditLot(user, {
@@ -383,6 +398,7 @@ function resolveMembershipItem() {
    - ✅ DESCUENTO: SOLO SHOP (hoy no hay SHOP => 0)
    - DUO+ siempre full price
    - ✅ NO devolver orderId al cliente
+   - ✅ NUEVO: si es CASH manda mail al admin al crear la orden
 ========================================================= */
 router.post("/checkout", protect, async (req, res) => {
   try {
@@ -472,9 +488,13 @@ router.post("/checkout", protect, async (req, res) => {
       status: "pending",
       applied: false,
       // creditsApplied tiene default false en el schema
+      // adminNotifiedAt tiene default null en el schema
     });
 
     if (pm === "CASH") {
+      // ✅ NUEVO: mail al admin al crear orden CASH (1 sola vez)
+      await notifyAdminIfNeeded(order);
+
       return res.status(201).json({
         ok: true,
         status: "pending",
@@ -550,9 +570,12 @@ router.post("/", protect, async (req, res) => {
       status: "pending",
       creditsApplied: false,
       applied: false,
+      // adminNotifiedAt default null
     });
 
     if (pm === "CASH") {
+      // ✅ NUEVO: mail admin también en legacy cash
+      await notifyAdminIfNeeded(order);
       return res.status(201).json({ ok: true, status: "pending" });
     }
 
@@ -620,7 +643,6 @@ router.patch("/:id/enable-credits", protect, adminOnly, async (req, res) => {
     const r = await applyCreditsOnlyIfNeeded(order);
     if (!r.ok) return res.status(500).json({ error: r.error || "No se pudo habilitar créditos." });
 
-    // ✅ queda pendiente, no tocamos status
     return res.json({ ok: true });
   } catch (err) {
     console.error("PATCH /orders/:id/enable-credits error:", err);
@@ -672,10 +694,6 @@ router.patch("/:id/mark-paid", protect, adminOnly, async (req, res) => {
 
 /* =========================================================
    DELETE /orders/:id  (ADMIN) — BORRAR VENTA
-   ✅ NUEVO:
-   - SI ya impactó (applied o creditsApplied), IGUAL se borra
-   - PERO se devuelve warning + mensaje para avisar al admin
-   - NO se deshacen créditos/membresía (solo borrás el registro de venta)
 ========================================================= */
 router.delete("/:id", protect, adminOnly, async (req, res) => {
   try {
@@ -690,7 +708,6 @@ router.delete("/:id", protect, adminOnly, async (req, res) => {
 
     const impacted = !!(order.applied || order.creditsApplied);
 
-    // ✅ (opcional pero recomendado) dejar rastro en historial del usuario
     try {
       const user = await User.findById(order.user);
       if (user) {
@@ -705,7 +722,6 @@ router.delete("/:id", protect, adminOnly, async (req, res) => {
         await user.save();
       }
     } catch (e) {
-      // no frenamos el delete por esto
       console.warn("ORDER DELETE: no se pudo guardar history:", e?.message || e);
     }
 
