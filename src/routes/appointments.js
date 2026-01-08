@@ -60,8 +60,9 @@ function isPlusActive(user) {
   return new Date(m.activeUntil) > new Date();
 }
 
+// ✅ NUEVO: BASIC=2 / PLUS=3
 function getMonthlyCancelLimit(user) {
-  return isPlusActive(user) ? 2 : 1;
+  return isPlusActive(user) ? 3 : 2;
 }
 
 function ensureMonthlyCancels(user) {
@@ -101,7 +102,8 @@ function getMembershipEffective(user) {
     return {
       tier: "plus",
       cancelHours: Number(m.cancelHours || 12),
-      cancelsLeft: Math.min(Math.max(Number(m.cancelsLeft ?? 2), 0), 2),
+      // ✅ PLUS ahora 3
+      cancelsLeft: Math.min(Math.max(Number(m.cancelsLeft ?? 3), 0), 3),
       creditsExpireDays: Number(m.creditsExpireDays || 40),
       activeUntil: m.activeUntil,
     };
@@ -110,7 +112,8 @@ function getMembershipEffective(user) {
   return {
     tier: "basic",
     cancelHours: 24,
-    cancelsLeft: Math.min(Math.max(Number(m.cancelsLeft ?? 1), 0), 1),
+    // ✅ BASIC ahora 2
+    cancelsLeft: Math.min(Math.max(Number(m.cancelsLeft ?? 2), 0), 2),
     creditsExpireDays: 30,
     activeUntil: null,
   };
@@ -310,7 +313,6 @@ router.post("/", async (req, res) => {
     }
 
     const isEpService = service === EP_NAME;
-    const isOtherService = OTHER_SERVICES.has(service);
 
     // ✅ tarde: SOLO EP (regla dura)
     if (turno === "tarde" && !isEpService) {
@@ -485,6 +487,7 @@ router.patch("/:id/cancel", async (req, res) => {
     if (!isAdmin) {
       const mem = getMembershipEffective(user);
 
+      // ✅ Normalización BASIC (ahora con 2)
       if (mem.tier === "basic") {
         user.membership = user.membership || {};
         user.membership.tier = "basic";
@@ -492,8 +495,8 @@ router.patch("/:id/cancel", async (req, res) => {
         user.membership.cancelHours = 24;
         user.membership.creditsExpireDays = 30;
 
-        const cur = Number(user.membership.cancelsLeft ?? 1);
-        user.membership.cancelsLeft = Math.min(Math.max(cur, 0), 1);
+        const cur = Number(user.membership.cancelsLeft ?? 2);
+        user.membership.cancelsLeft = Math.min(Math.max(cur, 0), 2);
       }
 
       const cancelHours = Number(mem.cancelHours || 24);

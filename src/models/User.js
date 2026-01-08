@@ -100,7 +100,10 @@ const userSchema = new mongoose.Schema(
       activeUntil: { type: Date, default: null },
 
       cancelHours: { type: Number, default: 24 },
-      cancelsLeft: { type: Number, default: 1 },
+
+      // ✅ BASIC por defecto ahora 2 (PLUS se setea/normaliza por lógica al cancelar)
+      cancelsLeft: { type: Number, default: 2 },
+
       creditsExpireDays: { type: Number, default: 30 },
     },
 
