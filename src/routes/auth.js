@@ -11,7 +11,7 @@ const router = express.Router();
 
 /* ============================================
    HELPERS
-   ============================================ */
+============================================ */
 
 function signToken(user) {
   return jwt.sign({ id: user._id }, process.env.JWT_SECRET, {
@@ -34,11 +34,10 @@ function normPhone(v) {
 /* ============================================
    ✅ Servicios disponibles (UI) desde creditLots
    - RF ELIMINADO
-   ============================================ */
+============================================ */
 
 const SERVICE_KEY_TO_NAME = {
   EP: "Entrenamiento Personal",
-  // RF: "Reeducacion Funcional", // ❌ eliminado
   AR: "Alto Rendimiento",
   RA: "Rehabilitacion Activa",
   NUT: "Nutricion",
@@ -56,7 +55,7 @@ function computeServiceAccessFromLots(u) {
 
   let universal = 0;
 
-  // ✅ RF eliminado: lo ignoramos totalmente en el acceso
+  // ✅ RF eliminado
   const byKey = { EP: 0, AR: 0, RA: 0, NUT: 0 };
 
   for (const lot of lots) {
@@ -73,11 +72,9 @@ function computeServiceAccessFromLots(u) {
       continue;
     }
 
-    // ✅ solo keys válidas (RF queda afuera)
     if (byKey[sk] !== undefined) byKey[sk] += remaining;
   }
 
-  // allowedServices con nombres tal cual el frontend
   let allowedServices = [];
 
   if (universal > 0) {
@@ -89,7 +86,6 @@ function computeServiceAccessFromLots(u) {
       .filter((name) => ALL_UI_SERVICES.includes(name));
   }
 
-  // serviceCredits SOLO dedicados (sin sumar ALL, para no mentir)
   const serviceCredits = {};
   for (const k of Object.keys(byKey)) {
     const name = SERVICE_KEY_TO_NAME[k];
@@ -106,11 +102,48 @@ function computeServiceAccessFromLots(u) {
   };
 }
 
+/* ============================================
+   ✅ Membership helpers (alineado a appointments.js)
+============================================ */
+
+function isPlusActive(u) {
+  const m = u?.membership || {};
+  const tier = String(m.tier || "").toLowerCase().trim();
+  if (tier !== "plus") return false;
+  if (!m.activeUntil) return false;
+  return new Date(m.activeUntil) > new Date();
+}
+
+function getMonthlyCancelLimit(u) {
+  return isPlusActive(u) ? 3 : 2;
+}
+
+function clamp(n, min, max) {
+  const x = Number(n);
+  if (!Number.isFinite(x)) return min;
+  return Math.min(Math.max(x, min), max);
+}
+
+/* ============================================
+   serializeUser
+============================================ */
+
 function serializeUser(u) {
   if (!u) return null;
 
   const m = u.membership || {};
   const svc = computeServiceAccessFromLots(u);
+
+  const plus = isPlusActive(u);
+  const limit = getMonthlyCancelLimit(u);
+
+  // defaults según plan efectivo
+  const cancelHoursDefault = plus ? 12 : 24;
+  const creditsExpireDaysDefault = plus ? 40 : 30;
+
+  const tierNorm = String(m.tier || (plus ? "plus" : "basic"))
+    .toLowerCase()
+    .trim();
 
   return {
     id: u._id.toString(),
@@ -128,24 +161,24 @@ function serializeUser(u) {
     approvalStatus: u.approvalStatus || "pending",
     createdAt: u.createdAt || null,
 
-    // ✅ lo que necesita el front para filtrar servicios
     allowedServices: svc.allowedServices,
     serviceCredits: svc.serviceCredits,
     universalCredits: svc.universalCredits,
 
     membership: {
-      tier: m.tier || "basic",
+      tier: tierNorm || "basic",
       activeUntil: m.activeUntil || null,
-      cancelHours: Number(m.cancelHours ?? 24),
-      cancelsLeft: Number(m.cancelsLeft ?? 1),
-      creditsExpireDays: Number(m.creditsExpireDays ?? 30),
+      cancelHours: clamp(m.cancelHours ?? cancelHoursDefault, 1, 999),
+      // ✅ BASIC=2 / PLUS=3
+      cancelsLeft: clamp(m.cancelsLeft ?? limit, 0, limit),
+      creditsExpireDays: clamp(m.creditsExpireDays ?? creditsExpireDaysDefault, 1, 999),
     },
   };
 }
 
 /* ============================================
    POST /auth/login
-   ============================================ */
+============================================ */
 router.post("/login", async (req, res) => {
   try {
     const { email, password } = req.body || {};
@@ -154,43 +187,29 @@ router.post("/login", async (req, res) => {
     }
 
     const user = await User.findOne({ email: String(email).toLowerCase() });
-    if (!user) {
-      return res.status(401).json({ error: "Email o contraseña incorrectos." });
-    }
+    if (!user) return res.status(401).json({ error: "Email o contraseña incorrectos." });
 
     if (String(user.role || "").toLowerCase() === "guest") {
-      return res.status(403).json({
-        error: "Usuario invitado. Acceso no permitido.",
-      });
+      return res.status(403).json({ error: "Usuario invitado. Acceso no permitido." });
     }
 
     const match = await bcrypt.compare(password, user.password);
-    if (!match) {
-      return res.status(401).json({ error: "Email o contraseña incorrectos." });
-    }
+    if (!match) return res.status(401).json({ error: "Email o contraseña incorrectos." });
 
     if (!user.emailVerified) {
-      return res.status(403).json({
-        error: "Tenés que verificar tu email antes de iniciar sesión.",
-      });
+      return res.status(403).json({ error: "Tenés que verificar tu email antes de iniciar sesión." });
     }
 
     if (user.approvalStatus === "pending") {
-      return res.status(403).json({
-        error: "Tu cuenta está pendiente de aprobación por el administrador.",
-      });
+      return res.status(403).json({ error: "Tu cuenta está pendiente de aprobación por el administrador." });
     }
 
     if (user.approvalStatus === "rejected") {
-      return res.status(403).json({
-        error: "Tu cuenta fue rechazada. Contactá al administrador.",
-      });
+      return res.status(403).json({ error: "Tu cuenta fue rechazada. Contactá al administrador." });
     }
 
     if (user.suspended) {
-      return res.status(403).json({
-        error: "Cuenta suspendida. Contactá al administrador.",
-      });
+      return res.status(403).json({ error: "Cuenta suspendida. Contactá al administrador." });
     }
 
     const token = signToken(user);
@@ -203,7 +222,7 @@ router.post("/login", async (req, res) => {
 
 /* ============================================
    POST /auth/register
-   ============================================ */
+============================================ */
 router.post("/register", async (req, res) => {
   try {
     const { name, lastName, phone, email, password } = req.body || {};
@@ -220,17 +239,11 @@ router.post("/register", async (req, res) => {
     }
 
     if (String(password).length < 8) {
-      return res.status(400).json({
-        error: "La contraseña debe tener al menos 8 caracteres.",
-      });
+      return res.status(400).json({ error: "La contraseña debe tener al menos 8 caracteres." });
     }
 
     const exists = await User.findOne({ email: em });
-    if (exists) {
-      return res.status(409).json({
-        error: "Ya existe una cuenta con ese email.",
-      });
-    }
+    if (exists) return res.status(409).json({ error: "Ya existe una cuenta con ese email." });
 
     const hashedPass = await bcrypt.hash(password, 10);
 
@@ -274,20 +287,14 @@ router.post("/register", async (req, res) => {
 
 /* ============================================
    POST /auth/force-change-password
-   ============================================ */
+============================================ */
 router.post("/force-change-password", protect, async (req, res) => {
   try {
     const { newPassword } = req.body || {};
     const np = String(newPassword || "").trim();
 
-    if (!np) {
-      return res.status(400).json({ error: "Ingresá una contraseña nueva." });
-    }
-    if (np.length < 8) {
-      return res.status(400).json({
-        error: "La contraseña debe tener al menos 8 caracteres.",
-      });
-    }
+    if (!np) return res.status(400).json({ error: "Ingresá una contraseña nueva." });
+    if (np.length < 8) return res.status(400).json({ error: "La contraseña debe tener al menos 8 caracteres." });
 
     const user = await User.findById(req.user._id);
     if (!user) return res.status(404).json({ error: "Usuario no encontrado." });
@@ -300,7 +307,6 @@ router.post("/force-change-password", protect, async (req, res) => {
     user.mustChangePassword = false;
 
     await user.save();
-
     return res.json({ ok: true });
   } catch (err) {
     console.error("Error en POST /auth/force-change-password:", err);
@@ -310,13 +316,11 @@ router.post("/force-change-password", protect, async (req, res) => {
 
 /* ============================================
    GET /auth/verify-email
-   ============================================ */
+============================================ */
 router.get("/verify-email", async (req, res) => {
   try {
     const rawToken = String(req.query.token || "").trim();
-    if (!rawToken) {
-      return res.status(400).json({ error: "Token inválido." });
-    }
+    if (!rawToken) return res.status(400).json({ error: "Token inválido." });
 
     const tokenHash = sha256(rawToken);
 
@@ -353,34 +357,22 @@ router.get("/verify-email", async (req, res) => {
 
 /* ============================================
    POST /auth/resend-verification
-   ============================================ */
+============================================ */
 router.post("/resend-verification", async (req, res) => {
   try {
     const { email } = req.body || {};
     const emailLower = String(email || "").toLowerCase().trim();
-    if (!emailLower) {
-      return res.status(400).json({ error: "Email requerido." });
-    }
+    if (!emailLower) return res.status(400).json({ error: "Email requerido." });
 
     const user = await User.findOne({ email: emailLower });
 
-    if (!user) {
-      return res.json({
-        ok: true,
-        message: "Si el email existe, te enviamos un correo.",
-      });
-    }
+    if (!user) return res.json({ ok: true, message: "Si el email existe, te enviamos un correo." });
 
     if (String(user.role || "").toLowerCase() === "guest") {
-      return res.json({
-        ok: true,
-        message: "Si el email existe, te enviamos un correo.",
-      });
+      return res.json({ ok: true, message: "Si el email existe, te enviamos un correo." });
     }
 
-    if (user.emailVerified) {
-      return res.json({ ok: true, message: "Tu email ya está verificado." });
-    }
+    if (user.emailVerified) return res.json({ ok: true, message: "Tu email ya está verificado." });
 
     const rawToken = crypto.randomBytes(32).toString("hex");
     const tokenHash = sha256(rawToken);
@@ -403,13 +395,11 @@ router.post("/resend-verification", async (req, res) => {
 
 /* ============================================
    GET /auth/me
-   ============================================ */
+============================================ */
 router.get("/me", protect, async (req, res) => {
   try {
     const user = await User.findById(req.user._id);
-    if (!user) {
-      return res.status(401).json({ error: "Usuario no encontrado." });
-    }
+    if (!user) return res.status(401).json({ error: "Usuario no encontrado." });
     return res.json(serializeUser(user));
   } catch (err) {
     console.error("Error en GET /auth/me:", err);

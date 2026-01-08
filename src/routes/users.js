@@ -79,9 +79,42 @@ function nowDate() {
 
 function isPlusActive(user) {
   const m = user?.membership || {};
-  if (String(m.tier) !== "plus") return false;
+  const tier = String(m.tier || "").toLowerCase().trim(); // ✅ case-insensitive
+  if (tier !== "plus") return false;
   if (!m.activeUntil) return false;
   return new Date(m.activeUntil) > new Date();
+}
+
+// ✅ NUEVO: BASIC=2 / PLUS=3
+function getMonthlyCancelLimit(user) {
+  return isPlusActive(user) ? 3 : 2;
+}
+
+function clamp(n, min, max) {
+  const x = Number(n);
+  if (!Number.isFinite(x)) return min;
+  return Math.min(Math.max(x, min), max);
+}
+
+function normalizeMembershipForUI(user) {
+  const m = user?.membership || {};
+  const plus = isPlusActive(user);
+  const limit = getMonthlyCancelLimit(user);
+
+  const cancelHoursDefault = plus ? 12 : 24;
+  const expireDaysDefault = plus ? 40 : 30;
+
+  const tierNorm = String(m.tier || (plus ? "plus" : "basic"))
+    .toLowerCase()
+    .trim();
+
+  return {
+    tier: tierNorm || "basic",
+    activeUntil: m.activeUntil || null,
+    cancelHours: clamp(m.cancelHours ?? cancelHoursDefault, 1, 999),
+    cancelsLeft: clamp(m.cancelsLeft ?? limit, 0, limit), // ✅ clamp 0..(2/3)
+    creditsExpireDays: clamp(m.creditsExpireDays ?? expireDaysDefault, 1, 999),
+  };
 }
 
 function recalcUserCredits(user) {
@@ -103,7 +136,82 @@ function normalizeLotServiceKey(lot) {
   return sk || "ALL";
 }
 
+// ✅ servicios válidos (RF fuera)
 const ALLOWED_SERVICE_KEYS = new Set(["ALL", "EP", "AR", "RA", "NUT"]);
+
+/* ============================================
+   ✅ Servicios disponibles (UI) desde creditLots
+   - RF ELIMINADO
+============================================ */
+
+const SERVICE_KEY_TO_NAME = {
+  EP: "Entrenamiento Personal",
+  AR: "Alto Rendimiento",
+  RA: "Rehabilitacion Activa",
+  NUT: "Nutricion",
+};
+
+const ALL_UI_SERVICES = [
+  "Entrenamiento Personal",
+  "Alto Rendimiento",
+  "Rehabilitacion Activa",
+];
+
+function computeServiceAccessFromLots(u) {
+  const now = new Date();
+  const lots = Array.isArray(u?.creditLots) ? u.creditLots : [];
+
+  let universal = 0;
+  const byKey = { EP: 0, AR: 0, RA: 0, NUT: 0 };
+
+  for (const lot of lots) {
+    const remaining = Number(lot?.remaining || 0);
+    if (remaining <= 0) continue;
+
+    const exp = lot?.expiresAt ? new Date(lot.expiresAt) : null;
+    if (exp && exp <= now) continue;
+
+    const sk = String(lot?.serviceKey || "").toUpperCase().trim();
+
+    if (sk === "ALL") {
+      universal += remaining;
+      continue;
+    }
+
+    // ✅ solo keys válidas (RF queda afuera)
+    if (byKey[sk] !== undefined) byKey[sk] += remaining;
+  }
+
+  let allowedServices = [];
+
+  if (universal > 0) {
+    allowedServices = [...ALL_UI_SERVICES];
+  } else {
+    allowedServices = Object.entries(byKey)
+      .filter(([k, v]) => v > 0 && SERVICE_KEY_TO_NAME[k])
+      .map(([k]) => SERVICE_KEY_TO_NAME[k])
+      .filter((name) => ALL_UI_SERVICES.includes(name));
+  }
+
+  const serviceCredits = {};
+  for (const k of Object.keys(byKey)) {
+    const name = SERVICE_KEY_TO_NAME[k];
+    if (!name) continue;
+    if (ALL_UI_SERVICES.includes(name) && byKey[k] > 0) {
+      serviceCredits[name] = byKey[k];
+    }
+  }
+
+  return {
+    allowedServices,
+    serviceCredits,
+    universalCredits: universal,
+  };
+}
+
+/* ============================================
+   Créditos por servicio (ADMIN UI)
+============================================ */
 
 function sumCreditsForService(user, serviceKey) {
   const now = nowDate();
@@ -179,6 +287,30 @@ function addCreditLot(user, { amount, serviceKey = "ALL", source = "admin-adjust
   recalcUserCredits(user);
 }
 
+function buildCreditsByService(user) {
+  return {
+    EP: sumCreditsForService(user, "EP"),
+    AR: sumCreditsForService(user, "AR"),
+    RA: sumCreditsForService(user, "RA"),
+    NUT: sumCreditsForService(user, "NUT"),
+    ALL: sumCreditsForService(user, "ALL"),
+  };
+}
+
+function stripSensitive(u) {
+  if (!u || typeof u !== "object") return u;
+  // sacamos password + tokens y cosas internas
+  // (igual te dejo creditLots porque lo usás en admin)
+  const {
+    password,
+    emailVerificationToken,
+    emailVerificationExpires,
+    __v,
+    ...rest
+  } = u;
+  return rest;
+}
+
 /* ============================================
    TODAS LAS RUTAS REQUIEREN ESTAR LOGUEADO
 ============================================ */
@@ -198,7 +330,7 @@ router.get("/registrations/list", adminOnly, async (req, res) => {
     if (status === "rejected") query.approvalStatus = "rejected";
 
     const users = await User.find(query).sort({ createdAt: -1 }).lean();
-    return res.json(users);
+    return res.json(users.map(stripSensitive));
   } catch (err) {
     console.error("Error en GET /users/registrations/list:", err);
     return res.status(500).json({ error: "Error al obtener registraciones." });
@@ -259,9 +391,17 @@ router.post("/", adminOnly, async (req, res) => {
       await user.save();
     }
 
+    const uLean = (await User.findById(user._id).lean()) || user.toObject?.() || user;
+    const svc = computeServiceAccessFromLots(uLean);
+    const membership = normalizeMembershipForUI(uLean);
+
     res.status(201).json({
       ok: true,
-      user,
+      user: {
+        ...stripSensitive(uLean),
+        ...svc,
+        membership,
+      },
       tempPassword: password ? undefined : plainPassword,
     });
   } catch (err) {
@@ -278,7 +418,7 @@ router.post("/", adminOnly, async (req, res) => {
 router.get("/", adminOnly, async (req, res) => {
   try {
     const list = await User.find().lean();
-    res.json(list);
+    res.json(list.map(stripSensitive));
   } catch (err) {
     console.error("Error en GET /users:", err);
     res.status(500).json({ error: "Error al obtener usuarios." });
@@ -291,7 +431,7 @@ router.get("/pending", adminOnly, async (req, res) => {
       .sort({ createdAt: -1 })
       .lean();
 
-    res.json(pending);
+    res.json(pending.map(stripSensitive));
   } catch (err) {
     console.error("Error en GET /users/pending:", err);
     res.status(500).json({ error: "Error al obtener pendientes." });
@@ -374,13 +514,17 @@ router.put("/:id", async (req, res) => {
 
     if (!u) return res.status(404).json({ error: "Usuario no encontrado." });
 
+    const svc = computeServiceAccessFromLots(u);
+    const membership = normalizeMembershipForUI(u);
+
     if (!isAdmin) {
       // eslint-disable-next-line no-unused-vars
-      const { clinicalNotes, ...safeUser } = u;
-      return res.json(safeUser);
+      const { clinicalNotes, ...safeUser } = stripSensitive(u);
+      return res.json({ ...safeUser, ...svc, membership });
     }
 
-    return res.json(u);
+    const creditsByService = buildCreditsByService(u);
+    return res.json({ ...stripSensitive(u), ...svc, membership, creditsByService });
   } catch (err) {
     console.error("Error en PUT /users/:id:", err);
     return res.status(500).json({ error: "Error interno." });
@@ -403,13 +547,23 @@ router.get("/:id", async (req, res) => {
     const u = await User.findById(id).lean();
     if (!u) return res.status(404).json({ error: "Usuario no encontrado." });
 
+    const svc = computeServiceAccessFromLots(u);
+    const membership = normalizeMembershipForUI(u);
+
     if (!isAdmin) {
       // eslint-disable-next-line no-unused-vars
-      const { clinicalNotes, ...safeUser } = u;
-      return res.json(safeUser);
+      const { clinicalNotes, ...safeUser } = stripSensitive(u);
+      return res.json({ ...safeUser, ...svc, membership });
     }
 
-    res.json(u);
+    const creditsByService = buildCreditsByService(u);
+
+    return res.json({
+      ...stripSensitive(u),
+      ...svc,
+      membership,
+      creditsByService,
+    });
   } catch (err) {
     console.error("Error en GET /users/:id:", err);
     res.status(500).json({ error: "Error interno." });
@@ -421,10 +575,13 @@ router.patch("/:id", adminOnly, async (req, res) => {
     const { id } = req.params;
     const updates = req.body || {};
 
-    const u = await User.findByIdAndUpdate(id, updates, { new: true });
+    const u = await User.findByIdAndUpdate(id, updates, { new: true }).lean();
     if (!u) return res.status(404).json({ error: "Usuario no encontrado." });
 
-    res.json(u);
+    const svc = computeServiceAccessFromLots(u);
+    const membership = normalizeMembershipForUI(u);
+
+    res.json({ ...stripSensitive(u), ...svc, membership });
   } catch (err) {
     console.error("Error en PATCH /users/:id:", err);
     res.status(500).json({ error: "Error interno." });
@@ -529,10 +686,6 @@ router.post("/:id/clinical-notes", adminOnly, async (req, res) => {
 
 /* ============================================
    CRÉDITOS (ADMIN) ✅ POR SERVICIO (creditLots)
-   body:
-   - legacy: { credits:number, serviceKey } => set absoluto por servicio
-   - legacy: { delta:number, serviceKey }   => suma/resta por servicio
-   - ✅ batch: { items:[{serviceKey, credits? | delta?}], source? }
 ============================================ */
 async function updateCredits(req, res) {
   try {
@@ -550,9 +703,7 @@ async function updateCredits(req, res) {
         throw err;
       }
 
-      // recalcular antes (por seguridad)
       recalcUserCredits(user);
-
       const currentForService = sumCreditsForService(user, sk);
 
       if (typeof c === "number") {
@@ -583,7 +734,6 @@ async function updateCredits(req, res) {
       throw err;
     };
 
-    // ✅ batch
     if (Array.isArray(items) && items.length > 0) {
       for (const it of items) {
         applyOne({
@@ -594,7 +744,6 @@ async function updateCredits(req, res) {
         });
       }
     } else {
-      // legacy
       applyOne({
         credits,
         delta,
@@ -603,20 +752,20 @@ async function updateCredits(req, res) {
       });
     }
 
+    recalcUserCredits(user);
     await user.save();
 
-    const creditsByService = {
-      EP: sumCreditsForService(user, "EP"),
-      AR: sumCreditsForService(user, "AR"),
-      RA: sumCreditsForService(user, "RA"),
-      NUT: sumCreditsForService(user, "NUT"),
-      ALL: sumCreditsForService(user, "ALL"),
-    };
+    const creditsByService = buildCreditsByService(user);
+    const svc = computeServiceAccessFromLots(user);
+    const membership = normalizeMembershipForUI(user);
 
     res.json({
       ok: true,
       credits: Number(user.credits || 0),
       creditsByService,
+      creditLots: user.creditLots || [],
+      ...svc,
+      membership,
     });
   } catch (err) {
     console.error("Error en créditos:", err);
@@ -628,6 +777,9 @@ async function updateCredits(req, res) {
 router.patch("/:id/credits", adminOnly, updateCredits);
 router.post("/:id/credits", adminOnly, updateCredits);
 
+/* ============================================
+   RESET PASSWORD (ADMIN)
+============================================ */
 router.post("/:id/reset-password", adminOnly, async (req, res) => {
   try {
     const { id } = req.params;
@@ -649,6 +801,9 @@ router.post("/:id/reset-password", adminOnly, async (req, res) => {
   }
 });
 
+/* ============================================
+   SUSPENDER / REACTIVAR (ADMIN)
+============================================ */
 router.patch("/:id/suspend", adminOnly, async (req, res) => {
   try {
     const { id } = req.params;
@@ -667,6 +822,9 @@ router.patch("/:id/suspend", adminOnly, async (req, res) => {
   }
 });
 
+/* ============================================
+   SUBIR APTO (PDF)
+============================================ */
 router.post("/:id/apto", uploadApto.single("apto"), async (req, res) => {
   try {
     const { id } = req.params;

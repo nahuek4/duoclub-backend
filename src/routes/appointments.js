@@ -55,7 +55,8 @@ function addOneMonthExact(d) {
 
 function isPlusActive(user) {
   const m = user?.membership || {};
-  if (String(m.tier) !== "plus") return false;
+  const tier = String(m.tier || "").toLowerCase().trim();
+  if (tier !== "plus") return false;
   if (!m.activeUntil) return false;
   return new Date(m.activeUntil) > new Date();
 }
