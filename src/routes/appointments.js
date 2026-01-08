@@ -20,22 +20,19 @@ function stripAccents(s) {
     .replace(/[\u0300-\u036f]/g, "");
 }
 
-// Mapea el nombre del servicio (texto) al serviceKey de créditos
+// ✅ RF eliminado
 function serviceToKey(serviceName) {
   const s = stripAccents(serviceName).toLowerCase().trim();
 
   if (s.includes("entrenamiento") && s.includes("personal")) return "EP";
-  if (s.includes("reeducacion") && s.includes("funcional")) return "RF";
   if (s.includes("rehabilitacion") && s.includes("activa")) return "RA";
   if (s.includes("alto") && s.includes("rendimiento")) return "AR";
   if (s.includes("nutricion")) return "NUT";
 
-  // fallback: si viene tipo "EP"
   const up = String(serviceName || "").toUpperCase().trim();
-  const allowed = new Set(["EP", "RF", "RA", "AR", "NUT"]);
+  const allowed = new Set(["EP", "RA", "AR", "NUT"]);
   if (allowed.has(up)) return up;
 
-  // default seguro
   return "EP";
 }
 
@@ -43,7 +40,6 @@ function startOfDay(d) {
   return new Date(d.getFullYear(), d.getMonth(), d.getDate());
 }
 
-// suma 1 mes exacto: 21→21 (si no existe, clampa)
 function addOneMonthExact(d) {
   const base = new Date(d);
   const day = base.getDate();
@@ -57,9 +53,6 @@ function addOneMonthExact(d) {
   return next;
 }
 
-/* =========================
-   ✅ Membresía: plus ACTIVO (tier + activeUntil)
-========================= */
 function isPlusActive(user) {
   const m = user?.membership || {};
   if (String(m.tier) !== "plus") return false;
@@ -71,7 +64,6 @@ function getMonthlyCancelLimit(user) {
   return isPlusActive(user) ? 2 : 1;
 }
 
-// ✅ resetea cancelsLeft si empezó un nuevo período mensual
 function ensureMonthlyCancels(user) {
   user.membership = user.membership || {};
   const now = new Date();
@@ -174,9 +166,6 @@ function findLotById(user, lotId) {
   return lots.find((l) => String(l._id) === String(lotId)) || null;
 }
 
-/* =========================
-   Normaliza turno para el frontend
-========================= */
 function serializeAppointment(ap) {
   const json = ap.toObject ? ap.toObject() : ap;
 
@@ -201,15 +190,10 @@ function serializeAppointment(ap) {
   };
 }
 
-/* =========================
-   Reglas existentes
-========================= */
 function requiresApto(user) {
   if (!user?.createdAt) return false;
   const created = new Date(user.createdAt);
-  const days = Math.floor(
-    (Date.now() - created.getTime()) / (1000 * 60 * 60 * 24)
-  );
+  const days = Math.floor((Date.now() - created.getTime()) / (1000 * 60 * 60 * 24));
   return days > 20 && !user.aptoPath;
 }
 
@@ -224,18 +208,16 @@ function isSaturday(dateStr) {
  * ✅ Match con tu frontend:
  * - mañana: 07..12
  * - tarde: 14..17
- * - noche: 18..19
- * - bloque 13..14 fuera
- * - 20 no se usa
+ * - noche: 18..20 (incluye 20)
  */
 function getTurnoFromTime(time) {
   if (!time) return "";
   const [hStr] = time.split(":");
   const h = Number(hStr);
 
-  if (h >= 7 && h < 13) return "maniana";
-  if (h >= 14 && h < 18) return "tarde";
-  if (h >= 18 && h < 20) return "noche";
+  if (h >= 7 && h <= 12) return "maniana";
+  if (h >= 14 && h <= 17) return "tarde";
+  if (h >= 18 && h <= 20) return "noche";
   return "";
 }
 
@@ -247,21 +229,20 @@ function buildSlotDate(dateStr, timeStr) {
   return new Date(year, month - 1, day, hour || 0, minute || 0);
 }
 
-// =========================
-// ✅ Equilibrador
-// =========================
-const TOTAL_CAP = 7;
+/* =========================
+   ✅ Cupos (alineado con front)
+========================= */
+const TOTAL_CAP = 6;
 
-const EP_KEY = "Entrenamiento Personal";
+const EP_NAME = "Entrenamiento Personal";
 const OTHER_SERVICES = new Set([
-  "Reeducacion Funcional",
-  "Rehabilitacion Activa",
   "Alto Rendimiento",
+  "Rehabilitacion Activa",
 ]);
 
 function calcEpCap({ hoursToStart, otherReservedCount }) {
-  const base = hoursToStart > 12 ? 4 : 7; // >12hs => máx 4, <=12hs => hasta 7
-  const dynamic = TOTAL_CAP - otherReservedCount; // no pisa otros servicios
+  const base = hoursToStart > 12 ? 4 : TOTAL_CAP;
+  const dynamic = TOTAL_CAP - otherReservedCount;
   return Math.max(0, Math.min(base, dynamic));
 }
 
@@ -294,45 +275,41 @@ router.use(protect);
 
 /* =========================
    POST /appointments
-   descuenta 1 crédito desde lotes (POR SERVICIO)
+   - descuenta 1 crédito desde lotes (POR SERVICIO)
 ========================= */
 router.post("/", async (req, res) => {
   try {
     const { date, time, service } = req.body || {};
     if (!date || !time || !service) {
-      return res
-        .status(400)
-        .json({ error: "Faltan campos: date, time y service." });
+      return res.status(400).json({ error: "Faltan campos: date, time y service." });
     }
 
     const turno = getTurnoFromTime(time);
     if (!turno) {
-      return res
-        .status(400)
-        .json({ error: "Horario fuera del rango permitido." });
+      return res.status(400).json({ error: "Horario fuera del rango permitido." });
     }
 
-    // ✅ Sábado: solo 07..12 (mañana)
-    if (isSaturday(date) && turno !== "maniana") {
-      return res.status(400).json({
-        error: "Los sábados solo se puede reservar de 07:00 a 12:00.",
-      });
+    // ✅ Sábado: 08..12
+    if (isSaturday(date)) {
+      const [hStr] = String(time).split(":");
+      const h = Number(hStr);
+      if (h < 8 || h > 12) {
+        return res.status(400).json({
+          error: "Los sábados solo se puede reservar de 08:00 a 12:00.",
+        });
+      }
     }
 
     const slotDate = buildSlotDate(date, time);
-    if (!slotDate) {
-      return res.status(400).json({ error: "Fecha/hora inválida." });
-    }
+    if (!slotDate) return res.status(400).json({ error: "Fecha/hora inválida." });
 
     const diffMs = slotDate.getTime() - Date.now();
     const hoursToStart = diffMs / (1000 * 60 * 60);
     if (hoursToStart < 0) {
-      return res
-        .status(400)
-        .json({ error: "No se puede reservar un turno pasado." });
+      return res.status(400).json({ error: "No se puede reservar un turno pasado." });
     }
 
-    const isEpService = service === EP_KEY;
+    const isEpService = service === EP_NAME;
     const isOtherService = OTHER_SERVICES.has(service);
 
     // ✅ tarde: SOLO EP (regla dura)
@@ -342,7 +319,8 @@ router.post("/", async (req, res) => {
       });
     }
 
-    // si llega un servicio raro, lo tratamos como “otro” (1 cupo) pero igual se controla total
+    // si llega un servicio que no conocemos:
+    // lo tratamos como "otro" (1 cupo) pero sin permitir duplicarlo
     const treatAsOther = !isEpService;
 
     const userId = req.user._id || req.user.id;
@@ -351,14 +329,10 @@ router.post("/", async (req, res) => {
 
     const isAdmin = user.role === "admin";
 
-    // Reglas para clientes
     if (!isAdmin) {
-      if (user.suspended)
-        return res.status(403).json({ error: "Cuenta suspendida." });
+      if (user.suspended) return res.status(403).json({ error: "Cuenta suspendida." });
       if (requiresApto(user))
-        return res
-          .status(403)
-          .json({ error: "Cuenta suspendida por falta de apto médico." });
+        return res.status(403).json({ error: "Cuenta suspendida por falta de apto médico." });
 
       recalcUserCredits(user);
       if ((user.credits || 0) <= 0)
@@ -374,12 +348,9 @@ router.post("/", async (req, res) => {
     }).lean();
 
     if (alreadyByUser) {
-      return res
-        .status(409)
-        .json({ error: "Ya tenés un turno reservado en ese horario." });
+      return res.status(409).json({ error: "Ya tenés un turno reservado en ese horario." });
     }
 
-    // cupos slot
     const existingAtSlot = await Appointment.find({
       date,
       time,
@@ -387,41 +358,27 @@ router.post("/", async (req, res) => {
     }).lean();
 
     const totalCount = existingAtSlot.length;
-
-    const epCount = existingAtSlot.filter((a) => a.service === EP_KEY).length;
-    const rfTaken = existingAtSlot.some(
-      (a) => a.service === "Reeducacion Funcional"
-    )
-      ? 1
-      : 0;
-    const arTaken = existingAtSlot.some((a) => a.service === "Alto Rendimiento")
-      ? 1
-      : 0;
-    const raTaken = existingAtSlot.some(
-      (a) => a.service === "Rehabilitacion Activa"
-    )
-      ? 1
-      : 0;
-
-    const otherReservedCount = rfTaken + arTaken + raTaken;
-
     if (totalCount >= TOTAL_CAP) {
       return res.status(409).json({
         error: "Se alcanzó el cupo total disponible para este horario.",
       });
     }
 
+    const epCount = existingAtSlot.filter((a) => a.service === EP_NAME).length;
+    const arTaken = existingAtSlot.some((a) => a.service === "Alto Rendimiento") ? 1 : 0;
+    const raTaken = existingAtSlot.some((a) => a.service === "Rehabilitacion Activa") ? 1 : 0;
+
+    const otherReservedCount = arTaken + raTaken;
+
     // ✅ Otros servicios: máximo 1 por servicio por hora
     if (treatAsOther) {
       const alreadyService = existingAtSlot.some((a) => a.service === service);
       if (alreadyService) {
-        return res
-          .status(409)
-          .json({ error: "Ese servicio ya está ocupado en este horario." });
+        return res.status(409).json({ error: "Ese servicio ya está ocupado en este horario." });
       }
     }
 
-    // ✅ Entrenamiento personal: 4 antes de 12hs, y dentro de 12hs puede ocupar huecos hasta 7
+    // ✅ EP cap rule
     if (isEpService) {
       const epCap = calcEpCap({ hoursToStart, otherReservedCount });
       if (epCount >= epCap) {
@@ -434,21 +391,18 @@ router.post("/", async (req, res) => {
       }
     }
 
-    // ✅ consumir crédito desde lote (solo clientes) - POR SERVICIO
+    // ✅ consumir crédito desde lote (solo clientes)
     let usedLotId = null;
     let usedLotExp = null;
 
     if (!isAdmin) {
-      const sk = serviceToKey(service); // EP/RF/AR/RA/NUT
+      const sk = serviceToKey(service); // EP/AR/RA/NUT
 
       const lot = pickLotToConsume(user, sk);
       if (!lot) {
         recalcUserCredits(user);
         return res.status(403).json({
-          error:
-            sk === "EP"
-              ? "No tenés créditos válidos para Entrenamiento Personal."
-              : `No tenés créditos válidos para este servicio (${sk}).`,
+          error: `No tenés créditos válidos para este servicio (${sk}).`,
         });
       }
 
@@ -480,19 +434,14 @@ router.post("/", async (req, res) => {
       creditExpiresAt: usedLotExp,
     });
 
-    const populated = await Appointment.findById(ap._id).populate(
-      "user",
-      "name email"
-    );
+    const populated = await Appointment.findById(ap._id).populate("user", "name email");
     res.status(201).json(serializeAppointment(populated));
   } catch (err) {
     console.error("Error en POST /appointments:", err);
 
-    // ✅ si salta índice único (por ejemplo RF/AR/RA duplicado, o user duplicado)
     if (err?.code === 11000) {
       return res.status(409).json({
-        error:
-          "Conflicto: ese turno o ese servicio ya fue reservado. Actualizá y probá de nuevo.",
+        error: "Conflicto: ese turno o ese servicio ya fue reservado. Actualizá y probá de nuevo.",
       });
     }
 
@@ -525,8 +474,7 @@ router.patch("/:id/cancel", async (req, res) => {
     }
 
     const apDate = buildSlotDate(ap.date, ap.time);
-    if (!apDate)
-      return res.status(400).json({ error: "Turno con fecha/hora inválida." });
+    if (!apDate) return res.status(400).json({ error: "Turno con fecha/hora inválida." });
 
     const diffMs = apDate.getTime() - Date.now();
     const hours = diffMs / (1000 * 60 * 60);
@@ -537,7 +485,6 @@ router.patch("/:id/cancel", async (req, res) => {
     if (!isAdmin) {
       const mem = getMembershipEffective(user);
 
-      // si plus venció, forzamos basic defaults (normaliza DB)
       if (mem.tier === "basic") {
         user.membership = user.membership || {};
         user.membership.tier = "basic";
@@ -572,11 +519,10 @@ router.patch("/:id/cancel", async (req, res) => {
       user.cancelationsUsed = Number(user.cancelationsUsed || 0) + 1;
     }
 
-    // cancelar turno
     ap.status = "cancelled";
     await ap.save();
 
-    // ✅ devolver crédito si era cliente (no admin)
+    // ✅ devolver crédito si era cliente
     if (user.role !== "admin") {
       const now = nowDate();
       const sk = serviceToKey(ap.service);
@@ -589,7 +535,6 @@ router.patch("/:id/cancel", async (req, res) => {
           lot.remaining = Number(lot.remaining || 0) + 1;
         }
       } else {
-        // fallback: refund lot
         const mem = getMembershipEffective(user);
         const exp = new Date(now);
         exp.setDate(exp.getDate() + Number(mem.creditsExpireDays || 30));
@@ -619,10 +564,7 @@ router.patch("/:id/cancel", async (req, res) => {
       await user.save();
     }
 
-    const populated = await Appointment.findById(ap._id).populate(
-      "user",
-      "name email"
-    );
+    const populated = await Appointment.findById(ap._id).populate("user", "name email");
     return res.json(serializeAppointment(populated));
   } catch (err) {
     console.error("Error en PATCH /appointments/:id/cancel:", err);

@@ -273,7 +273,6 @@ router.post("/guest", protect, adminOnly, async (req, res) => {
 
 /* =========================================================
    DELETE /admin/evaluations/guest/:id
-   ✅ borra invitado + sus evaluaciones
 ========================================================= */
 router.delete("/guest/:id", protect, adminOnly, async (req, res) => {
   try {
@@ -293,7 +292,6 @@ router.delete("/guest/:id", protect, adminOnly, async (req, res) => {
     }
 
     await Promise.all([Evaluation.deleteMany({ user: id }), User.findByIdAndDelete(id)]);
-
     return res.json({ ok: true });
   } catch (err) {
     console.error("DELETE /admin/evaluations/guest/:id error:", err);
@@ -321,7 +319,6 @@ router.get("/user/:userId", protect, adminOnly, async (req, res) => {
       .lean();
 
     const items = (docs || []).map(serializeEvalLite).filter(Boolean);
-
     return res.json({ items });
   } catch (err) {
     console.error("GET /admin/evaluations/user/:userId error:", err);
@@ -370,7 +367,7 @@ router.post("/user/:userId", protect, adminOnly, async (req, res) => {
 
 /* =========================================================
    GET /admin/evaluations/:id
-   ✅ FIX REAL: SOLO evaluationId (SIN FALLBACK)
+   ✅ SOLO evaluationId (SIN FALLBACK)
 ========================================================= */
 router.get("/:id", protect, adminOnly, async (req, res) => {
   try {

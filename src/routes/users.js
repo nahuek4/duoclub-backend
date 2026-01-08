@@ -16,7 +16,7 @@ const router = express.Router();
 
 /* ============================================
    CONFIGURACIÓN DE RUTAS / PATHS
-   ============================================ */
+============================================ */
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -29,12 +29,10 @@ if (!fs.existsSync(uploadDir)) {
 
 /* ============================================
    MULTER PARA APTOS (PDF)
-   ============================================ */
+============================================ */
 
 const aptoStorage = multer.diskStorage({
-  destination: (req, file, cb) => {
-    cb(null, uploadDir);
-  },
+  destination: (req, file, cb) => cb(null, uploadDir),
   filename: (req, file, cb) => {
     const ext = path.extname(file.originalname) || ".pdf";
     const base = "apto-" + req.params.id + "-" + Date.now();
@@ -44,19 +42,15 @@ const aptoStorage = multer.diskStorage({
 
 const uploadApto = multer({
   storage: aptoStorage,
-  limits: {
-    fileSize: 10 * 1024 * 1024,
-  },
+  limits: { fileSize: 10 * 1024 * 1024 },
 });
 
 /* ============================================
    MULTER PARA FOTO DE PACIENTE (AVATAR)
-   ============================================ */
+============================================ */
 
 const avatarStorage = multer.diskStorage({
-  destination: (req, file, cb) => {
-    cb(null, uploadDir);
-  },
+  destination: (req, file, cb) => cb(null, uploadDir),
   filename: (req, file, cb) => {
     const ext = path.extname(file.originalname) || ".jpg";
     const base = "avatar-" + req.params.id + "-" + Date.now();
@@ -66,9 +60,7 @@ const avatarStorage = multer.diskStorage({
 
 const avatarUpload = multer({
   storage: avatarStorage,
-  limits: {
-    fileSize: 5 * 1024 * 1024,
-  },
+  limits: { fileSize: 5 * 1024 * 1024 },
   fileFilter: (req, file, cb) => {
     if (!file.mimetype.startsWith("image/")) {
       return cb(new Error("Solo se permiten archivos de imagen."));
@@ -78,8 +70,84 @@ const avatarUpload = multer({
 });
 
 /* ============================================
+   HELPERS: CREDIT LOTS (compatibles con appointments.js)
+============================================ */
+
+function nowDate() {
+  return new Date();
+}
+
+function isPlusActive(user) {
+  const m = user?.membership || {};
+  if (String(m.tier) !== "plus") return false;
+  if (!m.activeUntil) return false;
+  return new Date(m.activeUntil) > new Date();
+}
+
+function recalcUserCredits(user) {
+  const now = nowDate();
+  const lots = Array.isArray(user.creditLots) ? user.creditLots : [];
+
+  const sum = lots.reduce((acc, lot) => {
+    const exp = lot.expiresAt ? new Date(lot.expiresAt) : null;
+    if (exp && exp <= now) return acc;
+    return acc + Number(lot.remaining || 0);
+  }, 0);
+
+  user.credits = sum;
+}
+
+function addCreditLot(user, { amount, serviceKey = "ALL", source = "admin-adjust" }) {
+  const now = nowDate();
+  const days = isPlusActive(user) ? 40 : 30;
+
+  const exp = new Date(now);
+  exp.setDate(exp.getDate() + days);
+
+  user.creditLots = user.creditLots || [];
+  user.creditLots.push({
+    serviceKey: String(serviceKey || "ALL").toUpperCase().trim(),
+    amount: Number(amount || 0),
+    remaining: Number(amount || 0),
+    expiresAt: exp,
+    source,
+    orderId: null,
+    createdAt: now,
+  });
+
+  recalcUserCredits(user);
+}
+
+function consumeCredits(user, toRemove) {
+  const now = nowDate();
+  let left = Math.max(0, Number(toRemove || 0));
+
+  const lots = Array.isArray(user.creditLots) ? user.creditLots : [];
+  const sorted = lots
+    .filter((l) => Number(l.remaining || 0) > 0)
+    .filter((l) => !l.expiresAt || new Date(l.expiresAt) > now)
+    .sort((a, b) => {
+      const ae = a.expiresAt ? new Date(a.expiresAt).getTime() : Infinity;
+      const be = b.expiresAt ? new Date(b.expiresAt).getTime() : Infinity;
+      if (ae !== be) return ae - be;
+      const ac = a.createdAt ? new Date(a.createdAt).getTime() : 0;
+      const bc = b.createdAt ? new Date(b.createdAt).getTime() : 0;
+      return ac - bc;
+    });
+
+  for (const lot of sorted) {
+    if (left <= 0) break;
+    const take = Math.min(Number(lot.remaining || 0), left);
+    lot.remaining = Number(lot.remaining || 0) - take;
+    left -= take;
+  }
+
+  recalcUserCredits(user);
+}
+
+/* ============================================
    TODAS LAS RUTAS REQUIEREN ESTAR LOGUEADO
-   ============================================ */
+============================================ */
 router.use(protect);
 
 // ============================================
@@ -106,7 +174,7 @@ router.get("/registrations/list", adminOnly, async (req, res) => {
 
 /* ============================================
    POST: CREAR USUARIO NUEVO (ADMIN)
-   ============================================ */
+============================================ */
 router.post("/", adminOnly, async (req, res) => {
   try {
     const {
@@ -150,12 +218,15 @@ router.post("/", adminOnly, async (req, res) => {
       age: age ?? null,
       weight: weight ?? null,
       notes: notes || "",
-      credits: credits ?? 0,
+
+      // ✅ compat: si mandás credits, los convertimos en lots "ALL"
+      credits: 0,
+      creditLots: [],
+
       role: role || "client",
       password: hashed,
       mustChangePassword: true,
 
-      // creados por admin: habilitados
       suspended: false,
       emailVerified: true,
       approvalStatus: "approved",
@@ -163,6 +234,13 @@ router.post("/", adminOnly, async (req, res) => {
       aptoPath: "",
       aptoStatus: "",
     });
+
+    // ✅ si viene credits, los cargamos como lote
+    const initialCredits = Number(credits ?? 0);
+    if (initialCredits > 0) {
+      addCreditLot(user, { amount: initialCredits, serviceKey: "ALL", source: "admin-create" });
+      await user.save();
+    }
 
     res.status(201).json({
       ok: true,
@@ -182,7 +260,7 @@ router.post("/", adminOnly, async (req, res) => {
 
 /* ============================================
    GET: LISTAR TODOS LOS USUARIOS (ADMIN)
-   ============================================ */
+============================================ */
 router.get("/", adminOnly, async (req, res) => {
   try {
     const list = await User.find().lean();
@@ -222,7 +300,6 @@ router.patch("/:id/approval", adminOnly, async (req, res) => {
     const user = await User.findById(id);
     if (!user) return res.status(404).json({ error: "Usuario no encontrado." });
 
-    // No aprobar si no verificó email
     if (status === "approved" && !user.emailVerified) {
       return res.status(400).json({
         error: "No se puede aprobar: el email no está verificado.",
@@ -231,9 +308,6 @@ router.patch("/:id/approval", adminOnly, async (req, res) => {
 
     user.approvalStatus = status;
 
-    // ✅ regla del sistema:
-    // - approved => habilitado
-    // - rejected => bloqueado
     if (status === "approved") user.suspended = false;
     if (status === "rejected") user.suspended = true;
 
@@ -253,11 +327,7 @@ router.patch("/:id/approval", adminOnly, async (req, res) => {
 
 /* ============================================
    ✅ PUT: EDITAR DATOS BÁSICOS (SELF o ADMIN)
-   - Para el Profile.jsx (guardar info personal)
-   - Permite actualizar SOLO: name, lastName, phone, dni
-   - Self: solo puede editarse a sí mismo
-   - Admin: puede editar cualquiera
-   ============================================ */
+============================================ */
 router.put("/:id", async (req, res) => {
   try {
     const { id } = req.params;
@@ -271,14 +341,12 @@ router.put("/:id", async (req, res) => {
       });
     }
 
-    // ✅ whitelist estricta (no permitir tocar email, role, credits, membership, etc.)
     const name = typeof req.body?.name === "string" ? req.body.name.trim() : undefined;
     const lastName =
       typeof req.body?.lastName === "string" ? req.body.lastName.trim() : undefined;
     const phone = typeof req.body?.phone === "string" ? req.body.phone.trim() : undefined;
     const dni = typeof req.body?.dni === "string" ? req.body.dni.trim() : undefined;
 
-    // Validación opcional DNI (ARG) 6-10 dígitos
     if (dni !== undefined && dni !== "" && !/^\d{6,10}$/.test(dni)) {
       return res.status(400).json({ error: "DNI inválido." });
     }
@@ -300,7 +368,6 @@ router.put("/:id", async (req, res) => {
 
     if (!u) return res.status(404).json({ error: "Usuario no encontrado." });
 
-    // Si NO es admin, ocultamos historia clínica por seguridad
     if (!isAdmin) {
       // eslint-disable-next-line no-unused-vars
       const { clinicalNotes, ...safeUser } = u;
@@ -316,7 +383,7 @@ router.put("/:id", async (req, res) => {
 
 /* ============================================
    GET UN USUARIO
-   ============================================ */
+============================================ */
 router.get("/:id", async (req, res) => {
   try {
     const { id } = req.params;
@@ -348,7 +415,8 @@ router.get("/:id", async (req, res) => {
 
 /* ============================================
    PATCH EDITAR USUARIO (ADMIN)
-   ============================================ */
+   (ojo: esto permite tocar cualquier campo)
+============================================ */
 router.patch("/:id", adminOnly, async (req, res) => {
   try {
     const { id } = req.params;
@@ -366,15 +434,13 @@ router.patch("/:id", adminOnly, async (req, res) => {
 
 /* ============================================
    DELETE ELIMINAR USUARIO + SUS TURNOS (ADMIN)
-   ============================================ */
+============================================ */
 router.delete("/:id", adminOnly, async (req, res) => {
   try {
     const { id } = req.params;
 
     const user = await User.findById(id);
-    if (!user) {
-      return res.status(404).json({ error: "Usuario no encontrado." });
-    }
+    if (!user) return res.status(404).json({ error: "Usuario no encontrado." });
 
     await Appointment.deleteMany({ user: id });
     await user.deleteOne();
@@ -391,7 +457,7 @@ router.delete("/:id", adminOnly, async (req, res) => {
 
 /* ============================================
    HISTORIAL
-   ============================================ */
+============================================ */
 router.get("/:id/history", async (req, res) => {
   try {
     const { id } = req.params;
@@ -428,15 +494,13 @@ router.get("/:id/history", async (req, res) => {
 
 /* ============================================
    HISTORIA CLÍNICA (SOLO ADMIN)
-   ============================================ */
+============================================ */
 
 router.get("/:id/clinical-notes", adminOnly, async (req, res) => {
   try {
     const { id } = req.params;
     const user = await User.findById(id).lean();
-    if (!user) {
-      return res.status(404).json({ error: "Paciente no encontrado." });
-    }
+    if (!user) return res.status(404).json({ error: "Paciente no encontrado." });
     res.json(user.clinicalNotes || []);
   } catch (err) {
     console.error("Error en GET /users/:id/clinical-notes:", err);
@@ -456,9 +520,7 @@ router.post("/:id/clinical-notes", adminOnly, async (req, res) => {
     }
 
     const user = await User.findById(id);
-    if (!user) {
-      return res.status(404).json({ error: "Paciente no encontrado." });
-    }
+    if (!user) return res.status(404).json({ error: "Paciente no encontrado." });
 
     user.clinicalNotes = user.clinicalNotes || [];
     user.clinicalNotes.push({
@@ -477,27 +539,44 @@ router.post("/:id/clinical-notes", adminOnly, async (req, res) => {
 });
 
 /* ============================================
-   CRÉDITOS (ADMIN)
-   ============================================ */
+   CRÉDITOS (ADMIN) ✅ compatible con creditLots
+   body:
+   - { credits: number } => set absoluto
+   - { delta: number }   => suma/resta
+   opcional:
+   - { serviceKey: "ALL" | "EP" | "AR" | "RA" | "NUT" }
+============================================ */
 async function updateCredits(req, res) {
   try {
     const { id } = req.params;
-    const { credits, delta } = req.body || {};
+    const { credits, delta, serviceKey } = req.body || {};
 
     const user = await User.findById(id);
     if (!user) return res.status(404).json({ error: "Usuario no encontrado." });
 
+    // recalcular base
+    recalcUserCredits(user);
+    const current = Number(user.credits || 0);
+
+    const sk = String(serviceKey || "ALL").toUpperCase().trim() || "ALL";
+
     if (typeof credits === "number") {
-      user.credits = credits;
+      const target = Math.max(0, Math.round(credits));
+      const diff = target - current;
+
+      if (diff > 0) addCreditLot(user, { amount: diff, serviceKey: sk, source: "admin-set" });
+      else if (diff < 0) consumeCredits(user, Math.abs(diff));
     } else if (typeof delta === "number") {
-      user.credits = (user.credits || 0) + delta;
+      const d = Math.round(delta);
+
+      if (d > 0) addCreditLot(user, { amount: d, serviceKey: sk, source: "admin-delta" });
+      else if (d < 0) consumeCredits(user, Math.abs(d));
     } else {
       return res.status(400).json({ error: "Valor inválido." });
     }
 
     await user.save();
-
-    res.json({ ok: true, credits: user.credits });
+    res.json({ ok: true, credits: Number(user.credits || 0) });
   } catch (err) {
     console.error("Error en créditos:", err);
     res.status(500).json({ error: "Error interno." });
@@ -509,7 +588,7 @@ router.post("/:id/credits", adminOnly, updateCredits);
 
 /* ============================================
    RESET PASSWORD (ADMIN)
-   ============================================ */
+============================================ */
 router.post("/:id/reset-password", adminOnly, async (req, res) => {
   try {
     const { id } = req.params;
@@ -533,16 +612,14 @@ router.post("/:id/reset-password", adminOnly, async (req, res) => {
 
 /* ============================================
    SUSPENDER / REACTIVAR USUARIO (ADMIN)
-   ============================================ */
+============================================ */
 router.patch("/:id/suspend", adminOnly, async (req, res) => {
   try {
     const { id } = req.params;
     const { suspended } = req.body || {};
 
     const user = await User.findById(id);
-    if (!user) {
-      return res.status(404).json({ error: "Usuario no encontrado." });
-    }
+    if (!user) return res.status(404).json({ error: "Usuario no encontrado." });
 
     user.suspended = !!suspended;
     await user.save();
@@ -556,7 +633,7 @@ router.patch("/:id/suspend", adminOnly, async (req, res) => {
 
 /* ============================================
    SUBIR APTO (PDF)
-   ============================================ */
+============================================ */
 router.post("/:id/apto", uploadApto.single("apto"), async (req, res) => {
   try {
     const { id } = req.params;
@@ -603,7 +680,7 @@ router.post("/:id/apto", uploadApto.single("apto"), async (req, res) => {
 
 /* ============================================
    VER APTOS
-   ============================================ */
+============================================ */
 router.get("/:id/apto", async (req, res) => {
   try {
     const { id } = req.params;
@@ -611,14 +688,10 @@ router.get("/:id/apto", async (req, res) => {
     const isAdmin = req.user.role === "admin";
     const isSelf = req.user._id.toString() === id;
 
-    if (!isAdmin && !isSelf) {
-      return res.status(403).json({ error: "No autorizado." });
-    }
+    if (!isAdmin && !isSelf) return res.status(403).json({ error: "No autorizado." });
 
     const user = await User.findById(id);
-    if (!user || !user.aptoPath) {
-      return res.status(404).json({ error: "Apto no encontrado." });
-    }
+    if (!user || !user.aptoPath) return res.status(404).json({ error: "Apto no encontrado." });
 
     const filePath = path.join(__dirname, "..", "..", user.aptoPath.replace(/^\//, ""));
     res.sendFile(filePath);
@@ -630,7 +703,7 @@ router.get("/:id/apto", async (req, res) => {
 
 /* ============================================
    DELETE APTO
-   ============================================ */
+============================================ */
 router.delete("/:id/apto", async (req, res) => {
   try {
     const { id } = req.params;
@@ -638,9 +711,7 @@ router.delete("/:id/apto", async (req, res) => {
     const isAdmin = req.user.role === "admin";
     const isSelf = req.user._id.toString() === id;
 
-    if (!isAdmin && !isSelf) {
-      return res.status(403).json({ error: "No autorizado." });
-    }
+    if (!isAdmin && !isSelf) return res.status(403).json({ error: "No autorizado." });
 
     const user = await User.findById(id);
     if (!user) return res.status(404).json({ error: "Usuario no encontrado." });
@@ -665,7 +736,7 @@ router.delete("/:id/apto", async (req, res) => {
 
 /* ============================================
    FOTO DEL PACIENTE (AVATAR)
-   ============================================ */
+============================================ */
 router.post("/:id/photo", avatarUpload.single("photo"), async (req, res) => {
   try {
     const { id } = req.params;
@@ -684,9 +755,7 @@ router.post("/:id/photo", avatarUpload.single("photo"), async (req, res) => {
     }
 
     const user = await User.findById(id);
-    if (!user) {
-      return res.status(404).json({ error: "Usuario no encontrado." });
-    }
+    if (!user) return res.status(404).json({ error: "Usuario no encontrado." });
 
     if (user.photoPath) {
       try {
@@ -699,10 +768,7 @@ router.post("/:id/photo", avatarUpload.single("photo"), async (req, res) => {
     user.photoPath = relativePath;
     await user.save();
 
-    res.json({
-      ok: true,
-      photoPath: user.photoPath,
-    });
+    res.json({ ok: true, photoPath: user.photoPath });
   } catch (err) {
     console.error("Error en POST /users/:id/photo:", err);
     res.status(500).json({ error: "Error al subir foto del paciente." });

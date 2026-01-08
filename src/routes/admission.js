@@ -118,7 +118,7 @@ function buildNotesFromAdmission(step1 = {}, step2 = {}) {
   if (step1.lastBloodTest) lines.push(`Último análisis: ${step1.lastBloodTest}`);
   if (step1.relevantInfo) lines.push(`Info relevante: ${step1.relevantInfo}`);
 
-  // Step2 (si existe)
+  // Step2
   if (step2?.needsRehab) lines.push(`Rehab: ${step2.needsRehab}`);
   if (step2?.symptoms) lines.push(`Síntomas: ${step2.symptoms}`);
   if (step2?.immediateGoal) lines.push(`Objetivo: ${step2.immediateGoal}`);
@@ -141,8 +141,8 @@ function mapAdmissionToUserUpdate(adm) {
     name: name || undefined,
     lastName: lastName || undefined,
     phone: String(s1.phone || "").trim() || undefined,
-    // ⚠️ no tocamos email por seguridad acá (pero si querés, lo habilitamos)
-    // email: String(s1.email || "").trim().toLowerCase() || undefined,
+
+    // ⚠️ no tocamos email por seguridad acá
     age: age ?? null,
     weight: weight ?? null,
     notes: buildNotesFromAdmission(s1, s2) || "",
@@ -219,14 +219,29 @@ router.patch("/:id/step2", async (req, res) => {
 
 /* =========================================================
    ADMIN: listar
+   ✅ FIX ciudad en lista: step1.city step1.cityOther
 ========================================================= */
 router.get("/admin", protect, adminOnly, async (req, res) => {
   try {
     const items = await Admission.find({})
       .sort({ createdAt: -1 })
       .select(
-        "publicId user syncedToUser syncedAt step1.fullName step1.email step1.phone step1Completed step2Completed createdAt"
-      );
+        [
+          "publicId",
+          "user",
+          "syncedToUser",
+          "syncedAt",
+          "step1.fullName",
+          "step1.email",
+          "step1.phone",
+          "step1.city",
+          "step1.cityOther",
+          "step1Completed",
+          "step2Completed",
+          "createdAt",
+        ].join(" ")
+      )
+      .lean();
 
     return res.json({ ok: true, items });
   } catch (err) {
@@ -240,7 +255,7 @@ router.get("/admin", protect, adminOnly, async (req, res) => {
 ========================================================= */
 router.get("/admin/:id", protect, adminOnly, async (req, res) => {
   try {
-    const doc = await Admission.findById(req.params.id);
+    const doc = await Admission.findById(req.params.id).lean();
     if (!doc)
       return res.status(404).json({ ok: false, error: "No encontrado." });
 
@@ -289,7 +304,7 @@ router.post("/admin/:id/create-user", protect, adminOnly, async (req, res) => {
     let created = false;
     let tempPassword = "";
 
-    // 2) si no existe user => crearlo (similar a POST /users admin)
+    // 2) si no existe user => crearlo
     if (!user) {
       const { name, lastName } = splitFullName(fullName);
 
@@ -346,6 +361,42 @@ router.post("/admin/:id/create-user", protect, adminOnly, async (req, res) => {
     });
   } catch (err) {
     console.error("POST /admission/admin/:id/create-user error:", err);
+    return res.status(500).json({ ok: false, error: "Error interno." });
+  }
+});
+
+/* =========================================================
+   ✅ ADMIN: vincular usuario existente por email
+   POST /admission/admin/:id/link-user
+========================================================= */
+router.post("/admin/:id/link-user", protect, adminOnly, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const email = String(req.body?.email || "").trim().toLowerCase();
+
+    if (!email) return res.status(400).json({ ok: false, error: "Email es requerido." });
+
+    const adm = await Admission.findById(id);
+    if (!adm) return res.status(404).json({ ok: false, error: "Admisión no encontrada." });
+
+    const user = await User.findOne({ email }).lean();
+    if (!user) return res.status(404).json({ ok: false, error: "No existe usuario con ese email." });
+
+    // sync también
+    const update = mapAdmissionToUserUpdate(adm);
+    const updatedUser = await User.findByIdAndUpdate(user._id, update, {
+      new: true,
+      runValidators: true,
+    }).lean();
+
+    adm.user = user._id;
+    adm.syncedToUser = true;
+    adm.syncedAt = new Date();
+    await adm.save();
+
+    return res.json({ ok: true, user: updatedUser, admissionId: adm._id });
+  } catch (err) {
+    console.error("POST /admission/admin/:id/link-user error:", err);
     return res.status(500).json({ ok: false, error: "Error interno." });
   }
 });

@@ -14,24 +14,28 @@ const historySchema = new mongoose.Schema(
 
 const creditLotSchema = new mongoose.Schema(
   {
-    serviceKey: { type: String, default: "EP", uppercase: true, trim: true }, // EP/RF/AR/RA/NUT o ALL
+    serviceKey: { type: String, default: "ALL", uppercase: true, trim: true }, // EP/AR/RA/NUT o ALL
     amount: { type: Number, default: 0 },
     remaining: { type: Number, default: 0 },
     expiresAt: { type: Date, default: null },
     source: { type: String, default: "" },
-    orderId: {
-      type: mongoose.Schema.Types.ObjectId,
-      ref: "Order",
-      default: null,
-    },
+    orderId: { type: mongoose.Schema.Types.ObjectId, ref: "Order", default: null },
     createdAt: { type: Date, default: Date.now },
   },
   { _id: true }
 );
 
+const clinicalNoteSchema = new mongoose.Schema(
+  {
+    date: { type: Date, default: Date.now },
+    author: { type: String, default: "" },
+    text: { type: String, default: "" },
+  },
+  { _id: false }
+);
+
 // Helpers para required condicional (guest vs client/admin)
 function requiredIfNotGuest() {
-  // `this` es el doc
   return this.role !== "guest";
 }
 
@@ -40,20 +44,16 @@ const userSchema = new mongoose.Schema(
     name: { type: String, required: true, trim: true },
     lastName: { type: String, required: true, trim: true },
 
-    // ✅ Email NO obligatorio (por pedido), pero:
-    // - para client/admin sigue siendo requerido
-    // - para guest puede ser "" o null
+    // ✅ Email NO obligatorio para guest
+    // ✅ default NULL (NO ""), para que el índice único no choque
     email: {
       type: String,
       required: requiredIfNotGuest,
-      unique: true,
-      sparse: true, // ✅ permite múltiples docs sin email
       lowercase: true,
       trim: true,
-      default: "",
+      default: null,
     },
 
-    // ✅ Tel no obligatorio para guest
     phone: {
       type: String,
       required: requiredIfNotGuest,
@@ -66,13 +66,11 @@ const userSchema = new mongoose.Schema(
     weight: { type: Number, default: null },
     notes: { type: String, default: "" },
 
+    // cache (se recalcula desde lots)
     credits: { type: Number, default: 0 },
 
-    // ✅ ahora agregamos guest
     role: { type: String, default: "client", enum: ["admin", "client", "guest"] },
 
-    // ✅ password requerida para client/admin.
-    // Para guest la vamos a setear igual (random+hash) desde el endpoint.
     password: { type: String, required: requiredIfNotGuest, default: "" },
 
     mustChangePassword: { type: Boolean, default: false },
@@ -80,10 +78,12 @@ const userSchema = new mongoose.Schema(
 
     aptoPath: { type: String, default: "" },
     aptoStatus: { type: String, default: "" }, // "uploaded" | "approved" | "rejected"
-
     photoPath: { type: String, default: "" },
 
     history: { type: [historySchema], default: [] },
+
+    // ✅ ahora sí existe (lo usás en /users/:id/clinical-notes)
+    clinicalNotes: { type: [clinicalNoteSchema], default: [] },
 
     emailVerified: { type: Boolean, default: false },
     approvalStatus: {
@@ -112,8 +112,14 @@ const userSchema = new mongoose.Schema(
   { timestamps: true }
 );
 
-// ✅ Index único real (sparse evita choque cuando email = "" / null)
-userSchema.index({ email: 1 }, { unique: true, sparse: true });
+// ✅ índice único REAL solo si email es string y no vacío
+userSchema.index(
+  { email: 1 },
+  {
+    unique: true,
+    partialFilterExpression: { email: { $type: "string", $ne: "" } },
+  }
+);
 
 const User = mongoose.model("User", userSchema);
 export default User;
