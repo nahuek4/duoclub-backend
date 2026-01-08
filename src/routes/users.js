@@ -97,6 +97,67 @@ function recalcUserCredits(user) {
   user.credits = sum;
 }
 
+function normalizeLotServiceKey(lot) {
+  const raw = lot?.serviceKey;
+  const sk = String(raw || "").toUpperCase().trim();
+  return sk || "ALL";
+}
+
+const ALLOWED_SERVICE_KEYS = new Set(["ALL", "EP", "AR", "RA", "NUT"]);
+
+function sumCreditsForService(user, serviceKey) {
+  const now = nowDate();
+  const want = String(serviceKey || "ALL").toUpperCase().trim() || "ALL";
+  const lots = Array.isArray(user.creditLots) ? user.creditLots : [];
+
+  return lots.reduce((acc, lot) => {
+    const exp = lot.expiresAt ? new Date(lot.expiresAt) : null;
+    if (exp && exp <= now) return acc;
+
+    const lk = normalizeLotServiceKey(lot);
+    const rem = Number(lot.remaining || 0);
+    if (rem <= 0) return acc;
+
+    if (want === "ALL") return acc + rem;
+    if (lk === "ALL" || lk === want) return acc + rem;
+    return acc;
+  }, 0);
+}
+
+function consumeCreditsForService(user, toRemove, serviceKey) {
+  const now = nowDate();
+  let left = Math.max(0, Number(toRemove || 0));
+
+  const want = String(serviceKey || "ALL").toUpperCase().trim() || "ALL";
+  const lots = Array.isArray(user.creditLots) ? user.creditLots : [];
+
+  const sorted = lots
+    .filter((l) => Number(l.remaining || 0) > 0)
+    .filter((l) => !l.expiresAt || new Date(l.expiresAt) > now)
+    .filter((l) => {
+      if (want === "ALL") return true;
+      const lk = normalizeLotServiceKey(l);
+      return lk === want || lk === "ALL";
+    })
+    .sort((a, b) => {
+      const ae = a.expiresAt ? new Date(a.expiresAt).getTime() : Infinity;
+      const be = b.expiresAt ? new Date(b.expiresAt).getTime() : Infinity;
+      if (ae !== be) return ae - be;
+      const ac = a.createdAt ? new Date(a.createdAt).getTime() : 0;
+      const bc = b.createdAt ? new Date(b.createdAt).getTime() : 0;
+      return ac - bc;
+    });
+
+  for (const lot of sorted) {
+    if (left <= 0) break;
+    const take = Math.min(Number(lot.remaining || 0), left);
+    lot.remaining = Number(lot.remaining || 0) - take;
+    left -= take;
+  }
+
+  recalcUserCredits(user);
+}
+
 function addCreditLot(user, { amount, serviceKey = "ALL", source = "admin-adjust" }) {
   const now = nowDate();
   const days = isPlusActive(user) ? 40 : 30;
@@ -118,33 +179,6 @@ function addCreditLot(user, { amount, serviceKey = "ALL", source = "admin-adjust
   recalcUserCredits(user);
 }
 
-function consumeCredits(user, toRemove) {
-  const now = nowDate();
-  let left = Math.max(0, Number(toRemove || 0));
-
-  const lots = Array.isArray(user.creditLots) ? user.creditLots : [];
-  const sorted = lots
-    .filter((l) => Number(l.remaining || 0) > 0)
-    .filter((l) => !l.expiresAt || new Date(l.expiresAt) > now)
-    .sort((a, b) => {
-      const ae = a.expiresAt ? new Date(a.expiresAt).getTime() : Infinity;
-      const be = b.expiresAt ? new Date(b.expiresAt).getTime() : Infinity;
-      if (ae !== be) return ae - be;
-      const ac = a.createdAt ? new Date(a.createdAt).getTime() : 0;
-      const bc = b.createdAt ? new Date(b.createdAt).getTime() : 0;
-      return ac - bc;
-    });
-
-  for (const lot of sorted) {
-    if (left <= 0) break;
-    const take = Math.min(Number(lot.remaining || 0), left);
-    lot.remaining = Number(lot.remaining || 0) - take;
-    left -= take;
-  }
-
-  recalcUserCredits(user);
-}
-
 /* ============================================
    TODAS LAS RUTAS REQUIEREN ESTAR LOGUEADO
 ============================================ */
@@ -154,7 +188,6 @@ router.use(protect);
 // ✅ ADMIN - REGISTRACIONES PENDIENTES
 // ============================================
 
-// GET /users/registrations/list?status=pending|approved|rejected
 router.get("/registrations/list", adminOnly, async (req, res) => {
   try {
     const status = String(req.query.status || "pending");
@@ -172,24 +205,10 @@ router.get("/registrations/list", adminOnly, async (req, res) => {
   }
 });
 
-/* ============================================
-   POST: CREAR USUARIO NUEVO (ADMIN)
-============================================ */
 router.post("/", adminOnly, async (req, res) => {
   try {
-    const {
-      name,
-      lastName,
-      email,
-      phone,
-      dni,
-      age,
-      weight,
-      notes,
-      credits,
-      role,
-      password,
-    } = req.body || {};
+    const { name, lastName, email, phone, dni, age, weight, notes, credits, role, password } =
+      req.body || {};
 
     const n = String(name || "").trim();
     const ln = String(lastName || "").trim();
@@ -219,7 +238,6 @@ router.post("/", adminOnly, async (req, res) => {
       weight: weight ?? null,
       notes: notes || "",
 
-      // ✅ compat: si mandás credits, los convertimos en lots "ALL"
       credits: 0,
       creditLots: [],
 
@@ -235,7 +253,6 @@ router.post("/", adminOnly, async (req, res) => {
       aptoStatus: "",
     });
 
-    // ✅ si viene credits, los cargamos como lote
     const initialCredits = Number(credits ?? 0);
     if (initialCredits > 0) {
       addCreditLot(user, { amount: initialCredits, serviceKey: "ALL", source: "admin-create" });
@@ -258,9 +275,6 @@ router.post("/", adminOnly, async (req, res) => {
   }
 });
 
-/* ============================================
-   GET: LISTAR TODOS LOS USUARIOS (ADMIN)
-============================================ */
 router.get("/", adminOnly, async (req, res) => {
   try {
     const list = await User.find().lean();
@@ -271,8 +285,6 @@ router.get("/", adminOnly, async (req, res) => {
   }
 });
 
-// ✅ LISTAR PENDIENTES (solo admin)
-// GET /users/pending
 router.get("/pending", adminOnly, async (req, res) => {
   try {
     const pending = await User.find({ approvalStatus: "pending" })
@@ -286,8 +298,6 @@ router.get("/pending", adminOnly, async (req, res) => {
   }
 });
 
-// ✅ APROBAR / RECHAZAR (solo admin)
-// PATCH /users/:id/approval  body: { status: "approved" | "rejected" }
 router.patch("/:id/approval", adminOnly, async (req, res) => {
   try {
     const { id } = req.params;
@@ -325,9 +335,6 @@ router.patch("/:id/approval", adminOnly, async (req, res) => {
   }
 });
 
-/* ============================================
-   ✅ PUT: EDITAR DATOS BÁSICOS (SELF o ADMIN)
-============================================ */
 router.put("/:id", async (req, res) => {
   try {
     const { id } = req.params;
@@ -342,8 +349,7 @@ router.put("/:id", async (req, res) => {
     }
 
     const name = typeof req.body?.name === "string" ? req.body.name.trim() : undefined;
-    const lastName =
-      typeof req.body?.lastName === "string" ? req.body.lastName.trim() : undefined;
+    const lastName = typeof req.body?.lastName === "string" ? req.body.lastName.trim() : undefined;
     const phone = typeof req.body?.phone === "string" ? req.body.phone.trim() : undefined;
     const dni = typeof req.body?.dni === "string" ? req.body.dni.trim() : undefined;
 
@@ -381,9 +387,6 @@ router.put("/:id", async (req, res) => {
   }
 });
 
-/* ============================================
-   GET UN USUARIO
-============================================ */
 router.get("/:id", async (req, res) => {
   try {
     const { id } = req.params;
@@ -413,10 +416,6 @@ router.get("/:id", async (req, res) => {
   }
 });
 
-/* ============================================
-   PATCH EDITAR USUARIO (ADMIN)
-   (ojo: esto permite tocar cualquier campo)
-============================================ */
 router.patch("/:id", adminOnly, async (req, res) => {
   try {
     const { id } = req.params;
@@ -432,9 +431,6 @@ router.patch("/:id", adminOnly, async (req, res) => {
   }
 });
 
-/* ============================================
-   DELETE ELIMINAR USUARIO + SUS TURNOS (ADMIN)
-============================================ */
 router.delete("/:id", adminOnly, async (req, res) => {
   try {
     const { id } = req.params;
@@ -455,9 +451,6 @@ router.delete("/:id", adminOnly, async (req, res) => {
   }
 });
 
-/* ============================================
-   HISTORIAL
-============================================ */
 router.get("/:id/history", async (req, res) => {
   try {
     const { id } = req.params;
@@ -491,10 +484,6 @@ router.get("/:id/history", async (req, res) => {
     res.status(500).json({ error: "Error al obtener historial." });
   }
 });
-
-/* ============================================
-   HISTORIA CLÍNICA (SOLO ADMIN)
-============================================ */
 
 router.get("/:id/clinical-notes", adminOnly, async (req, res) => {
   try {
@@ -539,56 +528,106 @@ router.post("/:id/clinical-notes", adminOnly, async (req, res) => {
 });
 
 /* ============================================
-   CRÉDITOS (ADMIN) ✅ compatible con creditLots
+   CRÉDITOS (ADMIN) ✅ POR SERVICIO (creditLots)
    body:
-   - { credits: number } => set absoluto
-   - { delta: number }   => suma/resta
-   opcional:
-   - { serviceKey: "ALL" | "EP" | "AR" | "RA" | "NUT" }
+   - legacy: { credits:number, serviceKey } => set absoluto por servicio
+   - legacy: { delta:number, serviceKey }   => suma/resta por servicio
+   - ✅ batch: { items:[{serviceKey, credits? | delta?}], source? }
 ============================================ */
 async function updateCredits(req, res) {
   try {
     const { id } = req.params;
-    const { credits, delta, serviceKey } = req.body || {};
+    const { credits, delta, serviceKey, items, source } = req.body || {};
 
     const user = await User.findById(id);
     if (!user) return res.status(404).json({ error: "Usuario no encontrado." });
 
-    // recalcular base
-    recalcUserCredits(user);
-    const current = Number(user.credits || 0);
+    const applyOne = ({ credits: c, delta: d, serviceKey: skRaw, source: src }) => {
+      const sk = String(skRaw || "ALL").toUpperCase().trim() || "ALL";
+      if (!ALLOWED_SERVICE_KEYS.has(sk)) {
+        const err = new Error("serviceKey inválido.");
+        err.status = 400;
+        throw err;
+      }
 
-    const sk = String(serviceKey || "ALL").toUpperCase().trim() || "ALL";
+      // recalcular antes (por seguridad)
+      recalcUserCredits(user);
 
-    if (typeof credits === "number") {
-      const target = Math.max(0, Math.round(credits));
-      const diff = target - current;
+      const currentForService = sumCreditsForService(user, sk);
 
-      if (diff > 0) addCreditLot(user, { amount: diff, serviceKey: sk, source: "admin-set" });
-      else if (diff < 0) consumeCredits(user, Math.abs(diff));
-    } else if (typeof delta === "number") {
-      const d = Math.round(delta);
+      if (typeof c === "number") {
+        const target = Math.max(0, Math.round(c));
+        const diff = target - currentForService;
 
-      if (d > 0) addCreditLot(user, { amount: d, serviceKey: sk, source: "admin-delta" });
-      else if (d < 0) consumeCredits(user, Math.abs(d));
+        if (diff > 0) {
+          addCreditLot(user, { amount: diff, serviceKey: sk, source: src || "admin-set" });
+        } else if (diff < 0) {
+          consumeCreditsForService(user, Math.abs(diff), sk);
+        }
+        return;
+      }
+
+      if (typeof d === "number") {
+        const dd = Math.round(d);
+
+        if (dd > 0) {
+          addCreditLot(user, { amount: dd, serviceKey: sk, source: src || "admin-delta" });
+        } else if (dd < 0) {
+          consumeCreditsForService(user, Math.abs(dd), sk);
+        }
+        return;
+      }
+
+      const err = new Error("Valor inválido.");
+      err.status = 400;
+      throw err;
+    };
+
+    // ✅ batch
+    if (Array.isArray(items) && items.length > 0) {
+      for (const it of items) {
+        applyOne({
+          credits: it?.credits,
+          delta: it?.delta,
+          serviceKey: it?.serviceKey,
+          source: it?.source || source || "admin-batch",
+        });
+      }
     } else {
-      return res.status(400).json({ error: "Valor inválido." });
+      // legacy
+      applyOne({
+        credits,
+        delta,
+        serviceKey,
+        source: source || "admin-single",
+      });
     }
 
     await user.save();
-    res.json({ ok: true, credits: Number(user.credits || 0) });
+
+    const creditsByService = {
+      EP: sumCreditsForService(user, "EP"),
+      AR: sumCreditsForService(user, "AR"),
+      RA: sumCreditsForService(user, "RA"),
+      NUT: sumCreditsForService(user, "NUT"),
+      ALL: sumCreditsForService(user, "ALL"),
+    };
+
+    res.json({
+      ok: true,
+      credits: Number(user.credits || 0),
+      creditsByService,
+    });
   } catch (err) {
     console.error("Error en créditos:", err);
-    res.status(500).json({ error: "Error interno." });
+    const status = err?.status || 500;
+    res.status(status).json({ error: err?.message || "Error interno." });
   }
 }
 
 router.patch("/:id/credits", adminOnly, updateCredits);
 router.post("/:id/credits", adminOnly, updateCredits);
 
-/* ============================================
-   RESET PASSWORD (ADMIN)
-============================================ */
 router.post("/:id/reset-password", adminOnly, async (req, res) => {
   try {
     const { id } = req.params;
@@ -610,9 +649,6 @@ router.post("/:id/reset-password", adminOnly, async (req, res) => {
   }
 });
 
-/* ============================================
-   SUSPENDER / REACTIVAR USUARIO (ADMIN)
-============================================ */
 router.patch("/:id/suspend", adminOnly, async (req, res) => {
   try {
     const { id } = req.params;
@@ -631,9 +667,6 @@ router.patch("/:id/suspend", adminOnly, async (req, res) => {
   }
 });
 
-/* ============================================
-   SUBIR APTO (PDF)
-============================================ */
 router.post("/:id/apto", uploadApto.single("apto"), async (req, res) => {
   try {
     const { id } = req.params;
@@ -678,9 +711,6 @@ router.post("/:id/apto", uploadApto.single("apto"), async (req, res) => {
   }
 });
 
-/* ============================================
-   VER APTOS
-============================================ */
 router.get("/:id/apto", async (req, res) => {
   try {
     const { id } = req.params;
@@ -701,9 +731,6 @@ router.get("/:id/apto", async (req, res) => {
   }
 });
 
-/* ============================================
-   DELETE APTO
-============================================ */
 router.delete("/:id/apto", async (req, res) => {
   try {
     const { id } = req.params;
@@ -734,9 +761,6 @@ router.delete("/:id/apto", async (req, res) => {
   }
 });
 
-/* ============================================
-   FOTO DEL PACIENTE (AVATAR)
-============================================ */
 router.post("/:id/photo", avatarUpload.single("photo"), async (req, res) => {
   try {
     const { id } = req.params;
