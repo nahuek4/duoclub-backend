@@ -182,3 +182,118 @@ export async function sendAptoExpiredEmail(user) {
   ];
   await sendMail(user.email, "Es necesario actualizar tu apto médico", lines.join("\n"));
 }
+
+/* =========================================================
+   ✅ NUEVO: Email al admin por orden nueva
+   - CASH: se manda al crear la orden
+   - MP: se manda SOLO cuando llega approved al webhook
+========================================================= */
+
+function safe(v) {
+  return v == null ? "" : String(v);
+}
+
+function formatARS(n) {
+  const num = Number(n);
+  if (!Number.isFinite(num)) return "-";
+  return new Intl.NumberFormat("es-AR", {
+    style: "currency",
+    currency: "ARS",
+    maximumFractionDigits: 0,
+  }).format(num);
+}
+
+export async function sendAdminNewOrderEmail(order, user) {
+  const to = process.env.ADMIN_ORDERS_EMAIL || "duoclub.ar@gmail.com";
+  if (!to) return;
+
+  const pay = safe(order?.payMethod).toUpperCase() === "MP" ? "MercadoPago" : "Efectivo";
+  const status = safe(order?.status || "").toUpperCase();
+  const orderId = safe(order?._id);
+  const createdAt = order?.createdAt
+    ? new Date(order.createdAt).toLocaleString("es-AR")
+    : "-";
+
+  const customerName =
+    `${safe(user?.name)} ${safe(user?.lastName)}`.trim() ||
+    safe(order?.customerName) ||
+    "-";
+
+  const customerEmail =
+    safe(user?.email) ||
+    safe(order?.customerEmail) ||
+    "-";
+
+  const items = Array.isArray(order?.items) ? order.items : [];
+
+  const lines = items.map((it, idx) => {
+    const kind = safe(it.kind).toUpperCase();
+    const qty = Math.max(1, Number(it.qty || 1));
+
+    const title =
+      kind === "MEMBERSHIP"
+        ? (safe(it.action).toUpperCase() === "EXTEND" ? "DUO+ · Extender 1 mes" : "DUO+ mensual")
+        : (safe(it.serviceTitle) || safe(it.label) || safe(it.serviceKey) || "Créditos");
+
+    const credits = kind === "CREDITS" && it.credits ? ` (${it.credits} sesiones)` : "";
+    const price = formatARS(it.price ?? it.priceUI ?? it.basePrice ?? 0);
+
+    return `${idx + 1}. ${title}${credits} x${qty} — ${price}`;
+  });
+
+  const total = formatARS(order?.totalFinal ?? order?.total ?? order?.price ?? 0);
+
+  const subject = `🛒 Nueva orden DUO (${pay})${status ? ` - ${status}` : ""} — ${customerName}`;
+
+  const text = [
+    "Nueva orden recibida",
+    "",
+    `Orden: ${orderId}`,
+    `Fecha: ${createdAt}`,
+    `Pago: ${pay}`,
+    status ? `Estado: ${status}` : "",
+    "",
+    `Cliente: ${customerName}`,
+    `Email: ${customerEmail}`,
+    "",
+    "Items:",
+    ...(lines.length ? lines : ["(sin items)"]),
+    "",
+    `Total: ${total}`,
+  ].filter(Boolean).join("\n");
+
+  const html = `
+  <div style="font-family: Arial, sans-serif; color:#111; line-height:1.35;">
+    <h2 style="margin:0 0 10px;">Nueva orden recibida</h2>
+
+    <div style="padding:12px; border:1px solid #ddd; border-radius:10px; margin:12px 0;">
+      <div><b>Orden:</b> ${orderId || "-"}</div>
+      <div><b>Fecha:</b> ${createdAt}</div>
+      <div><b>Pago:</b> ${pay}</div>
+      ${status ? `<div><b>Estado:</b> ${status}</div>` : ""}
+    </div>
+
+    <div style="padding:12px; border:1px solid #ddd; border-radius:10px; margin:12px 0;">
+      <div><b>Cliente:</b> ${customerName || "-"}</div>
+      <div><b>Email:</b> ${customerEmail || "-"}</div>
+    </div>
+
+    <div style="padding:12px; border:1px solid #ddd; border-radius:10px; margin:12px 0;">
+      <div style="font-weight:700; margin-bottom:8px;">Items</div>
+      <ul style="margin:0; padding-left:18px;">
+        ${
+          lines.length
+            ? lines.map((l) => `<li style="margin:6px 0;">${safe(l)}</li>`).join("")
+            : "<li>(sin items)</li>"
+        }
+      </ul>
+    </div>
+
+    <div style="text-align:right; font-size:16px; margin-top:10px;">
+      <b>Total:</b> ${total}
+    </div>
+  </div>
+  `;
+
+  await sendMail(to, subject, text, html);
+}
