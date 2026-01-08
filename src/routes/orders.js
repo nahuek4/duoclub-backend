@@ -106,7 +106,67 @@ function addCreditLot(user, { amount, source, orderId, serviceKey }) {
 }
 
 /* =======================
-   Aplicar una orden (idempotente)
+   Aplicar créditos SOLO (idempotente)
+   - NO cambia status
+   - NO activa DUO+
+======================= */
+async function applyCreditsOnlyIfNeeded(order) {
+  if (!order) return { ok: false, error: "Orden inválida." };
+
+  if (order.creditsApplied) {
+    return { ok: true, message: "Créditos ya habilitados." };
+  }
+
+  const user = await User.findById(order.user);
+  if (!user) return { ok: false, error: "Usuario no encontrado." };
+
+  const hasItems = Array.isArray(order.items) && order.items.length > 0;
+
+  // Asegura estado membresía (por expiración)
+  ensureBasicIfExpired(user);
+
+  if (hasItems) {
+    for (const it of order.items) {
+      const kind = String(it.kind || "").toUpperCase();
+      if (kind !== "CREDITS") continue;
+
+      const qty = Math.max(1, Number(it.qty) || 1);
+      const creditsPer = Math.max(0, Number(it.credits) || 0);
+      const totalCredits = creditsPer * qty;
+
+      if (totalCredits > 0) {
+        addCreditLot(user, {
+          amount: totalCredits,
+          source: "order-credits-only",
+          orderId: order._id,
+          serviceKey: it.serviceKey || "EP",
+        });
+      }
+    }
+  } else {
+    // legacy
+    const totalCredits = Math.max(0, Number(order.credits) || 0);
+    if (totalCredits > 0) {
+      addCreditLot(user, {
+        amount: totalCredits,
+        source: "order-legacy-credits-only",
+        orderId: order._id,
+        serviceKey: order.serviceKey || "EP",
+      });
+    }
+  }
+
+  await user.save();
+
+  order.creditsApplied = true;
+  await order.save();
+
+  return { ok: true };
+}
+
+/* =======================
+   Aplicar una orden completa (idempotente)
+   - IMPORTANTE: si creditsApplied ya está true, NO vuelve a sumar créditos
 ======================= */
 async function applyOrderIfNeeded(order) {
   if (!order) return { ok: false, error: "Orden inválida." };
@@ -146,34 +206,36 @@ async function applyOrderIfNeeded(order) {
     else ensureBasicIfExpired(user);
   }
 
-  // 2) créditos
-  if (hasItems) {
-    for (const it of order.items) {
-      const kind = String(it.kind || "").toUpperCase();
-      if (kind !== "CREDITS") continue;
+  // 2) créditos (solo si todavía NO fueron aplicados)
+  if (!order.creditsApplied) {
+    if (hasItems) {
+      for (const it of order.items) {
+        const kind = String(it.kind || "").toUpperCase();
+        if (kind !== "CREDITS") continue;
 
-      const qty = Math.max(1, Number(it.qty) || 1);
-      const creditsPer = Math.max(0, Number(it.credits) || 0);
-      const totalCredits = creditsPer * qty;
+        const qty = Math.max(1, Number(it.qty) || 1);
+        const creditsPer = Math.max(0, Number(it.credits) || 0);
+        const totalCredits = creditsPer * qty;
 
+        if (totalCredits > 0) {
+          addCreditLot(user, {
+            amount: totalCredits,
+            source: "order",
+            orderId: order._id,
+            serviceKey: it.serviceKey || "EP",
+          });
+        }
+      }
+    } else {
+      const totalCredits = Math.max(0, Number(order.credits) || 0);
       if (totalCredits > 0) {
         addCreditLot(user, {
           amount: totalCredits,
-          source: "order",
+          source: "order-legacy",
           orderId: order._id,
-          serviceKey: it.serviceKey || "EP",
+          serviceKey: order.serviceKey || "EP",
         });
       }
-    }
-  } else {
-    const totalCredits = Math.max(0, Number(order.credits) || 0);
-    if (totalCredits > 0) {
-      addCreditLot(user, {
-        amount: totalCredits,
-        source: "order-legacy",
-        orderId: order._id,
-        serviceKey: order.serviceKey || "EP",
-      });
     }
   }
 
@@ -283,7 +345,7 @@ function resolveMembershipItem() {
 
 /* =========================================================
    POST /orders/checkout
-   - descuento 15% SOLO si YA es PLUS activo (solo sobre CREDITS)
+   - ✅ DESCUENTO: SOLO SHOP (hoy no hay SHOP => 0)
    - DUO+ siempre full price
    - ✅ NO devolver orderId al cliente
 ========================================================= */
@@ -350,14 +412,16 @@ router.post("/checkout", protect, async (req, res) => {
 
     const total = items.reduce((acc, x) => acc + Number(x.price || 0), 0);
 
-    const creditsSubtotal = items
-      .filter((x) => String(x.kind || "").toUpperCase() === "CREDITS")
+    // ✅ DESCUENTO: SOLO SHOP (hoy no existe => 0)
+    const shopSubtotal = items
+      .filter((x) => String(x.kind || "").toUpperCase() === "SHOP")
       .reduce((acc, x) => acc + Number(x.price || 0), 0);
 
-    const discountPercent = plusActiveNow ? PLUS_DISCOUNT_PCT : 0;
-    const discountAmount = plusActiveNow
-      ? Math.round(creditsSubtotal * (PLUS_DISCOUNT_PCT / 100))
-      : 0;
+    const discountPercent = plusActiveNow && shopSubtotal > 0 ? PLUS_DISCOUNT_PCT : 0;
+    const discountAmount =
+      plusActiveNow && shopSubtotal > 0
+        ? Math.round(shopSubtotal * (PLUS_DISCOUNT_PCT / 100))
+        : 0;
 
     const totalFinal = Math.max(0, Math.round(total - discountAmount));
 
@@ -372,10 +436,10 @@ router.post("/checkout", protect, async (req, res) => {
       totalFinal,
       status: "pending",
       applied: false,
+      // creditsApplied tiene default false en el schema
     });
 
     if (pm === "CASH") {
-      // ✅ sin orderId en respuesta
       return res.status(201).json({
         ok: true,
         status: "pending",
@@ -397,7 +461,6 @@ router.post("/checkout", protect, async (req, res) => {
     order.mpInitPoint = mp.init_point;
     await order.save();
 
-    // ✅ sin orderId en respuesta
     return res.status(201).json({
       ok: true,
       init_point: mp.init_point,
@@ -413,7 +476,6 @@ router.post("/checkout", protect, async (req, res) => {
 
 /* =========================================================
    LEGACY: POST /orders
-   (lo dejo tal cual; si también querés ocultar orderId acá, decime si se usa)
 ========================================================= */
 router.post("/", protect, async (req, res) => {
   try {
@@ -502,6 +564,42 @@ router.get("/", protect, adminOnly, async (req, res) => {
   res.json(list);
 });
 
+// ✅ PATCH /orders/:id/enable-credits (solo CASH, mantiene pending)
+router.patch("/:id/enable-credits", protect, adminOnly, async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    if (!mongoose.Types.ObjectId.isValid(id)) {
+      return res.status(400).json({ error: "ID de orden inválido" });
+    }
+
+    const order = await Order.findById(id);
+    if (!order) return res.status(404).json({ error: "Orden no encontrada" });
+
+    const pm = String(order.payMethod || "").toUpperCase();
+    if (pm !== "CASH") {
+      return res.status(400).json({ error: "Solo CASH permite habilitar créditos sin pago" });
+    }
+
+    const st = String(order.status || "").toLowerCase();
+    if (st !== "pending") {
+      return res.status(400).json({ error: "Solo órdenes pendientes pueden habilitar créditos sin pago" });
+    }
+
+    const r = await applyCreditsOnlyIfNeeded(order);
+    if (!r.ok) return res.status(500).json({ error: r.error || "No se pudo habilitar créditos." });
+
+    // ✅ queda pendiente, no tocamos status
+    return res.json({ ok: true });
+  } catch (err) {
+    console.error("PATCH /orders/:id/enable-credits error:", err);
+    return res.status(500).json({
+      error: "Error interno al habilitar créditos",
+      detail: err?.message || String(err),
+    });
+  }
+});
+
 // PATCH /orders/:id/mark-paid (solo CASH)
 router.patch("/:id/mark-paid", protect, adminOnly, async (req, res) => {
   try {
@@ -536,6 +634,38 @@ router.patch("/:id/mark-paid", protect, adminOnly, async (req, res) => {
     console.error("PATCH /orders/:id/mark-paid error:", err);
     return res.status(500).json({
       error: "Error interno al marcar como pagada",
+      detail: err?.message || String(err),
+    });
+  }
+});
+
+/* =========================================================
+   DELETE /orders/:id  (ADMIN) — BORRAR VENTA
+   - Bloquea si ya fue aplicada O si créditos ya fueron habilitados
+========================================================= */
+router.delete("/:id", protect, adminOnly, async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    if (!mongoose.Types.ObjectId.isValid(id)) {
+      return res.status(400).json({ error: "ID de orden inválido" });
+    }
+
+    const order = await Order.findById(id);
+    if (!order) return res.status(404).json({ error: "Orden no encontrada" });
+
+    if (order.applied || order.creditsApplied) {
+      return res.status(400).json({
+        error: "No se puede borrar: ya impactó en el usuario (créditos/membresía).",
+      });
+    }
+
+    await Order.deleteOne({ _id: order._id });
+    return res.json({ ok: true });
+  } catch (err) {
+    console.error("DELETE /orders/:id error:", err);
+    return res.status(500).json({
+      error: "Error interno al borrar la orden",
       detail: err?.message || String(err),
     });
   }
