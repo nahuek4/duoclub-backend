@@ -52,7 +52,9 @@ function addPlusMonths(user, months = 1) {
   const now = new Date();
   user.membership = user.membership || {};
 
-  const curUntil = user.membership.activeUntil ? new Date(user.membership.activeUntil) : null;
+  const curUntil = user.membership.activeUntil
+    ? new Date(user.membership.activeUntil)
+    : null;
   const base = curUntil && curUntil > now ? curUntil : now;
 
   const until = new Date(base);
@@ -103,6 +105,39 @@ function addCreditLot(user, { amount, source, orderId, serviceKey }) {
   });
 
   recalcCreditsCache(user);
+}
+
+function pad2(n) {
+  return String(n).padStart(2, "0");
+}
+function ymd(d = new Date()) {
+  return `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}`;
+}
+function hm(d = new Date()) {
+  return `${pad2(d.getHours())}:${pad2(d.getMinutes())}`;
+}
+function safeServiceFromOrder(order) {
+  const hasItems = Array.isArray(order?.items) && order.items.length > 0;
+  if (hasItems) {
+    const kinds = order.items
+      .map((it) => String(it?.kind || "").toUpperCase())
+      .filter(Boolean);
+    if (kinds.includes("MEMBERSHIP") && kinds.includes("CREDITS")) return "MEMBERSHIP+CREDITS";
+    if (kinds.includes("MEMBERSHIP")) return "MEMBERSHIP";
+    if (kinds.includes("CREDITS")) {
+      // si hay un único serviceKey en credits, lo mostramos
+      const sks = order.items
+        .filter((it) => String(it?.kind || "").toUpperCase() === "CREDITS")
+        .map((it) => String(it?.serviceKey || "").toUpperCase().trim())
+        .filter(Boolean);
+      const uniq = Array.from(new Set(sks));
+      if (uniq.length === 1) return uniq[0];
+      if (uniq.length > 1) return uniq.join("+");
+      return "CREDITS";
+    }
+    return "ITEMS";
+  }
+  return String(order?.serviceKey || "ORDER").toUpperCase().trim() || "ORDER";
 }
 
 /* =======================
@@ -486,10 +521,8 @@ router.post("/", protect, async (req, res) => {
     const cr = Number(credits);
     const wantsPlus = Boolean(plus);
 
-    if (!sk || !pm || !cr)
-      return res.status(400).json({ error: "Datos incompletos." });
-    if (!["CASH", "MP"].includes(pm))
-      return res.status(400).json({ error: "Medio de pago inválido." });
+    if (!sk || !pm || !cr) return res.status(400).json({ error: "Datos incompletos." });
+    if (!["CASH", "MP"].includes(pm)) return res.status(400).json({ error: "Medio de pago inválido." });
 
     const plan = await PricingPlan.findOne({
       serviceKey: sk,
@@ -547,9 +580,7 @@ router.post("/", protect, async (req, res) => {
 
 // GET /orders/me
 router.get("/me", protect, async (req, res) => {
-  const list = await Order.find({ user: req.user._id })
-    .sort({ createdAt: -1 })
-    .lean();
+  const list = await Order.find({ user: req.user._id }).sort({ createdAt: -1 }).lean();
   res.json(list);
 });
 
@@ -641,7 +672,10 @@ router.patch("/:id/mark-paid", protect, adminOnly, async (req, res) => {
 
 /* =========================================================
    DELETE /orders/:id  (ADMIN) — BORRAR VENTA
-   - Bloquea si ya fue aplicada O si créditos ya fueron habilitados
+   ✅ NUEVO:
+   - SI ya impactó (applied o creditsApplied), IGUAL se borra
+   - PERO se devuelve warning + mensaje para avisar al admin
+   - NO se deshacen créditos/membresía (solo borrás el registro de venta)
 ========================================================= */
 router.delete("/:id", protect, adminOnly, async (req, res) => {
   try {
@@ -654,13 +688,38 @@ router.delete("/:id", protect, adminOnly, async (req, res) => {
     const order = await Order.findById(id);
     if (!order) return res.status(404).json({ error: "Orden no encontrada" });
 
-    if (order.applied || order.creditsApplied) {
-      return res.status(400).json({
-        error: "No se puede borrar: ya impactó en el usuario (créditos/membresía).",
-      });
+    const impacted = !!(order.applied || order.creditsApplied);
+
+    // ✅ (opcional pero recomendado) dejar rastro en historial del usuario
+    try {
+      const user = await User.findById(order.user);
+      if (user) {
+        user.history = Array.isArray(user.history) ? user.history : [];
+        user.history.push({
+          action: impacted ? "ORDER_DELETED_IMPACTED" : "ORDER_DELETED",
+          date: ymd(new Date()),
+          time: hm(new Date()),
+          service: safeServiceFromOrder(order),
+          createdAt: new Date(),
+        });
+        await user.save();
+      }
+    } catch (e) {
+      // no frenamos el delete por esto
+      console.warn("ORDER DELETE: no se pudo guardar history:", e?.message || e);
     }
 
     await Order.deleteOne({ _id: order._id });
+
+    if (impacted) {
+      return res.json({
+        ok: true,
+        warning: true,
+        message:
+          "Venta borrada. Atención: esta orden ya había impactado (créditos/membresía). No se revierte lo habilitado.",
+      });
+    }
+
     return res.json({ ok: true });
   } catch (err) {
     console.error("DELETE /orders/:id error:", err);
