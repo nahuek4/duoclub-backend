@@ -1,3 +1,4 @@
+// backend/src/models/Admission.js
 import mongoose from "mongoose";
 
 const admissionSchema = new mongoose.Schema(
@@ -9,6 +10,18 @@ const admissionSchema = new mongoose.Schema(
       unique: true,
       index: true,
     },
+
+    // ✅ Vinculación opcional a User
+    user: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "User",
+      default: null,
+      index: true,
+    },
+
+    // ✅ tracking sync
+    syncedToUser: { type: Boolean, default: false },
+    syncedAt: { type: Date, default: null },
 
     // Estado de pasos
     step1Completed: { type: Boolean, default: false },
@@ -78,5 +91,9 @@ const admissionSchema = new mongoose.Schema(
     timestamps: true,
   }
 );
+
+// ✅ indices útiles
+admissionSchema.index({ "step1.email": 1 });
+admissionSchema.index({ createdAt: -1 });
 
 export default mongoose.model("Admission", admissionSchema);

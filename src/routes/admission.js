@@ -1,14 +1,160 @@
 // backend/src/routes/admission.js
 import express from "express";
 import crypto from "crypto";
+import bcrypt from "bcryptjs";
 import Admission from "../models/Admission.js";
+import User from "../models/User.js";
 import { protect, adminOnly } from "../middleware/auth.js";
 
 const router = express.Router();
 
-// ===============================
-// PUBLIC: guardar step1
-// ===============================
+/* =========================================================
+   HELPERS (mapping admission -> user)
+========================================================= */
+
+function splitFullName(fullName) {
+  const clean = String(fullName || "").trim().replace(/\s+/g, " ");
+  if (!clean) return { name: "", lastName: "" };
+  const parts = clean.split(" ");
+  if (parts.length === 1) return { name: parts[0], lastName: "-" };
+  return { name: parts.slice(0, -1).join(" "), lastName: parts.slice(-1).join(" ") };
+}
+
+function toNumberOrNull(v) {
+  if (v === undefined || v === null) return null;
+  const s = String(v).trim().replace(",", ".");
+  if (!s) return null;
+  const n = Number(s);
+  return Number.isFinite(n) ? n : null;
+}
+
+function computeAgeFromBirth(step1) {
+  const d = Number(step1?.birthDay);
+  const m = Number(step1?.birthMonth);
+  const y = Number(step1?.birthYear);
+  if (!d || !m || !y) return null;
+
+  const birth = new Date(y, m - 1, d);
+  if (Number.isNaN(birth.getTime())) return null;
+
+  const now = new Date();
+  let age = now.getFullYear() - birth.getFullYear();
+  const mm = now.getMonth() - birth.getMonth();
+  if (mm < 0 || (mm === 0 && now.getDate() < birth.getDate())) age--;
+  return age > 0 && age < 120 ? age : null;
+}
+
+function buildNotesFromAdmission(step1 = {}, step2 = {}) {
+  const lines = [];
+
+  if (step1.fitnessLevel) lines.push(`Fitness: ${step1.fitnessLevel}`);
+
+  if (step1.hasContraindication) {
+    lines.push(
+      step1.hasContraindication === "SI"
+        ? `Contraindicación: SI (${step1.contraindicationDetail || "-"})`
+        : `Contraindicación: ${step1.hasContraindication}`
+    );
+  }
+
+  if (step1.hasCondition) {
+    lines.push(
+      step1.hasCondition === "SI"
+        ? `Condición: SI (${step1.conditionDetail || "-"})`
+        : `Condición: ${step1.hasCondition}`
+    );
+  }
+
+  if (step1.hadInjuryLastYear) {
+    lines.push(
+      step1.hadInjuryLastYear === "SI"
+        ? `Lesión último año: SI (${step1.injuryDetail || "-"})`
+        : `Lesión último año: ${step1.hadInjuryLastYear}`
+    );
+  }
+
+  if (step1.diabetes) {
+    lines.push(
+      step1.diabetes === "SI"
+        ? `Diabetes: SI (${step1.diabetesType || "-"})`
+        : `Diabetes: ${step1.diabetes}`
+    );
+  }
+
+  if (step1.bloodPressure) lines.push(`Presión arterial: ${step1.bloodPressure}`);
+
+  if (step1.smokes) {
+    lines.push(
+      step1.smokes === "SI"
+        ? `Fuma: SI (${step1.cigarettesPerDay || "-"} cig/día)`
+        : `Fuma: ${step1.smokes}`
+    );
+  }
+
+  if (step1.heartProblems) {
+    lines.push(
+      step1.heartProblems === "SI"
+        ? `Cardíaco: SI (${step1.heartDetail || "-"})`
+        : `Cardíaco: ${step1.heartProblems}`
+    );
+  }
+
+  if (step1.orthoProblem) {
+    lines.push(
+      step1.orthoProblem === "SI"
+        ? `Ortopédico: SI (${step1.orthoDetail || "-"})`
+        : `Ortopédico: ${step1.orthoProblem}`
+    );
+  }
+
+  if (step1.pregnant) {
+    lines.push(
+      step1.pregnant === "SI"
+        ? `Embarazo: SI (${step1.pregnantWeeks || "-"} semanas)`
+        : `Embarazo: ${step1.pregnant}`
+    );
+  }
+
+  if (step1.lastBloodTest) lines.push(`Último análisis: ${step1.lastBloodTest}`);
+  if (step1.relevantInfo) lines.push(`Info relevante: ${step1.relevantInfo}`);
+
+  // Step2 (si existe)
+  if (step2?.needsRehab) lines.push(`Rehab: ${step2.needsRehab}`);
+  if (step2?.symptoms) lines.push(`Síntomas: ${step2.symptoms}`);
+  if (step2?.immediateGoal) lines.push(`Objetivo: ${step2.immediateGoal}`);
+  if (step2?.modality) lines.push(`Modalidad: ${step2.modality}`);
+  if (step2?.weeklySessions) lines.push(`Sesiones/sem: ${step2.weeklySessions}`);
+
+  return lines.filter(Boolean).join("\n");
+}
+
+function mapAdmissionToUserUpdate(adm) {
+  const s1 = adm.step1 || {};
+  const s2 = adm.step2 || {};
+
+  const { name, lastName } = splitFullName(s1.fullName);
+
+  const age = computeAgeFromBirth(s1);
+  const weight = toNumberOrNull(s1.weight);
+
+  const update = {
+    name: name || undefined,
+    lastName: lastName || undefined,
+    phone: String(s1.phone || "").trim() || undefined,
+    // ⚠️ no tocamos email por seguridad acá (pero si querés, lo habilitamos)
+    // email: String(s1.email || "").trim().toLowerCase() || undefined,
+    age: age ?? null,
+    weight: weight ?? null,
+    notes: buildNotesFromAdmission(s1, s2) || "",
+  };
+
+  Object.keys(update).forEach((k) => update[k] === undefined && delete update[k]);
+  return update;
+}
+
+/* =========================================================
+   PUBLIC: guardar step1
+========================================================= */
 router.post("/step1", async (req, res) => {
   try {
     const payload = req.body || {};
@@ -41,9 +187,9 @@ router.post("/step1", async (req, res) => {
   }
 });
 
-// ===============================
-// PUBLIC: guardar step2 (actualiza el doc creado en step1)
-// ===============================
+/* =========================================================
+   PUBLIC: guardar step2
+========================================================= */
 router.patch("/:id/step2", async (req, res) => {
   try {
     const payload = req.body || {};
@@ -71,15 +217,15 @@ router.patch("/:id/step2", async (req, res) => {
   }
 });
 
-// ===============================
-// ADMIN: listar (✅ incluye nombre/email/tel)
-// ===============================
+/* =========================================================
+   ADMIN: listar
+========================================================= */
 router.get("/admin", protect, adminOnly, async (req, res) => {
   try {
     const items = await Admission.find({})
       .sort({ createdAt: -1 })
       .select(
-        "publicId step1.fullName step1.email step1.phone step1Completed step2Completed createdAt"
+        "publicId user syncedToUser syncedAt step1.fullName step1.email step1.phone step1Completed step2Completed createdAt"
       );
 
     return res.json({ ok: true, items });
@@ -89,9 +235,9 @@ router.get("/admin", protect, adminOnly, async (req, res) => {
   }
 });
 
-// ===============================
-// ADMIN: detalle
-// ===============================
+/* =========================================================
+   ADMIN: detalle
+========================================================= */
 router.get("/admin/:id", protect, adminOnly, async (req, res) => {
   try {
     const doc = await Admission.findById(req.params.id);
@@ -105,9 +251,108 @@ router.get("/admin/:id", protect, adminOnly, async (req, res) => {
   }
 });
 
-// ===============================
-// ADMIN: eliminar admisión
-// ===============================
+/* =========================================================
+   ✅ ADMIN: crear/vincular usuario desde admisión + sync perfil
+   POST /admission/admin/:id/create-user
+========================================================= */
+router.post("/admin/:id/create-user", protect, adminOnly, async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    const adm = await Admission.findById(id);
+    if (!adm) return res.status(404).json({ ok: false, error: "Admisión no encontrada." });
+
+    const s1 = adm.step1 || {};
+    const fullName = String(s1.fullName || "").trim();
+    const email = String(s1.email || "").trim().toLowerCase();
+    const phone = String(s1.phone || "").trim();
+
+    if (!fullName) {
+      return res.status(400).json({ ok: false, error: "La admisión no tiene nombre completo." });
+    }
+    if (!email) {
+      return res.status(400).json({ ok: false, error: "La admisión no tiene email." });
+    }
+    if (!phone) {
+      return res.status(400).json({ ok: false, error: "La admisión no tiene teléfono." });
+    }
+
+    // 1) buscar user existente (primero por adm.user, si no por email)
+    let user = null;
+    if (adm.user) {
+      user = await User.findById(adm.user);
+    }
+    if (!user) {
+      user = await User.findOne({ email });
+    }
+
+    let created = false;
+    let tempPassword = "";
+
+    // 2) si no existe user => crearlo (similar a POST /users admin)
+    if (!user) {
+      const { name, lastName } = splitFullName(fullName);
+
+      tempPassword = Math.random().toString(36).slice(2, 10);
+      const hashed = await bcrypt.hash(tempPassword, 10);
+
+      user = await User.create({
+        name: name || "SinNombre",
+        lastName: lastName || "-",
+        email,
+        phone,
+
+        dni: "",
+        age: computeAgeFromBirth(s1),
+        weight: toNumberOrNull(s1.weight),
+        notes: "",
+        credits: 0,
+        role: "client",
+
+        password: hashed,
+        mustChangePassword: true,
+
+        suspended: false,
+        emailVerified: true,
+        approvalStatus: "approved",
+
+        aptoPath: "",
+        aptoStatus: "",
+      });
+
+      created = true;
+    }
+
+    // 3) sync perfil con datos del formulario (NO toca email)
+    const update = mapAdmissionToUserUpdate(adm);
+
+    const updatedUser = await User.findByIdAndUpdate(user._id, update, {
+      new: true,
+      runValidators: true,
+    }).lean();
+
+    // 4) vincular admisión a user + marcar sync
+    adm.user = user._id;
+    adm.syncedToUser = true;
+    adm.syncedAt = new Date();
+    await adm.save();
+
+    return res.json({
+      ok: true,
+      created,
+      tempPassword: created ? tempPassword : undefined,
+      user: updatedUser,
+      admissionId: adm._id,
+    });
+  } catch (err) {
+    console.error("POST /admission/admin/:id/create-user error:", err);
+    return res.status(500).json({ ok: false, error: "Error interno." });
+  }
+});
+
+/* =========================================================
+   ADMIN: eliminar admisión
+========================================================= */
 router.delete("/admin/:id", protect, adminOnly, async (req, res) => {
   try {
     const doc = await Admission.findById(req.params.id);
