@@ -82,7 +82,7 @@ const userSchema = new mongoose.Schema(
 
     history: { type: [historySchema], default: [] },
 
-    // ✅ ahora sí existe (lo usás en /users/:id/clinical-notes)
+    // ✅ existe (lo usás en /users/:id/clinical-notes)
     clinicalNotes: { type: [clinicalNoteSchema], default: [] },
 
     emailVerified: { type: Boolean, default: false },
@@ -99,18 +99,12 @@ const userSchema = new mongoose.Schema(
       tier: { type: String, default: "basic", enum: ["basic", "plus"] },
       activeUntil: { type: Date, default: null },
 
-      cancelHours: { type: Number, default: 24 },
-
-      // ✅ BASIC por defecto ahora 2 (PLUS se setea/normaliza por lógica al cancelar)
-      cancelsLeft: { type: Number, default: 2 },
-
+      // ✅ Se elimina todo lo de "límite de cancelaciones".
+      // Solo dejamos lo que afecta vencimiento de créditos (si querés seguir distinguiendo Basic vs Plus)
       creditsExpireDays: { type: Number, default: 30 },
     },
 
     creditLots: { type: [creditLotSchema], default: [] },
-
-    cancelationsUsed: { type: Number, default: 0 },
-    cancelationsPeriodStart: { type: Date, default: null },
   },
   { timestamps: true }
 );

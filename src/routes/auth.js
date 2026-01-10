@@ -103,7 +103,8 @@ function computeServiceAccessFromLots(u) {
 }
 
 /* ============================================
-   ✅ Membership helpers (alineado a appointments.js)
+   ✅ Membership helpers (solo tier/activeUntil + vencimiento créditos)
+   (sin cancelaciones)
 ============================================ */
 
 function isPlusActive(u) {
@@ -112,10 +113,6 @@ function isPlusActive(u) {
   if (tier !== "plus") return false;
   if (!m.activeUntil) return false;
   return new Date(m.activeUntil) > new Date();
-}
-
-function getMonthlyCancelLimit(u) {
-  return isPlusActive(u) ? 3 : 2;
 }
 
 function clamp(n, min, max) {
@@ -135,10 +132,6 @@ function serializeUser(u) {
   const svc = computeServiceAccessFromLots(u);
 
   const plus = isPlusActive(u);
-  const limit = getMonthlyCancelLimit(u);
-
-  // defaults según plan efectivo
-  const cancelHoursDefault = plus ? 12 : 24;
   const creditsExpireDaysDefault = plus ? 40 : 30;
 
   const tierNorm = String(m.tier || (plus ? "plus" : "basic"))
@@ -168,9 +161,8 @@ function serializeUser(u) {
     membership: {
       tier: tierNorm || "basic",
       activeUntil: m.activeUntil || null,
-      cancelHours: clamp(m.cancelHours ?? cancelHoursDefault, 1, 999),
-      // ✅ BASIC=2 / PLUS=3
-      cancelsLeft: clamp(m.cancelsLeft ?? limit, 0, limit),
+
+      // ✅ Solo queda esto (para expiración/refunds, etc)
       creditsExpireDays: clamp(m.creditsExpireDays ?? creditsExpireDaysDefault, 1, 999),
     },
   };

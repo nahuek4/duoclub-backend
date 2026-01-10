@@ -7,7 +7,7 @@ import { protect } from "../middleware/auth.js";
 const router = express.Router();
 
 /* =========================
-   HELPERS: membresía + créditos
+   HELPERS: créditos
 ========================= */
 
 function nowDate() {
@@ -61,63 +61,10 @@ function isPlusActive(user) {
   return new Date(m.activeUntil) > new Date();
 }
 
-// ✅ NUEVO: BASIC=2 / PLUS=3
-function getMonthlyCancelLimit(user) {
-  return isPlusActive(user) ? 3 : 2;
-}
-
-function ensureMonthlyCancels(user) {
-  user.membership = user.membership || {};
-  const now = new Date();
-
-  const limit = getMonthlyCancelLimit(user);
-
-  const start = user.cancelationsPeriodStart
-    ? startOfDay(new Date(user.cancelationsPeriodStart))
-    : null;
-
-  if (!start) {
-    user.cancelationsPeriodStart = startOfDay(now);
-    user.membership.cancelsLeft = limit;
-    user.cancelationsUsed = 0;
-    return;
-  }
-
-  const periodEnd = addOneMonthExact(start);
-  if (now >= periodEnd) {
-    user.cancelationsPeriodStart = startOfDay(now);
-    user.membership.cancelsLeft = limit;
-    user.cancelationsUsed = 0;
-    return;
-  }
-
-  const current = Number(user.membership.cancelsLeft ?? limit);
-  user.membership.cancelsLeft = Math.min(Math.max(current, 0), limit);
-}
-
-function getMembershipEffective(user) {
-  const m = user?.membership || {};
-  const plusActive = isPlusActive(user);
-
-  if (plusActive) {
-    return {
-      tier: "plus",
-      cancelHours: Number(m.cancelHours || 12),
-      // ✅ PLUS ahora 3
-      cancelsLeft: Math.min(Math.max(Number(m.cancelsLeft ?? 3), 0), 3),
-      creditsExpireDays: Number(m.creditsExpireDays || 40),
-      activeUntil: m.activeUntil,
-    };
-  }
-
-  return {
-    tier: "basic",
-    cancelHours: 24,
-    // ✅ BASIC ahora 2
-    cancelsLeft: Math.min(Math.max(Number(m.cancelsLeft ?? 2), 0), 2),
-    creditsExpireDays: 30,
-    activeUntil: null,
-  };
+// ✅ Solo para vencimiento de créditos (si querés mantener diferencia basic/plus)
+function getCreditsExpireDays(user) {
+  // si está plus activo => 40, si no => 30 (como venías manejando)
+  return isPlusActive(user) ? 40 : 30;
 }
 
 function recalcUserCredits(user) {
@@ -239,16 +186,19 @@ function buildSlotDate(dateStr, timeStr) {
 const TOTAL_CAP = 6;
 
 const EP_NAME = "Entrenamiento Personal";
-const OTHER_SERVICES = new Set([
-  "Alto Rendimiento",
-  "Rehabilitacion Activa",
-]);
 
 function calcEpCap({ hoursToStart, otherReservedCount }) {
   const base = hoursToStart > 12 ? 4 : TOTAL_CAP;
   const dynamic = TOTAL_CAP - otherReservedCount;
   return Math.max(0, Math.min(base, dynamic));
 }
+
+/* =========================
+   ✅ CANCELACIÓN: regla única
+   - Se puede cancelar hasta el inicio (no pasado)
+   - Crédito se devuelve SOLO si faltan >= 12hs
+========================= */
+const REFUND_CUTOFF_HOURS = 12;
 
 /* =========================
    PUBLIC: GET /appointments
@@ -454,6 +404,8 @@ router.post("/", async (req, res) => {
 
 /* =========================
    PATCH /appointments/:id/cancel
+   ✅ SIN LÍMITE DE CANCELACIONES
+   ✅ DEVOLUCIÓN SOLO SI >= 12HS
 ========================= */
 router.patch("/:id/cancel", async (req, res) => {
   try {
@@ -482,94 +434,71 @@ router.patch("/:id/cancel", async (req, res) => {
     const diffMs = apDate.getTime() - Date.now();
     const hours = diffMs / (1000 * 60 * 60);
 
+    // ✅ no se puede cancelar un turno pasado
+    if (hours < 0) {
+      return res.status(400).json({ error: "No se puede cancelar un turno que ya pasó." });
+    }
+
     const user = await User.findById(ap.user);
     if (!user) return res.status(404).json({ error: "Usuario no encontrado." });
 
-    if (!isAdmin) {
-      const mem = getMembershipEffective(user);
-
-      // ✅ Normalización BASIC (ahora con 2)
-      if (mem.tier === "basic") {
-        user.membership = user.membership || {};
-        user.membership.tier = "basic";
-        user.membership.activeUntil = null;
-        user.membership.cancelHours = 24;
-        user.membership.creditsExpireDays = 30;
-
-        const cur = Number(user.membership.cancelsLeft ?? 2);
-        user.membership.cancelsLeft = Math.min(Math.max(cur, 0), 2);
-      }
-
-      const cancelHours = Number(mem.cancelHours || 24);
-      if (hours < cancelHours) {
-        return res.status(400).json({
-          error: `Solo podés cancelar hasta ${cancelHours} horas antes del turno.`,
-        });
-      }
-
-      ensureMonthlyCancels(user);
-
-      const limitNow = getMonthlyCancelLimit(user);
-      const leftRaw = Number(user.membership?.cancelsLeft ?? limitNow);
-      const left = Math.min(Math.max(leftRaw, 0), limitNow);
-
-      if (left <= 0) {
-        return res.status(400).json({
-          error: "No tenés cancelaciones disponibles en este período.",
-        });
-      }
-
-      user.membership.cancelsLeft = left - 1;
-      user.cancelationsUsed = Number(user.cancelationsUsed || 0) + 1;
-    }
-
+    // ✅ cancelamos siempre
     ap.status = "cancelled";
     await ap.save();
 
-    // ✅ devolver crédito si era cliente
+    // ✅ devolver crédito SOLO si:
+    // - no es admin
+    // - y faltan >= 12 horas
+    const shouldRefund = user.role !== "admin" && hours >= REFUND_CUTOFF_HOURS;
+
     if (user.role !== "admin") {
-      const now = nowDate();
-      const sk = serviceToKey(ap.service);
-
-      const lot = ap.creditLotId ? findLotById(user, ap.creditLotId) : null;
-
-      if (lot) {
-        const exp = lot.expiresAt ? new Date(lot.expiresAt) : null;
-        if (!exp || exp > now) {
-          lot.remaining = Number(lot.remaining || 0) + 1;
-        }
-      } else {
-        const mem = getMembershipEffective(user);
-        const exp = new Date(now);
-        exp.setDate(exp.getDate() + Number(mem.creditsExpireDays || 30));
-
-        user.creditLots = user.creditLots || [];
-        user.creditLots.push({
-          serviceKey: sk,
-          amount: 1,
-          remaining: 1,
-          expiresAt: exp,
-          source: "refund",
-          orderId: null,
-          createdAt: now,
-        });
-      }
-
       user.history = user.history || [];
       user.history.push({
-        action: "cancelado",
+        action: shouldRefund ? "cancelado" : "cancelado_sin_reintegro",
         date: ap.date,
         time: ap.time,
         service: ap.service,
         createdAt: new Date(),
       });
 
+      if (shouldRefund) {
+        const now = nowDate();
+        const sk = serviceToKey(ap.service);
+
+        const lot = ap.creditLotId ? findLotById(user, ap.creditLotId) : null;
+
+        if (lot) {
+          const exp = lot.expiresAt ? new Date(lot.expiresAt) : null;
+          if (!exp || exp > now) {
+            lot.remaining = Number(lot.remaining || 0) + 1;
+          }
+        } else {
+          const exp = new Date(now);
+          exp.setDate(exp.getDate() + Number(getCreditsExpireDays(user) || 30));
+
+          user.creditLots = user.creditLots || [];
+          user.creditLots.push({
+            serviceKey: sk,
+            amount: 1,
+            remaining: 1,
+            expiresAt: exp,
+            source: "refund",
+            orderId: null,
+            createdAt: now,
+          });
+        }
+      }
+
       recalcUserCredits(user);
       await user.save();
     }
 
     const populated = await Appointment.findById(ap._id).populate("user", "name email");
-    return res.json(serializeAppointment(populated));
+    return res.json({
+      ...serializeAppointment(populated),
+      refund: shouldRefund,
+      refundCutoffHours: REFUND_CUTOFF_HOURS,
+    });
   } catch (err) {
     console.error("Error en PATCH /appointments/:id/cancel:", err);
     return res.status(500).json({ error: "Error al cancelar el turno." });
@@ -577,3 +506,4 @@ router.patch("/:id/cancel", async (req, res) => {
 });
 
 export default router;
+  
