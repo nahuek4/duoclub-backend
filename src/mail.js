@@ -1,4 +1,3 @@
-// backend/src/mail.js
 import nodemailer from "nodemailer";
 import dotenv from "dotenv";
 
@@ -35,7 +34,9 @@ function getTransporter() {
   return transporter;
 }
 
-// ✅ ahora soporta HTML (mantiene compatibilidad con llamadas viejas)
+// ===============================
+// Envío base
+// ===============================
 export async function sendMail(to, subject, text, html) {
   const tx = getTransporter();
 
@@ -48,14 +49,15 @@ export async function sendMail(to, subject, text, html) {
 
   const payload = { from, to, subject };
 
-  // mandamos ambos si existen (mejor deliverability + fallback)
   if (text) payload.text = text;
   if (html) payload.html = html;
 
   await tx.sendMail(payload);
 }
 
-/** ✅ Verificación de email (HTML + texto) */
+// ===============================
+// Emails existentes (no tocados)
+// ===============================
 export async function sendVerifyEmail(user, verifyUrl) {
   if (!user?.email) return;
 
@@ -98,7 +100,6 @@ export async function sendVerifyEmail(user, verifyUrl) {
   await sendMail(user.email, "Verificá tu email - DUO", textLines.join("\n"), html);
 }
 
-/** Bienvenida al crear usuario (admin flow) */
 export async function sendUserWelcomeEmail(user, tempPassword) {
   if (!user?.email) return;
   const lines = [
@@ -117,7 +118,6 @@ export async function sendUserWelcomeEmail(user, tempPassword) {
   await sendMail(user.email, "Tu usuario en DUO está listo", lines.join("\n"));
 }
 
-/** Turno agendado */
 export async function sendAppointmentBookedEmail(user, ap, serviceName) {
   if (!user?.email) return;
   const lines = [
@@ -134,7 +134,6 @@ export async function sendAppointmentBookedEmail(user, ap, serviceName) {
   await sendMail(user.email, "Tu turno fue reservado", lines.filter(Boolean).join("\n"));
 }
 
-/** Turno cancelado */
 export async function sendAppointmentCancelledEmail(user, ap, serviceName) {
   if (!user?.email) return;
   const lines = [
@@ -151,7 +150,6 @@ export async function sendAppointmentCancelledEmail(user, ap, serviceName) {
   await sendMail(user.email, "Tu turno fue cancelado", lines.filter(Boolean).join("\n"));
 }
 
-/** Recordatorio 24 hs antes */
 export async function sendAppointmentReminderEmail(user, ap, serviceName) {
   if (!user?.email) return;
   const lines = [
@@ -168,7 +166,6 @@ export async function sendAppointmentReminderEmail(user, ap, serviceName) {
   await sendMail(user.email, "Recordatorio de turno", lines.filter(Boolean).join("\n"));
 }
 
-/** Aviso de apto vencido */
 export async function sendAptoExpiredEmail(user) {
   if (!user?.email) return;
   const lines = [
@@ -183,12 +180,9 @@ export async function sendAptoExpiredEmail(user) {
   await sendMail(user.email, "Es necesario actualizar tu apto médico", lines.join("\n"));
 }
 
-/* =========================================================
-   ✅ NUEVO: Email al admin por orden nueva
-   - CASH: se manda al crear la orden
-   - MP: se manda SOLO cuando llega approved al webhook
-========================================================= */
-
+// =========================================================
+// Helpers
+// =========================================================
 function safe(v) {
   return v == null ? "" : String(v);
 }
@@ -203,6 +197,9 @@ function formatARS(n) {
   }).format(num);
 }
 
+// =========================================================
+// ORDENES → ADMIN
+// =========================================================
 export async function sendAdminNewOrderEmail(order, user) {
   const to = process.env.ADMIN_ORDERS_EMAIL || "duoclub.ar@gmail.com";
   if (!to) return;
@@ -292,6 +289,127 @@ export async function sendAdminNewOrderEmail(order, user) {
     <div style="text-align:right; font-size:16px; margin-top:10px;">
       <b>Total:</b> ${total}
     </div>
+  </div>
+  `;
+
+  await sendMail(to, subject, text, html);
+}
+
+// =========================================================
+// ✅ ADMISION → ADMIN (STEP 2 COMPLETADO)
+// =========================================================
+export async function sendAdminAdmissionStep2Email(admission, step1, step2) {
+  const to = process.env.ADMIN_ORDERS_EMAIL || "duoclub.ar@gmail.com";
+  if (!to) return;
+
+  const admId = safe(admission?._id);
+  const publicId = safe(admission?.publicId);
+  const createdAt = admission?.createdAt
+    ? new Date(admission.createdAt).toLocaleString("es-AR")
+    : "-";
+
+  const fullName =
+    `${safe(admission?.name)} ${safe(admission?.lastName)}`.trim() ||
+    `${safe(step1?.name)} ${safe(step1?.lastName)}`.trim() ||
+    "-";
+
+  const email =
+    safe(admission?.email) ||
+    safe(step1?.email) ||
+    "-";
+
+  const phone =
+    safe(admission?.phone) ||
+    safe(step1?.phone) ||
+    "-";
+
+  const subject = `📝 Admisión completada — ${fullName}${publicId ? ` (#${publicId})` : ""}`;
+
+  const text = [
+    "Nueva admisión completada",
+    "",
+    `ID: ${admId}`,
+    publicId ? `PublicID: ${publicId}` : "",
+    `Fecha: ${createdAt}`,
+    "",
+    `Nombre: ${fullName}`,
+    `Email: ${email}`,
+    `Tel: ${phone}`,
+    "",
+    "=== PASO 2 (resumen) ===",
+    `Necesita rehabilitación: ${safe(step2?.needsRehab)}`,
+    `Síntomas: ${safe(step2?.symptoms)}`,
+    `Fecha lesión/síntomas: ${safe(step2?.symptomDate)}`,
+    `Consulta médica: ${safe(step2?.medicalConsult)} ${safe(step2?.medicalConsultWhen)}`,
+    `Estudios: ${safe(step2?.diagnosticStudy)} ${safe(step2?.diagnosticStudyOther)}`,
+    `Cómo sucedió: ${safe(step2?.howHappened)}`,
+    `Dolor diario: ${safe(step2?.dailyDiscomfort)}`,
+    `Movilidad: ${safe(step2?.mobilityIssue)}`,
+    `Medicación: ${safe(step2?.takesMedication)} ${safe(step2?.medicationDetail)}`,
+    "",
+    "=== DEPORTE ===",
+    `Practica competitivo: ${safe(step2?.practicesCompetitiveSport)}`,
+    `Nivel: ${safe(step2?.competitionLevel)}`,
+    `Deporte: ${safe(step2?.sportName)}`,
+    `Puesto: ${safe(step2?.sportPosition)}`,
+    "",
+    "=== PLAN ===",
+    `Objetivo: ${safe(step2?.immediateGoal)}`,
+    `Entrena solo: ${safe(step2?.trainAlone)}`,
+    `Cantidad grupo: ${safe(step2?.groupCount)}`,
+    `Horario ideal: ${safe(step2?.idealSchedule)}`,
+    `Días preferidos: ${safe(step2?.preferredDays)}`,
+    `Sesiones semanales: ${safe(step2?.weeklySessions)}`,
+    `Modalidad: ${safe(step2?.modality)}`,
+  ].filter(Boolean).join("\n");
+
+  const html = `
+  <div style="font-family: Arial, sans-serif; color:#111; line-height:1.35;">
+    <h2>📝 Nueva admisión completada</h2>
+
+    <div style="padding:12px; border:1px solid #ddd; border-radius:10px; margin:12px 0;">
+      <div><b>ID:</b> ${admId || "-"}</div>
+      ${publicId ? `<div><b>PublicID:</b> ${publicId}</div>` : ""}
+      <div><b>Fecha:</b> ${createdAt}</div>
+    </div>
+
+    <div style="padding:12px; border:1px solid #ddd; border-radius:10px; margin:12px 0;">
+      <div><b>Nombre:</b> ${fullName || "-"}</div>
+      <div><b>Email:</b> ${email || "-"}</div>
+      <div><b>Tel:</b> ${phone || "-"}</div>
+    </div>
+
+    <h3>Rehabilitación</h3>
+    <ul>
+      <li><b>Necesita:</b> ${safe(step2?.needsRehab)}</li>
+      <li><b>Síntomas:</b> ${safe(step2?.symptoms)}</li>
+      <li><b>Fecha:</b> ${safe(step2?.symptomDate)}</li>
+      <li><b>Consulta médica:</b> ${safe(step2?.medicalConsult)} ${safe(step2?.medicalConsultWhen)}</li>
+      <li><b>Estudios:</b> ${safe(step2?.diagnosticStudy)} ${safe(step2?.diagnosticStudyOther)}</li>
+      <li><b>Cómo sucedió:</b> ${safe(step2?.howHappened)}</li>
+      <li><b>Dolor diario:</b> ${safe(step2?.dailyDiscomfort)}</li>
+      <li><b>Movilidad:</b> ${safe(step2?.mobilityIssue)}</li>
+      <li><b>Medicación:</b> ${safe(step2?.takesMedication)} ${safe(step2?.medicationDetail)}</li>
+    </ul>
+
+    <h3>Deporte</h3>
+    <ul>
+      <li><b>Competitivo:</b> ${safe(step2?.practicesCompetitiveSport)}</li>
+      <li><b>Nivel:</b> ${safe(step2?.competitionLevel)}</li>
+      <li><b>Deporte:</b> ${safe(step2?.sportName)}</li>
+      <li><b>Puesto:</b> ${safe(step2?.sportPosition)}</li>
+    </ul>
+
+    <h3>Plan</h3>
+    <ul>
+      <li><b>Objetivo:</b> ${safe(step2?.immediateGoal)}</li>
+      <li><b>Entrena solo:</b> ${safe(step2?.trainAlone)}</li>
+      <li><b>Grupo:</b> ${safe(step2?.groupCount)}</li>
+      <li><b>Horario:</b> ${safe(step2?.idealSchedule)}</li>
+      <li><b>Días:</b> ${safe(step2?.preferredDays)}</li>
+      <li><b>Sesiones:</b> ${safe(step2?.weeklySessions)}</li>
+      <li><b>Modalidad:</b> ${safe(step2?.modality)}</li>
+    </ul>
   </div>
   `;
 
