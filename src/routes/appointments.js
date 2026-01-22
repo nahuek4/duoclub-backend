@@ -170,24 +170,6 @@ function findLotById(user, lotId) {
   return lots.find((l) => String(l._id) === String(lotId)) || null;
 }
 
-/* =========================
-   ✅ Nombre + Apellido desde user.name
-   - si user.name = "Juan Pérez" => firstName="Juan", lastName="Pérez"
-   - si user.name = "Juan" => lastName=""
-========================= */
-function splitFullName(fullName) {
-  const clean = String(fullName || "").trim().replace(/\s+/g, " ");
-  if (!clean) return { firstName: "", lastName: "" };
-
-  const parts = clean.split(" ");
-  if (parts.length === 1) return { firstName: parts[0], lastName: "" };
-
-  return {
-    firstName: parts.slice(0, -1).join(" "),
-    lastName: parts.slice(-1).join(" "),
-  };
-}
-
 function serializeAppointment(ap) {
   const json = ap.toObject ? ap.toObject() : ap;
 
@@ -198,10 +180,6 @@ function serializeAppointment(ap) {
     userObj.toString?.() ||
     "";
 
-  const rawName = userObj.name || "";
-  const { firstName, lastName } = splitFullName(rawName);
-  const userFullName = String([firstName, lastName].filter(Boolean).join(" ")).trim();
-
   return {
     id: json._id?.toString?.() || json.id,
     date: json.date,
@@ -210,16 +188,8 @@ function serializeAppointment(ap) {
     status: json.status || "reserved",
     coach: json.coach || "",
     userId,
-
-    // ✅ existentes
-    userName: rawName,
+    userName: userObj.name || "",
     userEmail: userObj.email || "",
-
-    // ✅ NUEVOS (para front: nombre + apellido)
-    userFirstName: firstName,
-    userLastName: lastName,
-    userFullName,
-
     creditExpiresAt: json.creditExpiresAt || null,
   };
 }
@@ -739,9 +709,7 @@ router.post("/batch", async (req, res) => {
     if (msg === "NO_CREDITS") return res.status(403).json({ error: "Sin créditos disponibles." });
 
     if (msg === "DUP_SLOT_IN_BATCH")
-      return res
-        .status(409)
-        .json({ error: "No podés reservar 2 turnos en el mismo horario en un solo batch." });
+      return res.status(409).json({ error: "No podés reservar 2 turnos en el mismo horario en un solo batch." });
 
     if (msg === "ALREADY_HAVE_SLOT")
       return res.status(409).json({ error: "Ya tenés un turno reservado en alguno de esos horarios." });
@@ -914,8 +882,7 @@ router.patch("/:id/cancel", async (req, res) => {
         return res.status(403).json({ error: "Solo el dueño del turno o un admin pueden cancelarlo." });
       if (msg === "ALREADY_CANCELLED") return res.status(400).json({ error: "El turno ya estaba cancelado." });
       if (msg === "INVALID_AP_DATE") return res.status(400).json({ error: "Turno con fecha/hora inválida." });
-      if (msg === "PAST_APPOINTMENT")
-        return res.status(400).json({ error: "No se puede cancelar un turno que ya pasó." });
+      if (msg === "PAST_APPOINTMENT") return res.status(400).json({ error: "No se puede cancelar un turno que ya pasó." });
       if (msg === "USER_NOT_FOUND") return res.status(404).json({ error: "Usuario no encontrado." });
       return res.status(http).json({ error: "Error al cancelar el turno." });
     }
