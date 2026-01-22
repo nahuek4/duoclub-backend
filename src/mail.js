@@ -1,3 +1,4 @@
+// src/utils/mailer.js
 import nodemailer from "nodemailer";
 import dotenv from "dotenv";
 
@@ -16,6 +17,7 @@ function getTransporter() {
     SMTP_SECURE,
   } = process.env || {};
 
+  // ✅ Modo mock (no rompe la app si falta SMTP)
   if (!SMTP_HOST || !SMTP_USER || !SMTP_PASS) {
     console.log("[MAIL] SMTP no configurado. Se hará log en consola.");
     return null;
@@ -30,6 +32,12 @@ function getTransporter() {
       pass: SMTP_PASS,
     },
   });
+
+  // (Opcional) Verificar configuración sin romper si falla
+  transporter.verify().then(
+    () => console.log("[MAIL] SMTP OK"),
+    (e) => console.log("[MAIL] SMTP verify failed:", e?.message || e)
+  );
 
   return transporter;
 }
@@ -48,7 +56,6 @@ export async function sendMail(to, subject, text, html) {
   const from = process.env.MAIL_FROM || process.env.SMTP_USER;
 
   const payload = { from, to, subject };
-
   if (text) payload.text = text;
   if (html) payload.html = html;
 
@@ -178,6 +185,57 @@ export async function sendAptoExpiredEmail(user) {
     "Podés subirlo desde tu perfil dentro de la plataforma.",
   ];
   await sendMail(user.email, "Es necesario actualizar tu apto médico", lines.join("\n"));
+}
+
+/* =========================================================
+   ✅ FALTABA: Batch de turnos
+   (para tu POST /appointments/batch)
+========================================================= */
+export async function sendAppointmentBookedBatchEmail(user, items = []) {
+  if (!user?.email) return;
+
+  const list = Array.isArray(items) ? items : [];
+  const linesItems = list
+    .map((it, i) => {
+      const date = it?.date || "-";
+      const time = it?.time || "-";
+      const svc = it?.service || it?.serviceName || "";
+      return `${i + 1}. ${date} · ${time}${svc ? ` · ${svc}` : ""}`;
+    });
+
+  const text = [
+    `Hola ${user.name || ""}`.trim() + ",",
+    "",
+    "Tus turnos fueron reservados con éxito.",
+    "",
+    "Detalle:",
+    ...(linesItems.length ? linesItems : ["(sin items)"]),
+    "",
+    "Si no podés asistir, recordá cancelarlos con anticipación desde tu perfil.",
+  ].join("\n");
+
+  const html = `
+  <div style="font-family: Arial, sans-serif; color:#111; line-height:1.4;">
+    <h2 style="margin:0 0 10px;">✅ Turnos reservados</h2>
+    <p>Hola ${user.name || ""},</p>
+    <p>Tus turnos fueron reservados con éxito.</p>
+    <div style="padding:12px; border:1px solid #ddd; border-radius:10px;">
+      <div style="font-weight:700; margin-bottom:8px;">Detalle</div>
+      <ul style="margin:0; padding-left:18px;">
+        ${
+          linesItems.length
+            ? linesItems.map((l) => `<li style="margin:6px 0;">${safe(l)}</li>`).join("")
+            : "<li>(sin items)</li>"
+        }
+      </ul>
+    </div>
+    <p style="margin-top:12px; font-size:12px; color:#444;">
+      Si no podés asistir, recordá cancelarlos con anticipación desde tu perfil.
+    </p>
+  </div>
+  `;
+
+  await sendMail(user.email, "Tus turnos fueron reservados", text, html);
 }
 
 // =========================================================
