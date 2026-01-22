@@ -1,4 +1,3 @@
-// backend/src/utils/mailer.js (o donde lo tengas)
 import nodemailer from "nodemailer";
 import dotenv from "dotenv";
 
@@ -54,177 +53,6 @@ export async function sendMail(to, subject, text, html) {
   if (html) payload.html = html;
 
   await tx.sendMail(payload);
-}
-
-// =========================================================
-// Helpers
-// =========================================================
-function safe(v) {
-  return v == null ? "" : String(v);
-}
-
-function formatARS(n) {
-  const num = Number(n);
-  if (!Number.isFinite(num)) return "-";
-  return new Intl.NumberFormat("es-AR", {
-    style: "currency",
-    currency: "ARS",
-    maximumFractionDigits: 0,
-  }).format(num);
-}
-
-function fmtDateEsAR(dateStr) {
-  // dateStr: "YYYY-MM-DD"
-  if (!dateStr) return "-";
-  const s = String(dateStr);
-  const [y, m, d] = s.split("-").map(Number);
-  if (!y || !m || !d) return s;
-  const dt = new Date(y, m - 1, d);
-  return dt.toLocaleDateString("es-AR", { weekday: "long", day: "2-digit", month: "long" });
-}
-
-function fmtDateShort(dateStr) {
-  if (!dateStr) return "-";
-  const s = String(dateStr);
-  if (s.length >= 10 && s[4] === "-" && s[7] === "-") {
-    return `${s.slice(8, 10)}/${s.slice(5, 7)}/${s.slice(0, 4)}`;
-  }
-  return s;
-}
-
-function fmtTime(timeStr) {
-  if (!timeStr) return "-";
-  return String(timeStr).slice(0, 5);
-}
-
-function getBrand() {
-  return {
-    name: process.env.BRAND_NAME || "DUO",
-    supportEmail: process.env.BRAND_SUPPORT_EMAIL || "hola@duoclub.ar",
-    supportPhone: process.env.BRAND_SUPPORT_PHONE || "+54 9 249 420 7343",
-    address: process.env.BRAND_ADDRESS || "Av. Santamaría 54, Tandil.",
-    siteUrl: process.env.PUBLIC_WEB_URL || process.env.APP_URL || "",
-    cancelHours: Number(process.env.CANCEL_HOURS || 12),
-    scheduleText: process.env.BRAND_SCHEDULE || "Lun–Vie 07:00–21:00 · Sáb 08:00–13:00",
-  };
-}
-
-function emailShell({ title, preheader, contentHtml }) {
-  const brand = getBrand();
-  const logo = process.env.BRAND_LOGO_URL || ""; // opcional
-
-  const safeTitle = safe(title);
-  const safePre = safe(preheader);
-
-  return `
-  <!doctype html>
-  <html lang="es">
-  <head>
-    <meta charset="utf-8" />
-    <meta name="viewport" content="width=device-width,initial-scale=1" />
-    <title>${safeTitle}</title>
-  </head>
-  <body style="margin:0; padding:0; background:#f5f7fb;">
-    <div style="display:none; max-height:0; overflow:hidden; opacity:0; color:transparent;">
-      ${safePre}
-    </div>
-
-    <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="background:#f5f7fb; padding:24px 0;">
-      <tr>
-        <td align="center" style="padding:0 14px;">
-          <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="max-width:620px; background:#ffffff; border-radius:16px; overflow:hidden; box-shadow:0 8px 24px rgba(17,24,39,.08);">
-            <!-- Header -->
-            <tr>
-              <td style="padding:18px 20px; background:linear-gradient(135deg,#0b0b0c 0%, #111827 70%, #0b0b0c 100%); color:#fff;">
-                <table role="presentation" width="100%" cellspacing="0" cellpadding="0">
-                  <tr>
-                    <td style="vertical-align:middle;">
-                      <div style="font-family:Arial,sans-serif; font-size:14px; opacity:.9;">${brand.name}</div>
-                      <div style="font-family:Arial,sans-serif; font-size:20px; font-weight:800; margin-top:2px;">
-                        ${safeTitle}
-                      </div>
-                    </td>
-                    <td align="right" style="vertical-align:middle;">
-                      ${
-                        logo
-                          ? `<img src="${logo}" alt="${brand.name}" width="40" height="40" style="border-radius:10px; display:block;" />`
-                          : `<div style="width:40px;height:40px;border-radius:10px;background:rgba(255,255,255,.12);"></div>`
-                      }
-                    </td>
-                  </tr>
-                </table>
-              </td>
-            </tr>
-
-            <!-- Body -->
-            <tr>
-              <td style="padding:18px 20px; font-family:Arial,sans-serif; color:#111827; line-height:1.45;">
-                ${contentHtml}
-              </td>
-            </tr>
-
-            <!-- Footer -->
-            <tr>
-              <td style="padding:16px 20px; background:#f9fafb; font-family:Arial,sans-serif; color:#6b7280; font-size:12px; line-height:1.45;">
-                <div><b>Contacto:</b> ${brand.supportEmail} · ${brand.supportPhone}</div>
-                <div><b>Dirección:</b> ${brand.address}</div>
-                <div><b>Horario:</b> ${brand.scheduleText}</div>
-                ${
-                  brand.siteUrl
-                    ? `<div style="margin-top:8px;">Sitio: <a href="${brand.siteUrl}" style="color:#111827;">${brand.siteUrl}</a></div>`
-                    : ""
-                }
-              </td>
-            </tr>
-          </table>
-
-          <div style="max-width:620px; font-family:Arial,sans-serif; font-size:11px; color:#9ca3af; margin-top:10px;">
-            Si no solicitaste esta acción, podés ignorar este email.
-          </div>
-        </td>
-      </tr>
-    </table>
-  </body>
-  </html>
-  `;
-}
-
-function pill(text) {
-  return `<span style="display:inline-block; padding:6px 10px; border-radius:999px; background:#111827; color:#fff; font-size:12px; font-weight:700;">${safe(text)}</span>`;
-}
-
-function cardRow(label, value) {
-  return `
-    <tr>
-      <td style="padding:10px 12px; border-bottom:1px solid #eef2f7; color:#6b7280; width:35%; font-size:13px;">
-        ${safe(label)}
-      </td>
-      <td style="padding:10px 12px; border-bottom:1px solid #eef2f7; color:#111827; font-weight:700; font-size:13px;">
-        ${safe(value) || "—"}
-      </td>
-    </tr>
-  `;
-}
-
-function infoCard(rowsHtml) {
-  return `
-    <table role="presentation" width="100%" cellspacing="0" cellpadding="0"
-      style="border:1px solid #e5e7eb; border-radius:14px; overflow:hidden; margin:14px 0;">
-      ${rowsHtml}
-    </table>
-  `;
-}
-
-function buttonLink(href, label) {
-  if (!href) return "";
-  return `
-    <div style="margin:14px 0 4px;">
-      <a href="${href}"
-        style="display:inline-block; background:#111827; color:#fff; text-decoration:none; padding:12px 16px; border-radius:12px; font-weight:800;">
-        ${safe(label)}
-      </a>
-    </div>
-  `;
 }
 
 // ===============================
@@ -290,244 +118,52 @@ export async function sendUserWelcomeEmail(user, tempPassword) {
   await sendMail(user.email, "Tu usuario en DUO está listo", lines.join("\n"));
 }
 
-// =========================================================
-// ✅ TURNO RESERVADO (PLANTILLA COPADA)
-// =========================================================
 export async function sendAppointmentBookedEmail(user, ap, serviceName) {
   if (!user?.email) return;
-
-  const brand = getBrand();
-  const name = (user?.name || user?.fullName || "").trim() || "Hola";
-
-  const dateLong = fmtDateEsAR(ap?.date);
-  const dateShort = fmtDateShort(ap?.date);
-  const time = fmtTime(ap?.time);
-  const svc = serviceName || ap?.service || "Turno";
-  const notes = safe(ap?.notes || "");
-
-  // Link opcional a perfil/agenda
-  const profileUrl =
-    brand.siteUrl ? `${String(brand.siteUrl).replace(/\/$/, "")}/perfil` : "";
-
-  const subject = `✅ Turno reservado — ${dateShort} ${time}hs`;
-
-  const text = [
-    `Hola ${name},`,
+  const lines = [
+    `Hola ${user.name || ""}`.trim() + ",",
     "",
-    "¡Tu turno fue reservado con éxito!",
+    "Tu turno fue reservado con éxito.",
     "",
-    `Servicio: ${svc}`,
-    `Día: ${dateShort}`,
-    `Horario: ${time} hs`,
+    `Día: ${ap.date}`,
+    `Horario: ${ap.time}`,
+    serviceName ? `Servicio: ${serviceName}` : "",
     "",
-    `Cancelación: recordá hacerlo con ${brand.cancelHours}hs o más para que se devuelva la sesión (si aplica).`,
-    profileUrl ? `Gestioná tus turnos desde: ${profileUrl}` : "",
-  ].filter(Boolean).join("\n");
-
-  const contentHtml = `
-    <p style="margin:0 0 10px;">Hola <b>${safe(name)}</b>,</p>
-    <p style="margin:0 0 12px;">${pill("Turno confirmado")} Ya quedó agendado en nuestro sistema.</p>
-
-    ${infoCard([
-      cardRow("Servicio", svc),
-      cardRow("Día", `${dateLong} (${dateShort})`),
-      cardRow("Horario", `${time} hs`),
-      notes ? cardRow("Notas", notes) : "",
-    ].filter(Boolean).join(""))}
-
-    <div style="margin-top:10px; padding:12px; border-radius:14px; background:#f3f4f6; border:1px solid #e5e7eb;">
-      <div style="font-weight:800; margin-bottom:6px;">Recordatorio</div>
-      <div style="color:#374151; font-size:13px;">
-        Si no podés asistir, cancelá con <b>${brand.cancelHours}hs</b> o más de anticipación desde tu perfil para evitar inconvenientes.
-      </div>
-    </div>
-
-    ${buttonLink(profileUrl, "Ver / gestionar mis turnos")}
-
-    <div style="margin-top:14px; font-size:12px; color:#6b7280;">
-      ¿Necesitás ayuda? Respondé a este mail o escribinos a <b>${brand.supportEmail}</b>.
-    </div>
-  `;
-
-  const html = emailShell({
-    title: "Reserva confirmada",
-    preheader: `Tu turno: ${dateShort} a las ${time}hs · ${svc}`,
-    contentHtml,
-  });
-
-  await sendMail(user.email, subject, text, html);
+    "Si no podés asistir, recordá cancelarlo con anticipación desde tu perfil.",
+  ];
+  await sendMail(user.email, "Tu turno fue reservado", lines.filter(Boolean).join("\n"));
 }
 
-// =========================================================
-// ✅ TURNO RESERVADO (BATCH MULTI) - para tu ClientBooking.jsx
-// =========================================================
-export async function sendAppointmentBookedBatchEmail(user, items = []) {
-  if (!user?.email) return;
-
-  const brand = getBrand();
-  const name = (user?.name || user?.fullName || "").trim() || "Hola";
-
-  const clean = Array.isArray(items) ? items : [];
-  const sorted = clean
-    .map((it) => ({
-      service: it?.service || it?.serviceName || "-",
-      date: safe(it?.date),
-      time: fmtTime(it?.time),
-    }))
-    .filter((x) => x.date && x.time)
-    .sort((a, b) => (a.date + a.time).localeCompare(b.date + b.time));
-
-  const count = sorted.length;
-  if (!count) return;
-
-  const subject = `✅ Reservaste ${count} turno${count === 1 ? "" : "s"} — ${fmtDateShort(sorted[0].date)}`;
-
-  const profileUrl =
-    brand.siteUrl ? `${String(brand.siteUrl).replace(/\/$/, "")}/perfil` : "";
-
-  const text = [
-    `Hola ${name},`,
-    "",
-    `¡Reserva confirmada! Reservaste ${count} turno${count === 1 ? "" : "s"}:`,
-    "",
-    ...sorted.map((x) => `• ${fmtDateShort(x.date)} ${x.time}hs — ${x.service}`),
-    "",
-    `Cancelación: recordá hacerlo con ${brand.cancelHours}hs o más para que se devuelva la sesión (si aplica).`,
-    profileUrl ? `Gestioná tus turnos desde: ${profileUrl}` : "",
-  ].filter(Boolean).join("\n");
-
-  const listHtml = `
-    <div style="margin-top:10px; display:grid; gap:10px;">
-      ${sorted.map((x) => `
-        <div style="border:1px solid #e5e7eb; border-radius:14px; padding:12px; background:#fff;">
-          <div style="font-weight:900; color:#111827;">${fmtDateShort(x.date)} · ${x.time} hs</div>
-          <div style="color:#374151; margin-top:4px;">${safe(x.service)}</div>
-          <div style="color:#6b7280; font-size:12px; margin-top:4px;">${fmtDateEsAR(x.date)}</div>
-        </div>
-      `).join("")}
-    </div>
-  `;
-
-  const contentHtml = `
-    <p style="margin:0 0 10px;">Hola <b>${safe(name)}</b>,</p>
-    <p style="margin:0 0 12px;">${pill("Reserva confirmada")} Reservaste <b>${count}</b> turno${count === 1 ? "" : "s"}:</p>
-
-    ${listHtml}
-
-    <div style="margin-top:10px; padding:12px; border-radius:14px; background:#f3f4f6; border:1px solid #e5e7eb;">
-      <div style="font-weight:800; margin-bottom:6px;">Recordatorio</div>
-      <div style="color:#374151; font-size:13px;">
-        Si no podés asistir, cancelá con <b>${brand.cancelHours}hs</b> o más de anticipación desde tu perfil.
-      </div>
-    </div>
-
-    ${buttonLink(profileUrl, "Ver / gestionar mis turnos")}
-  `;
-
-  const html = emailShell({
-    title: "Reserva confirmada",
-    preheader: `Reservaste ${count} turno${count === 1 ? "" : "s"} en ${brand.name}`,
-    contentHtml,
-  });
-
-  await sendMail(user.email, subject, text, html);
-}
-
-// =========================================================
-// TURNO CANCELADO (puede quedar simple o también “copado”)
-// =========================================================
 export async function sendAppointmentCancelledEmail(user, ap, serviceName) {
   if (!user?.email) return;
-
-  const brand = getBrand();
-  const name = (user?.name || user?.fullName || "").trim() || "Hola";
-  const dateShort = fmtDateShort(ap?.date);
-  const time = fmtTime(ap?.time);
-  const svc = serviceName || ap?.service || "Turno";
-
-  const subject = `⚠️ Turno cancelado — ${dateShort} ${time}hs`;
-
-  const text = [
-    `Hola ${name},`,
+  const lines = [
+    `Hola ${user.name || ""}`.trim() + ",",
     "",
     "Tu turno fue cancelado.",
     "",
-    `Servicio: ${svc}`,
-    `Día: ${dateShort}`,
-    `Horario: ${time} hs`,
+    `Día: ${ap.date}`,
+    `Horario: ${ap.time}`,
+    serviceName ? `Servicio: ${serviceName}` : "",
     "",
     "Si fue un error, podés volver a reservar desde la agenda.",
-  ].join("\n");
-
-  const contentHtml = `
-    <p style="margin:0 0 10px;">Hola <b>${safe(name)}</b>,</p>
-    <p style="margin:0 0 12px;">${pill("Turno cancelado")} Se canceló el siguiente turno:</p>
-
-    ${infoCard([
-      cardRow("Servicio", svc),
-      cardRow("Día", `${fmtDateEsAR(ap?.date)} (${dateShort})`),
-      cardRow("Horario", `${time} hs`),
-    ].join(""))}
-
-    <div style="margin-top:12px; color:#6b7280; font-size:12px;">
-      Si fue un error, podés reservar nuevamente desde la agenda.
-    </div>
-  `;
-
-  const html = emailShell({
-    title: "Cancelación registrada",
-    preheader: `Se canceló tu turno del ${dateShort} ${time}hs`,
-    contentHtml,
-  });
-
-  await sendMail(user.email, subject, text, html);
+  ];
+  await sendMail(user.email, "Tu turno fue cancelado", lines.filter(Boolean).join("\n"));
 }
 
 export async function sendAppointmentReminderEmail(user, ap, serviceName) {
   if (!user?.email) return;
-
-  const brand = getBrand();
-  const name = (user?.name || user?.fullName || "").trim() || "Hola";
-  const dateShort = fmtDateShort(ap?.date);
-  const time = fmtTime(ap?.time);
-  const svc = serviceName || ap?.service || "Turno";
-
-  const subject = `⏰ Recordatorio de turno — ${dateShort} ${time}hs`;
-
-  const text = [
-    `Hola ${name},`,
+  const lines = [
+    `Hola ${user.name || ""}`.trim() + ",",
     "",
     "Te recordamos que tenés un turno agendado en las próximas 24 horas.",
     "",
-    `Servicio: ${svc}`,
-    `Día: ${dateShort}`,
-    `Horario: ${time} hs`,
+    `Día: ${ap.date}`,
+    `Horario: ${ap.time}`,
+    serviceName ? `Servicio: ${serviceName}` : "",
     "",
     "Te esperamos. Si no podés asistir, cancelá el turno para liberar el espacio.",
-  ].join("\n");
-
-  const contentHtml = `
-    <p style="margin:0 0 10px;">Hola <b>${safe(name)}</b>,</p>
-    <p style="margin:0 0 12px;">${pill("Recordatorio")} Tenés un turno en las próximas 24 horas:</p>
-
-    ${infoCard([
-      cardRow("Servicio", svc),
-      cardRow("Día", `${fmtDateEsAR(ap?.date)} (${dateShort})`),
-      cardRow("Horario", `${time} hs`),
-    ].join(""))}
-
-    <div style="margin-top:10px; color:#374151; font-size:13px;">
-      Si no podés asistir, por favor cancelá con anticipación para liberar el espacio.
-    </div>
-  `;
-
-  const html = emailShell({
-    title: "Recordatorio de turno",
-    preheader: `Turno: ${dateShort} ${time}hs · ${svc}`,
-    contentHtml,
-  });
-
-  await sendMail(user.email, subject, text, html);
+  ];
+  await sendMail(user.email, "Recordatorio de turno", lines.filter(Boolean).join("\n"));
 }
 
 export async function sendAptoExpiredEmail(user) {
@@ -542,6 +178,23 @@ export async function sendAptoExpiredEmail(user) {
     "Podés subirlo desde tu perfil dentro de la plataforma.",
   ];
   await sendMail(user.email, "Es necesario actualizar tu apto médico", lines.join("\n"));
+}
+
+// =========================================================
+// Helpers
+// =========================================================
+function safe(v) {
+  return v == null ? "" : String(v);
+}
+
+function formatARS(n) {
+  const num = Number(n);
+  if (!Number.isFinite(num)) return "-";
+  return new Intl.NumberFormat("es-AR", {
+    style: "currency",
+    currency: "ARS",
+    maximumFractionDigits: 0,
+  }).format(num);
 }
 
 // =========================================================
