@@ -9,7 +9,7 @@ import {
   sendAppointmentBookedEmail,
   sendAppointmentBookedBatchEmail,
   sendAppointmentCancelledEmail,
-} from "../utils/mailer.js";
+} from "../mail.js";
 
 const router = express.Router();
 
