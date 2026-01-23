@@ -91,6 +91,7 @@ function buildEmailLayout({ title, preheader, bodyHtml, footerNote }) {
     footerNote || "Si no reconocés esta acción, respondé a este correo y lo revisamos."
   );
 
+  // preheader oculto (mejora en Gmail/iOS)
   const preheaderHtml = _pre
     ? `<div style="display:none; font-size:1px; color:#fff; line-height:1px; max-height:0px; max-width:0px; opacity:0; overflow:hidden;">
          ${_pre}
@@ -445,6 +446,82 @@ export async function sendAdminAppointmentCancelledEmail(user, ap, serviceName) 
   const html = buildEmailLayout({
     title: `${BRAND_NAME} · Turno cancelado`,
     preheader: `${uName} canceló ${ap?.date || ""} ${ap?.time || ""} · ${svc}`,
+    bodyHtml,
+  });
+
+  await sendMail(to, subject, text, html);
+}
+
+/* =========================================================
+   ✅ NUEVO: ADMIN — nuevo pedido (FIX LOGIN)
+   (esto arregla el error de orders.js)
+========================================================= */
+export async function sendAdminNewOrderEmail(order = {}, user = null) {
+  const to = ADMIN_EMAIL;
+  if (!to) return;
+
+  const uName =
+    `${user?.name || ""} ${user?.lastName || ""}`.trim() ||
+    user?.fullName ||
+    user?.email ||
+    "-";
+  const uEmail = user?.email || "-";
+
+  const orderId = order?._id?.toString?.() || order?.id || "-";
+  const total = order?.total != null ? String(order.total) : "-";
+
+  const items = Array.isArray(order?.items) ? order.items : [];
+
+  const subject = `🛒 Nuevo pedido — ${uName} · #${orderId}`;
+
+  const text = [
+    "Nuevo pedido",
+    "",
+    `Pedido: ${orderId}`,
+    `Usuario: ${uName}`,
+    `Email: ${uEmail}`,
+    "",
+    `Total: ${total}`,
+    "",
+    "Items:",
+    ...(items.length
+      ? items.map((it, i) => `${i + 1}. ${it?.name || it?.title || "Item"} x${it?.qty || 1}`)
+      : ["(sin items)"]),
+  ].join("\n");
+
+  const bodyHtml = `
+    <div style="font-size:18px; font-weight:800; margin-bottom:12px;">Nuevo pedido</div>
+    <div style="border:1px solid #eee; border-radius:14px; overflow:hidden;">
+      <table role="presentation" cellpadding="0" cellspacing="0" width="100%" style="border-collapse:collapse;">
+        ${kvRow("Pedido", `#${orderId}`)}
+        ${kvRow("Usuario", uName)}
+        ${kvRow("Email", uEmail)}
+        ${kvRow("Total", total)}
+        ${kvRow("Items", items.length ? String(items.length) : "0")}
+      </table>
+    </div>
+
+    ${
+      items.length
+        ? `
+        <div style="margin-top:14px; font-size:13px; font-weight:800;">Detalle</div>
+        <ul style="margin:10px 0 0; padding-left:18px; color:#111;">
+          ${items
+            .map((it) => {
+              const name = it?.name || it?.title || "Item";
+              const qty = it?.qty || it?.quantity || 1;
+              return `<li style="margin:6px 0;">${escapeHtml(name)} x${escapeHtml(qty)}</li>`;
+            })
+            .join("")}
+        </ul>
+      `
+        : ""
+    }
+  `;
+
+  const html = buildEmailLayout({
+    title: `${BRAND_NAME} · Nuevo pedido`,
+    preheader: `Nuevo pedido #${orderId} · ${uName}`,
     bodyHtml,
   });
 
