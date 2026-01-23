@@ -18,7 +18,13 @@ const orderItemSchema = new mongoose.Schema(
 
     // MEMBERSHIP
     membershipTier: { type: String, default: "", lowercase: true, trim: true }, // plus
-    action: { type: String, default: "BUY", uppercase: true, trim: true, enum: ["BUY", "EXTEND"] },
+    action: {
+      type: String,
+      default: "BUY",
+      uppercase: true,
+      trim: true,
+      enum: ["BUY", "EXTEND"],
+    },
 
     // qty + precios por item (server authority)
     qty: { type: Number, default: 1, min: 1 },
@@ -50,7 +56,7 @@ const orderSchema = new mongoose.Schema(
     // Lo dejamos con default y lo auto-completamos en pre('validate').
     total: { type: Number, default: 0, min: 0 },
 
-    // ✅ descuento DUO+
+    // ✅ descuento DUO+ (hoy solo aplica a SHOP, si existiera)
     discountPercent: { type: Number, default: 0, min: 0 },
     discountAmount: { type: Number, default: 0, min: 0 },
     totalFinal: { type: Number, default: 0, min: 0 },
@@ -63,14 +69,22 @@ const orderSchema = new mongoose.Schema(
 
     applied: { type: Boolean, default: false },
 
-    // ✅ NUEVO: evita mandar mail admin 2 veces (CASH + MP webhook reintentos)
+    // ✅ evita mandar mail admin 2 veces (CASH + MP webhook reintentos)
     adminNotifiedAt: { type: Date, default: null },
+
+    // ✅ NUEVO: idempotencia mails "pagado"
+    adminPaidNotifiedAt: { type: Date, default: null },
+    userPaidNotifiedAt: { type: Date, default: null },
 
     // MercadoPago data
     mpPreferenceId: { type: String, default: "" },
     mpInitPoint: { type: String, default: "" },
     mpPaymentId: { type: String, default: "" },
     mpMerchantOrderId: { type: String, default: "" },
+
+    // ✅ NUEVO: tracking webhook MP
+    mpStatus: { type: String, default: "" },
+    mpPaidAmount: { type: Number, default: 0, min: 0 },
 
     paidAt: { type: Date, default: null },
     notes: { type: String, default: "" },
@@ -93,7 +107,6 @@ const orderSchema = new mongoose.Schema(
 
 /**
  * ✅ Arregla:
- * - "next is not a function" (hook mal firmado)
  * - órdenes viejas sin total (total required)
  * - asegura totalFinal coherente
  */

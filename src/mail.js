@@ -6,6 +6,31 @@ dotenv.config();
 
 let transporter = null;
 
+/* =========================================================
+   Config
+========================================================= */
+const ADMIN_EMAIL = process.env.ADMIN_EMAIL || "duoclub.ar@gmail.com";
+const BRAND_NAME = process.env.BRAND_NAME || "DUO";
+const BRAND_URL = process.env.BRAND_URL || "https://duoclub.ar";
+
+/* =========================================================
+   Util: fire-and-forget (no bloquear requests)
+========================================================= */
+export function fireAndForget(fn, label = "MAIL") {
+  try {
+    setImmediate(() => {
+      Promise.resolve()
+        .then(fn)
+        .catch((e) => console.log(`[${label}] async error:`, e?.message || e));
+    });
+  } catch (e) {
+    console.log(`[${label}] schedule error:`, e?.message || e);
+  }
+}
+
+/* =========================================================
+   Transporter (SMTP)
+========================================================= */
 function getTransporter() {
   if (transporter) return transporter;
 
@@ -22,6 +47,16 @@ function getTransporter() {
     port: Number(SMTP_PORT || 587),
     secure: String(SMTP_SECURE) === "true",
     auth: { user: SMTP_USER, pass: SMTP_PASS },
+
+    // ✅ evita cuelgues largos
+    connectionTimeout: 10_000,
+    greetingTimeout: 10_000,
+    socketTimeout: 20_000,
+
+    // ✅ opcional: pool (mejora performance si mandás varios)
+    pool: true,
+    maxConnections: 2,
+    maxMessages: 50,
   });
 
   transporter.verify().then(
@@ -32,9 +67,9 @@ function getTransporter() {
   return transporter;
 }
 
-// ===============================
-// Envío base
-// ===============================
+/* =========================================================
+   Envío base
+========================================================= */
 export async function sendMail(to, subject, text, html) {
   const tx = getTransporter();
 
@@ -53,12 +88,8 @@ export async function sendMail(to, subject, text, html) {
 }
 
 /* =========================================================
-   ✅ NUEVO: helpers de template "lindo" + seguridad HTML
+   Helpers HTML / Templates
 ========================================================= */
-const ADMIN_EMAIL = process.env.ADMIN_EMAIL || "duoclub.ar@gmail.com";
-const BRAND_NAME = process.env.BRAND_NAME || "DUO";
-const BRAND_URL = process.env.BRAND_URL || "https://duoclub.ar"; // opcional
-
 function escapeHtml(v) {
   return String(v ?? "")
     .replace(/&/g, "&amp;")
@@ -84,6 +115,43 @@ function prettyDateAR(dateStr) {
   }
 }
 
+function moneyARS(v) {
+  const n = Number(v);
+  if (!Number.isFinite(n)) return String(v ?? "-");
+  try {
+    return n.toLocaleString("es-AR", { style: "currency", currency: "ARS" });
+  } catch {
+    return `$${n}`;
+  }
+}
+
+function kvRow(label, value) {
+  return `
+    <tr>
+      <td style="padding:8px 10px; color:#555; font-size:13px; width:170px; border-bottom:1px solid #eee;">
+        ${escapeHtml(label)}
+      </td>
+      <td style="padding:8px 10px; color:#111; font-size:13px; border-bottom:1px solid #eee;">
+        ${escapeHtml(value)}
+      </td>
+    </tr>
+  `;
+}
+
+function pill(status) {
+  const s = String(status || "").toLowerCase();
+  if (s === "approved" || s === "paid") {
+    return { bg: "#e9f7ef", tx: "#0b6b2a", label: "PAGADO" };
+  }
+  if (s === "pending") {
+    return { bg: "#fff6db", tx: "#7a5200", label: "PENDIENTE" };
+  }
+  if (s === "cancelled" || s === "rejected" || s === "failed") {
+    return { bg: "#ffe9ea", tx: "#a00010", label: "RECHAZADO" };
+  }
+  return { bg: "#eef1f5", tx: "#334155", label: String(status || "ESTADO") };
+}
+
 function buildEmailLayout({ title, preheader, bodyHtml, footerNote }) {
   const _title = escapeHtml(title || BRAND_NAME);
   const _pre = escapeHtml(preheader || "");
@@ -91,7 +159,6 @@ function buildEmailLayout({ title, preheader, bodyHtml, footerNote }) {
     footerNote || "Si no reconocés esta acción, respondé a este correo y lo revisamos."
   );
 
-  // preheader oculto (mejora en Gmail/iOS)
   const preheaderHtml = _pre
     ? `<div style="display:none; font-size:1px; color:#fff; line-height:1px; max-height:0px; max-width:0px; opacity:0; overflow:hidden;">
          ${_pre}
@@ -155,25 +222,169 @@ function buildEmailLayout({ title, preheader, bodyHtml, footerNote }) {
   `;
 }
 
-function kvRow(label, value) {
-  return `
-    <tr>
-      <td style="padding:8px 10px; color:#555; font-size:13px; width:170px; border-bottom:1px solid #eee;">
-        ${escapeHtml(label)}
-      </td>
-      <td style="padding:8px 10px; color:#111; font-size:13px; border-bottom:1px solid #eee;">
-        ${escapeHtml(value)}
-      </td>
-    </tr>
-  `;
+function orderSummary(order = {}, user = null) {
+  const orderId = order?._id?.toString?.() || order?.id || "-";
+  const createdAt = order?.createdAt ? new Date(order.createdAt) : null;
+  const createdDate = createdAt
+    ? createdAt.toLocaleDateString("es-AR", { year: "numeric", month: "2-digit", day: "2-digit" })
+    : "-";
+  const createdTime = createdAt
+    ? createdAt.toLocaleTimeString("es-AR", { hour: "2-digit", minute: "2-digit" })
+    : "-";
+
+  const uName =
+    `${user?.name || ""} ${user?.lastName || ""}`.trim() ||
+    user?.fullName ||
+    user?.email ||
+    "-";
+  const uEmail = user?.email || "-";
+
+  const pm = String(order?.payMethod || "").toUpperCase() || "-";
+  const status = String(order?.status || "pending").toLowerCase();
+
+  const totalFinal =
+    order?.totalFinal != null ? moneyARS(order.totalFinal) : moneyARS(order?.total ?? order?.price ?? 0);
+
+  const items = Array.isArray(order?.items) ? order.items : [];
+  const itemsCount = items.reduce((acc, it) => acc + Math.max(1, Number(it?.qty) || 1), 0);
+
+  return {
+    orderId,
+    createdDate,
+    createdTime,
+    uName,
+    uEmail,
+    pm,
+    status,
+    totalFinal,
+    items,
+    itemsCount,
+  };
 }
 
+function renderItemsList(items = []) {
+  if (!items.length) return "<li>(sin items)</li>";
+
+  return items
+    .map((it) => {
+      const kind = String(it?.kind || "").toUpperCase();
+      const qty = Math.max(1, Number(it?.qty) || 1);
+
+      if (kind === "CREDITS") {
+        const svc = String(it?.serviceKey || "EP").toUpperCase();
+        const cr = Number(it?.credits) || 0;
+        return `<li style="margin:6px 0;">Créditos <b>${escapeHtml(String(cr))}</b> (${escapeHtml(svc)}) x${escapeHtml(String(qty))}</li>`;
+      }
+
+      if (kind === "MEMBERSHIP") {
+        const months = qty;
+        return `<li style="margin:6px 0;">Membresía <b>DUO+</b> (${escapeHtml(String(months))} mes/es)</li>`;
+      }
+
+      const name = it?.label || it?.name || it?.title || "Item";
+      return `<li style="margin:6px 0;">${escapeHtml(String(name))} x${escapeHtml(String(qty))}</li>`;
+    })
+    .join("");
+}
+
+/* =========================================================
+   Emails existentes (verify / welcome)
+========================================================= */
+export async function sendVerifyEmail(user, verifyUrl) {
+  if (!user?.email) return;
+
+  const textLines = [
+    `Hola ${user.name || ""}`.trim() + ",",
+    "",
+    `Gracias por registrarte en ${BRAND_NAME}.`,
+    "",
+    "Para continuar, verificá tu email en este link (si no abre, copiá y pegá en el navegador):",
+    "",
+    verifyUrl,
+    "",
+    "Este link vence en 24 horas.",
+    "",
+    "Si vos no creaste esta cuenta, podés ignorar este email.",
+  ];
+
+  const bodyHtml = `
+    <div style="font-size:18px; font-weight:800; margin-bottom:10px;">Verificación de email</div>
+    <div style="color:#333; margin-bottom:12px;">Hola <b>${escapeHtml(user.name || "")}</b>,</div>
+    <div style="color:#333; margin-bottom:12px;">Para continuar, hacé click en el botón:</div>
+
+    <div style="margin:16px 0;">
+      <a href="${verifyUrl}" style="background:#111; color:#fff; padding:12px 16px; border-radius:10px; text-decoration:none; display:inline-block;">
+        Verificar email
+      </a>
+    </div>
+
+    <div style="font-size:12px; color:#555;">Si el botón no funciona, copiá y pegá este link:</div>
+    <div style="font-size:12px; word-break:break-all; margin-top:6px;">
+      <a href="${verifyUrl}">${verifyUrl}</a>
+    </div>
+  `;
+
+  const html = buildEmailLayout({
+    title: `${BRAND_NAME} · Verificación de email`,
+    preheader: "Verificá tu email para continuar",
+    bodyHtml,
+  });
+
+  await sendMail(user.email, `Verificá tu email - ${BRAND_NAME}`, textLines.join("\n"), html);
+}
+
+export async function sendUserWelcomeEmail(user, tempPassword) {
+  if (!user?.email) return;
+
+  const lines = [
+    `Hola ${user.name || ""}`.trim() + ",",
+    "",
+    `Te creamos un usuario en la plataforma de ${BRAND_NAME}.`,
+    "",
+    "Estos son tus datos de acceso:",
+    `Email: ${user.email}`,
+    `Contraseña temporal: ${tempPassword}`,
+    "",
+    "Cuando ingreses por primera vez, el sistema te pedirá que cambies la contraseña.",
+    "",
+    "Cualquier duda, respondé a este correo.",
+  ];
+
+  const bodyHtml = `
+    <div style="font-size:18px; font-weight:800; margin-bottom:10px;">Tu usuario está listo</div>
+    <div style="color:#333; margin-bottom:12px;">Hola <b>${escapeHtml(user.name || "")}</b>,</div>
+
+    <div style="border:1px solid #eee; border-radius:14px; overflow:hidden; margin-top:10px;">
+      <table role="presentation" cellpadding="0" cellspacing="0" width="100%" style="border-collapse:collapse;">
+        ${kvRow("Email", user.email || "-")}
+        ${kvRow("Contraseña temporal", tempPassword || "-")}
+      </table>
+    </div>
+
+    <div style="margin-top:12px; font-size:12px; color:#666;">
+      Al iniciar sesión por primera vez, el sistema te pedirá que cambies la contraseña.
+    </div>
+  `;
+
+  const html = buildEmailLayout({
+    title: `${BRAND_NAME} · Usuario creado`,
+    preheader: "Tu usuario ya está listo",
+    bodyHtml,
+  });
+
+  await sendMail(user.email, `Tu usuario en ${BRAND_NAME} está listo`, lines.join("\n"), html);
+}
+
+/* =========================================================
+   Turnos (USER + ADMIN)
+========================================================= */
 function buildAppointmentCardHtml({ user, ap, serviceName, kind }) {
   const uName =
     `${user?.name || ""} ${user?.lastName || ""}`.trim() ||
     user?.fullName ||
     user?.email ||
     "Usuario";
+
   const whenDateLong = prettyDateAR(ap?.date);
   const time = ap?.time || "-";
   const svc = serviceName || ap?.service || "-";
@@ -181,13 +392,13 @@ function buildAppointmentCardHtml({ user, ap, serviceName, kind }) {
   const title = kind === "cancelled" ? "Turno cancelado" : "Turno confirmado";
   const pillBg = kind === "cancelled" ? "#ffe9ea" : "#e9f7ef";
   const pillTx = kind === "cancelled" ? "#a00010" : "#0b6b2a";
-  const pill = kind === "cancelled" ? "CANCELADO" : "CONFIRMADO";
+  const pillLabel = kind === "cancelled" ? "CANCELADO" : "CONFIRMADO";
 
   const body = `
     <div style="display:flex; gap:10px; align-items:center; margin-bottom:14px;">
       <div style="font-size:18px; font-weight:800;">${escapeHtml(title)}</div>
       <div style="margin-left:auto; background:${pillBg}; color:${pillTx}; padding:6px 10px; border-radius:999px; font-size:12px; font-weight:800;">
-        ${escapeHtml(pill)}
+        ${escapeHtml(pillLabel)}
       </div>
     </div>
 
@@ -220,76 +431,10 @@ function buildAppointmentCardHtml({ user, ap, serviceName, kind }) {
   });
 }
 
-/* =========================================================
-   Emails existentes
-========================================================= */
-export async function sendVerifyEmail(user, verifyUrl) {
-  if (!user?.email) return;
-
-  const textLines = [
-    `Hola ${user.name || ""}`.trim() + ",",
-    "",
-    "Gracias por registrarte en DUO.",
-    "",
-    "Para continuar, verificá tu email en este link (si no abre, copiá y pegá en el navegador):",
-    "",
-    verifyUrl,
-    "",
-    "Este link vence en 24 horas.",
-    "",
-    "Si vos no creaste esta cuenta, podés ignorar este email.",
-  ];
-
-  const html = `
-  <div style="font-family: Arial, sans-serif; line-height: 1.4; color:#111;">
-    <h2 style="margin:0 0 12px;">Verificación de email</h2>
-    <p>Hola ${user.name || ""},</p>
-    <p>Gracias por registrarte en <b>DUO</b>.</p>
-    <p>Para continuar, hacé click en el botón:</p>
-    <p style="margin:18px 0;">
-      <a href="${verifyUrl}"
-         style="background:#111; color:#fff; padding:12px 16px; border-radius:8px; text-decoration:none; display:inline-block;">
-        Verificar email
-      </a>
-    </p>
-    <p style="font-size:12px; color:#444;">
-      Si el botón no funciona, copiá y pegá este link en el navegador:
-    </p>
-    <p style="font-size:12px; word-break:break-all;">
-      <a href="${verifyUrl}">${verifyUrl}</a>
-    </p>
-    <p style="font-size:12px; color:#444;">Este link vence en 24 horas.</p>
-  </div>
-  `;
-
-  await sendMail(user.email, "Verificá tu email - DUO", textLines.join("\n"), html);
-}
-
-export async function sendUserWelcomeEmail(user, tempPassword) {
-  if (!user?.email) return;
-  const lines = [
-    `Hola ${user.name || ""}`.trim() + ",",
-    "",
-    "Te creamos un usuario en la plataforma de DUO.",
-    "",
-    "Estos son tus datos de acceso:",
-    `Email: ${user.email}`,
-    `Contraseña temporal: ${tempPassword}`,
-    "",
-    "Cuando ingreses por primera vez, el sistema te pedirá que cambies la contraseña.",
-    "",
-    "Cualquier duda, respondé a este correo.",
-  ];
-  await sendMail(user.email, "Tu usuario en DUO está listo", lines.join("\n"));
-}
-
-/* =========================================================
-   ✅ Turnos (USER + ADMIN)
-========================================================= */
 export async function sendAppointmentBookedEmail(user, ap, serviceName) {
   if (!user?.email) return;
 
-  const subject = "✅ Tu turno fue reservado - DUO";
+  const subject = `✅ Tu turno fue reservado - ${BRAND_NAME}`;
   const text = [
     `Hola ${user.name || ""}`.trim() + ",",
     "",
@@ -307,15 +452,13 @@ export async function sendAppointmentBookedEmail(user, ap, serviceName) {
   const html = buildAppointmentCardHtml({ user, ap, serviceName, kind: "booked" });
 
   await sendMail(user.email, subject, text, html);
-
-  // ✅ También al admin
   await sendAdminAppointmentBookedEmail(user, ap, serviceName);
 }
 
 export async function sendAppointmentCancelledEmail(user, ap, serviceName) {
   if (!user?.email) return;
 
-  const subject = "❌ Tu turno fue cancelado - DUO";
+  const subject = `❌ Tu turno fue cancelado - ${BRAND_NAME}`;
   const text = [
     `Hola ${user.name || ""}`.trim() + ",",
     "",
@@ -333,13 +476,12 @@ export async function sendAppointmentCancelledEmail(user, ap, serviceName) {
   const html = buildAppointmentCardHtml({ user, ap, serviceName, kind: "cancelled" });
 
   await sendMail(user.email, subject, text, html);
-
-  // ✅ También al admin
   await sendAdminAppointmentCancelledEmail(user, ap, serviceName);
 }
 
 export async function sendAppointmentReminderEmail(user, ap, serviceName) {
   if (!user?.email) return;
+
   const lines = [
     `Hola ${user.name || ""}`.trim() + ",",
     "",
@@ -351,12 +493,10 @@ export async function sendAppointmentReminderEmail(user, ap, serviceName) {
     "",
     "Te esperamos. Si no podés asistir, cancelá el turno para liberar el espacio.",
   ];
+
   await sendMail(user.email, "Recordatorio de turno", lines.filter(Boolean).join("\n"));
 }
 
-/* =========================================================
-   ✅ ADMIN — turnos reservados / cancelados
-========================================================= */
 export async function sendAdminAppointmentBookedEmail(user, ap, serviceName) {
   const to = ADMIN_EMAIL;
   if (!to) return;
@@ -453,83 +593,240 @@ export async function sendAdminAppointmentCancelledEmail(user, ap, serviceName) 
 }
 
 /* =========================================================
-   ✅ NUEVO: ADMIN — nuevo pedido (FIX LOGIN)
-   (esto arregla el error de orders.js)
+   ✅ NUEVO: Pedidos (ORDER) — ADMIN + USER
 ========================================================= */
 export async function sendAdminNewOrderEmail(order = {}, user = null) {
   const to = ADMIN_EMAIL;
   if (!to) return;
 
-  const uName =
-    `${user?.name || ""} ${user?.lastName || ""}`.trim() ||
-    user?.fullName ||
-    user?.email ||
-    "-";
-  const uEmail = user?.email || "-";
+  const s = orderSummary(order, user);
 
-  const orderId = order?._id?.toString?.() || order?.id || "-";
-  const total = order?.total != null ? String(order.total) : "-";
-
-  const items = Array.isArray(order?.items) ? order.items : [];
-
-  const subject = `🛒 Nuevo pedido — ${uName} · #${orderId}`;
+  const subject = `🛒 Nuevo pedido — ${s.uName} · #${s.orderId}`;
 
   const text = [
     "Nuevo pedido",
     "",
-    `Pedido: ${orderId}`,
-    `Usuario: ${uName}`,
-    `Email: ${uEmail}`,
+    `Pedido: #${s.orderId}`,
+    `Usuario: ${s.uName}`,
+    `Email: ${s.uEmail}`,
     "",
-    `Total: ${total}`,
+    `Pago: ${s.pm}`,
+    `Estado: ${s.status}`,
+    `Total: ${s.totalFinal}`,
     "",
     "Items:",
-    ...(items.length
-      ? items.map((it, i) => `${i + 1}. ${it?.name || it?.title || "Item"} x${it?.qty || 1}`)
+    ...(s.items.length
+      ? s.items.map((it, i) => `${i + 1}. ${(it?.label || it?.name || it?.title || it?.kind || "Item")} x${it?.qty || 1}`)
       : ["(sin items)"]),
   ].join("\n");
 
+  const st = pill(s.status);
   const bodyHtml = `
-    <div style="font-size:18px; font-weight:800; margin-bottom:12px;">Nuevo pedido</div>
+    <div style="display:flex; align-items:center; gap:10px; margin-bottom:12px;">
+      <div style="font-size:18px; font-weight:800;">Nuevo pedido</div>
+      <div style="margin-left:auto; background:${st.bg}; color:${st.tx}; padding:6px 10px; border-radius:999px; font-size:12px; font-weight:800;">
+        ${escapeHtml(st.label)}
+      </div>
+    </div>
+
     <div style="border:1px solid #eee; border-radius:14px; overflow:hidden;">
       <table role="presentation" cellpadding="0" cellspacing="0" width="100%" style="border-collapse:collapse;">
-        ${kvRow("Pedido", `#${orderId}`)}
-        ${kvRow("Usuario", uName)}
-        ${kvRow("Email", uEmail)}
-        ${kvRow("Total", total)}
-        ${kvRow("Items", items.length ? String(items.length) : "0")}
+        ${kvRow("Pedido", `#${s.orderId}`)}
+        ${kvRow("Usuario", s.uName)}
+        ${kvRow("Email", s.uEmail)}
+        ${kvRow("Pago", s.pm)}
+        ${kvRow("Estado", s.status)}
+        ${kvRow("Total", s.totalFinal)}
+        ${kvRow("Creado", `${s.createdDate} ${s.createdTime}`)}
+        ${kvRow("Items", String(s.itemsCount))}
       </table>
     </div>
 
-    ${
-      items.length
-        ? `
-        <div style="margin-top:14px; font-size:13px; font-weight:800;">Detalle</div>
-        <ul style="margin:10px 0 0; padding-left:18px; color:#111;">
-          ${items
-            .map((it) => {
-              const name = it?.name || it?.title || "Item";
-              const qty = it?.qty || it?.quantity || 1;
-              return `<li style="margin:6px 0;">${escapeHtml(name)} x${escapeHtml(qty)}</li>`;
-            })
-            .join("")}
-        </ul>
-      `
-        : ""
-    }
+    <div style="margin-top:14px; font-size:13px; font-weight:800;">Detalle</div>
+    <ul style="margin:10px 0 0; padding-left:18px; color:#111;">
+      ${renderItemsList(s.items)}
+    </ul>
   `;
 
   const html = buildEmailLayout({
     title: `${BRAND_NAME} · Nuevo pedido`,
-    preheader: `Nuevo pedido #${orderId} · ${uName}`,
+    preheader: `Nuevo pedido #${s.orderId} · ${s.uName} · ${s.totalFinal}`,
     bodyHtml,
   });
 
   await sendMail(to, subject, text, html);
 }
 
+export async function sendAdminOrderPaidEmail(order = {}, user = null) {
+  const to = ADMIN_EMAIL;
+  if (!to) return;
+
+  const s = orderSummary(order, user);
+
+  const subject = `✅ Pedido pagado — ${s.uName} · #${s.orderId}`;
+
+  const text = [
+    "Pedido pagado",
+    "",
+    `Pedido: #${s.orderId}`,
+    `Usuario: ${s.uName}`,
+    `Email: ${s.uEmail}`,
+    "",
+    `Pago: ${s.pm}`,
+    `Estado: ${s.status}`,
+    `Total: ${s.totalFinal}`,
+  ].join("\n");
+
+  const st = pill("paid");
+  const bodyHtml = `
+    <div style="display:flex; align-items:center; gap:10px; margin-bottom:12px;">
+      <div style="font-size:18px; font-weight:800;">Pedido pagado</div>
+      <div style="margin-left:auto; background:${st.bg}; color:${st.tx}; padding:6px 10px; border-radius:999px; font-size:12px; font-weight:800;">
+        ${escapeHtml(st.label)}
+      </div>
+    </div>
+
+    <div style="border:1px solid #eee; border-radius:14px; overflow:hidden;">
+      <table role="presentation" cellpadding="0" cellspacing="0" width="100%" style="border-collapse:collapse;">
+        ${kvRow("Pedido", `#${s.orderId}`)}
+        ${kvRow("Usuario", s.uName)}
+        ${kvRow("Email", s.uEmail)}
+        ${kvRow("Pago", s.pm)}
+        ${kvRow("Total", s.totalFinal)}
+      </table>
+    </div>
+  `;
+
+  const html = buildEmailLayout({
+    title: `${BRAND_NAME} · Pedido pagado`,
+    preheader: `Pedido #${s.orderId} pagado · ${s.uName} · ${s.totalFinal}`,
+    bodyHtml,
+  });
+
+  await sendMail(to, subject, text, html);
+}
+
+export async function sendUserOrderCreatedEmail(order = {}, user = null) {
+  if (!user?.email) return;
+
+  const s = orderSummary(order, user);
+  const st = pill("pending");
+
+  const subject = `🧾 Recibimos tu pedido - ${BRAND_NAME}`;
+  const text = [
+    `Hola ${user?.name || ""}`.trim() + ",",
+    "",
+    "Recibimos tu pedido correctamente.",
+    "",
+    `Pedido: #${s.orderId}`,
+    `Pago: ${s.pm}`,
+    `Total: ${s.totalFinal}`,
+    "",
+    "Estado: Pendiente de pago/confirmación.",
+    "Cuando el staff confirme el pago (efectivo), vas a ver reflejado el impacto en tu cuenta.",
+  ].join("\n");
+
+  const bodyHtml = `
+    <div style="display:flex; align-items:center; gap:10px; margin-bottom:12px;">
+      <div style="font-size:18px; font-weight:800;">Pedido recibido</div>
+      <div style="margin-left:auto; background:${st.bg}; color:${st.tx}; padding:6px 10px; border-radius:999px; font-size:12px; font-weight:800;">
+        ${escapeHtml(st.label)}
+      </div>
+    </div>
+
+    <div style="color:#333; margin-bottom:12px;">
+      Hola <b>${escapeHtml(user?.name || "")}</b>, recibimos tu pedido correctamente.
+    </div>
+
+    <div style="border:1px solid #eee; border-radius:14px; overflow:hidden;">
+      <table role="presentation" cellpadding="0" cellspacing="0" width="100%" style="border-collapse:collapse;">
+        ${kvRow("Pedido", `#${s.orderId}`)}
+        ${kvRow("Pago", s.pm)}
+        ${kvRow("Total", s.totalFinal)}
+        ${kvRow("Estado", "Pendiente")}
+      </table>
+    </div>
+
+    <div style="margin-top:14px; font-size:13px; font-weight:800;">Detalle</div>
+    <ul style="margin:10px 0 0; padding-left:18px; color:#111;">
+      ${renderItemsList(s.items)}
+    </ul>
+
+    <div style="margin-top:14px; font-size:12px; color:#666;">
+      Cuando el staff confirme el pago (efectivo), tu compra se acreditará automáticamente.
+    </div>
+  `;
+
+  const html = buildEmailLayout({
+    title: `${BRAND_NAME} · Pedido recibido`,
+    preheader: `Pedido #${s.orderId} recibido · ${s.totalFinal}`,
+    bodyHtml,
+  });
+
+  await sendMail(user.email, subject, text, html);
+}
+
+export async function sendUserOrderPaidEmail(order = {}, user = null) {
+  if (!user?.email) return;
+
+  const s = orderSummary(order, user);
+  const st = pill("paid");
+
+  const subject = `✅ Pago aprobado - ${BRAND_NAME}`;
+  const text = [
+    `Hola ${user?.name || ""}`.trim() + ",",
+    "",
+    "Tu pago fue aprobado y tu compra se procesó correctamente.",
+    "",
+    `Pedido: #${s.orderId}`,
+    `Pago: ${s.pm}`,
+    `Total: ${s.totalFinal}`,
+    "",
+    "Ya podés ver el impacto (créditos/membresía) en tu cuenta.",
+  ].join("\n");
+
+  const bodyHtml = `
+    <div style="display:flex; align-items:center; gap:10px; margin-bottom:12px;">
+      <div style="font-size:18px; font-weight:800;">Pago aprobado</div>
+      <div style="margin-left:auto; background:${st.bg}; color:${st.tx}; padding:6px 10px; border-radius:999px; font-size:12px; font-weight:800;">
+        ${escapeHtml(st.label)}
+      </div>
+    </div>
+
+    <div style="color:#333; margin-bottom:12px;">
+      Hola <b>${escapeHtml(user?.name || "")}</b>, tu pago fue aprobado y tu compra se acreditó.
+    </div>
+
+    <div style="border:1px solid #eee; border-radius:14px; overflow:hidden;">
+      <table role="presentation" cellpadding="0" cellspacing="0" width="100%" style="border-collapse:collapse;">
+        ${kvRow("Pedido", `#${s.orderId}`)}
+        ${kvRow("Pago", s.pm)}
+        ${kvRow("Total", s.totalFinal)}
+        ${kvRow("Estado", "Pagado")}
+      </table>
+    </div>
+
+    <div style="margin-top:14px; font-size:13px; font-weight:800;">Detalle</div>
+    <ul style="margin:10px 0 0; padding-left:18px; color:#111;">
+      ${renderItemsList(s.items)}
+    </ul>
+
+    <div style="margin-top:14px; font-size:12px; color:#666;">
+      Ya podés ver el impacto (créditos/membresía) en tu cuenta.
+    </div>
+  `;
+
+  const html = buildEmailLayout({
+    title: `${BRAND_NAME} · Pago aprobado`,
+    preheader: `Pago aprobado · Pedido #${s.orderId} · ${s.totalFinal}`,
+    bodyHtml,
+  });
+
+  await sendMail(user.email, subject, text, html);
+}
+
 /* =========================================================
-   Batch (user) — y opcional admin
+   Batch (turnos)
 ========================================================= */
 export async function sendAppointmentBookedBatchEmail(user, items = []) {
   if (!user?.email) return;
@@ -553,14 +850,14 @@ export async function sendAppointmentBookedBatchEmail(user, items = []) {
     "Si no podés asistir, recordá cancelarlos con anticipación desde tu perfil.",
   ].join("\n");
 
-  const html = `
-  <div style="font-family: Arial, sans-serif; color:#111; line-height:1.4;">
-    <h2 style="margin:0 0 10px;">✅ Turnos reservados</h2>
-    <p>Hola ${user.name || ""},</p>
-    <p>Tus turnos fueron reservados con éxito.</p>
-    <div style="padding:12px; border:1px solid #ddd; border-radius:10px;">
-      <div style="font-weight:700; margin-bottom:8px;">Detalle</div>
-      <ul style="margin:0; padding-left:18px;">
+  const bodyHtml = `
+    <div style="font-size:18px; font-weight:800; margin-bottom:10px;">✅ Turnos reservados</div>
+    <div style="color:#333; margin-bottom:12px;">Hola <b>${escapeHtml(user.name || "")}</b>,</div>
+    <div style="color:#333; margin-bottom:12px;">Tus turnos fueron reservados con éxito.</div>
+
+    <div style="border:1px solid #eee; border-radius:14px; overflow:hidden;">
+      <div style="padding:12px 12px 0; font-size:13px; font-weight:800;">Detalle</div>
+      <ul style="margin:10px 0 0; padding:0 12px 12px 28px; color:#111;">
         ${
           linesItems.length
             ? linesItems.map((l) => `<li style="margin:6px 0;">${escapeHtml(l)}</li>`).join("")
@@ -568,14 +865,17 @@ export async function sendAppointmentBookedBatchEmail(user, items = []) {
         }
       </ul>
     </div>
-    <p style="margin-top:12px; font-size:12px; color:#444;">
+
+    <div style="margin-top:12px; font-size:12px; color:#666;">
       Si no podés asistir, recordá cancelarlos con anticipación desde tu perfil.
-    </p>
-  </div>
+    </div>
   `;
 
-  await sendMail(user.email, "Tus turnos fueron reservados", text, html);
+  const html = buildEmailLayout({
+    title: `${BRAND_NAME} · Turnos reservados`,
+    preheader: "Tus turnos fueron reservados",
+    bodyHtml,
+  });
 
-  // ✅ opcional admin
-  // await sendMail(ADMIN_EMAIL, "🗓️ Batch de turnos reservado", text, html);
+  await sendMail(user.email, `Tus turnos fueron reservados - ${BRAND_NAME}`, text, html);
 }

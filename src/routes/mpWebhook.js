@@ -2,7 +2,13 @@
 import express from "express";
 import Order from "../models/Order.js";
 import User from "../models/User.js";
-import { sendAdminNewOrderEmail } from "../mail.js";
+
+import {
+  fireAndForget,
+  sendAdminNewOrderEmail,
+  sendAdminOrderPaidEmail,
+  sendUserOrderPaidEmail,
+} from "../mail.js";
 
 const router = express.Router();
 
@@ -29,7 +35,7 @@ async function fetchMpPayment(paymentId) {
 ======================= */
 function isPlusActive(user) {
   const m = user?.membership || {};
-  if (m.tier !== "plus") return false;
+  if (String(m.tier || "").toLowerCase() !== "plus") return false;
   if (!m.activeUntil) return false;
   return new Date(m.activeUntil) > new Date();
 }
@@ -39,7 +45,7 @@ function ensureBasicIfExpired(user) {
   user.membership = user.membership || {};
 
   const expired =
-    user.membership.tier === "plus" &&
+    String(user.membership.tier || "").toLowerCase() === "plus" &&
     user.membership.activeUntil &&
     new Date(user.membership.activeUntil) <= now;
 
@@ -117,7 +123,7 @@ async function applyOrderIfNeeded(order) {
 
   const hasItems = Array.isArray(order.items) && order.items.length > 0;
 
-  // 1) primero activar plus si corresponde (para que los lotes expiren en 40)
+  // 1) membership primero (para que expireDays sea 40 si corresponde)
   if (hasItems) {
     const hasPlus = order.items.some((it) => String(it.kind).toUpperCase() === "MEMBERSHIP");
     if (hasPlus) activatePlus(user);
@@ -128,7 +134,7 @@ async function applyOrderIfNeeded(order) {
     else ensureBasicIfExpired(user);
   }
 
-  // 2) acreditar créditos
+  // 2) créditos
   if (hasItems) {
     for (const it of order.items) {
       if (String(it.kind).toUpperCase() !== "CREDITS") continue;
@@ -171,7 +177,7 @@ async function applyOrderIfNeeded(order) {
   await user.save();
 
   order.applied = true;
-  order.creditsApplied = true; // compat legacy
+  order.creditsApplied = true;
   await order.save();
 
   return { ok: true };
@@ -180,7 +186,7 @@ async function applyOrderIfNeeded(order) {
 /* =======================
    ✅ Notificar admin (idempotente)
 ======================= */
-async function notifyAdminIfNeeded(order) {
+async function notifyAdminNewIfNeeded(order) {
   if (!order) return;
   if (order.adminNotifiedAt) return;
 
@@ -190,8 +196,37 @@ async function notifyAdminIfNeeded(order) {
     order.adminNotifiedAt = new Date();
     await order.save();
   } catch (e) {
-    console.warn("MP webhook: no se pudo enviar mail admin:", e?.message || e);
-    // no marcamos adminNotifiedAt si falló el mail
+    console.warn("MP webhook: no se pudo enviar mail admin NEW:", e?.message || e);
+  }
+}
+
+async function notifyAdminPaidIfNeeded(order) {
+  if (!order) return;
+  if (order.adminPaidNotifiedAt) return;
+
+  try {
+    const u = await User.findById(order.user).lean().catch(() => null);
+    await sendAdminOrderPaidEmail(order, u);
+    order.adminPaidNotifiedAt = new Date();
+    await order.save();
+  } catch (e) {
+    console.warn("MP webhook: no se pudo enviar mail admin PAID:", e?.message || e);
+  }
+}
+
+async function notifyUserPaidIfNeeded(order) {
+  if (!order) return;
+  if (order.userPaidNotifiedAt) return;
+
+  try {
+    const u = await User.findById(order.user).lean().catch(() => null);
+    if (u?.email) {
+      await sendUserOrderPaidEmail(order, u);
+      order.userPaidNotifiedAt = new Date();
+      await order.save();
+    }
+  } catch (e) {
+    console.warn("MP webhook: no se pudo enviar mail user PAID:", e?.message || e);
   }
 }
 
@@ -206,7 +241,7 @@ router.post("/mercadopago/webhook", async (req, res) => {
 
     const payment = await fetchMpPayment(paymentId);
 
-    const status = String(payment.status || "");
+    const status = String(payment.status || "").toLowerCase();
     const externalRef = String(payment.external_reference || "");
     if (!externalRef) return res.status(200).json({ ok: true });
 
@@ -216,11 +251,13 @@ router.post("/mercadopago/webhook", async (req, res) => {
     // Guardar datos del pago
     order.mpPaymentId = String(payment.id || "");
     order.mpMerchantOrderId = String(payment.order?.id || payment.merchant_order_id || "");
+    order.mpStatus = status;
+    order.mpPaidAmount = Number(payment.transaction_amount || 0);
 
-    const paidAmount = Number(payment.transaction_amount || 0);
     const expected = Number(order.totalFinal ?? order.total ?? order.price ?? 0);
+    const paidAmount = Number(payment.transaction_amount || 0);
 
-    // tolerancia mínima por redondeo (si querés, dejala en 0)
+    // Si querés tolerancia por redondeo, poné 1 o 2 pesos
     const EPS = 0;
 
     if (Math.abs(paidAmount - expected) > EPS) {
@@ -229,6 +266,7 @@ router.post("/mercadopago/webhook", async (req, res) => {
       return res.status(200).json({ ok: true });
     }
 
+    // Aceptamos solo approved
     if (status !== "approved") {
       order.notes = `MP status: ${status}`;
       await order.save();
@@ -236,12 +274,12 @@ router.post("/mercadopago/webhook", async (req, res) => {
     }
 
     // ✅ Pago aprobado
-    if (String(order.status || "") !== "paid") {
+    if (String(order.status || "").toLowerCase() !== "paid") {
       order.status = "paid";
       order.paidAt = new Date();
     }
 
-    // ✅ aplicar orden (plus + créditos) de forma idempotente
+    // ✅ aplicar orden (idempotente)
     const applied = await applyOrderIfNeeded(order);
     if (!applied.ok) {
       order.notes = applied.error || "No se pudo aplicar orden";
@@ -249,8 +287,10 @@ router.post("/mercadopago/webhook", async (req, res) => {
       return res.status(200).json({ ok: true });
     }
 
-    // ✅ Mail al admin SOLO cuando está approved (y solo 1 vez)
-    await notifyAdminIfNeeded(order);
+    // ✅ Mails ASYNC (no bloquean el webhook)
+    fireAndForget(() => notifyAdminNewIfNeeded(order), "MAIL_ADMIN_NEW_ORDER_MP");
+    fireAndForget(() => notifyAdminPaidIfNeeded(order), "MAIL_ADMIN_PAID_ORDER_MP");
+    fireAndForget(() => notifyUserPaidIfNeeded(order), "MAIL_USER_PAID_ORDER_MP");
 
     await order.save();
     return res.status(200).json({ ok: true });

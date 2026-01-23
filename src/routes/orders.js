@@ -5,7 +5,12 @@ import PricingPlan from "../models/PricingPlan.js";
 import Order from "../models/Order.js";
 import User from "../models/User.js";
 import mongoose from "mongoose";
-import { sendAdminNewOrderEmail } from "../mail.js";
+
+import {
+  fireAndForget,
+  sendAdminNewOrderEmail,
+  sendUserOrderCashCreatedEmail,
+} from "../mail.js";
 
 const router = express.Router();
 
@@ -53,9 +58,7 @@ function addPlusMonths(user, months = 1) {
   const now = new Date();
   user.membership = user.membership || {};
 
-  const curUntil = user.membership.activeUntil
-    ? new Date(user.membership.activeUntil)
-    : null;
+  const curUntil = user.membership.activeUntil ? new Date(user.membership.activeUntil) : null;
   const base = curUntil && curUntil > now ? curUntil : now;
 
   const until = new Date(base);
@@ -120,9 +123,7 @@ function hm(d = new Date()) {
 function safeServiceFromOrder(order) {
   const hasItems = Array.isArray(order?.items) && order.items.length > 0;
   if (hasItems) {
-    const kinds = order.items
-      .map((it) => String(it?.kind || "").toUpperCase())
-      .filter(Boolean);
+    const kinds = order.items.map((it) => String(it?.kind || "").toUpperCase()).filter(Boolean);
     if (kinds.includes("MEMBERSHIP") && kinds.includes("CREDITS")) return "MEMBERSHIP+CREDITS";
     if (kinds.includes("MEMBERSHIP")) return "MEMBERSHIP";
     if (kinds.includes("CREDITS")) {
@@ -216,7 +217,6 @@ async function applyCreditsOnlyIfNeeded(order) {
 
 /* =======================
    Aplicar una orden completa (idempotente)
-   - IMPORTANTE: si creditsApplied ya está true, NO vuelve a sumar créditos
 ======================= */
 async function applyOrderIfNeeded(order) {
   if (!order) return { ok: false, error: "Orden inválida." };
@@ -242,9 +242,8 @@ async function applyOrderIfNeeded(order) {
       for (const it of membershipItems) {
         const qty = Math.max(1, Number(it.qty) || 1);
         const action = String(it.action || "BUY").toUpperCase();
-
         if (action === "EXTEND") monthsToAdd += qty;
-        else monthsToAdd += qty; // BUY
+        else monthsToAdd += qty;
       }
 
       if (monthsToAdd > 0) addPlusMonths(user, monthsToAdd);
@@ -395,10 +394,6 @@ function resolveMembershipItem() {
 
 /* =========================================================
    POST /orders/checkout
-   - ✅ DESCUENTO: SOLO SHOP (hoy no hay SHOP => 0)
-   - DUO+ siempre full price
-   - ✅ NO devolver orderId al cliente
-   - ✅ NUEVO: si es CASH manda mail al admin al crear la orden
 ========================================================= */
 router.post("/checkout", protect, async (req, res) => {
   try {
@@ -487,15 +482,13 @@ router.post("/checkout", protect, async (req, res) => {
       totalFinal,
       status: "pending",
       applied: false,
-      // creditsApplied tiene default false en el schema
-      // adminNotifiedAt tiene default null en el schema
+      // creditsApplied default false
+      // adminNotifiedAt default null
     });
 
     if (pm === "CASH") {
-      // ✅ NUEVO: mail al admin al crear orden CASH (1 sola vez)
-      await notifyAdminIfNeeded(order);
-
-      return res.status(201).json({
+      // ✅ responder rápido
+      res.status(201).json({
         ok: true,
         status: "pending",
         totalFinal,
@@ -503,6 +496,16 @@ router.post("/checkout", protect, async (req, res) => {
         discountAmount,
         message: "Pedido generado correctamente. Coordiná el pago con el staff.",
       });
+
+      // ✅ mails async (no bloquea)
+      fireAndForget(() => notifyAdminIfNeeded(order), "MAIL_ADMIN_NEW_ORDER_CASH");
+
+      fireAndForget(async () => {
+        const u = await User.findById(order.user).lean().catch(() => null);
+        if (u?.email) await sendUserOrderCashCreatedEmail(order, u);
+      }, "MAIL_USER_CASH_CREATED");
+
+      return;
     }
 
     const mp = await createMpPreference({ order, user: req.user });
@@ -516,6 +519,7 @@ router.post("/checkout", protect, async (req, res) => {
     order.mpInitPoint = mp.init_point;
     await order.save();
 
+    // ✅ IMPORTANTE: mail al cliente NO acá, sino cuando webhook approved
     return res.status(201).json({
       ok: true,
       init_point: mp.init_point,
@@ -542,7 +546,8 @@ router.post("/", protect, async (req, res) => {
     const wantsPlus = Boolean(plus);
 
     if (!sk || !pm || !cr) return res.status(400).json({ error: "Datos incompletos." });
-    if (!["CASH", "MP"].includes(pm)) return res.status(400).json({ error: "Medio de pago inválido." });
+    if (!["CASH", "MP"].includes(pm))
+      return res.status(400).json({ error: "Medio de pago inválido." });
 
     const plan = await PricingPlan.findOne({
       serviceKey: sk,
@@ -570,13 +575,19 @@ router.post("/", protect, async (req, res) => {
       status: "pending",
       creditsApplied: false,
       applied: false,
-      // adminNotifiedAt default null
     });
 
     if (pm === "CASH") {
-      // ✅ NUEVO: mail admin también en legacy cash
-      await notifyAdminIfNeeded(order);
-      return res.status(201).json({ ok: true, status: "pending" });
+      res.status(201).json({ ok: true, status: "pending" });
+
+      // ✅ mails async
+      fireAndForget(() => notifyAdminIfNeeded(order), "MAIL_ADMIN_NEW_ORDER_LEGACY_CASH");
+      fireAndForget(async () => {
+        const u = await User.findById(order.user).lean().catch(() => null);
+        if (u?.email) await sendUserOrderCashCreatedEmail(order, u);
+      }, "MAIL_USER_LEGACY_CASH_CREATED");
+
+      return;
     }
 
     const mp = await createMpPreference({
@@ -611,10 +622,7 @@ router.get("/me", protect, async (req, res) => {
    ADMIN
 ======================= */
 router.get("/", protect, adminOnly, async (req, res) => {
-  const list = await Order.find()
-    .populate("user", "name email")
-    .sort({ createdAt: -1 })
-    .lean();
+  const list = await Order.find().populate("user", "name email").sort({ createdAt: -1 }).lean();
   res.json(list);
 });
 
