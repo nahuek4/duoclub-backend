@@ -9,6 +9,9 @@ import {
   sendAppointmentBookedEmail,
   sendAppointmentBookedBatchEmail,
   sendAppointmentCancelledEmail,
+  // si en tu mail.js agregaste estas, podés usarlas directo:
+  // sendAdminAppointmentBookedEmail,
+  // sendAdminAppointmentCancelledEmail,
 } from "../mail.js";
 
 const router = express.Router();
@@ -18,6 +21,37 @@ const router = express.Router();
    ✅ desde AHORA hasta +14 días
 ========================= */
 const MAX_ADVANCE_DAYS = 14;
+
+/* =========================
+   ADMIN MAIL (fallback)
+   - si tus funciones ya mandan al admin, no pasa nada
+========================= */
+const ADMIN_EMAIL = process.env.ADMIN_EMAIL || "duoclub.ar@gmail.com";
+
+// fallback simple por si todavía no agregaste "admin mail" en mail.js
+async function sendAdminCopy({ kind, user, ap }) {
+  try {
+    // si tus mailers ya lo mandan al admin, podés apagar esto seteando:
+    // MAIL_ADMIN_COPY=false
+    if (String(process.env.MAIL_ADMIN_COPY || "true") !== "true") return;
+
+    // Si NO tenés SMTP, tu mailer mockuea y listo.
+    // Usamos sendAppointmentBookedEmail / CancelledEmail? NO, porque eso re-enviaría al usuario.
+    // Entonces, este fallback solo sirve si en ../mail.js exponés un sendMail simple.
+    // Como acá NO lo importamos, dejamos solo log para no duplicar.
+    //
+    // 👉 Recomendación: lo correcto es que sendAppointmentBookedEmail/CanceledEmail
+    // ya envíen al admin adentro (como te pasé).
+    console.log("[MAIL ADMIN FALLBACK]", {
+      to: ADMIN_EMAIL,
+      kind,
+      user: { id: user?._id?.toString?.() || user?.id, email: user?.email, name: user?.name },
+      ap: { date: ap?.date, time: ap?.time, service: ap?.service },
+    });
+  } catch (e) {
+    console.log("[MAIL] admin fallback error:", e?.message || e);
+  }
+}
 
 /* =========================
    HELPERS: fecha/hora
@@ -420,10 +454,13 @@ router.post("/", async (req, res) => {
       out = serializeAppointment(populated);
 
       // mail (si no hay SMTP, tu mailer hace mock log)
+      // ✅ Nota: esto debería enviar al usuario + admin si lo implementaste en mailer.
       try {
         await sendAppointmentBookedEmail(user, { date, time, service }, service);
       } catch (e) {
         console.log("[MAIL] booked error:", e?.message || e);
+        // fallback admin log
+        await sendAdminCopy({ kind: "booked", user, ap: { date, time, service } });
       }
     });
 
@@ -671,10 +708,12 @@ router.post("/batch", async (req, res) => {
       }
 
       // ✅ 1 solo mail para todo el batch
+      // 👉 Recomendación: en tu mailer hacé que este batch también copie al admin.
       try {
         await sendAppointmentBookedBatchEmail(user, result);
       } catch (e) {
         console.log("[MAIL] batch booked error:", e?.message || e);
+        await sendAdminCopy({ kind: "batch_booked", user, ap: { items: result } });
       }
     });
 
@@ -867,6 +906,7 @@ router.patch("/:id/cancel", async (req, res) => {
         await sendAppointmentCancelledEmail(user, ap, ap.service);
       } catch (e) {
         console.log("[MAIL] cancelled error:", e?.message || e);
+        await sendAdminCopy({ kind: "cancelled", user, ap });
       }
     });
 

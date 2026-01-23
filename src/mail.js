@@ -1,4 +1,4 @@
-// src/utils/mailer.js
+// backend/src/mail.js
 import nodemailer from "nodemailer";
 import dotenv from "dotenv";
 
@@ -9,13 +9,7 @@ let transporter = null;
 function getTransporter() {
   if (transporter) return transporter;
 
-  const {
-    SMTP_HOST,
-    SMTP_PORT,
-    SMTP_USER,
-    SMTP_PASS,
-    SMTP_SECURE,
-  } = process.env || {};
+  const { SMTP_HOST, SMTP_PORT, SMTP_USER, SMTP_PASS, SMTP_SECURE } = process.env || {};
 
   // ✅ Modo mock (no rompe la app si falta SMTP)
   if (!SMTP_HOST || !SMTP_USER || !SMTP_PASS) {
@@ -27,13 +21,9 @@ function getTransporter() {
     host: SMTP_HOST,
     port: Number(SMTP_PORT || 587),
     secure: String(SMTP_SECURE) === "true",
-    auth: {
-      user: SMTP_USER,
-      pass: SMTP_PASS,
-    },
+    auth: { user: SMTP_USER, pass: SMTP_PASS },
   });
 
-  // (Opcional) Verificar configuración sin romper si falla
   transporter.verify().then(
     () => console.log("[MAIL] SMTP OK"),
     (e) => console.log("[MAIL] SMTP verify failed:", e?.message || e)
@@ -62,9 +52,176 @@ export async function sendMail(to, subject, text, html) {
   await tx.sendMail(payload);
 }
 
-// ===============================
-// Emails existentes (no tocados)
-// ===============================
+/* =========================================================
+   ✅ NUEVO: helpers de template "lindo" + seguridad HTML
+========================================================= */
+const ADMIN_EMAIL = process.env.ADMIN_EMAIL || "duoclub.ar@gmail.com";
+const BRAND_NAME = process.env.BRAND_NAME || "DUO";
+const BRAND_URL = process.env.BRAND_URL || "https://duoclub.ar"; // opcional
+
+function escapeHtml(v) {
+  return String(v ?? "")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#039;");
+}
+
+function prettyDateAR(dateStr) {
+  try {
+    if (!dateStr) return "-";
+    const [y, m, d] = String(dateStr).split("-").map(Number);
+    const dt = new Date(y, (m || 1) - 1, d || 1);
+    return dt.toLocaleDateString("es-AR", {
+      weekday: "long",
+      year: "numeric",
+      month: "long",
+      day: "2-digit",
+    });
+  } catch {
+    return String(dateStr || "-");
+  }
+}
+
+function buildEmailLayout({ title, preheader, bodyHtml, footerNote }) {
+  const _title = escapeHtml(title || BRAND_NAME);
+  const _pre = escapeHtml(preheader || "");
+  const _footer = escapeHtml(
+    footerNote || "Si no reconocés esta acción, respondé a este correo y lo revisamos."
+  );
+
+  const preheaderHtml = _pre
+    ? `<div style="display:none; font-size:1px; color:#fff; line-height:1px; max-height:0px; max-width:0px; opacity:0; overflow:hidden;">
+         ${_pre}
+       </div>`
+    : "";
+
+  return `
+  <!doctype html>
+  <html>
+    <head>
+      <meta name="viewport" content="width=device-width,initial-scale=1" />
+      <meta http-equiv="Content-Type" content="text/html; charset=UTF-8" />
+      <title>${_title}</title>
+    </head>
+    <body style="margin:0; padding:0; background:#f5f6f8;">
+      ${preheaderHtml}
+
+      <div style="padding:24px 12px;">
+        <table role="presentation" cellpadding="0" cellspacing="0" width="100%" style="border-collapse:collapse;">
+          <tr>
+            <td align="center">
+              <table role="presentation" cellpadding="0" cellspacing="0" width="100%" style="max-width:620px; border-collapse:collapse;">
+                <tr>
+                  <td style="padding:6px 6px 14px;">
+                    <div style="font-family: Arial, sans-serif; font-weight:800; letter-spacing:.2px; color:#111; font-size:18px;">
+                      ${
+                        BRAND_URL
+                          ? `<a href="${BRAND_URL}" style="color:#111; text-decoration:none;">${BRAND_NAME}</a>`
+                          : BRAND_NAME
+                      }
+                    </div>
+                  </td>
+                </tr>
+
+                <tr>
+                  <td style="background:#ffffff; border:1px solid #e7e7ea; border-radius:16px; overflow:hidden;">
+                    <div style="padding:22px 20px; font-family: Arial, sans-serif; color:#111; line-height:1.45;">
+                      ${bodyHtml || ""}
+                    </div>
+                  </td>
+                </tr>
+
+                <tr>
+                  <td style="padding:12px 6px 0;">
+                    <div style="font-family: Arial, sans-serif; color:#666; font-size:12px; line-height:1.4;">
+                      ${_footer}
+                    </div>
+                    <div style="font-family: Arial, sans-serif; color:#999; font-size:12px; margin-top:8px;">
+                      © ${new Date().getFullYear()} ${BRAND_NAME}
+                    </div>
+                  </td>
+                </tr>
+
+              </table>
+            </td>
+          </tr>
+        </table>
+      </div>
+    </body>
+  </html>
+  `;
+}
+
+function kvRow(label, value) {
+  return `
+    <tr>
+      <td style="padding:8px 10px; color:#555; font-size:13px; width:170px; border-bottom:1px solid #eee;">
+        ${escapeHtml(label)}
+      </td>
+      <td style="padding:8px 10px; color:#111; font-size:13px; border-bottom:1px solid #eee;">
+        ${escapeHtml(value)}
+      </td>
+    </tr>
+  `;
+}
+
+function buildAppointmentCardHtml({ user, ap, serviceName, kind }) {
+  const uName =
+    `${user?.name || ""} ${user?.lastName || ""}`.trim() ||
+    user?.fullName ||
+    user?.email ||
+    "Usuario";
+  const whenDateLong = prettyDateAR(ap?.date);
+  const time = ap?.time || "-";
+  const svc = serviceName || ap?.service || "-";
+
+  const title = kind === "cancelled" ? "Turno cancelado" : "Turno confirmado";
+  const pillBg = kind === "cancelled" ? "#ffe9ea" : "#e9f7ef";
+  const pillTx = kind === "cancelled" ? "#a00010" : "#0b6b2a";
+  const pill = kind === "cancelled" ? "CANCELADO" : "CONFIRMADO";
+
+  const body = `
+    <div style="display:flex; gap:10px; align-items:center; margin-bottom:14px;">
+      <div style="font-size:18px; font-weight:800;">${escapeHtml(title)}</div>
+      <div style="margin-left:auto; background:${pillBg}; color:${pillTx}; padding:6px 10px; border-radius:999px; font-size:12px; font-weight:800;">
+        ${escapeHtml(pill)}
+      </div>
+    </div>
+
+    <div style="color:#333; margin-bottom:14px;">
+      Hola <b>${escapeHtml(uName)}</b>,
+      ${kind === "cancelled" ? " tu turno fue cancelado." : " tu turno fue reservado con éxito."}
+    </div>
+
+    <div style="border:1px solid #eee; border-radius:14px; overflow:hidden;">
+      <table role="presentation" cellpadding="0" cellspacing="0" width="100%" style="border-collapse:collapse;">
+        ${kvRow("Día", whenDateLong)}
+        ${kvRow("Horario", `${time} hs`)}
+        ${kvRow("Servicio", svc)}
+      </table>
+    </div>
+
+    <div style="margin-top:14px; font-size:12px; color:#666;">
+      ${
+        kind === "cancelled"
+          ? "Si fue un error, podés volver a reservar desde la agenda."
+          : "Si no podés asistir, recordá cancelarlo con anticipación desde tu perfil."
+      }
+    </div>
+  `;
+
+  return buildEmailLayout({
+    title: `${BRAND_NAME} · ${title}`,
+    preheader: `${title}: ${ap?.date || ""} ${time} · ${svc}`,
+    bodyHtml: body,
+  });
+}
+
+/* =========================================================
+   Emails existentes
+========================================================= */
 export async function sendVerifyEmail(user, verifyUrl) {
   if (!user?.email) return;
 
@@ -125,36 +282,59 @@ export async function sendUserWelcomeEmail(user, tempPassword) {
   await sendMail(user.email, "Tu usuario en DUO está listo", lines.join("\n"));
 }
 
+/* =========================================================
+   ✅ Turnos (USER + ADMIN)
+========================================================= */
 export async function sendAppointmentBookedEmail(user, ap, serviceName) {
   if (!user?.email) return;
-  const lines = [
+
+  const subject = "✅ Tu turno fue reservado - DUO";
+  const text = [
     `Hola ${user.name || ""}`.trim() + ",",
     "",
     "Tu turno fue reservado con éxito.",
     "",
-    `Día: ${ap.date}`,
-    `Horario: ${ap.time}`,
-    serviceName ? `Servicio: ${serviceName}` : "",
+    `Día: ${ap?.date || "-"}`,
+    `Horario: ${ap?.time || "-"}`,
+    serviceName ? `Servicio: ${serviceName}` : ap?.service ? `Servicio: ${ap.service}` : "",
     "",
     "Si no podés asistir, recordá cancelarlo con anticipación desde tu perfil.",
-  ];
-  await sendMail(user.email, "Tu turno fue reservado", lines.filter(Boolean).join("\n"));
+  ]
+    .filter(Boolean)
+    .join("\n");
+
+  const html = buildAppointmentCardHtml({ user, ap, serviceName, kind: "booked" });
+
+  await sendMail(user.email, subject, text, html);
+
+  // ✅ También al admin
+  await sendAdminAppointmentBookedEmail(user, ap, serviceName);
 }
 
 export async function sendAppointmentCancelledEmail(user, ap, serviceName) {
   if (!user?.email) return;
-  const lines = [
+
+  const subject = "❌ Tu turno fue cancelado - DUO";
+  const text = [
     `Hola ${user.name || ""}`.trim() + ",",
     "",
     "Tu turno fue cancelado.",
     "",
-    `Día: ${ap.date}`,
-    `Horario: ${ap.time}`,
-    serviceName ? `Servicio: ${serviceName}` : "",
+    `Día: ${ap?.date || "-"}`,
+    `Horario: ${ap?.time || "-"}`,
+    serviceName ? `Servicio: ${serviceName}` : ap?.service ? `Servicio: ${ap.service}` : "",
     "",
     "Si fue un error, podés volver a reservar desde la agenda.",
-  ];
-  await sendMail(user.email, "Tu turno fue cancelado", lines.filter(Boolean).join("\n"));
+  ]
+    .filter(Boolean)
+    .join("\n");
+
+  const html = buildAppointmentCardHtml({ user, ap, serviceName, kind: "cancelled" });
+
+  await sendMail(user.email, subject, text, html);
+
+  // ✅ También al admin
+  await sendAdminAppointmentCancelledEmail(user, ap, serviceName);
 }
 
 export async function sendAppointmentReminderEmail(user, ap, serviceName) {
@@ -173,35 +353,117 @@ export async function sendAppointmentReminderEmail(user, ap, serviceName) {
   await sendMail(user.email, "Recordatorio de turno", lines.filter(Boolean).join("\n"));
 }
 
-export async function sendAptoExpiredEmail(user) {
-  if (!user?.email) return;
-  const lines = [
-    `Hola ${user.name || ""}`.trim() + ",",
+/* =========================================================
+   ✅ ADMIN — turnos reservados / cancelados
+========================================================= */
+export async function sendAdminAppointmentBookedEmail(user, ap, serviceName) {
+  const to = ADMIN_EMAIL;
+  if (!to) return;
+
+  const uName =
+    `${user?.name || ""} ${user?.lastName || ""}`.trim() || user?.fullName || "-";
+  const uEmail = user?.email || "-";
+  const svc = serviceName || ap?.service || "-";
+
+  const subject = `🗓️ Nuevo turno reservado — ${uName} · ${ap?.date || "-"} ${ap?.time || ""}`;
+
+  const text = [
+    "Nuevo turno reservado",
     "",
-    "Detectamos que todavía no subiste tu apto médico o ya pasaron más de 20 días desde tu alta.",
+    `Usuario: ${uName}`,
+    `Email: ${uEmail}`,
     "",
-    "Por normativa interna, no podrás reservar nuevos turnos hasta que subas un apto válido.",
+    `Día: ${ap?.date || "-"}`,
+    `Horario: ${ap?.time || "-"}`,
+    `Servicio: ${svc}`,
+    ap?.notes ? "" : "",
+    ap?.notes ? `Notas: ${String(ap.notes)}` : "",
+  ]
+    .filter(Boolean)
+    .join("\n");
+
+  const bodyHtml = `
+    <div style="font-size:18px; font-weight:800; margin-bottom:12px;">Nuevo turno reservado</div>
+    <div style="border:1px solid #eee; border-radius:14px; overflow:hidden;">
+      <table role="presentation" cellpadding="0" cellspacing="0" width="100%" style="border-collapse:collapse;">
+        ${kvRow("Usuario", uName)}
+        ${kvRow("Email", uEmail)}
+        ${kvRow("Día", prettyDateAR(ap?.date))}
+        ${kvRow("Horario", `${ap?.time || "-"} hs`)}
+        ${kvRow("Servicio", svc)}
+        ${ap?.notes ? kvRow("Notas", String(ap.notes)) : ""}
+      </table>
+    </div>
+  `;
+
+  const html = buildEmailLayout({
+    title: `${BRAND_NAME} · Nuevo turno reservado`,
+    preheader: `${uName} · ${ap?.date || ""} ${ap?.time || ""} · ${svc}`,
+    bodyHtml,
+  });
+
+  await sendMail(to, subject, text, html);
+}
+
+export async function sendAdminAppointmentCancelledEmail(user, ap, serviceName) {
+  const to = ADMIN_EMAIL;
+  if (!to) return;
+
+  const uName =
+    `${user?.name || ""} ${user?.lastName || ""}`.trim() || user?.fullName || "-";
+  const uEmail = user?.email || "-";
+  const svc = serviceName || ap?.service || "-";
+
+  const subject = `🧾 Turno cancelado — ${uName} · ${ap?.date || "-"} ${ap?.time || ""}`;
+
+  const text = [
+    "Turno cancelado",
     "",
-    "Podés subirlo desde tu perfil dentro de la plataforma.",
-  ];
-  await sendMail(user.email, "Es necesario actualizar tu apto médico", lines.join("\n"));
+    `Usuario: ${uName}`,
+    `Email: ${uEmail}`,
+    "",
+    `Día: ${ap?.date || "-"}`,
+    `Horario: ${ap?.time || "-"}`,
+    `Servicio: ${svc}`,
+  ]
+    .filter(Boolean)
+    .join("\n");
+
+  const bodyHtml = `
+    <div style="font-size:18px; font-weight:800; margin-bottom:12px;">Turno cancelado</div>
+    <div style="border:1px solid #eee; border-radius:14px; overflow:hidden;">
+      <table role="presentation" cellpadding="0" cellspacing="0" width="100%" style="border-collapse:collapse;">
+        ${kvRow("Usuario", uName)}
+        ${kvRow("Email", uEmail)}
+        ${kvRow("Día", prettyDateAR(ap?.date))}
+        ${kvRow("Horario", `${ap?.time || "-"} hs`)}
+        ${kvRow("Servicio", svc)}
+      </table>
+    </div>
+  `;
+
+  const html = buildEmailLayout({
+    title: `${BRAND_NAME} · Turno cancelado`,
+    preheader: `${uName} canceló ${ap?.date || ""} ${ap?.time || ""} · ${svc}`,
+    bodyHtml,
+  });
+
+  await sendMail(to, subject, text, html);
 }
 
 /* =========================================================
-   ✅ FALTABA: Batch de turnos
-   (para tu POST /appointments/batch)
+   Batch (user) — y opcional admin
 ========================================================= */
 export async function sendAppointmentBookedBatchEmail(user, items = []) {
   if (!user?.email) return;
 
   const list = Array.isArray(items) ? items : [];
-  const linesItems = list
-    .map((it, i) => {
-      const date = it?.date || "-";
-      const time = it?.time || "-";
-      const svc = it?.service || it?.serviceName || "";
-      return `${i + 1}. ${date} · ${time}${svc ? ` · ${svc}` : ""}`;
-    });
+  const linesItems = list.map((it, i) => {
+    const date = it?.date || "-";
+    const time = it?.time || "-";
+    const svc = it?.service || it?.serviceName || "";
+    return `${i + 1}. ${date} · ${time}${svc ? ` · ${svc}` : ""}`;
+  });
 
   const text = [
     `Hola ${user.name || ""}`.trim() + ",",
@@ -224,7 +486,7 @@ export async function sendAppointmentBookedBatchEmail(user, items = []) {
       <ul style="margin:0; padding-left:18px;">
         ${
           linesItems.length
-            ? linesItems.map((l) => `<li style="margin:6px 0;">${safe(l)}</li>`).join("")
+            ? linesItems.map((l) => `<li style="margin:6px 0;">${escapeHtml(l)}</li>`).join("")
             : "<li>(sin items)</li>"
         }
       </ul>
@@ -236,240 +498,7 @@ export async function sendAppointmentBookedBatchEmail(user, items = []) {
   `;
 
   await sendMail(user.email, "Tus turnos fueron reservados", text, html);
-}
 
-// =========================================================
-// Helpers
-// =========================================================
-function safe(v) {
-  return v == null ? "" : String(v);
-}
-
-function formatARS(n) {
-  const num = Number(n);
-  if (!Number.isFinite(num)) return "-";
-  return new Intl.NumberFormat("es-AR", {
-    style: "currency",
-    currency: "ARS",
-    maximumFractionDigits: 0,
-  }).format(num);
-}
-
-// =========================================================
-// ORDENES → ADMIN
-// =========================================================
-export async function sendAdminNewOrderEmail(order, user) {
-  const to = process.env.ADMIN_ORDERS_EMAIL || "duoclub.ar@gmail.com";
-  if (!to) return;
-
-  const pay = safe(order?.payMethod).toUpperCase() === "MP" ? "MercadoPago" : "Efectivo";
-  const status = safe(order?.status || "").toUpperCase();
-  const orderId = safe(order?._id);
-  const createdAt = order?.createdAt
-    ? new Date(order.createdAt).toLocaleString("es-AR")
-    : "-";
-
-  const customerName =
-    `${safe(user?.name)} ${safe(user?.lastName)}`.trim() ||
-    safe(order?.customerName) ||
-    "-";
-
-  const customerEmail =
-    safe(user?.email) ||
-    safe(order?.customerEmail) ||
-    "-";
-
-  const items = Array.isArray(order?.items) ? order.items : [];
-
-  const lines = items.map((it, idx) => {
-    const kind = safe(it.kind).toUpperCase();
-    const qty = Math.max(1, Number(it.qty || 1));
-
-    const title =
-      kind === "MEMBERSHIP"
-        ? (safe(it.action).toUpperCase() === "EXTEND" ? "DUO+ · Extender 1 mes" : "DUO+ mensual")
-        : (safe(it.serviceTitle) || safe(it.label) || safe(it.serviceKey) || "Créditos");
-
-    const credits = kind === "CREDITS" && it.credits ? ` (${it.credits} sesiones)` : "";
-    const price = formatARS(it.price ?? it.priceUI ?? it.basePrice ?? 0);
-
-    return `${idx + 1}. ${title}${credits} x${qty} — ${price}`;
-  });
-
-  const total = formatARS(order?.totalFinal ?? order?.total ?? order?.price ?? 0);
-
-  const subject = `🛒 Nueva orden DUO (${pay})${status ? ` - ${status}` : ""} — ${customerName}`;
-
-  const text = [
-    "Nueva orden recibida",
-    "",
-    `Orden: ${orderId}`,
-    `Fecha: ${createdAt}`,
-    `Pago: ${pay}`,
-    status ? `Estado: ${status}` : "",
-    "",
-    `Cliente: ${customerName}`,
-    `Email: ${customerEmail}`,
-    "",
-    "Items:",
-    ...(lines.length ? lines : ["(sin items)"]),
-    "",
-    `Total: ${total}`,
-  ].filter(Boolean).join("\n");
-
-  const html = `
-  <div style="font-family: Arial, sans-serif; color:#111; line-height:1.35;">
-    <h2 style="margin:0 0 10px;">Nueva orden recibida</h2>
-
-    <div style="padding:12px; border:1px solid #ddd; border-radius:10px; margin:12px 0;">
-      <div><b>Orden:</b> ${orderId || "-"}</div>
-      <div><b>Fecha:</b> ${createdAt}</div>
-      <div><b>Pago:</b> ${pay}</div>
-      ${status ? `<div><b>Estado:</b> ${status}</div>` : ""}
-    </div>
-
-    <div style="padding:12px; border:1px solid #ddd; border-radius:10px; margin:12px 0;">
-      <div><b>Cliente:</b> ${customerName || "-"}</div>
-      <div><b>Email:</b> ${customerEmail || "-"}</div>
-    </div>
-
-    <div style="padding:12px; border:1px solid #ddd; border-radius:10px; margin:12px 0;">
-      <div style="font-weight:700; margin-bottom:8px;">Items</div>
-      <ul style="margin:0; padding-left:18px;">
-        ${
-          lines.length
-            ? lines.map((l) => `<li style="margin:6px 0;">${safe(l)}</li>`).join("")
-            : "<li>(sin items)</li>"
-        }
-      </ul>
-    </div>
-
-    <div style="text-align:right; font-size:16px; margin-top:10px;">
-      <b>Total:</b> ${total}
-    </div>
-  </div>
-  `;
-
-  await sendMail(to, subject, text, html);
-}
-
-// =========================================================
-// ✅ ADMISION → ADMIN (STEP 2 COMPLETADO)
-// =========================================================
-export async function sendAdminAdmissionStep2Email(admission, step1, step2) {
-  const to = process.env.ADMIN_ORDERS_EMAIL || "duoclub.ar@gmail.com";
-  if (!to) return;
-
-  const admId = safe(admission?._id);
-  const publicId = safe(admission?.publicId);
-  const createdAt = admission?.createdAt
-    ? new Date(admission.createdAt).toLocaleString("es-AR")
-    : "-";
-
-  const fullName =
-    `${safe(admission?.name)} ${safe(admission?.lastName)}`.trim() ||
-    `${safe(step1?.name)} ${safe(step1?.lastName)}`.trim() ||
-    "-";
-
-  const email =
-    safe(admission?.email) ||
-    safe(step1?.email) ||
-    "-";
-
-  const phone =
-    safe(admission?.phone) ||
-    safe(step1?.phone) ||
-    "-";
-
-  const subject = `📝 Admisión completada — ${fullName}${publicId ? ` (#${publicId})` : ""}`;
-
-  const text = [
-    "Nueva admisión completada",
-    "",
-    `ID: ${admId}`,
-    publicId ? `PublicID: ${publicId}` : "",
-    `Fecha: ${createdAt}`,
-    "",
-    `Nombre: ${fullName}`,
-    `Email: ${email}`,
-    `Tel: ${phone}`,
-    "",
-    "=== PASO 2 (resumen) ===",
-    `Necesita rehabilitación: ${safe(step2?.needsRehab)}`,
-    `Síntomas: ${safe(step2?.symptoms)}`,
-    `Fecha lesión/síntomas: ${safe(step2?.symptomDate)}`,
-    `Consulta médica: ${safe(step2?.medicalConsult)} ${safe(step2?.medicalConsultWhen)}`,
-    `Estudios: ${safe(step2?.diagnosticStudy)} ${safe(step2?.diagnosticStudyOther)}`,
-    `Cómo sucedió: ${safe(step2?.howHappened)}`,
-    `Dolor diario: ${safe(step2?.dailyDiscomfort)}`,
-    `Movilidad: ${safe(step2?.mobilityIssue)}`,
-    `Medicación: ${safe(step2?.takesMedication)} ${safe(step2?.medicationDetail)}`,
-    "",
-    "=== DEPORTE ===",
-    `Practica competitivo: ${safe(step2?.practicesCompetitiveSport)}`,
-    `Nivel: ${safe(step2?.competitionLevel)}`,
-    `Deporte: ${safe(step2?.sportName)}`,
-    `Puesto: ${safe(step2?.sportPosition)}`,
-    "",
-    "=== PLAN ===",
-    `Objetivo: ${safe(step2?.immediateGoal)}`,
-    `Entrena solo: ${safe(step2?.trainAlone)}`,
-    `Cantidad grupo: ${safe(step2?.groupCount)}`,
-    `Horario ideal: ${safe(step2?.idealSchedule)}`,
-    `Días preferidos: ${safe(step2?.preferredDays)}`,
-    `Sesiones semanales: ${safe(step2?.weeklySessions)}`,
-    `Modalidad: ${safe(step2?.modality)}`,
-  ].filter(Boolean).join("\n");
-
-  const html = `
-  <div style="font-family: Arial, sans-serif; color:#111; line-height:1.35;">
-    <h2>📝 Nueva admisión completada</h2>
-
-    <div style="padding:12px; border:1px solid #ddd; border-radius:10px; margin:12px 0;">
-      <div><b>ID:</b> ${admId || "-"}</div>
-      ${publicId ? `<div><b>PublicID:</b> ${publicId}</div>` : ""}
-      <div><b>Fecha:</b> ${createdAt}</div>
-    </div>
-
-    <div style="padding:12px; border:1px solid #ddd; border-radius:10px; margin:12px 0;">
-      <div><b>Nombre:</b> ${fullName || "-"}</div>
-      <div><b>Email:</b> ${email || "-"}</div>
-      <div><b>Tel:</b> ${phone || "-"}</div>
-    </div>
-
-    <h3>Rehabilitación</h3>
-    <ul>
-      <li><b>Necesita:</b> ${safe(step2?.needsRehab)}</li>
-      <li><b>Síntomas:</b> ${safe(step2?.symptoms)}</li>
-      <li><b>Fecha:</b> ${safe(step2?.symptomDate)}</li>
-      <li><b>Consulta médica:</b> ${safe(step2?.medicalConsult)} ${safe(step2?.medicalConsultWhen)}</li>
-      <li><b>Estudios:</b> ${safe(step2?.diagnosticStudy)} ${safe(step2?.diagnosticStudyOther)}</li>
-      <li><b>Cómo sucedió:</b> ${safe(step2?.howHappened)}</li>
-      <li><b>Dolor diario:</b> ${safe(step2?.dailyDiscomfort)}</li>
-      <li><b>Movilidad:</b> ${safe(step2?.mobilityIssue)}</li>
-      <li><b>Medicación:</b> ${safe(step2?.takesMedication)} ${safe(step2?.medicationDetail)}</li>
-    </ul>
-
-    <h3>Deporte</h3>
-    <ul>
-      <li><b>Competitivo:</b> ${safe(step2?.practicesCompetitiveSport)}</li>
-      <li><b>Nivel:</b> ${safe(step2?.competitionLevel)}</li>
-      <li><b>Deporte:</b> ${safe(step2?.sportName)}</li>
-      <li><b>Puesto:</b> ${safe(step2?.sportPosition)}</li>
-    </ul>
-
-    <h3>Plan</h3>
-    <ul>
-      <li><b>Objetivo:</b> ${safe(step2?.immediateGoal)}</li>
-      <li><b>Entrena solo:</b> ${safe(step2?.trainAlone)}</li>
-      <li><b>Grupo:</b> ${safe(step2?.groupCount)}</li>
-      <li><b>Horario:</b> ${safe(step2?.idealSchedule)}</li>
-      <li><b>Días:</b> ${safe(step2?.preferredDays)}</li>
-      <li><b>Sesiones:</b> ${safe(step2?.weeklySessions)}</li>
-      <li><b>Modalidad:</b> ${safe(step2?.modality)}</li>
-    </ul>
-  </div>
-  `;
-
-  await sendMail(to, subject, text, html);
+  // ✅ opcional admin
+  // await sendMail(ADMIN_EMAIL, "🗓️ Batch de turnos reservado", text, html);
 }
