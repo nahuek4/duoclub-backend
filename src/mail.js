@@ -550,7 +550,11 @@ export async function sendAppointmentReminderEmail(user, ap, serviceName) {
     "Te esperamos. Si no podés asistir, cancelá el turno para liberar el espacio.",
   ];
 
-  await sendMail(user.email, "Recordatorio de turno", lines.filter(Boolean).join("\n"));
+  await sendMail(
+    user.email,
+    "Recordatorio de turno",
+    lines.filter(Boolean).join("\n")
+  );
 }
 
 export async function sendAdminAppointmentBookedEmail(user, ap, serviceName) {
@@ -577,7 +581,6 @@ export async function sendAdminAppointmentBookedEmail(user, ap, serviceName) {
     `Día: ${ap?.date || "-"}`,
     `Horario: ${ap?.time || "-"}`,
     `Servicio: ${svc}`,
-    ap?.notes ? "" : "",
     ap?.notes ? `Notas: ${String(ap.notes)}` : "",
   ]
     .filter(Boolean)
@@ -654,6 +657,227 @@ export async function sendAdminAppointmentCancelledEmail(user, ap, serviceName) 
   });
 
   await sendMail(to, subject, text, html);
+}
+
+/* =========================================================
+   ✅ NUEVO: ADMISSION (Formulario completo Step2) — ADMIN + USER
+   (para usar en routes/admission.js)
+========================================================= */
+function safeAdmId(adm) {
+  return adm?._id?.toString?.() || adm?.id || "-";
+}
+
+function admissionSummary(adm = {}, user = null) {
+  const s1 = adm?.step1 || {};
+  const s2 = adm?.step2 || {};
+
+  const publicId = adm?.publicId || "-";
+  const admissionId = safeAdmId(adm);
+
+  const createdAt = adm?.createdAt ? new Date(adm.createdAt) : null;
+  const createdDate = createdAt
+    ? createdAt.toLocaleDateString("es-AR", { year: "numeric", month: "2-digit", day: "2-digit" })
+    : "-";
+  const createdTime = createdAt
+    ? createdAt.toLocaleTimeString("es-AR", { hour: "2-digit", minute: "2-digit" })
+    : "-";
+
+  const fullName =
+    `${user?.name || ""} ${user?.lastName || ""}`.trim() ||
+    user?.fullName ||
+    s1.fullName ||
+    "-";
+
+  const email = user?.email || s1.email || "-";
+  const phone = user?.phone || s1.phone || "-";
+
+  const city = s1.cityOther ? `${s1.city || ""} (${s1.cityOther})`.trim() : (s1.city || "-");
+
+  // algunos campos típicos del form
+  const fitnessLevel = s1.fitnessLevel || "-";
+  const weight = s1.weight || "-";
+  const height = s1.height || "-";
+
+  // step2 (según lo que tengas)
+  const immediateGoal = s2.immediateGoal || "-";
+  const modality = s2.modality || "-";
+  const weeklySessions = s2.weeklySessions || "-";
+  const needsRehab = s2.needsRehab || "-";
+
+  const hasContraindication =
+    s1.hasContraindication === "SI"
+      ? `SI (${s1.contraindicationDetail || "-"})`
+      : (s1.hasContraindication || "-");
+
+  const hasCondition =
+    s1.hasCondition === "SI"
+      ? `SI (${s1.conditionDetail || "-"})`
+      : (s1.hasCondition || "-");
+
+  const hadInjuryLastYear =
+    s1.hadInjuryLastYear === "SI"
+      ? `SI (${s1.injuryDetail || "-"})`
+      : (s1.hadInjuryLastYear || "-");
+
+  const relevantInfo = s1.relevantInfo || "-";
+
+  return {
+    admissionId,
+    publicId,
+    createdDate,
+    createdTime,
+    fullName,
+    email,
+    phone,
+    city,
+    fitnessLevel,
+    weight,
+    height,
+    hasContraindication,
+    hasCondition,
+    hadInjuryLastYear,
+    relevantInfo,
+    immediateGoal,
+    modality,
+    weeklySessions,
+    needsRehab,
+  };
+}
+
+export async function sendAdminAdmissionCompletedEmail(admissionDoc = {}, pseudoUser = null) {
+  const to = ADMIN_EMAIL;
+  if (!to) return;
+
+  const s = admissionSummary(admissionDoc, pseudoUser);
+
+  const subject = `🧾 Formulario completo (Admisión) — ${s.fullName} · #${s.publicId}`;
+
+  const text = [
+    "Formulario de admisión completado (Step2)",
+    "",
+    `PublicId: ${s.publicId}`,
+    `AdmissionId: ${s.admissionId}`,
+    `Creado: ${s.createdDate} ${s.createdTime}`,
+    "",
+    `Nombre: ${s.fullName}`,
+    `Email: ${s.email}`,
+    `Tel: ${s.phone}`,
+    `Ciudad: ${s.city}`,
+    "",
+    `Fitness: ${s.fitnessLevel}`,
+    `Altura: ${s.height}`,
+    `Peso: ${s.weight}`,
+    "",
+    `Contraindicación: ${s.hasContraindication}`,
+    `Condición: ${s.hasCondition}`,
+    `Lesión último año: ${s.hadInjuryLastYear}`,
+    `Info relevante: ${s.relevantInfo}`,
+    "",
+    `Step2 · Rehab: ${s.needsRehab}`,
+    `Step2 · Objetivo: ${s.immediateGoal}`,
+    `Step2 · Modalidad: ${s.modality}`,
+    `Step2 · Sesiones/sem: ${s.weeklySessions}`,
+  ].join("\n");
+
+  const bodyHtml = `
+    <div style="display:flex; align-items:center; gap:10px; margin-bottom:12px;">
+      <div style="font-size:18px; font-weight:800;">Formulario completado</div>
+      <div style="margin-left:auto; background:#e9f7ef; color:#0b6b2a; padding:6px 10px; border-radius:999px; font-size:12px; font-weight:800;">
+        COMPLETO
+      </div>
+    </div>
+
+    <div style="border:1px solid #eee; border-radius:14px; overflow:hidden;">
+      <table role="presentation" cellpadding="0" cellspacing="0" width="100%" style="border-collapse:collapse;">
+        ${kvRow("PublicId", `#${s.publicId}`)}
+        ${kvRow("AdmissionId", s.admissionId)}
+        ${kvRow("Creado", `${s.createdDate} ${s.createdTime}`)}
+        ${kvRow("Nombre", s.fullName)}
+        ${kvRow("Email", s.email)}
+        ${kvRow("Teléfono", s.phone)}
+        ${kvRow("Ciudad", s.city)}
+      </table>
+    </div>
+
+    <div style="margin-top:14px; font-size:13px; font-weight:800;">Resumen Step1</div>
+    <div style="border:1px solid #eee; border-radius:14px; overflow:hidden; margin-top:8px;">
+      <table role="presentation" cellpadding="0" cellspacing="0" width="100%" style="border-collapse:collapse;">
+        ${kvRow("Fitness", s.fitnessLevel)}
+        ${kvRow("Altura", s.height)}
+        ${kvRow("Peso", s.weight)}
+        ${kvRow("Contraindicación", s.hasContraindication)}
+        ${kvRow("Condición", s.hasCondition)}
+        ${kvRow("Lesión último año", s.hadInjuryLastYear)}
+        ${kvRow("Info relevante", s.relevantInfo)}
+      </table>
+    </div>
+
+    <div style="margin-top:14px; font-size:13px; font-weight:800;">Resumen Step2</div>
+    <div style="border:1px solid #eee; border-radius:14px; overflow:hidden; margin-top:8px;">
+      <table role="presentation" cellpadding="0" cellspacing="0" width="100%" style="border-collapse:collapse;">
+        ${kvRow("Rehab", s.needsRehab)}
+        ${kvRow("Objetivo", s.immediateGoal)}
+        ${kvRow("Modalidad", s.modality)}
+        ${kvRow("Sesiones/sem", s.weeklySessions)}
+      </table>
+    </div>
+  `;
+
+  const html = buildEmailLayout({
+    title: `${BRAND_NAME} · Admisión completada`,
+    preheader: `Admisión #${s.publicId} · ${s.fullName}`,
+    bodyHtml,
+  });
+
+  await sendMail(to, subject, text, html);
+}
+
+export async function sendUserAdmissionReceivedEmail(admissionDoc = {}, pseudoUser = null) {
+  const email = String(pseudoUser?.email || admissionDoc?.step1?.email || "").trim();
+  if (!email) return;
+
+  const s = admissionSummary(admissionDoc, pseudoUser);
+
+  const subject = `✅ Recibimos tu formulario - ${BRAND_NAME}`;
+
+  const text = [
+    `Hola ${pseudoUser?.name || ""}`.trim() + ",",
+    "",
+    "Recibimos tu formulario correctamente.",
+    "",
+    `Código: #${s.publicId}`,
+    "",
+    "En breve el staff lo revisa y te contacta si hace falta.",
+  ].join("\n");
+
+  const bodyHtml = `
+    <div style="font-size:18px; font-weight:800; margin-bottom:10px;">Formulario recibido</div>
+
+    <div style="color:#333; margin-bottom:12px;">
+      Hola <b>${escapeHtml(pseudoUser?.name || s.fullName || "👋")}</b>, recibimos tu formulario correctamente.
+    </div>
+
+    <div style="border:1px solid #eee; border-radius:14px; overflow:hidden;">
+      <table role="presentation" cellpadding="0" cellspacing="0" width="100%" style="border-collapse:collapse;">
+        ${kvRow("Código", `#${s.publicId}`)}
+        ${kvRow("Nombre", s.fullName)}
+        ${kvRow("Email", s.email)}
+        ${kvRow("Teléfono", s.phone)}
+      </table>
+    </div>
+
+    <div style="margin-top:14px; font-size:12px; color:#666;">
+      En breve el staff lo revisa. Si hace falta, te contactamos por WhatsApp o email.
+    </div>
+  `;
+
+  const html = buildEmailLayout({
+    title: `${BRAND_NAME} · Formulario recibido`,
+    preheader: `Recibimos tu formulario · Código #${s.publicId}`,
+    bodyHtml,
+  });
+
+  await sendMail(email, subject, text, html);
 }
 
 /* =========================================================
@@ -932,10 +1156,7 @@ export async function sendAppointmentBookedBatchEmail(user, items = []) {
         ${
           linesItems.length
             ? linesItems
-                .map(
-                  (l) =>
-                    `<li style="margin:6px 0;">${escapeHtml(l)}</li>`
-                )
+                .map((l) => `<li style="margin:6px 0;">${escapeHtml(l)}</li>`)
                 .join("")
             : "<li>(sin items)</li>"
         }

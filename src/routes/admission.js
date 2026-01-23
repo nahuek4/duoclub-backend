@@ -5,6 +5,11 @@ import bcrypt from "bcryptjs";
 import Admission from "../models/Admission.js";
 import User from "../models/User.js";
 import { protect, adminOnly } from "../middleware/auth.js";
+import {
+  fireAndForget,
+  sendAdminAdmissionCompletedEmail,
+  sendUserAdmissionReceivedEmail,
+} from "../mail.js";
 
 const router = express.Router();
 
@@ -181,39 +186,66 @@ router.post("/step1", async (req, res) => {
     });
   } catch (err) {
     console.error("POST /admission/step1 error:", err);
-    return res
-      .status(500)
-      .json({ ok: false, error: "No se pudo guardar el formulario." });
+    return res.status(500).json({ ok: false, error: "No se pudo guardar el formulario." });
   }
 });
 
 /* =========================================================
-   PUBLIC: guardar step2
+   PUBLIC: guardar step2 + ✅ enviar mails (admin + user) una sola vez
 ========================================================= */
 router.patch("/:id/step2", async (req, res) => {
   try {
     const payload = req.body || {};
     const { id } = req.params;
 
-    const doc = await Admission.findByIdAndUpdate(
-      id,
-      { step2Completed: true, step2: payload },
-      { new: true, runValidators: true }
-    );
+    const doc = await Admission.findById(id);
+    if (!doc) return res.status(404).json({ ok: false, error: "No encontrado." });
 
-    if (!doc)
-      return res.status(404).json({ ok: false, error: "No encontrado." });
+    // Guardar step2
+    doc.step2Completed = true;
+    doc.step2 = payload;
+
+    // ✅ Idempotencia: si ya mandamos mails, no los re-enviamos
+    const shouldSend = !doc.step2EmailSent;
+
+    // Marcamos flags antes de guardar (para evitar doble envío en reintentos)
+    if (shouldSend) {
+      doc.step2EmailSent = true;
+      doc.step2EmailSentAt = new Date();
+    }
+
+    await doc.save();
+
+    // ✅ Enviar mails sin bloquear request
+    if (shouldSend) {
+      fireAndForget(async () => {
+        // Armar "user" virtual desde step1 (porque todavía no hay User necesariamente)
+        const s1 = doc.step1 || {};
+        const fullName = String(s1.fullName || "").trim();
+        const { name, lastName } = splitFullName(fullName);
+
+        const pseudoUser = {
+          name: name || "",
+          lastName: lastName || "",
+          fullName,
+          email: String(s1.email || "").trim(),
+          phone: String(s1.phone || "").trim(),
+        };
+
+        await sendAdminAdmissionCompletedEmail(doc, pseudoUser);
+        await sendUserAdmissionReceivedEmail(doc, pseudoUser);
+      }, "ADMISSION_STEP2_MAIL");
+    }
 
     return res.json({
       ok: true,
       admissionId: doc._id,
       publicId: doc.publicId,
+      mailsSent: shouldSend,
     });
   } catch (err) {
     console.error("PATCH /admission/:id/step2 error:", err);
-    return res
-      .status(500)
-      .json({ ok: false, error: "No se pudo guardar el paso 2." });
+    return res.status(500).json({ ok: false, error: "No se pudo guardar el paso 2." });
   }
 });
 
@@ -238,6 +270,8 @@ router.get("/admin", protect, adminOnly, async (req, res) => {
           "step1.cityOther",
           "step1Completed",
           "step2Completed",
+          "step2EmailSent",
+          "step2EmailSentAt",
           "createdAt",
         ].join(" ")
       )
@@ -256,8 +290,7 @@ router.get("/admin", protect, adminOnly, async (req, res) => {
 router.get("/admin/:id", protect, adminOnly, async (req, res) => {
   try {
     const doc = await Admission.findById(req.params.id).lean();
-    if (!doc)
-      return res.status(404).json({ ok: false, error: "No encontrado." });
+    if (!doc) return res.status(404).json({ ok: false, error: "No encontrado." });
 
     return res.json({ ok: true, item: doc });
   } catch (err) {

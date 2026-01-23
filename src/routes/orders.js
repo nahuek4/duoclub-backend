@@ -10,6 +10,9 @@ import {
   fireAndForget,
   sendAdminNewOrderEmail,
   sendUserOrderCashCreatedEmail,
+  // ✅ NUEVO: mails cuando se marca pagado
+  sendAdminOrderPaidEmail,
+  sendUserOrderPaidEmail,
 } from "../mail.js";
 
 const router = express.Router();
@@ -160,6 +163,33 @@ async function notifyAdminIfNeeded(order) {
     await order.save();
   } catch (e) {
     console.warn("ORDERS: no se pudo enviar mail admin:", e?.message || e);
+  }
+}
+
+/* =======================
+   ✅ NUEVO: Notificar pago (idempotente)
+   - Manda mail al cliente cuando el admin marca PAGADO
+   - Evita duplicados si clickean dos veces
+======================= */
+async function notifyOrderPaidIfNeeded(order) {
+  if (!order) return;
+
+  // ✅ evita doble envío si el admin toca 2 veces
+  if (order.userPaidNotifiedAt) return;
+
+  try {
+    const u = await User.findById(order.user).lean().catch(() => null);
+
+    // mail al cliente
+    if (u?.email) await sendUserOrderPaidEmail(order, u);
+
+    // mail al admin (opcional)
+    await sendAdminOrderPaidEmail(order, u);
+
+    order.userPaidNotifiedAt = new Date();
+    await order.save();
+  } catch (e) {
+    console.warn("ORDERS: no se pudo enviar mail de pago:", e?.message || e);
   }
 }
 
@@ -669,7 +699,7 @@ router.patch("/:id/enable-credits", protect, adminOnly, async (req, res) => {
   }
 });
 
-// PATCH /orders/:id/mark-paid (solo CASH)
+// ✅ PATCH /orders/:id/mark-paid (solo CASH)
 router.patch("/:id/mark-paid", protect, adminOnly, async (req, res) => {
   try {
     const { id } = req.params;
@@ -687,15 +717,24 @@ router.patch("/:id/mark-paid", protect, adminOnly, async (req, res) => {
     }
 
     const st = String(order.status || "").toLowerCase();
-    if (st !== "paid") {
+    const wasPaid = st === "paid"; // ✅ clave
+
+    // ✅ solo si NO estaba pagada, la pasamos a paid
+    if (!wasPaid) {
       order.status = "paid";
       order.paidAt = new Date();
       await order.save();
     }
 
+    // ✅ igual aplicamos (idempotente)
     const applied = await applyOrderIfNeeded(order);
     if (!applied.ok) {
       return res.status(500).json({ error: applied.error || "No se pudo aplicar." });
+    }
+
+    // ✅ SOLO SI HUBO CAMBIO pending->paid (o no-paid->paid)
+    if (!wasPaid) {
+      fireAndForget(() => notifyOrderPaidIfNeeded(order), "MAIL_ORDER_PAID");
     }
 
     return res.json({ ok: true });

@@ -27,6 +27,10 @@ const admissionSchema = new mongoose.Schema(
     step1Completed: { type: Boolean, default: false },
     step2Completed: { type: Boolean, default: false },
 
+    // ✅ idempotencia mails Step2
+    step2EmailSent: { type: Boolean, default: false },
+    step2EmailSentAt: { type: Date, default: null },
+
     // ===============================
     // STEP 1 (Formulario inicial)
     // ===============================
