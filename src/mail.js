@@ -34,7 +34,8 @@ export function fireAndForget(fn, label = "MAIL") {
 function getTransporter() {
   if (transporter) return transporter;
 
-  const { SMTP_HOST, SMTP_PORT, SMTP_USER, SMTP_PASS, SMTP_SECURE } = process.env || {};
+  const { SMTP_HOST, SMTP_PORT, SMTP_USER, SMTP_PASS, SMTP_SECURE } =
+    process.env || {};
 
   // ✅ Modo mock (no rompe la app si falta SMTP)
   if (!SMTP_HOST || !SMTP_USER || !SMTP_PASS) {
@@ -156,7 +157,8 @@ function buildEmailLayout({ title, preheader, bodyHtml, footerNote }) {
   const _title = escapeHtml(title || BRAND_NAME);
   const _pre = escapeHtml(preheader || "");
   const _footer = escapeHtml(
-    footerNote || "Si no reconocés esta acción, respondé a este correo y lo revisamos."
+    footerNote ||
+      "Si no reconocés esta acción, respondé a este correo y lo revisamos."
   );
 
   const preheaderHtml = _pre
@@ -226,10 +228,17 @@ function orderSummary(order = {}, user = null) {
   const orderId = order?._id?.toString?.() || order?.id || "-";
   const createdAt = order?.createdAt ? new Date(order.createdAt) : null;
   const createdDate = createdAt
-    ? createdAt.toLocaleDateString("es-AR", { year: "numeric", month: "2-digit", day: "2-digit" })
+    ? createdAt.toLocaleDateString("es-AR", {
+        year: "numeric",
+        month: "2-digit",
+        day: "2-digit",
+      })
     : "-";
   const createdTime = createdAt
-    ? createdAt.toLocaleTimeString("es-AR", { hour: "2-digit", minute: "2-digit" })
+    ? createdAt.toLocaleTimeString("es-AR", {
+        hour: "2-digit",
+        minute: "2-digit",
+      })
     : "-";
 
   const uName =
@@ -243,10 +252,15 @@ function orderSummary(order = {}, user = null) {
   const status = String(order?.status || "pending").toLowerCase();
 
   const totalFinal =
-    order?.totalFinal != null ? moneyARS(order.totalFinal) : moneyARS(order?.total ?? order?.price ?? 0);
+    order?.totalFinal != null
+      ? moneyARS(order.totalFinal)
+      : moneyARS(order?.total ?? order?.price ?? 0);
 
   const items = Array.isArray(order?.items) ? order.items : [];
-  const itemsCount = items.reduce((acc, it) => acc + Math.max(1, Number(it?.qty) || 1), 0);
+  const itemsCount = items.reduce(
+    (acc, it) => acc + Math.max(1, Number(it?.qty) || 1),
+    0
+  );
 
   return {
     orderId,
@@ -273,16 +287,22 @@ function renderItemsList(items = []) {
       if (kind === "CREDITS") {
         const svc = String(it?.serviceKey || "EP").toUpperCase();
         const cr = Number(it?.credits) || 0;
-        return `<li style="margin:6px 0;">Créditos <b>${escapeHtml(String(cr))}</b> (${escapeHtml(svc)}) x${escapeHtml(String(qty))}</li>`;
+        return `<li style="margin:6px 0;">Créditos <b>${escapeHtml(
+          String(cr)
+        )}</b> (${escapeHtml(svc)}) x${escapeHtml(String(qty))}</li>`;
       }
 
       if (kind === "MEMBERSHIP") {
         const months = qty;
-        return `<li style="margin:6px 0;">Membresía <b>DUO+</b> (${escapeHtml(String(months))} mes/es)</li>`;
+        return `<li style="margin:6px 0;">Membresía <b>DUO+</b> (${escapeHtml(
+          String(months)
+        )} mes/es)</li>`;
       }
 
       const name = it?.label || it?.name || it?.title || "Item";
-      return `<li style="margin:6px 0;">${escapeHtml(String(name))} x${escapeHtml(String(qty))}</li>`;
+      return `<li style="margin:6px 0;">${escapeHtml(
+        String(name)
+      )} x${escapeHtml(String(qty))}</li>`;
     })
     .join("");
 }
@@ -309,7 +329,9 @@ export async function sendVerifyEmail(user, verifyUrl) {
 
   const bodyHtml = `
     <div style="font-size:18px; font-weight:800; margin-bottom:10px;">Verificación de email</div>
-    <div style="color:#333; margin-bottom:12px;">Hola <b>${escapeHtml(user.name || "")}</b>,</div>
+    <div style="color:#333; margin-bottom:12px;">Hola <b>${escapeHtml(
+      user.name || ""
+    )}</b>,</div>
     <div style="color:#333; margin-bottom:12px;">Para continuar, hacé click en el botón:</div>
 
     <div style="margin:16px 0;">
@@ -330,7 +352,12 @@ export async function sendVerifyEmail(user, verifyUrl) {
     bodyHtml,
   });
 
-  await sendMail(user.email, `Verificá tu email - ${BRAND_NAME}`, textLines.join("\n"), html);
+  await sendMail(
+    user.email,
+    `Verificá tu email - ${BRAND_NAME}`,
+    textLines.join("\n"),
+    html
+  );
 }
 
 export async function sendUserWelcomeEmail(user, tempPassword) {
@@ -352,7 +379,9 @@ export async function sendUserWelcomeEmail(user, tempPassword) {
 
   const bodyHtml = `
     <div style="font-size:18px; font-weight:800; margin-bottom:10px;">Tu usuario está listo</div>
-    <div style="color:#333; margin-bottom:12px;">Hola <b>${escapeHtml(user.name || "")}</b>,</div>
+    <div style="color:#333; margin-bottom:12px;">Hola <b>${escapeHtml(
+      user.name || ""
+    )}</b>,</div>
 
     <div style="border:1px solid #eee; border-radius:14px; overflow:hidden; margin-top:10px;">
       <table role="presentation" cellpadding="0" cellspacing="0" width="100%" style="border-collapse:collapse;">
@@ -372,7 +401,12 @@ export async function sendUserWelcomeEmail(user, tempPassword) {
     bodyHtml,
   });
 
-  await sendMail(user.email, `Tu usuario en ${BRAND_NAME} está listo`, lines.join("\n"), html);
+  await sendMail(
+    user.email,
+    `Tu usuario en ${BRAND_NAME} está listo`,
+    lines.join("\n"),
+    html
+  );
 }
 
 /* =========================================================
@@ -404,7 +438,11 @@ function buildAppointmentCardHtml({ user, ap, serviceName, kind }) {
 
     <div style="color:#333; margin-bottom:14px;">
       Hola <b>${escapeHtml(uName)}</b>,
-      ${kind === "cancelled" ? " tu turno fue cancelado." : " tu turno fue reservado con éxito."}
+      ${
+        kind === "cancelled"
+          ? " tu turno fue cancelado."
+          : " tu turno fue reservado con éxito."
+      }
     </div>
 
     <div style="border:1px solid #eee; border-radius:14px; overflow:hidden;">
@@ -442,14 +480,23 @@ export async function sendAppointmentBookedEmail(user, ap, serviceName) {
     "",
     `Día: ${ap?.date || "-"}`,
     `Horario: ${ap?.time || "-"}`,
-    serviceName ? `Servicio: ${serviceName}` : ap?.service ? `Servicio: ${ap.service}` : "",
+    serviceName
+      ? `Servicio: ${serviceName}`
+      : ap?.service
+      ? `Servicio: ${ap.service}`
+      : "",
     "",
     "Si no podés asistir, recordá cancelarlo con anticipación desde tu perfil.",
   ]
     .filter(Boolean)
     .join("\n");
 
-  const html = buildAppointmentCardHtml({ user, ap, serviceName, kind: "booked" });
+  const html = buildAppointmentCardHtml({
+    user,
+    ap,
+    serviceName,
+    kind: "booked",
+  });
 
   await sendMail(user.email, subject, text, html);
   await sendAdminAppointmentBookedEmail(user, ap, serviceName);
@@ -466,14 +513,23 @@ export async function sendAppointmentCancelledEmail(user, ap, serviceName) {
     "",
     `Día: ${ap?.date || "-"}`,
     `Horario: ${ap?.time || "-"}`,
-    serviceName ? `Servicio: ${serviceName}` : ap?.service ? `Servicio: ${ap.service}` : "",
+    serviceName
+      ? `Servicio: ${serviceName}`
+      : ap?.service
+      ? `Servicio: ${ap.service}`
+      : "",
     "",
     "Si fue un error, podés volver a reservar desde la agenda.",
   ]
     .filter(Boolean)
     .join("\n");
 
-  const html = buildAppointmentCardHtml({ user, ap, serviceName, kind: "cancelled" });
+  const html = buildAppointmentCardHtml({
+    user,
+    ap,
+    serviceName,
+    kind: "cancelled",
+  });
 
   await sendMail(user.email, subject, text, html);
   await sendAdminAppointmentCancelledEmail(user, ap, serviceName);
@@ -502,11 +558,15 @@ export async function sendAdminAppointmentBookedEmail(user, ap, serviceName) {
   if (!to) return;
 
   const uName =
-    `${user?.name || ""} ${user?.lastName || ""}`.trim() || user?.fullName || "-";
+    `${user?.name || ""} ${user?.lastName || ""}`.trim() ||
+    user?.fullName ||
+    "-";
   const uEmail = user?.email || "-";
   const svc = serviceName || ap?.service || "-";
 
-  const subject = `🗓️ Nuevo turno reservado — ${uName} · ${ap?.date || "-"} ${ap?.time || ""}`;
+  const subject = `🗓️ Nuevo turno reservado — ${uName} · ${
+    ap?.date || "-"
+  } ${ap?.time || ""}`;
 
   const text = [
     "Nuevo turno reservado",
@@ -551,11 +611,15 @@ export async function sendAdminAppointmentCancelledEmail(user, ap, serviceName) 
   if (!to) return;
 
   const uName =
-    `${user?.name || ""} ${user?.lastName || ""}`.trim() || user?.fullName || "-";
+    `${user?.name || ""} ${user?.lastName || ""}`.trim() ||
+    user?.fullName ||
+    "-";
   const uEmail = user?.email || "-";
   const svc = serviceName || ap?.service || "-";
 
-  const subject = `🧾 Turno cancelado — ${uName} · ${ap?.date || "-"} ${ap?.time || ""}`;
+  const subject = `🧾 Turno cancelado — ${uName} · ${
+    ap?.date || "-"
+  } ${ap?.time || ""}`;
 
   const text = [
     "Turno cancelado",
@@ -616,7 +680,12 @@ export async function sendAdminNewOrderEmail(order = {}, user = null) {
     "",
     "Items:",
     ...(s.items.length
-      ? s.items.map((it, i) => `${i + 1}. ${(it?.label || it?.name || it?.title || it?.kind || "Item")} x${it?.qty || 1}`)
+      ? s.items.map(
+          (it, i) =>
+            `${i + 1}. ${
+              it?.label || it?.name || it?.title || it?.kind || "Item"
+            } x${it?.qty || 1}`
+        )
       : ["(sin items)"]),
   ].join("\n");
 
@@ -852,7 +921,9 @@ export async function sendAppointmentBookedBatchEmail(user, items = []) {
 
   const bodyHtml = `
     <div style="font-size:18px; font-weight:800; margin-bottom:10px;">✅ Turnos reservados</div>
-    <div style="color:#333; margin-bottom:12px;">Hola <b>${escapeHtml(user.name || "")}</b>,</div>
+    <div style="color:#333; margin-bottom:12px;">Hola <b>${escapeHtml(
+      user.name || ""
+    )}</b>,</div>
     <div style="color:#333; margin-bottom:12px;">Tus turnos fueron reservados con éxito.</div>
 
     <div style="border:1px solid #eee; border-radius:14px; overflow:hidden;">
@@ -860,7 +931,12 @@ export async function sendAppointmentBookedBatchEmail(user, items = []) {
       <ul style="margin:10px 0 0; padding:0 12px 12px 28px; color:#111;">
         ${
           linesItems.length
-            ? linesItems.map((l) => `<li style="margin:6px 0;">${escapeHtml(l)}</li>`).join("")
+            ? linesItems
+                .map(
+                  (l) =>
+                    `<li style="margin:6px 0;">${escapeHtml(l)}</li>`
+                )
+                .join("")
             : "<li>(sin items)</li>"
         }
       </ul>
@@ -877,5 +953,74 @@ export async function sendAppointmentBookedBatchEmail(user, items = []) {
     bodyHtml,
   });
 
-  await sendMail(user.email, `Tus turnos fueron reservados - ${BRAND_NAME}`, text, html);
+  await sendMail(
+    user.email,
+    `Tus turnos fueron reservados - ${BRAND_NAME}`,
+    text,
+    html
+  );
+}
+
+/* =========================================================
+   ✅ FALTABA ESTO: CASH creado (pendiente) — USER
+   (para que no explote el import en orders.js)
+========================================================= */
+export async function sendUserOrderCashCreatedEmail(order = {}, user = null) {
+  if (!user?.email) return;
+
+  const s = orderSummary(order, user);
+  const st = pill("pending");
+
+  const subject = `🧾 Pedido generado (Efectivo) - ${BRAND_NAME}`;
+  const text = [
+    `Hola ${user?.name || ""}`.trim() + ",",
+    "",
+    "Generamos tu pedido correctamente.",
+    "Medio de pago: EFECTIVO.",
+    "",
+    `Pedido: #${s.orderId}`,
+    `Total: ${s.totalFinal}`,
+    "",
+    "Ahora coordiná el pago con el staff.",
+    "Cuando el staff marque el pago como realizado, se acreditarán los créditos/membresía.",
+  ].join("\n");
+
+  const bodyHtml = `
+    <div style="display:flex; align-items:center; gap:10px; margin-bottom:12px;">
+      <div style="font-size:18px; font-weight:800;">Pedido generado (Efectivo)</div>
+      <div style="margin-left:auto; background:${st.bg}; color:${st.tx}; padding:6px 10px; border-radius:999px; font-size:12px; font-weight:800;">
+        ${escapeHtml(st.label)}
+      </div>
+    </div>
+
+    <div style="color:#333; margin-bottom:12px;">
+      Hola <b>${escapeHtml(user?.name || "")}</b>, generamos tu pedido correctamente.
+    </div>
+
+    <div style="border:1px solid #eee; border-radius:14px; overflow:hidden;">
+      <table role="presentation" cellpadding="0" cellspacing="0" width="100%" style="border-collapse:collapse;">
+        ${kvRow("Pedido", `#${s.orderId}`)}
+        ${kvRow("Pago", "Efectivo")}
+        ${kvRow("Total", s.totalFinal)}
+        ${kvRow("Estado", "Pendiente")}
+      </table>
+    </div>
+
+    <div style="margin-top:14px; font-size:13px; font-weight:800;">Detalle</div>
+    <ul style="margin:10px 0 0; padding-left:18px; color:#111;">
+      ${renderItemsList(s.items)}
+    </ul>
+
+    <div style="margin-top:14px; font-size:12px; color:#666;">
+      Coordiná el pago con el staff. Cuando se confirme, se acreditará automáticamente.
+    </div>
+  `;
+
+  const html = buildEmailLayout({
+    title: `${BRAND_NAME} · Pedido generado (Efectivo)`,
+    preheader: `Pedido #${s.orderId} generado · ${s.totalFinal}`,
+    bodyHtml,
+  });
+
+  await sendMail(user.email, subject, text, html);
 }

@@ -58,7 +58,9 @@ function addPlusMonths(user, months = 1) {
   const now = new Date();
   user.membership = user.membership || {};
 
-  const curUntil = user.membership.activeUntil ? new Date(user.membership.activeUntil) : null;
+  const curUntil = user.membership.activeUntil
+    ? new Date(user.membership.activeUntil)
+    : null;
   const base = curUntil && curUntil > now ? curUntil : now;
 
   const until = new Date(base);
@@ -123,8 +125,11 @@ function hm(d = new Date()) {
 function safeServiceFromOrder(order) {
   const hasItems = Array.isArray(order?.items) && order.items.length > 0;
   if (hasItems) {
-    const kinds = order.items.map((it) => String(it?.kind || "").toUpperCase()).filter(Boolean);
-    if (kinds.includes("MEMBERSHIP") && kinds.includes("CREDITS")) return "MEMBERSHIP+CREDITS";
+    const kinds = order.items
+      .map((it) => String(it?.kind || "").toUpperCase())
+      .filter(Boolean);
+    if (kinds.includes("MEMBERSHIP") && kinds.includes("CREDITS"))
+      return "MEMBERSHIP+CREDITS";
     if (kinds.includes("MEMBERSHIP")) return "MEMBERSHIP";
     if (kinds.includes("CREDITS")) {
       const sks = order.items
@@ -482,8 +487,6 @@ router.post("/checkout", protect, async (req, res) => {
       totalFinal,
       status: "pending",
       applied: false,
-      // creditsApplied default false
-      // adminNotifiedAt default null
     });
 
     if (pm === "CASH") {
@@ -519,7 +522,6 @@ router.post("/checkout", protect, async (req, res) => {
     order.mpInitPoint = mp.init_point;
     await order.save();
 
-    // ✅ IMPORTANTE: mail al cliente NO acá, sino cuando webhook approved
     return res.status(201).json({
       ok: true,
       init_point: mp.init_point,
@@ -622,7 +624,10 @@ router.get("/me", protect, async (req, res) => {
    ADMIN
 ======================= */
 router.get("/", protect, adminOnly, async (req, res) => {
-  const list = await Order.find().populate("user", "name email").sort({ createdAt: -1 }).lean();
+  const list = await Order.find()
+    .populate("user", "name email")
+    .sort({ createdAt: -1 })
+    .lean();
   res.json(list);
 });
 
@@ -645,11 +650,14 @@ router.patch("/:id/enable-credits", protect, adminOnly, async (req, res) => {
 
     const st = String(order.status || "").toLowerCase();
     if (st !== "pending") {
-      return res.status(400).json({ error: "Solo órdenes pendientes pueden habilitar créditos sin pago" });
+      return res
+        .status(400)
+        .json({ error: "Solo órdenes pendientes pueden habilitar créditos sin pago" });
     }
 
     const r = await applyCreditsOnlyIfNeeded(order);
-    if (!r.ok) return res.status(500).json({ error: r.error || "No se pudo habilitar créditos." });
+    if (!r.ok)
+      return res.status(500).json({ error: r.error || "No se pudo habilitar créditos." });
 
     return res.json({ ok: true });
   } catch (err) {
