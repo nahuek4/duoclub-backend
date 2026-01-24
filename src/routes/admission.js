@@ -1,10 +1,10 @@
-// backend/src/routes/admission.js
 import express from "express";
 import crypto from "crypto";
 import bcrypt from "bcryptjs";
 import Admission from "../models/Admission.js";
 import User from "../models/User.js";
 import { protect, adminOnly } from "../middleware/auth.js";
+
 import {
   fireAndForget,
   sendAdminAdmissionCompletedEmail,
@@ -22,7 +22,10 @@ function splitFullName(fullName) {
   if (!clean) return { name: "", lastName: "" };
   const parts = clean.split(" ");
   if (parts.length === 1) return { name: parts[0], lastName: "-" };
-  return { name: parts.slice(0, -1).join(" "), lastName: parts.slice(-1).join(" ") };
+  return {
+    name: parts.slice(0, -1).join(" "),
+    lastName: parts.slice(-1).join(" "),
+  };
 }
 
 function toNumberOrNull(v) {
@@ -46,6 +49,7 @@ function computeAgeFromBirth(step1) {
   let age = now.getFullYear() - birth.getFullYear();
   const mm = now.getMonth() - birth.getMonth();
   if (mm < 0 || (mm === 0 && now.getDate() < birth.getDate())) age--;
+
   return age > 0 && age < 120 ? age : null;
 }
 
@@ -170,10 +174,7 @@ router.post("/step1", async (req, res) => {
       step1Completed: true,
       step1: payload,
       ip:
-        req.headers["x-forwarded-for"]
-          ?.toString()
-          ?.split(",")[0]
-          ?.trim() ||
+        req.headers["x-forwarded-for"]?.toString()?.split(",")[0]?.trim() ||
         req.socket?.remoteAddress ||
         "",
       userAgent: req.headers["user-agent"] || "",
@@ -192,6 +193,7 @@ router.post("/step1", async (req, res) => {
 
 /* =========================================================
    PUBLIC: guardar step2 + ✅ enviar mails (admin + user) una sola vez
+   ✅ FIX REAL: solo marcamos step2EmailSent si el envío salió OK
 ========================================================= */
 router.patch("/:id/step2", async (req, res) => {
   try {
@@ -201,47 +203,72 @@ router.patch("/:id/step2", async (req, res) => {
     const doc = await Admission.findById(id);
     if (!doc) return res.status(404).json({ ok: false, error: "No encontrado." });
 
-    // Guardar step2
     doc.step2Completed = true;
     doc.step2 = payload;
 
-    // ✅ Idempotencia: si ya mandamos mails, no los re-enviamos
-    const shouldSend = !doc.step2EmailSent;
-
-    // Marcamos flags antes de guardar (para evitar doble envío en reintentos)
-    if (shouldSend) {
-      doc.step2EmailSent = true;
-      doc.step2EmailSentAt = new Date();
+    // Si ya se enviaron mails antes, no re-enviamos
+    if (doc.step2EmailSent) {
+      await doc.save();
+      return res.json({
+        ok: true,
+        admissionId: doc._id,
+        publicId: doc.publicId,
+        mailsSent: false,
+        reason: "already_sent",
+      });
     }
 
     await doc.save();
 
-    // ✅ Enviar mails sin bloquear request
-    if (shouldSend) {
-      fireAndForget(async () => {
-        // Armar "user" virtual desde step1 (porque todavía no hay User necesariamente)
-        const s1 = doc.step1 || {};
-        const fullName = String(s1.fullName || "").trim();
-        const { name, lastName } = splitFullName(fullName);
+    // Intento async: si falla, no dejamos el flag trabado
+    fireAndForget(async () => {
+      const s1 = doc.step1 || {};
+      const fullName = String(s1.fullName || "").trim();
+      const { name, lastName } = splitFullName(fullName);
 
-        const pseudoUser = {
-          name: name || "",
-          lastName: lastName || "",
-          fullName,
-          email: String(s1.email || "").trim(),
-          phone: String(s1.phone || "").trim(),
-        };
+      const pseudoUser = {
+        name: name || "",
+        lastName: lastName || "",
+        fullName,
+        email: String(s1.email || "").trim(),
+        phone: String(s1.phone || "").trim(),
+      };
 
+      console.log("[MAIL][ADM] step2 attempt ->", {
+        admissionId: String(doc._id),
+        publicId: doc.publicId,
+        adminTo: process.env.ADMIN_EMAIL,
+        userTo: pseudoUser.email,
+      });
+
+      try {
         await sendAdminAdmissionCompletedEmail(doc, pseudoUser);
         await sendUserAdmissionReceivedEmail(doc, pseudoUser);
-      }, "ADMISSION_STEP2_MAIL");
-    }
+
+        await Admission.updateOne(
+          { _id: doc._id, step2EmailSent: false },
+          { $set: { step2EmailSent: true, step2EmailSentAt: new Date() } }
+        );
+
+        console.log("[MAIL][ADM] step2 mails SENT ok", {
+          admissionId: String(doc._id),
+          publicId: doc.publicId,
+        });
+      } catch (e) {
+        await Admission.updateOne(
+          { _id: doc._id },
+          { $set: { step2EmailSent: false, step2EmailSentAt: null } }
+        );
+
+        console.log("[MAIL][ADM] step2 mails FAILED", e?.message || e);
+      }
+    }, "ADMISSION_STEP2_MAIL");
 
     return res.json({
       ok: true,
       admissionId: doc._id,
       publicId: doc.publicId,
-      mailsSent: shouldSend,
+      mailsSent: true, // “se intentó”
     });
   } catch (err) {
     console.error("PATCH /admission/:id/step2 error:", err);
@@ -251,7 +278,6 @@ router.patch("/:id/step2", async (req, res) => {
 
 /* =========================================================
    ADMIN: listar
-   ✅ FIX ciudad en lista: step1.city step1.cityOther
 ========================================================= */
 router.get("/admin", protect, adminOnly, async (req, res) => {
   try {
@@ -300,8 +326,7 @@ router.get("/admin/:id", protect, adminOnly, async (req, res) => {
 });
 
 /* =========================================================
-   ✅ ADMIN: crear/vincular usuario desde admisión + sync perfil
-   POST /admission/admin/:id/create-user
+   ADMIN: crear/vincular usuario desde admisión + sync perfil
 ========================================================= */
 router.post("/admin/:id/create-user", protect, adminOnly, async (req, res) => {
   try {
@@ -315,24 +340,14 @@ router.post("/admin/:id/create-user", protect, adminOnly, async (req, res) => {
     const email = String(s1.email || "").trim().toLowerCase();
     const phone = String(s1.phone || "").trim();
 
-    if (!fullName) {
-      return res.status(400).json({ ok: false, error: "La admisión no tiene nombre completo." });
-    }
-    if (!email) {
-      return res.status(400).json({ ok: false, error: "La admisión no tiene email." });
-    }
-    if (!phone) {
-      return res.status(400).json({ ok: false, error: "La admisión no tiene teléfono." });
-    }
+    if (!fullName) return res.status(400).json({ ok: false, error: "La admisión no tiene nombre completo." });
+    if (!email) return res.status(400).json({ ok: false, error: "La admisión no tiene email." });
+    if (!phone) return res.status(400).json({ ok: false, error: "La admisión no tiene teléfono." });
 
     // 1) buscar user existente (primero por adm.user, si no por email)
     let user = null;
-    if (adm.user) {
-      user = await User.findById(adm.user);
-    }
-    if (!user) {
-      user = await User.findOne({ email });
-    }
+    if (adm.user) user = await User.findById(adm.user);
+    if (!user) user = await User.findOne({ email });
 
     let created = false;
     let tempPassword = "";
@@ -399,8 +414,7 @@ router.post("/admin/:id/create-user", protect, adminOnly, async (req, res) => {
 });
 
 /* =========================================================
-   ✅ ADMIN: vincular usuario existente por email
-   POST /admission/admin/:id/link-user
+   ADMIN: vincular usuario existente por email
 ========================================================= */
 router.post("/admin/:id/link-user", protect, adminOnly, async (req, res) => {
   try {
@@ -415,7 +429,6 @@ router.post("/admin/:id/link-user", protect, adminOnly, async (req, res) => {
     const user = await User.findOne({ email }).lean();
     if (!user) return res.status(404).json({ ok: false, error: "No existe usuario con ese email." });
 
-    // sync también
     const update = mapAdmissionToUserUpdate(adm);
     const updatedUser = await User.findByIdAndUpdate(user._id, update, {
       new: true,

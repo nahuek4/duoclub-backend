@@ -1,9 +1,7 @@
-// backend/src/models/Admission.js
 import mongoose from "mongoose";
 
 const admissionSchema = new mongoose.Schema(
   {
-    // ID público (para compartir / debug)
     publicId: {
       type: String,
       required: true,
@@ -11,7 +9,6 @@ const admissionSchema = new mongoose.Schema(
       index: true,
     },
 
-    // ✅ Vinculación opcional a User
     user: {
       type: mongoose.Schema.Types.ObjectId,
       ref: "User",
@@ -19,11 +16,9 @@ const admissionSchema = new mongoose.Schema(
       index: true,
     },
 
-    // ✅ tracking sync
     syncedToUser: { type: Boolean, default: false },
     syncedAt: { type: Date, default: null },
 
-    // Estado de pasos
     step1Completed: { type: Boolean, default: false },
     step2Completed: { type: Boolean, default: false },
 
@@ -31,9 +26,6 @@ const admissionSchema = new mongoose.Schema(
     step2EmailSent: { type: Boolean, default: false },
     step2EmailSentAt: { type: Date, default: null },
 
-    // ===============================
-    // STEP 1 (Formulario inicial)
-    // ===============================
     step1: {
       fullName: String,
       birthDay: String,
@@ -79,24 +71,17 @@ const admissionSchema = new mongoose.Schema(
       relevantInfo: String,
     },
 
-    // ===============================
-    // STEP 2 (rehab / deporte / plan)
-    // ===============================
     step2: {
       type: Object,
       default: {},
     },
 
-    // Metadata útil
     ip: String,
     userAgent: String,
   },
-  {
-    timestamps: true,
-  }
+  { timestamps: true }
 );
 
-// ✅ indices útiles
 admissionSchema.index({ "step1.email": 1 });
 admissionSchema.index({ createdAt: -1 });
 
