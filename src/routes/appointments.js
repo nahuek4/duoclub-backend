@@ -9,9 +9,6 @@ import {
   sendAppointmentBookedEmail,
   sendAppointmentBookedBatchEmail,
   sendAppointmentCancelledEmail,
-  // si en tu mail.js agregaste estas, podés usarlas directo:
-  // sendAdminAppointmentBookedEmail,
-  // sendAdminAppointmentCancelledEmail,
 } from "../mail.js";
 
 const router = express.Router();
@@ -24,29 +21,22 @@ const MAX_ADVANCE_DAYS = 14;
 
 /* =========================
    ADMIN MAIL (fallback)
-   - si tus funciones ya mandan al admin, no pasa nada
 ========================= */
 const ADMIN_EMAIL = process.env.ADMIN_EMAIL || "duoclub.ar@gmail.com";
 
-// fallback simple por si todavía no agregaste "admin mail" en mail.js
 async function sendAdminCopy({ kind, user, ap }) {
   try {
-    // si tus mailers ya lo mandan al admin, podés apagar esto seteando:
-    // MAIL_ADMIN_COPY=false
     if (String(process.env.MAIL_ADMIN_COPY || "true") !== "true") return;
 
-    // Si NO tenés SMTP, tu mailer mockuea y listo.
-    // Usamos sendAppointmentBookedEmail / CancelledEmail? NO, porque eso re-enviaría al usuario.
-    // Entonces, este fallback solo sirve si en ../mail.js exponés un sendMail simple.
-    // Como acá NO lo importamos, dejamos solo log para no duplicar.
-    //
-    // 👉 Recomendación: lo correcto es que sendAppointmentBookedEmail/CanceledEmail
-    // ya envíen al admin adentro (como te pasé).
     console.log("[MAIL ADMIN FALLBACK]", {
       to: ADMIN_EMAIL,
       kind,
-      user: { id: user?._id?.toString?.() || user?.id, email: user?.email, name: user?.name },
-      ap: { date: ap?.date, time: ap?.time, service: ap?.service },
+      user: {
+        id: user?._id?.toString?.() || user?.id,
+        email: user?.email,
+        name: user?.name,
+      },
+      ap,
     });
   } catch (e) {
     console.log("[MAIL] admin fallback error:", e?.message || e);
@@ -98,7 +88,7 @@ function isSaturday(dateStr) {
 /**
  * ✅ Match con tu frontend:
  * - mañana: 07..12
- * - tarde: 14..17
+ * - tarde:  14..17
  * - noche: 18..20 (incluye 20)
  */
 function getTurnoFromTime(time) {
@@ -149,7 +139,6 @@ function isPlusActive(user) {
   return new Date(m.activeUntil) > new Date();
 }
 
-// ✅ Solo para vencimiento de créditos (si querés mantener diferencia basic/plus)
 function getCreditsExpireDays(user) {
   return isPlusActive(user) ? 40 : 30;
 }
@@ -386,7 +375,6 @@ router.post("/", async (req, res) => {
 
       const epCount = existingAtSlot.filter((a) => a.service === EP_NAME).length;
 
-      // ojo con el acento: tu sistema lo está guardando como "Rehabilitacion Activa" (sin tilde)
       const arTaken = existingAtSlot.some((a) => a.service === "Alto Rendimiento") ? 1 : 0;
       const raTaken = existingAtSlot.some((a) => a.service === "Rehabilitacion Activa") ? 1 : 0;
       const otherReservedCount = arTaken + raTaken;
@@ -453,13 +441,11 @@ router.post("/", async (req, res) => {
 
       out = serializeAppointment(populated);
 
-      // mail (si no hay SMTP, tu mailer hace mock log)
-      // ✅ Nota: esto debería enviar al usuario + admin si lo implementaste en mailer.
+      // mail (usuario + admin dentro del mailer)
       try {
         await sendAppointmentBookedEmail(user, { date, time, service }, service);
       } catch (e) {
         console.log("[MAIL] booked error:", e?.message || e);
-        // fallback admin log
         await sendAdminCopy({ kind: "booked", user, ap: { date, time, service } });
       }
     });
@@ -514,8 +500,6 @@ router.post("/", async (req, res) => {
 
 /* =========================
    ✅ POST /appointments/batch
-   - reserva múltiples turnos en 1 request
-   - envía 1 solo mail batch
 ========================= */
 router.post("/batch", async (req, res) => {
   const session = await mongoose.startSession();
@@ -528,7 +512,6 @@ router.post("/batch", async (req, res) => {
       return res.status(400).json({ error: "Máximo 12 turnos por operación." });
     }
 
-    // ✅ validación básica + evitar duplicados dentro del batch
     const seen = new Set();
     const normalized = items.map((it, idx) => {
       const date = String(it?.date || "").trim();
@@ -571,7 +554,6 @@ router.post("/batch", async (req, res) => {
         if ((user.credits || 0) <= 0) throw new Error("NO_CREDITS");
       }
 
-      // ✅ no permitir 2 reservas mismo date/time (aunque sean servicios distintos)
       const slotSet = new Set(normalized.map((x) => slotKey(x.date, x.time)));
       if (slotSet.size !== normalized.length) {
         const e = new Error("DUP_SLOT_IN_BATCH");
@@ -579,7 +561,6 @@ router.post("/batch", async (req, res) => {
         throw e;
       }
 
-      // ✅ verificar que no tenga ya turnos en esos slots
       const orSlots = normalized.map((x) => ({ date: x.date, time: x.time }));
       const alreadyByUserAny = await Appointment.findOne({
         user: user._id,
@@ -591,7 +572,6 @@ router.post("/batch", async (req, res) => {
 
       if (alreadyByUserAny) throw new Error("ALREADY_HAVE_SLOT");
 
-      // ✅ Traer reservas existentes de los slots involucrados
       const existing = await Appointment.find({
         status: "reserved",
         $or: orSlots,
@@ -599,7 +579,6 @@ router.post("/batch", async (req, res) => {
         .session(session)
         .lean();
 
-      // index por slot
       const bySlot = new Map();
       for (const ap of existing) {
         const k = slotKey(ap.date, ap.time);
@@ -607,12 +586,10 @@ router.post("/batch", async (req, res) => {
         bySlot.get(k).push(ap);
       }
 
-      // ✅ Simular/validar cupos por slot considerando el batch
       for (const it of normalized) {
         const k = slotKey(it.date, it.time);
         const cur = bySlot.get(k) || [];
 
-        // total cap
         if (cur.length >= TOTAL_CAP) {
           const e = new Error("TOTAL_CAP_REACHED");
           e.http = 409;
@@ -624,7 +601,6 @@ router.post("/batch", async (req, res) => {
         const raTaken = cur.some((a) => a.service === "Rehabilitacion Activa") ? 1 : 0;
         const otherReservedCount = arTaken + raTaken;
 
-        // otros servicios: 1 por servicio
         if (!it.isEpService) {
           const alreadyService = cur.some((a) => a.service === it.service);
           if (alreadyService) {
@@ -634,7 +610,6 @@ router.post("/batch", async (req, res) => {
           }
         }
 
-        // EP cap
         if (it.isEpService) {
           const hoursToStart = (it.slotDate.getTime() - Date.now()) / (1000 * 60 * 60);
           const epCap = calcEpCap({ hoursToStart, otherReservedCount });
@@ -645,12 +620,10 @@ router.post("/batch", async (req, res) => {
           }
         }
 
-        // “agregar” el item al slot (simulación)
         cur.push({ date: it.date, time: it.time, service: it.service });
         bySlot.set(k, cur);
       }
 
-      // ✅ consumir créditos + crear turnos
       result = [];
 
       for (const it of normalized) {
@@ -707,8 +680,6 @@ router.post("/batch", async (req, res) => {
         await user.save({ session });
       }
 
-      // ✅ 1 solo mail para todo el batch
-      // 👉 Recomendación: en tu mailer hacé que este batch también copie al admin.
       try {
         await sendAppointmentBookedBatchEmail(user, result);
       } catch (e) {
@@ -826,7 +797,6 @@ router.patch("/:id/cancel", async (req, res) => {
       const diffMs = apDate.getTime() - Date.now();
       const hours = diffMs / (1000 * 60 * 60);
 
-      // ✅ no se puede cancelar un turno pasado
       if (hours < 0) {
         const e = new Error("PAST_APPOINTMENT");
         e.http = 400;
@@ -840,13 +810,9 @@ router.patch("/:id/cancel", async (req, res) => {
         throw e;
       }
 
-      // ✅ cancelamos siempre
       ap.status = "cancelled";
       await ap.save({ session });
 
-      // ✅ devolver crédito SOLO si:
-      // - no es admin
-      // - y faltan >= 12 horas
       const shouldRefund = user.role !== "admin" && hours >= REFUND_CUTOFF_HOURS;
 
       if (user.role !== "admin") {
@@ -901,12 +867,21 @@ router.patch("/:id/cancel", async (req, res) => {
         refundCutoffHours: REFUND_CUTOFF_HOURS,
       };
 
-      // mail cancel (si no hay SMTP => mock log)
+      // ✅ MAIL CANCEL: usuario + admin, con reintegro sí/no
       try {
-        await sendAppointmentCancelledEmail(user, ap, ap.service);
+        await sendAppointmentCancelledEmail(
+          user,
+          { date: ap.date, time: ap.time, service: ap.service },
+          ap.service,
+          { refund: shouldRefund, refundCutoffHours: REFUND_CUTOFF_HOURS }
+        );
       } catch (e) {
         console.log("[MAIL] cancelled error:", e?.message || e);
-        await sendAdminCopy({ kind: "cancelled", user, ap });
+        await sendAdminCopy({
+          kind: "cancelled",
+          user,
+          ap: { date: ap.date, time: ap.time, service: ap.service, refund: shouldRefund },
+        });
       }
     });
 

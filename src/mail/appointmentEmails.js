@@ -7,7 +7,7 @@ import { buildEmailLayout } from "./layout.js";
    Turnos (USER + ADMIN)
 ========================================================= */
 
-function buildAppointmentCardHtml({ user, ap, serviceName, kind }) {
+function buildAppointmentCardHtml({ user, ap, serviceName, kind, meta = {} }) {
   const uName =
     `${user?.name || ""} ${user?.lastName || ""}`.trim() ||
     user?.fullName ||
@@ -22,6 +22,26 @@ function buildAppointmentCardHtml({ user, ap, serviceName, kind }) {
   const pillBg = kind === "cancelled" ? "#ffe9ea" : "#e9f7ef";
   const pillTx = kind === "cancelled" ? "#a00010" : "#0b6b2a";
   const pillLabel = kind === "cancelled" ? "CANCELADO" : "CONFIRMADO";
+
+  const refundFlag =
+    kind === "cancelled" && typeof meta?.refund === "boolean" ? meta.refund : null;
+
+  const refundText =
+    refundFlag === null
+      ? ""
+      : refundFlag
+      ? `✅ Se reintegró 1 sesión a tu cuenta.`
+      : `ℹ️ No hubo reintegro de sesión (cancelación fuera del límite).`;
+
+  const cutoff =
+    typeof meta?.refundCutoffHours === "number" ? meta.refundCutoffHours : null;
+
+  const cutoffLine =
+    refundFlag === null
+      ? ""
+      : cutoff
+      ? `Límite de reintegro: ${cutoff}hs o más de anticipación.`
+      : "";
 
   const body = `
     <div style="display:flex; gap:10px; align-items:center; margin-bottom:14px;">
@@ -45,8 +65,30 @@ function buildAppointmentCardHtml({ user, ap, serviceName, kind }) {
         ${kvRow("Día", whenDateLong)}
         ${kvRow("Horario", `${time} hs`)}
         ${kvRow("Servicio", svc)}
+        ${
+          refundFlag === null
+            ? ""
+            : kvRow("Reintegro", refundFlag ? "Sí (1 sesión)" : "No")
+        }
       </table>
     </div>
+
+    ${
+      refundFlag === null
+        ? ""
+        : `
+        <div style="margin-top:12px; font-size:13px; color:#111;">
+          ${escapeHtml(refundText)}
+        </div>
+        ${
+          cutoffLine
+            ? `<div style="margin-top:6px; font-size:12px; color:#666;">${escapeHtml(
+                cutoffLine
+              )}</div>`
+            : ""
+        }
+      `
+    }
 
     <div style="margin-top:14px; font-size:12px; color:#666;">
       ${
@@ -69,7 +111,6 @@ function buildAppointmentCardHtml({ user, ap, serviceName, kind }) {
 ========================================================= */
 
 export async function sendAppointmentBookedEmail(user, ap, serviceName) {
-  // Debug mínimo (podés comentar luego)
   console.log("[MAIL][APPT] booked ->", {
     to: user?.email,
     date: ap?.date,
@@ -109,17 +150,44 @@ export async function sendAppointmentBookedEmail(user, ap, serviceName) {
   await sendAdminAppointmentBookedEmail(user, ap, serviceName);
 }
 
-export async function sendAppointmentCancelledEmail(user, ap, serviceName) {
+/**
+ * ✅ Cancelación: acepta meta para reintegro
+ * meta = { refund:boolean, refundCutoffHours:number }
+ */
+export async function sendAppointmentCancelledEmail(user, ap, serviceName, meta = {}) {
   console.log("[MAIL][APPT] cancelled ->", {
     to: user?.email,
     date: ap?.date,
     time: ap?.time,
     serviceName: serviceName || ap?.service,
+    refund: meta?.refund,
+    refundCutoffHours: meta?.refundCutoffHours,
   });
 
   if (!user?.email) return;
 
+  const refundFlag = typeof meta?.refund === "boolean" ? meta.refund : null;
+  const cutoff =
+    typeof meta?.refundCutoffHours === "number" ? meta.refundCutoffHours : null;
+
   const subject = `❌ Tu turno fue cancelado - ${BRAND_NAME}`;
+
+  const refundLine =
+    refundFlag === null
+      ? ""
+      : refundFlag
+      ? "Reintegro: Sí (1 sesión)"
+      : "Reintegro: No";
+
+  const extraExplain =
+    refundFlag === null
+      ? ""
+      : refundFlag
+      ? "Se reintegró 1 sesión a tu cuenta."
+      : cutoff
+      ? `No hubo reintegro porque la cancelación fue fuera del límite (${cutoff}hs).`
+      : "No hubo reintegro porque la cancelación fue fuera del límite.";
+
   const text = [
     `Hola ${user.name || ""}`.trim() + ",",
     "",
@@ -132,6 +200,8 @@ export async function sendAppointmentCancelledEmail(user, ap, serviceName) {
       : ap?.service
       ? `Servicio: ${ap.service}`
       : "",
+    refundLine ? refundLine : "",
+    extraExplain ? extraExplain : "",
     "",
     "Si fue un error, podés volver a reservar desde la agenda.",
   ]
@@ -143,10 +213,11 @@ export async function sendAppointmentCancelledEmail(user, ap, serviceName) {
     ap,
     serviceName,
     kind: "cancelled",
+    meta,
   });
 
   await sendMail(user.email, subject, text, html);
-  await sendAdminAppointmentCancelledEmail(user, ap, serviceName);
+  await sendAdminAppointmentCancelledEmail(user, ap, serviceName, meta);
 }
 
 export async function sendAppointmentReminderEmail(user, ap, serviceName) {
@@ -159,7 +230,6 @@ export async function sendAppointmentReminderEmail(user, ap, serviceName) {
 
   if (!user?.email) return;
 
-  // Texto (fallback)
   const text = [
     `Hola ${user.name || ""}`.trim() + ",",
     "",
@@ -174,7 +244,6 @@ export async function sendAppointmentReminderEmail(user, ap, serviceName) {
     .filter(Boolean)
     .join("\n");
 
-  // ✅ HTML (más consistente que mandar solo texto)
   const whenDateLong = prettyDateAR(ap?.date);
   const time = ap?.time || "-";
   const svc = serviceName || ap?.service || "-";
@@ -233,9 +302,7 @@ export async function sendAdminAppointmentBookedEmail(user, ap, serviceName) {
   const uEmail = user?.email || "-";
   const svc = serviceName || ap?.service || "-";
 
-  const subject = `🗓️ Nuevo turno reservado — ${uName} · ${
-    ap?.date || "-"
-  } ${ap?.time || ""}`;
+  const subject = `🗓️ Nuevo turno reservado — ${uName} · ${ap?.date || "-"} ${ap?.time || ""}`;
 
   const text = [
     "Nuevo turno reservado",
@@ -274,7 +341,10 @@ export async function sendAdminAppointmentBookedEmail(user, ap, serviceName) {
   await sendMail(to, subject, text, html);
 }
 
-export async function sendAdminAppointmentCancelledEmail(user, ap, serviceName) {
+/**
+ * ✅ Admin cancel: acepta meta refund
+ */
+export async function sendAdminAppointmentCancelledEmail(user, ap, serviceName, meta = {}) {
   const to = ADMIN_EMAIL;
   if (!to) return;
 
@@ -285,9 +355,27 @@ export async function sendAdminAppointmentCancelledEmail(user, ap, serviceName) 
   const uEmail = user?.email || "-";
   const svc = serviceName || ap?.service || "-";
 
-  const subject = `🧾 Turno cancelado — ${uName} · ${
-    ap?.date || "-"
-  } ${ap?.time || ""}`;
+  const refundFlag = typeof meta?.refund === "boolean" ? meta.refund : null;
+  const cutoff =
+    typeof meta?.refundCutoffHours === "number" ? meta.refundCutoffHours : null;
+
+  const subject = `🧾 Turno cancelado — ${uName} · ${ap?.date || "-"} ${ap?.time || ""}`;
+
+  const refundLine =
+    refundFlag === null
+      ? ""
+      : refundFlag
+      ? "Reintegro: Sí (1 sesión)"
+      : "Reintegro: No";
+
+  const extraExplain =
+    refundFlag === null
+      ? ""
+      : refundFlag
+      ? "Se reintegró 1 sesión."
+      : cutoff
+      ? `No hubo reintegro (fuera del límite: ${cutoff}hs).`
+      : "No hubo reintegro (fuera del límite).";
 
   const text = [
     "Turno cancelado",
@@ -298,6 +386,8 @@ export async function sendAdminAppointmentCancelledEmail(user, ap, serviceName) 
     `Día: ${ap?.date || "-"}`,
     `Horario: ${ap?.time || "-"}`,
     `Servicio: ${svc}`,
+    refundLine ? refundLine : "",
+    extraExplain ? extraExplain : "",
   ]
     .filter(Boolean)
     .join("\n");
@@ -311,6 +401,12 @@ export async function sendAdminAppointmentCancelledEmail(user, ap, serviceName) 
         ${kvRow("Día", prettyDateAR(ap?.date))}
         ${kvRow("Horario", `${ap?.time || "-"} hs`)}
         ${kvRow("Servicio", svc)}
+        ${
+          refundFlag === null
+            ? ""
+            : kvRow("Reintegro", refundFlag ? "Sí (1 sesión)" : "No")
+        }
+        ${refundFlag === null ? "" : kvRow("Detalle", escapeHtml(extraExplain || "-"))}
       </table>
     </div>
   `;
