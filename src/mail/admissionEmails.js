@@ -1,6 +1,6 @@
 // backend/src/mail/admissionEmails.js
 import { ADMIN_EMAIL, BRAND_NAME, sendMail, BRAND_URL } from "./core.js";
-import { escapeHtml, kvRow } from "./helpers.js";
+import { escapeHtml, kvRow, kvRowRaw } from "./helpers.js";
 import { buildEmailLayout } from "./layout.js";
 
 /* =========================================================
@@ -166,36 +166,36 @@ export async function sendAdminAdmissionCompletedEmail(admissionDoc = {}, pseudo
 
     <div style="border:1px solid #eee; border-radius:14px; overflow:hidden;">
       <table role="presentation" cellpadding="0" cellspacing="0" width="100%" style="border-collapse:collapse;">
-        ${kvRow("PublicId", `#${escapeHtml(s.publicId)}`)}
-        ${kvRow("AdmissionId", escapeHtml(s.admissionId))}
-        ${kvRow("Creado", escapeHtml(`${s.createdDate} ${s.createdTime}`))}
-        ${kvRow("Nombre", escapeHtml(s.fullName))}
-        ${kvRow("Email", escapeHtml(s.email))}
-        ${kvRow("Teléfono", escapeHtml(s.phone))}
-        ${kvRow("Ciudad", escapeHtml(s.city))}
+        ${kvRow("PublicId", `#${s.publicId}`)}
+        ${kvRow("AdmissionId", s.admissionId)}
+        ${kvRow("Creado", `${s.createdDate} ${s.createdTime}`)}
+        ${kvRow("Nombre", s.fullName)}
+        ${kvRow("Email", s.email)}
+        ${kvRow("Teléfono", s.phone)}
+        ${kvRow("Ciudad", s.city)}
       </table>
     </div>
 
     <div style="margin-top:14px; font-size:13px; font-weight:800;">Resumen Step1</div>
     <div style="border:1px solid #eee; border-radius:14px; overflow:hidden; margin-top:8px;">
       <table role="presentation" cellpadding="0" cellspacing="0" width="100%" style="border-collapse:collapse;">
-        ${kvRow("Fitness", escapeHtml(s.fitnessLevel))}
-        ${kvRow("Altura", escapeHtml(s.height))}
-        ${kvRow("Peso", escapeHtml(s.weight))}
-        ${kvRow("Contraindicación", escapeHtml(s.hasContraindication))}
-        ${kvRow("Condición", escapeHtml(s.hasCondition))}
-        ${kvRow("Lesión último año", escapeHtml(s.hadInjuryLastYear))}
-        ${kvRow("Info relevante", escapeHtml(s.relevantInfo))}
+        ${kvRow("Fitness", s.fitnessLevel)}
+        ${kvRow("Altura", s.height)}
+        ${kvRow("Peso", s.weight)}
+        ${kvRow("Contraindicación", s.hasContraindication)}
+        ${kvRow("Condición", s.hasCondition)}
+        ${kvRow("Lesión último año", s.hadInjuryLastYear)}
+        ${kvRow("Info relevante", s.relevantInfo)}
       </table>
     </div>
 
     <div style="margin-top:14px; font-size:13px; font-weight:800;">Resumen Step2</div>
     <div style="border:1px solid #eee; border-radius:14px; overflow:hidden; margin-top:8px;">
       <table role="presentation" cellpadding="0" cellspacing="0" width="100%" style="border-collapse:collapse;">
-        ${kvRow("Rehab", escapeHtml(s.needsRehab))}
-        ${kvRow("Objetivo", escapeHtml(s.immediateGoal))}
-        ${kvRow("Modalidad", escapeHtml(s.modality))}
-        ${kvRow("Sesiones/sem", escapeHtml(s.weeklySessions))}
+        ${kvRow("Rehab", s.needsRehab)}
+        ${kvRow("Objetivo", s.immediateGoal)}
+        ${kvRow("Modalidad", s.modality)}
+        ${kvRow("Sesiones/sem", s.weeklySessions)}
       </table>
     </div>
   `;
@@ -248,10 +248,10 @@ export async function sendUserAdmissionReceivedEmail(admissionDoc = {}, pseudoUs
 
     <div style="border:1px solid #eee; border-radius:14px; overflow:hidden;">
       <table role="presentation" cellpadding="0" cellspacing="0" width="100%" style="border-collapse:collapse;">
-        ${kvRow("Código", `#${escapeHtml(s.publicId)}`)}
-        ${kvRow("Nombre", escapeHtml(s.fullName))}
-        ${kvRow("Email", escapeHtml(s.email))}
-        ${kvRow("Teléfono", escapeHtml(s.phone))}
+        ${kvRow("Código", `#${s.publicId}`)}
+        ${kvRow("Nombre", s.fullName)}
+        ${kvRow("Email", s.email)}
+        ${kvRow("Teléfono", s.phone)}
       </table>
     </div>
 
@@ -311,7 +311,11 @@ export async function sendUserApprovedEmail({
   ];
 
   if (hasPass) {
-    textLines.push("", `Contraseña temporal: ${String(password).trim()}`, "En tu primer ingreso te vamos a pedir que la cambies.");
+    textLines.push(
+      "",
+      `Contraseña temporal: ${String(password).trim()}`,
+      "En tu primer ingreso te vamos a pedir que la cambies."
+    );
   }
 
   textLines.push("", `Si no fuiste vos, escribinos a ${ADMIN_EMAIL}.`);
@@ -332,8 +336,13 @@ export async function sendUserApprovedEmail({
 
     <div style="border:1px solid #eee; border-radius:14px; overflow:hidden;">
       <table role="presentation" cellpadding="0" cellspacing="0" width="100%" style="border-collapse:collapse;">
-        ${kvRow("Email", escapeHtml(email))}
-        ${kvRow("Ingreso", `<a href="${escapeHtml(url)}" style="color:#111; font-weight:800; text-decoration:none;">${escapeHtml(url)}</a>`)}
+        ${kvRow("Email", email)}
+        ${kvRowRaw(
+          "Ingreso",
+          `<a href="${escapeHtml(url)}" style="color:#111; font-weight:800; text-decoration:none;">${escapeHtml(
+            url
+          )}</a>`
+        )}
       </table>
     </div>
 
@@ -343,7 +352,7 @@ export async function sendUserApprovedEmail({
       <div style="margin-top:14px; font-size:13px; font-weight:800;">Tu contraseña temporal</div>
       <div style="margin-top:8px; border:1px solid #eee; border-radius:14px; overflow:hidden;">
         <table role="presentation" cellpadding="0" cellspacing="0" width="100%" style="border-collapse:collapse;">
-          ${kvRow(
+          ${kvRowRaw(
             "Password",
             `<span style="font-family:ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono', 'Courier New', monospace; font-size:16px; letter-spacing:0.6px; font-weight:900;">${escapeHtml(
               String(password).trim()

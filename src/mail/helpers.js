@@ -1,3 +1,5 @@
+// backend/src/mail/helpers.js
+
 export function escapeHtml(v) {
   return String(v ?? "")
     .replace(/&/g, "&amp;")
@@ -33,6 +35,10 @@ export function moneyARS(v) {
   }
 }
 
+/**
+ * ✅ kvRow: Escapa label y value (por defecto).
+ * - Si necesitás renderizar HTML en value, usá kvRowRaw().
+ */
 export function kvRow(label, value) {
   return `
     <tr>
@@ -41,6 +47,23 @@ export function kvRow(label, value) {
       </td>
       <td style="padding:8px 10px; color:#111; font-size:13px; border-bottom:1px solid #eee;">
         ${escapeHtml(value)}
+      </td>
+    </tr>
+  `;
+}
+
+/**
+ * ✅ kvRowRaw: Escapa solo label y deja value tal cual (para links o HTML controlado).
+ * OJO: Usalo solo con HTML generado por vos.
+ */
+export function kvRowRaw(label, htmlValue) {
+  return `
+    <tr>
+      <td style="padding:8px 10px; color:#555; font-size:13px; width:170px; border-bottom:1px solid #eee;">
+        ${escapeHtml(label)}
+      </td>
+      <td style="padding:8px 10px; color:#111; font-size:13px; border-bottom:1px solid #eee;">
+        ${String(htmlValue ?? "")}
       </td>
     </tr>
   `;

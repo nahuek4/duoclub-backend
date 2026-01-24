@@ -1,3 +1,4 @@
+// backend/src/mail/layout.js
 import { BRAND_NAME, BRAND_URL } from "./core.js";
 import { escapeHtml } from "./helpers.js";
 
