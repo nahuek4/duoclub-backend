@@ -12,6 +12,9 @@ import { protect, adminOnly } from "../middleware/auth.js";
 
 import multer from "multer";
 
+// ✅ MAIL
+import { fireAndForget, sendUserApprovedEmail } from "../mail.js";
+
 const router = express.Router();
 
 /* ============================================
@@ -301,13 +304,7 @@ function stripSensitive(u) {
   if (!u || typeof u !== "object") return u;
   // sacamos password + tokens y cosas internas
   // (igual te dejo creditLots porque lo usás en admin)
-  const {
-    password,
-    emailVerificationToken,
-    emailVerificationExpires,
-    __v,
-    ...rest
-  } = u;
+  const { password, emailVerificationToken, emailVerificationExpires, __v, ...rest } = u;
   return rest;
 }
 
@@ -383,6 +380,9 @@ router.post("/", adminOnly, async (req, res) => {
 
       aptoPath: "",
       aptoStatus: "",
+
+      // ✅ NUEVO: ya lo aprobaste desde admin-create, mandamos mail 1 vez
+      welcomeApprovedEmailSentAt: new Date(),
     });
 
     const initialCredits = Number(credits ?? 0);
@@ -390,6 +390,18 @@ router.post("/", adminOnly, async (req, res) => {
       addCreditLot(user, { amount: initialCredits, serviceKey: "ALL", source: "admin-create" });
       await user.save();
     }
+
+    // ✅ enviar mail de alta aprobada + password temporal (fire-and-forget)
+    fireAndForget(
+      async () => {
+        await sendUserApprovedEmail({
+          to: em,
+          user: { name: n, lastName: ln, email: em },
+          password: plainPassword,
+        });
+      },
+      "MAIL_APPROVED_CREATE"
+    );
 
     const uLean = (await User.findById(user._id).lean()) || user.toObject?.() || user;
     const svc = computeServiceAccessFromLots(uLean);
@@ -456,12 +468,41 @@ router.patch("/:id/approval", adminOnly, async (req, res) => {
       });
     }
 
+    const prevStatus = String(user.approvalStatus || "pending");
     user.approvalStatus = status;
 
     if (status === "approved") user.suspended = false;
     if (status === "rejected") user.suspended = true;
 
+    // ✅ si pasó a aprobado y todavía no se envió, enviamos mail (sin password)
+    const shouldSendApprovedEmail =
+      status === "approved" &&
+      prevStatus !== "approved" &&
+      !!String(user.email || "").trim() &&
+      !user.welcomeApprovedEmailSentAt;
+
+    if (shouldSendApprovedEmail) {
+      user.welcomeApprovedEmailSentAt = new Date();
+    }
+
     await user.save();
+
+    if (shouldSendApprovedEmail) {
+      const to = String(user.email || "").trim();
+      const name = String(user.name || "").trim();
+      const lastName = String(user.lastName || "").trim();
+
+      fireAndForget(
+        async () => {
+          await sendUserApprovedEmail({
+            to,
+            user: { name, lastName, email: to },
+            password: "",
+          });
+        },
+        "MAIL_APPROVED_PATCH"
+      );
+    }
 
     res.json({
       ok: true,

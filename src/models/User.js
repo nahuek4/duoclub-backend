@@ -105,6 +105,9 @@ const userSchema = new mongoose.Schema(
     },
 
     creditLots: { type: [creditLotSchema], default: [] },
+
+    // ✅ NUEVO: marca para no enviar 2 veces el mail de "alta aprobada"
+    welcomeApprovedEmailSentAt: { type: Date, default: null },
   },
   { timestamps: true }
 );

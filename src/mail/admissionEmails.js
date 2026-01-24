@@ -1,4 +1,5 @@
-import { ADMIN_EMAIL, BRAND_NAME, sendMail } from "./core.js";
+// backend/src/mail/admissionEmails.js
+import { ADMIN_EMAIL, BRAND_NAME, sendMail, BRAND_URL } from "./core.js";
 import { escapeHtml, kvRow } from "./helpers.js";
 import { buildEmailLayout } from "./layout.js";
 
@@ -262,6 +263,107 @@ export async function sendUserAdmissionReceivedEmail(admissionDoc = {}, pseudoUs
   const html = buildEmailLayout({
     title: `${BRAND_NAME} · Formulario recibido`,
     preheader: `Recibimos tu formulario · Código #${s.publicId}`,
+    bodyHtml,
+  });
+
+  await sendMail(email, subject, text, html);
+}
+
+/* =========================================================
+   ✅ USER email: Alta aprobada (con password temporal opcional)
+   - Usar desde:
+     - POST /users (admin create)
+     - PATCH /users/:id/approval cuando status=approved
+========================================================= */
+export async function sendUserApprovedEmail({
+  to,
+  user = null,
+  password = "",
+  loginUrl = "",
+} = {}) {
+  const email = cleanStr(to || user?.email, "").trim();
+  if (!email) return;
+
+  const fullName =
+    cleanStr(`${user?.name || ""} ${user?.lastName || ""}`.trim(), "") ||
+    cleanStr(user?.fullName, "") ||
+    "Hola";
+
+  const url = cleanStr(loginUrl || `${BRAND_URL}/login`, `${BRAND_URL}/login`);
+  const hasPass = !!String(password || "").trim();
+
+  console.log("[MAIL][APPROVAL] send approved ->", {
+    to: email,
+    fullName,
+    hasPass,
+  });
+
+  const subject = `✅ Alta aprobada - ${BRAND_NAME}`;
+
+  const textLines = [
+    `Hola ${fullName},`,
+    "",
+    "Tu alta fue aprobada. Ya podés ingresar a la plataforma.",
+    "",
+    `Ingresar: ${url}`,
+    "",
+    `Email: ${email}`,
+  ];
+
+  if (hasPass) {
+    textLines.push("", `Contraseña temporal: ${String(password).trim()}`, "En tu primer ingreso te vamos a pedir que la cambies.");
+  }
+
+  textLines.push("", `Si no fuiste vos, escribinos a ${ADMIN_EMAIL}.`);
+
+  const text = textLines.join("\n");
+
+  const bodyHtml = `
+    <div style="display:flex; align-items:center; gap:10px; margin-bottom:12px;">
+      <div style="font-size:18px; font-weight:800;">Alta aprobada</div>
+      <div style="margin-left:auto; background:#e9f7ef; color:#0b6b2a; padding:6px 10px; border-radius:999px; font-size:12px; font-weight:800;">
+        APROBADA
+      </div>
+    </div>
+
+    <div style="color:#333; margin-bottom:12px;">
+      Hola <b>${escapeHtml(fullName)}</b>, tu alta fue <b>aprobada</b>. Ya podés ingresar a la plataforma.
+    </div>
+
+    <div style="border:1px solid #eee; border-radius:14px; overflow:hidden;">
+      <table role="presentation" cellpadding="0" cellspacing="0" width="100%" style="border-collapse:collapse;">
+        ${kvRow("Email", escapeHtml(email))}
+        ${kvRow("Ingreso", `<a href="${escapeHtml(url)}" style="color:#111; font-weight:800; text-decoration:none;">${escapeHtml(url)}</a>`)}
+      </table>
+    </div>
+
+    ${
+      hasPass
+        ? `
+      <div style="margin-top:14px; font-size:13px; font-weight:800;">Tu contraseña temporal</div>
+      <div style="margin-top:8px; border:1px solid #eee; border-radius:14px; overflow:hidden;">
+        <table role="presentation" cellpadding="0" cellspacing="0" width="100%" style="border-collapse:collapse;">
+          ${kvRow(
+            "Password",
+            `<span style="font-family:ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono', 'Courier New', monospace; font-size:16px; letter-spacing:0.6px; font-weight:900;">${escapeHtml(
+              String(password).trim()
+            )}</span>`
+          )}
+          ${kvRow("Importante", "En tu primer ingreso te vamos a pedir que la cambies.")}
+        </table>
+      </div>
+    `
+        : ""
+    }
+
+    <div style="margin-top:14px; font-size:12px; color:#666;">
+      Si no fuiste vos, escribinos a ${escapeHtml(ADMIN_EMAIL)}.
+    </div>
+  `;
+
+  const html = buildEmailLayout({
+    title: `${BRAND_NAME} · Alta aprobada`,
+    preheader: `Tu alta fue aprobada · Ya podés ingresar`,
     bodyHtml,
   });
 
