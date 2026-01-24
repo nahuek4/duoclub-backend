@@ -20,6 +20,8 @@ import adminEvaluationsRoutes from "./routes/adminEvaluations.js";
 import evaluationsRoutes from "./routes/evaluations.js";
 import testMailRouter from "./routes/testMail.js";
 
+import { startAppointmentReminderScheduler } from "./jobs/startReminders.js";
+
 dotenv.config();
 
 const app = express();
@@ -37,6 +39,16 @@ const __dirname = path.dirname(__filename);
    DB
 ========================= */
 await connectDB();
+
+/* =========================
+   ✅ REMINDERS 24HS (AUTO)
+   - Arranca después de DB
+========================= */
+startAppointmentReminderScheduler({
+  everyMinutes: Number(process.env.REMINDER_EVERY_MINUTES || 10),
+  aheadHours: Number(process.env.REMINDER_AHEAD_HOURS || 24),
+  windowMinutes: Number(process.env.REMINDER_WINDOW_MINUTES || 10),
+});
 
 /* =========================
    MIDDLEWARES BASE

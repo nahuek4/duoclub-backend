@@ -32,6 +32,13 @@ const appointmentSchema = new mongoose.Schema(
 
     // ✅ vencimiento del crédito usado (debug/UI)
     creditExpiresAt: { type: Date, default: null },
+
+    /* =========================================================
+       ✅ REMINDERS (24hs antes)
+       - Para no spamear y poder auditar
+    ========================================================= */
+    reminder24hSentAt: { type: Date, default: null },
+    reminder24hLastError: { type: String, default: "" },
   },
   { timestamps: true }
 );
@@ -62,6 +69,9 @@ appointmentSchema.index(
   { date: 1, time: 1, user: 1, status: 1 },
   { unique: true, partialFilterExpression: { status: "reserved" } }
 );
+
+// ✅ ayuda para el job (no es único)
+appointmentSchema.index({ status: 1, date: 1, time: 1, reminder24hSentAt: 1 });
 
 const Appointment = mongoose.model("Appointment", appointmentSchema);
 export default Appointment;
