@@ -31,7 +31,7 @@ function orderSummary(order = {}, user = null) {
   const uEmail = user?.email || "-";
 
   const pm = String(order?.payMethod || "").toUpperCase() || "-";
-  const status = String(order?.status || "pending").toLowerCase();
+  const status = String(order?.status || "Pendiente").toLowerCase();
 
   const totalFinal =
     order?.totalFinal != null
