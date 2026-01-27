@@ -1,6 +1,8 @@
+// backend/src/routes/admission.js
 import express from "express";
 import crypto from "crypto";
 import bcrypt from "bcryptjs";
+import mongoose from "mongoose";
 import Admission from "../models/Admission.js";
 import User from "../models/User.js";
 import { protect, adminOnly } from "../middleware/auth.js";
@@ -18,7 +20,9 @@ const router = express.Router();
 ========================================================= */
 
 function splitFullName(fullName) {
-  const clean = String(fullName || "").trim().replace(/\s+/g, " ");
+  const clean = String(fullName || "")
+    .trim()
+    .replace(/\s+/g, " ");
   if (!clean) return { name: "", lastName: "" };
   const parts = clean.split(" ");
   if (parts.length === 1) return { name: parts[0], lastName: "-" };
@@ -161,22 +165,71 @@ function mapAdmissionToUserUpdate(adm) {
   return update;
 }
 
+function getClientIp(req) {
+  return (
+    req.headers["x-forwarded-for"]?.toString()?.split(",")[0]?.trim() ||
+    req.socket?.remoteAddress ||
+    ""
+  );
+}
+
+function normEmail(v) {
+  return String(v || "").trim().toLowerCase();
+}
+
 /* =========================================================
-   PUBLIC: guardar step1
+   PUBLIC: guardar step1 (ANTI DUPLICADOS por email)
+   - Si existe el email con step2Completed=true -> 409
+   - Si existe el email con step2Completed=false -> REUSA ese registro (no crea otro)
 ========================================================= */
 router.post("/step1", async (req, res) => {
   try {
     const payload = req.body || {};
+    const email = normEmail(payload?.email);
+
+    if (!email) {
+      return res.status(400).json({ ok: false, error: "Email requerido." });
+    }
+
+    // Guardar email normalizado en step1
+    payload.email = email;
+
+    // Buscar la última admisión por email
+    const existing = await Admission.findOne({ "step1.email": email }).sort({ createdAt: -1 });
+
+    // Ya enviada -> bloquear (esto evita que te llenen la tabla)
+    if (existing?.step2Completed) {
+      return res.status(409).json({
+        ok: false,
+        error: "Este formulario ya fue enviado anteriormente.",
+        code: "ADMISSION_ALREADY_SUBMITTED",
+      });
+    }
+
+    // En progreso -> reusar
+    if (existing && !existing.step2Completed) {
+      existing.step1Completed = true;
+      existing.step1 = { ...(existing.step1 || {}), ...payload };
+      existing.ip = getClientIp(req);
+      existing.userAgent = req.headers["user-agent"] || "";
+      await existing.save();
+
+      return res.status(200).json({
+        ok: true,
+        admissionId: existing._id,
+        publicId: existing.publicId,
+        reused: true,
+      });
+    }
+
+    // No existe -> crear nueva
     const publicId = crypto.randomBytes(10).toString("hex");
 
     const doc = await Admission.create({
       publicId,
       step1Completed: true,
       step1: payload,
-      ip:
-        req.headers["x-forwarded-for"]?.toString()?.split(",")[0]?.trim() ||
-        req.socket?.remoteAddress ||
-        "",
+      ip: getClientIp(req),
       userAgent: req.headers["user-agent"] || "",
     });
 
@@ -184,6 +237,7 @@ router.post("/step1", async (req, res) => {
       ok: true,
       admissionId: doc._id,
       publicId: doc.publicId,
+      reused: false,
     });
   } catch (err) {
     console.error("POST /admission/step1 error:", err);
@@ -192,23 +246,41 @@ router.post("/step1", async (req, res) => {
 });
 
 /* =========================================================
-   PUBLIC: guardar step2 + ✅ enviar mails (admin + user) una sola vez
-   ✅ FIX REAL: solo marcamos step2EmailSent si el envío salió OK
+   PUBLIC: guardar step2 + mails (admin + user) UNA SOLA VEZ
+   ✅ FIX: Step2 idempotente (si ya estaba completo -> 409)
+   ✅ FIX: step2EmailSent solo se marca si el envío salió OK
 ========================================================= */
 router.patch("/:id/step2", async (req, res) => {
   try {
     const payload = req.body || {};
     const { id } = req.params;
 
-    const doc = await Admission.findById(id);
-    if (!doc) return res.status(404).json({ ok: false, error: "No encontrado." });
+    if (!mongoose.isValidObjectId(id)) {
+      return res.status(400).json({ ok: false, error: "ID inválido." });
+    }
 
-    doc.step2Completed = true;
-    doc.step2 = payload;
+    // ✅ Idempotencia real: SOLO completar si aún NO estaba completo
+    const doc = await Admission.findOneAndUpdate(
+      { _id: id, step2Completed: { $ne: true } },
+      { $set: { step2Completed: true, step2: payload } },
+      { new: true }
+    );
 
-    // Si ya se enviaron mails antes, no re-enviamos
+    // Si no actualizó es porque ya estaba completado (o no existe)
+    if (!doc) {
+      // ver si existe para diferenciar 404 vs 409
+      const exists = await Admission.findById(id).select("_id").lean();
+      if (!exists) return res.status(404).json({ ok: false, error: "No encontrado." });
+
+      return res.status(409).json({
+        ok: false,
+        error: "Este formulario ya fue enviado anteriormente.",
+        code: "ADMISSION_ALREADY_SUBMITTED",
+      });
+    }
+
+    // Si por algún motivo ya estaba marcado mails enviados, no reintentar
     if (doc.step2EmailSent) {
-      await doc.save();
       return res.json({
         ok: true,
         admissionId: doc._id,
@@ -218,9 +290,7 @@ router.patch("/:id/step2", async (req, res) => {
       });
     }
 
-    await doc.save();
-
-    // Intento async: si falla, no dejamos el flag trabado
+    // Intento async: si falla, NO dejamos el flag trabado
     fireAndForget(async () => {
       const s1 = doc.step1 || {};
       const fullName = String(s1.fullName || "").trim();
