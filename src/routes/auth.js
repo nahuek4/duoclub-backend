@@ -5,7 +5,14 @@ import jwt from "jsonwebtoken";
 import crypto from "crypto";
 import User from "../models/User.js";
 import { protect } from "../middleware/auth.js";
-import { sendVerifyEmail } from "../mail.js";
+
+// ✅ antes: import { sendVerifyEmail } from "../mail.js";
+import {
+  sendVerifyEmail,
+  sendUserRegistrationReceivedEmail,
+  sendAdminNewRegistrationEmail,
+  fireAndForget,
+} from "../mail.js";
 
 const router = express.Router();
 
@@ -29,6 +36,24 @@ function normText(v) {
 
 function normPhone(v) {
   return String(v || "").trim().replace(/[^\d+\s()-]/g, "");
+}
+
+// ✅ base URL del backend para armar links de aprobar/rechazar
+function getBackendBase(req) {
+  const env = String(process.env.BACKEND_URL || "").trim();
+  if (env) return env.replace(/\/+$/, "");
+
+  const proto = (req.headers["x-forwarded-proto"] || req.protocol || "https")
+    .toString()
+    .split(",")[0]
+    .trim();
+
+  const host = (req.headers["x-forwarded-host"] || req.get("host") || "")
+    .toString()
+    .split(",")[0]
+    .trim();
+
+  return `${proto}://${host}`;
 }
 
 /* ============================================
@@ -161,8 +186,6 @@ function serializeUser(u) {
     membership: {
       tier: tierNorm || "basic",
       activeUntil: m.activeUntil || null,
-
-      // ✅ Solo queda esto (para expiración/refunds, etc)
       creditsExpireDays: clamp(m.creditsExpireDays ?? creditsExpireDaysDefault, 1, 999),
     },
   };
@@ -262,7 +285,34 @@ router.post("/register", async (req, res) => {
     const frontend = process.env.FRONTEND_URL || "https://duoclub.ar";
     const verifyUrl = `${frontend}/verificar-email?token=${rawToken}`;
 
+    // ✅ mantenemos tu comportamiento (verificación inmediata)
     await sendVerifyEmail(user, verifyUrl);
+
+    // ✅ NUEVO: mail al usuario “registro recibido / esperá aprobación”
+    fireAndForget(() => sendUserRegistrationReceivedEmail(user), "MAIL_REGISTER_RECEIVED");
+
+    // ✅ NUEVO: mail al admin con botones
+    const backendBase = getBackendBase(req);
+
+    const approveToken = jwt.sign(
+      { uid: user._id.toString(), action: "approved", kind: "admin_approval" },
+      process.env.JWT_SECRET,
+      { expiresIn: "14d" }
+    );
+
+    const rejectToken = jwt.sign(
+      { uid: user._id.toString(), action: "rejected", kind: "admin_approval" },
+      process.env.JWT_SECRET,
+      { expiresIn: "14d" }
+    );
+
+    const approveUrl = `${backendBase}/auth/admin-approval?t=${encodeURIComponent(approveToken)}`;
+    const rejectUrl = `${backendBase}/auth/admin-approval?t=${encodeURIComponent(rejectToken)}`;
+
+    fireAndForget(
+      () => sendAdminNewRegistrationEmail({ user, approveUrl, rejectUrl }),
+      "MAIL_ADMIN_NEW_REGISTER"
+    );
 
     return res.status(201).json({
       ok: true,

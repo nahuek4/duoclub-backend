@@ -13,7 +13,7 @@ import { protect, adminOnly } from "../middleware/auth.js";
 import multer from "multer";
 
 // ✅ MAIL
-import { fireAndForget, sendUserApprovedEmail } from "../mail.js";
+import { fireAndForget, sendUserApprovedEmail, sendUserApprovalResultEmail } from "../mail.js";
 
 const router = express.Router();
 
@@ -302,8 +302,6 @@ function buildCreditsByService(user) {
 
 function stripSensitive(u) {
   if (!u || typeof u !== "object") return u;
-  // sacamos password + tokens y cosas internas
-  // (igual te dejo creditLots porque lo usás en admin)
   const { password, emailVerificationToken, emailVerificationExpires, __v, ...rest } = u;
   return rest;
 }
@@ -450,18 +448,27 @@ router.get("/pending", adminOnly, async (req, res) => {
   }
 });
 
+/* =========================================================
+   ✅ PATCH /users/:id/approval
+   - Mantener "en espera hasta que admin apruebe"
+   - Si aprueba: suspended=false
+   - Si rechaza: suspended=true
+   - No aprobar si NO verificó email
+   - Mail al usuario aprobado/rechazado (+ link a DUO) — 1 sola vez
+========================================================= */
 router.patch("/:id/approval", adminOnly, async (req, res) => {
   try {
     const { id } = req.params;
-    const { status } = req.body || {};
+    const status = String(req.body?.status || "").toLowerCase().trim();
 
-    if (!["approved", "rejected"].includes(String(status))) {
+    if (!["approved", "rejected"].includes(status)) {
       return res.status(400).json({ error: "Estado inválido." });
     }
 
     const user = await User.findById(id);
     if (!user) return res.status(404).json({ error: "Usuario no encontrado." });
 
+    // ✅ regla: NO aprobar si no verificó email
     if (status === "approved" && !user.emailVerified) {
       return res.status(400).json({
         error: "No se puede aprobar: el email no está verificado.",
@@ -474,34 +481,24 @@ router.patch("/:id/approval", adminOnly, async (req, res) => {
     if (status === "approved") user.suspended = false;
     if (status === "rejected") user.suspended = true;
 
-    // ✅ si pasó a aprobado y todavía no se envió, enviamos mail (sin password)
-    const shouldSendApprovedEmail =
-      status === "approved" &&
-      prevStatus !== "approved" &&
-      !!String(user.email || "").trim() &&
-      !user.welcomeApprovedEmailSentAt;
+    // ✅ mail 1 sola vez al pasar de pending->approved (o pending->rejected si querés también)
+    const changed = prevStatus !== status;
 
-    if (shouldSendApprovedEmail) {
+    // Si querés mandar mail también al rechazar 1 sola vez, lo hacemos con el mismo flag.
+    const shouldSendApprovalMail =
+      changed &&
+      !!String(user.email || "").trim() &&
+      !user.welcomeApprovedEmailSentAt; // usamos el mismo campo como “ya notificado”
+
+    if (shouldSendApprovalMail) {
       user.welcomeApprovedEmailSentAt = new Date();
     }
 
     await user.save();
 
-    if (shouldSendApprovedEmail) {
-      const to = String(user.email || "").trim();
-      const name = String(user.name || "").trim();
-      const lastName = String(user.lastName || "").trim();
-
-      fireAndForget(
-        async () => {
-          await sendUserApprovedEmail({
-            to,
-            user: { name, lastName, email: to },
-            password: "",
-          });
-        },
-        "MAIL_APPROVED_PATCH"
-      );
+    if (shouldSendApprovalMail) {
+      // ✅ mail aprobado/rechazado con link a DUO (aprobado)
+      fireAndForget(() => sendUserApprovalResultEmail(user, status), "MAIL_APPROVAL_RESULT_WEB");
     }
 
     res.json({

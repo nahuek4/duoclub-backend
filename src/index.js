@@ -1,4 +1,4 @@
-// src/index.js
+// backend/src/index.js
 import express from "express";
 import dotenv from "dotenv";
 import path from "path";
@@ -21,6 +21,9 @@ import evaluationsRoutes from "./routes/evaluations.js";
 import testMailRouter from "./routes/testMail.js";
 
 import { startAppointmentReminderScheduler } from "./jobs/startReminders.js";
+
+// ✅ NUEVO
+import adminApprovalLinksRoutes from "./routes/adminApprovalLinks.js";
 
 dotenv.config();
 
@@ -125,6 +128,10 @@ app.get("/health", (req, res) => {
    RUTAS
 ========================= */
 app.use("/auth", authRoutes);
+
+// ✅ NUEVO: links de aprobar/rechazar del mail (vive en /auth)
+app.use("/auth", adminApprovalLinksRoutes);
+
 app.use("/users", userRoutes);
 app.use("/appointments", appointmentRoutes);
 app.use("/services", servicesRoutes);
