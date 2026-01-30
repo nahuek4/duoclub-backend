@@ -476,19 +476,50 @@ router.patch("/:id/approval", adminOnly, async (req, res) => {
     }
 
     const prevStatus = String(user.approvalStatus || "pending");
-    user.approvalStatus = status;
 
-    if (status === "approved") user.suspended = false;
-    if (status === "rejected") user.suspended = true;
+    // =========================================================
+    // ✅ CASO RECHAZADO -> BORRAR CUENTA
+    // - mandamos mail de rechazo (si corresponde)
+    // - borramos el usuario
+    // - así puede registrarse de nuevo con el mismo email
+    // =========================================================
+    if (status === "rejected") {
+      const to = String(user.email || "").trim();
 
-    // ✅ mail 1 sola vez al pasar de pending->approved (o pending->rejected si querés también)
-    const changed = prevStatus !== status;
+      // mandamos mail solo si hay email y si no estaba ya rechazado
+      const shouldSendRejectionMail = !!to && prevStatus !== "rejected";
 
-    // Si querés mandar mail también al rechazar 1 sola vez, lo hacemos con el mismo flag.
+      if (shouldSendRejectionMail) {
+        fireAndForget(
+          () => sendUserApprovalResultEmail(user, "rejected"),
+          "MAIL_REJECT_AND_DELETE"
+        );
+      }
+
+      // ✅ BORRADO DEFINITIVO
+      // (Opcional) también borramos turnos asociados por limpieza
+      await Appointment.deleteMany({ user: user._id });
+      await user.deleteOne();
+
+      return res.json({
+        ok: true,
+        deleted: true,
+        message: "Usuario rechazado y eliminado. Puede registrarse nuevamente.",
+      });
+    }
+
+    // =========================================================
+    // ✅ CASO APROBADO -> activar + mail 1 sola vez
+    // =========================================================
+    user.approvalStatus = "approved";
+    user.suspended = false;
+
+    const changed = prevStatus !== "approved";
+
     const shouldSendApprovalMail =
       changed &&
       !!String(user.email || "").trim() &&
-      !user.welcomeApprovedEmailSentAt; // usamos el mismo campo como “ya notificado”
+      !user.welcomeApprovedEmailSentAt;
 
     if (shouldSendApprovalMail) {
       user.welcomeApprovedEmailSentAt = new Date();
@@ -497,11 +528,10 @@ router.patch("/:id/approval", adminOnly, async (req, res) => {
     await user.save();
 
     if (shouldSendApprovalMail) {
-      // ✅ mail aprobado/rechazado con link a DUO (aprobado)
-      fireAndForget(() => sendUserApprovalResultEmail(user, status), "MAIL_APPROVAL_RESULT_WEB");
+      fireAndForget(() => sendUserApprovalResultEmail(user, "approved"), "MAIL_APPROVED_WEB");
     }
 
-    res.json({
+    return res.json({
       ok: true,
       approvalStatus: user.approvalStatus,
       suspended: user.suspended,
@@ -509,9 +539,10 @@ router.patch("/:id/approval", adminOnly, async (req, res) => {
     });
   } catch (err) {
     console.error("Error en PATCH /users/:id/approval:", err);
-    res.status(500).json({ error: "Error al actualizar aprobación." });
+    return res.status(500).json({ error: "Error al actualizar aprobación." });
   }
 });
+
 
 router.put("/:id", async (req, res) => {
   try {
