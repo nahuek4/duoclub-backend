@@ -6,6 +6,7 @@ import User from "../models/User.js";
 import { protect } from "../middleware/auth.js";
 
 import {
+  fireAndForget,
   sendAppointmentBookedEmail,
   sendAppointmentBookedBatchEmail,
   sendAppointmentCancelledEmail,
@@ -15,7 +16,6 @@ const router = express.Router();
 
 /* =========================
    CONFIG: ventana de reserva
-   ✅ desde AHORA hasta +14 días
 ========================= */
 const MAX_ADVANCE_DAYS = 14;
 
@@ -67,14 +67,12 @@ function validateBookingWindow(slotDate) {
   if (slotDate.getTime() < now.getTime()) {
     return { ok: false, error: "No se puede reservar un turno pasado." };
   }
-
   if (slotDate.getTime() > max.getTime()) {
     return {
       ok: false,
       error: `Solo se puede reservar hasta ${MAX_ADVANCE_DAYS} días de anticipación.`,
     };
   }
-
   return { ok: true };
 }
 
@@ -86,10 +84,10 @@ function isSaturday(dateStr) {
 }
 
 /**
- * ✅ Match con tu frontend:
+ * Match con front:
  * - mañana: 07..12
  * - tarde:  14..17
- * - noche: 18..20 (incluye 20)
+ * - noche: 18..20
  */
 function getTurnoFromTime(time) {
   if (!time) return "";
@@ -115,7 +113,7 @@ function stripAccents(s) {
     .replace(/[\u0300-\u036f]/g, "");
 }
 
-// ✅ RF eliminado
+// RF eliminado
 function serviceToKey(serviceName) {
   const s = stripAccents(serviceName).toLowerCase().trim();
 
@@ -194,26 +192,26 @@ function findLotById(user, lotId) {
 }
 
 function serializeAppointment(ap) {
-  const json = ap.toObject ? ap.toObject() : ap;
+  const json = ap?.toObject ? ap.toObject() : ap;
 
-  const userObj = json.user || {};
+  const userObj = json?.user || {};
   const userId =
-    userObj._id?.toString?.() ||
-    json.userId ||
-    userObj.toString?.() ||
+    userObj?._id?.toString?.() ||
+    json?.userId ||
+    userObj?.toString?.() ||
     "";
 
   return {
-    id: json._id?.toString?.() || json.id,
-    date: json.date,
-    time: json.time,
-    service: json.service || "",
-    status: json.status || "reserved",
-    coach: json.coach || "",
+    id: json?._id?.toString?.() || json?.id,
+    date: json?.date,
+    time: json?.time,
+    service: json?.service || "",
+    status: json?.status || "reserved",
+    coach: json?.coach || "",
     userId,
-    userName: userObj.name || "",
-    userEmail: userObj.email || "",
-    creditExpiresAt: json.creditExpiresAt || null,
+    userName: userObj?.name || "",
+    userEmail: userObj?.email || "",
+    creditExpiresAt: json?.creditExpiresAt || null,
   };
 }
 
@@ -225,7 +223,7 @@ function requiresApto(user) {
 }
 
 /* =========================
-   ✅ Cupos (alineado con front)
+   Cupos (alineado con front)
 ========================= */
 const TOTAL_CAP = 6;
 
@@ -238,9 +236,7 @@ function calcEpCap({ hoursToStart, otherReservedCount }) {
 }
 
 /* =========================
-   ✅ CANCELACIÓN: regla única
-   - Se puede cancelar hasta el inicio (no pasado)
-   - Crédito se devuelve SOLO si faltan >= 12hs
+   CANCELACIÓN
 ========================= */
 const REFUND_CUTOFF_HOURS = 12;
 
@@ -257,34 +253,27 @@ function validateBasicSlotRules({ date, time, service }) {
     return { ok: false, error: "Horario fuera del rango permitido." };
   }
 
-  // ✅ Sábado: 08..12
+  // sábado 08..12
   if (isSaturday(date)) {
     const [hStr] = String(time).split(":");
     const h = Number(hStr);
     if (h < 8 || h > 12) {
-      return {
-        ok: false,
-        error: "Los sábados solo se puede reservar de 08:00 a 12:00.",
-      };
+      return { ok: false, error: "Los sábados solo se puede reservar de 08:00 a 12:00." };
     }
   }
 
   const slotDate = buildSlotDate(date, time);
   if (!slotDate) return { ok: false, error: "Fecha/hora inválida." };
 
-  // ✅ ventana: AHORA -> +14 días
   const w = validateBookingWindow(slotDate);
   if (!w.ok) return w;
 
   const isEpService = service === EP_NAME;
 
-  // ✅ tarde: SOLO EP (regla dura)
+  // tarde solo EP
   if (turno === "tarde" && !isEpService) {
-    return {
-      ok: false,
-      error: "En el turno tarde solo está disponible Entrenamiento Personal.",
-    };
-  }
+    return { ok: false, error: "En el turno tarde solo está disponible Entrenamiento Personal." };
+    }
 
   return { ok: true, turno, slotDate, isEpService };
 }
@@ -308,7 +297,7 @@ router.get("/", async (req, res) => {
       .populate("user", "name email")
       .lean();
 
-    res.json(list.map(serializeAppointment));
+    res.json((list || []).map(serializeAppointment));
   } catch (err) {
     console.error("Error en GET /appointments:", err);
     res.status(500).json({ error: "Error al obtener turnos." });
@@ -322,18 +311,22 @@ router.use(protect);
 
 /* =========================
    POST /appointments
-   - descuenta 1 crédito desde lotes (POR SERVICIO)
+   ✅ mails fuera de la transacción
 ========================= */
 router.post("/", async (req, res) => {
   const session = await mongoose.startSession();
+
+  // para disparar mail after-commit sin depender de variables internas
+  let mailUser = null;
+  let mailAp = null;
+  let mailServiceName = null;
+
   try {
     const { date, time, service } = req.body || {};
-
     const basic = validateBasicSlotRules({ date, time, service });
     if (!basic.ok) return res.status(400).json({ error: basic.error });
 
     const userId = req.user._id || req.user.id;
-
     let out = null;
 
     await session.withTransaction(async () => {
@@ -370,8 +363,7 @@ router.post("/", async (req, res) => {
         .session(session)
         .lean();
 
-      const totalCount = existingAtSlot.length;
-      if (totalCount >= TOTAL_CAP) throw new Error("TOTAL_CAP_REACHED");
+      if (existingAtSlot.length >= TOTAL_CAP) throw new Error("TOTAL_CAP_REACHED");
 
       const epCount = existingAtSlot.filter((a) => a.service === EP_NAME).length;
 
@@ -379,26 +371,25 @@ router.post("/", async (req, res) => {
       const raTaken = existingAtSlot.some((a) => a.service === "Rehabilitacion Activa") ? 1 : 0;
       const otherReservedCount = arTaken + raTaken;
 
-      // ✅ Otros servicios: máximo 1 por servicio por hora
+      // otros servicios: max 1 por servicio/hora
       if (!basic.isEpService) {
         const alreadyService = existingAtSlot.some((a) => a.service === service);
         if (alreadyService) throw new Error("SERVICE_ALREADY_TAKEN");
       }
 
-      // ✅ EP cap rule
+      // EP cap
       if (basic.isEpService) {
         const hoursToStart = (basic.slotDate.getTime() - Date.now()) / (1000 * 60 * 60);
         const epCap = calcEpCap({ hoursToStart, otherReservedCount });
         if (epCount >= epCap) throw new Error(hoursToStart > 12 ? "EP_CAP_4" : "EP_CAP_TOTAL");
       }
 
-      // ✅ consumir crédito desde lote (solo clientes)
+      // consumir crédito
       let usedLotId = null;
       let usedLotExp = null;
 
       if (!isAdmin) {
         const sk = serviceToKey(service);
-
         const lot = pickLotToConsume(user, sk);
         if (!lot) throw new Error(`NO_CREDITS_FOR_${sk}`);
 
@@ -420,7 +411,7 @@ router.post("/", async (req, res) => {
         await user.save({ session });
       }
 
-      const ap = await Appointment.create(
+      const created = await Appointment.create(
         [
           {
             date,
@@ -435,25 +426,34 @@ router.post("/", async (req, res) => {
         { session }
       );
 
-      const populated = await Appointment.findById(ap[0]._id)
+      const populated = await Appointment.findById(created[0]._id)
         .populate("user", "name email")
         .session(session);
 
       out = serializeAppointment(populated);
 
-      // mail (usuario + admin dentro del mailer)
-      try {
-        await sendAppointmentBookedEmail(user, { date, time, service }, service);
-      } catch (e) {
-        console.log("[MAIL] booked error:", e?.message || e);
-        await sendAdminCopy({ kind: "booked", user, ap: { date, time, service } });
-      }
+      // ✅ guardamos para mailing después del commit
+      mailUser = { ...user.toObject(), _id: user._id }; // snapshot
+      mailAp = { date, time, service };
+      mailServiceName = service;
     });
 
-    return res.status(201).json(out);
+    // ✅ RESPONDE RÁPIDO
+    res.status(201).json(out);
+
+    // ✅ MAIL DESPUÉS (no bloquea, no afecta UX)
+    if (mailUser && mailAp) {
+      fireAndForget(async () => {
+        try {
+          await sendAppointmentBookedEmail(mailUser, mailAp, mailServiceName);
+        } catch (e) {
+          console.log("[MAIL] booked error:", e?.message || e);
+          await sendAdminCopy({ kind: "booked", user: mailUser, ap: mailAp });
+        }
+      }, "MAIL_BOOKED");
+    }
   } catch (err) {
     console.error("Error en POST /appointments:", err);
-
     const msg = String(err?.message || "");
 
     if (err?.code === 11000) {
@@ -499,18 +499,20 @@ router.post("/", async (req, res) => {
 });
 
 /* =========================
-   ✅ POST /appointments/batch
+   POST /appointments/batch
+   ✅ 1 request, valida todo, crea todo
+   ✅ mail after-commit con fireAndForget
 ========================= */
 router.post("/batch", async (req, res) => {
   const session = await mongoose.startSession();
+
+  let mailUser = null;
+  let mailItems = null;
+
   try {
     const items = Array.isArray(req.body?.items) ? req.body.items : [];
-    if (!items.length) {
-      return res.status(400).json({ error: "Faltan items: [{date,time,service}]." });
-    }
-    if (items.length > 12) {
-      return res.status(400).json({ error: "Máximo 12 turnos por operación." });
-    }
+    if (!items.length) return res.status(400).json({ error: "Faltan items: [{date,time,service}]." });
+    if (items.length > 12) return res.status(400).json({ error: "Máximo 12 turnos por operación." });
 
     const seen = new Set();
     const normalized = items.map((it, idx) => {
@@ -538,7 +540,7 @@ router.post("/batch", async (req, res) => {
 
     const userId = req.user._id || req.user.id;
 
-    let result = [];
+    let createdItems = [];
 
     await session.withTransaction(async () => {
       const user = await User.findById(userId).session(session);
@@ -554,6 +556,7 @@ router.post("/batch", async (req, res) => {
         if ((user.credits || 0) <= 0) throw new Error("NO_CREDITS");
       }
 
+      // no duplicar mismo horario dentro del batch
       const slotSet = new Set(normalized.map((x) => slotKey(x.date, x.time)));
       if (slotSet.size !== normalized.length) {
         const e = new Error("DUP_SLOT_IN_BATCH");
@@ -561,6 +564,7 @@ router.post("/batch", async (req, res) => {
         throw e;
       }
 
+      // si ya tiene turno en alguno de esos horarios
       const orSlots = normalized.map((x) => ({ date: x.date, time: x.time }));
       const alreadyByUserAny = await Appointment.findOne({
         user: user._id,
@@ -572,6 +576,7 @@ router.post("/batch", async (req, res) => {
 
       if (alreadyByUserAny) throw new Error("ALREADY_HAVE_SLOT");
 
+      // traer existentes por esos slots
       const existing = await Appointment.find({
         status: "reserved",
         $or: orSlots,
@@ -586,6 +591,7 @@ router.post("/batch", async (req, res) => {
         bySlot.get(k).push(ap);
       }
 
+      // validación por slot como si se agregaran
       for (const it of normalized) {
         const k = slotKey(it.date, it.time);
         const cur = bySlot.get(k) || [];
@@ -624,7 +630,8 @@ router.post("/batch", async (req, res) => {
         bySlot.set(k, cur);
       }
 
-      result = [];
+      // crear turnos + descontar lotes
+      createdItems = [];
 
       for (const it of normalized) {
         let usedLotId = null;
@@ -672,7 +679,7 @@ router.post("/batch", async (req, res) => {
           .populate("user", "name email")
           .session(session);
 
-        result.push(serializeAppointment(populated));
+        createdItems.push(serializeAppointment(populated));
       }
 
       if (!isAdmin) {
@@ -680,18 +687,27 @@ router.post("/batch", async (req, res) => {
         await user.save({ session });
       }
 
-      try {
-        await sendAppointmentBookedBatchEmail(user, result);
-      } catch (e) {
-        console.log("[MAIL] batch booked error:", e?.message || e);
-        await sendAdminCopy({ kind: "batch_booked", user, ap: { items: result } });
-      }
+      // snapshot para mail after commit
+      mailUser = { ...user.toObject(), _id: user._id };
+      mailItems = createdItems.map((x) => ({ date: x.date, time: x.time, service: x.service }));
     });
 
-    return res.status(201).json({ items: result });
+    // responder rápido
+    res.status(201).json({ items: createdItems });
+
+    // mail after-commit
+    if (mailUser && mailItems?.length) {
+      fireAndForget(async () => {
+        try {
+          await sendAppointmentBookedBatchEmail(mailUser, mailItems);
+        } catch (e) {
+          console.log("[MAIL] batch booked error:", e?.message || e);
+          await sendAdminCopy({ kind: "batch_booked", user: mailUser, ap: { items: mailItems } });
+        }
+      }, "MAIL_BATCH_BOOKED");
+    }
   } catch (err) {
     console.error("Error en POST /appointments/batch:", err);
-
     const msg = String(err?.message || "");
     const http = err?.http;
 
@@ -753,11 +769,16 @@ router.post("/batch", async (req, res) => {
 
 /* =========================
    PATCH /appointments/:id/cancel
-   ✅ SIN LÍMITE DE CANCELACIONES
-   ✅ DEVOLUCIÓN SOLO SI >= 12HS
+   ✅ mail after-commit
 ========================= */
 router.patch("/:id/cancel", async (req, res) => {
   const session = await mongoose.startSession();
+
+  let mailUser = null;
+  let mailAp = null;
+  let mailServiceName = null;
+  let mailMeta = null;
+
   try {
     const { id } = req.params;
 
@@ -867,25 +888,29 @@ router.patch("/:id/cancel", async (req, res) => {
         refundCutoffHours: REFUND_CUTOFF_HOURS,
       };
 
-      // ✅ MAIL CANCEL: usuario + admin, con reintegro sí/no
-      try {
-        await sendAppointmentCancelledEmail(
-          user,
-          { date: ap.date, time: ap.time, service: ap.service },
-          ap.service,
-          { refund: shouldRefund, refundCutoffHours: REFUND_CUTOFF_HOURS }
-        );
-      } catch (e) {
-        console.log("[MAIL] cancelled error:", e?.message || e);
-        await sendAdminCopy({
-          kind: "cancelled",
-          user,
-          ap: { date: ap.date, time: ap.time, service: ap.service, refund: shouldRefund },
-        });
-      }
+      // snapshot mail after
+      mailUser = { ...user.toObject(), _id: user._id };
+      mailAp = { date: ap.date, time: ap.time, service: ap.service };
+      mailServiceName = ap.service;
+      mailMeta = { refund: shouldRefund, refundCutoffHours: REFUND_CUTOFF_HOURS };
     });
 
-    return res.json(payload);
+    res.json(payload);
+
+    if (mailUser && mailAp) {
+      fireAndForget(async () => {
+        try {
+          await sendAppointmentCancelledEmail(mailUser, mailAp, mailServiceName, mailMeta);
+        } catch (e) {
+          console.log("[MAIL] cancelled error:", e?.message || e);
+          await sendAdminCopy({
+            kind: "cancelled",
+            user: mailUser,
+            ap: { ...mailAp, refund: mailMeta?.refund },
+          });
+        }
+      }, "MAIL_CANCELLED");
+    }
   } catch (err) {
     console.error("Error en PATCH /appointments/:id/cancel:", err);
     const http = err?.http;
