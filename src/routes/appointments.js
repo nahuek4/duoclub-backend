@@ -20,8 +20,7 @@ const router = express.Router();
 const MAX_ADVANCE_DAYS = 14;
 
 /* =========================
-   ✅ NUEVO: anticipación mínima
-   Ej: 11:00 -> no deja reservar 12:00
+   ✅ Anticipación mínima para reservar
 ========================= */
 const MIN_LEAD_MINUTES = 60;
 
@@ -82,14 +81,10 @@ function validateBookingWindow(slotDate) {
   return { ok: true };
 }
 
-/* =========================
-   ✅ NUEVO: validación anticipación mínima
-========================= */
 function validateMinLeadTime(slotDate) {
   const now = new Date();
   const cutoff = new Date(now.getTime() + MIN_LEAD_MINUTES * 60 * 1000);
 
-  // si el turno es <= ahora + 60 min => NO
   if (slotDate.getTime() <= cutoff.getTime()) {
     return {
       ok: false,
@@ -241,9 +236,7 @@ function serializeAppointment(ap) {
 function requiresApto(user) {
   if (!user?.createdAt) return false;
   const created = new Date(user.createdAt);
-  const days = Math.floor(
-    (Date.now() - created.getTime()) / (1000 * 60 * 60 * 24)
-  );
+  const days = Math.floor((Date.now() - created.getTime()) / (1000 * 60 * 60 * 24));
   return days > 20 && !user.aptoPath;
 }
 
@@ -261,9 +254,18 @@ function calcEpCap({ hoursToStart, otherReservedCount }) {
 }
 
 /* =========================
-   CANCELACIÓN
+   ✅ CANCELACIÓN: reintegro por servicio
+   - EP: 2hs
+   - resto: 12hs
 ========================= */
-const REFUND_CUTOFF_HOURS = 12;
+const REFUND_CUTOFF_HOURS_DEFAULT = 12;
+const REFUND_CUTOFF_HOURS_EP = 2;
+
+function getRefundCutoffHoursByService(serviceName) {
+  // Si querés más robusto, podés usar serviceToKey(serviceName)
+  if (String(serviceName || "").trim() === EP_NAME) return REFUND_CUTOFF_HOURS_EP;
+  return REFUND_CUTOFF_HOURS_DEFAULT;
+}
 
 /* =========================
    Helpers: validación de item
@@ -283,10 +285,7 @@ function validateBasicSlotRules({ date, time, service }) {
     const [hStr] = String(time).split(":");
     const h = Number(hStr);
     if (h < 8 || h > 12) {
-      return {
-        ok: false,
-        error: "Los sábados solo se puede reservar de 08:00 a 12:00.",
-      };
+      return { ok: false, error: "Los sábados solo se puede reservar de 08:00 a 12:00." };
     }
   }
 
@@ -296,7 +295,6 @@ function validateBasicSlotRules({ date, time, service }) {
   const w = validateBookingWindow(slotDate);
   if (!w.ok) return w;
 
-  // ✅ NUEVO: 60 minutos mínimo
   const lead = validateMinLeadTime(slotDate);
   if (!lead.ok) return lead;
 
@@ -304,10 +302,7 @@ function validateBasicSlotRules({ date, time, service }) {
 
   // tarde solo EP
   if (turno === "tarde" && !isEpService) {
-    return {
-      ok: false,
-      error: "En el turno tarde solo está disponible Entrenamiento Personal.",
-    };
+    return { ok: false, error: "En el turno tarde solo está disponible Entrenamiento Personal." };
   }
 
   return { ok: true, turno, slotDate, isEpService };
@@ -328,7 +323,9 @@ router.get("/", async (req, res) => {
     if (from && to) query.date = { $gte: from, $lt: to };
     else if (from) query.date = { $gte: from };
 
-    const list = await Appointment.find(query).populate("user", "name email").lean();
+    const list = await Appointment.find(query)
+      .populate("user", "name email")
+      .lean();
 
     res.json((list || []).map(serializeAppointment));
   } catch (err) {
@@ -344,12 +341,10 @@ router.use(protect);
 
 /* =========================
    POST /appointments
-   ✅ mails fuera de la transacción
 ========================= */
 router.post("/", async (req, res) => {
   const session = await mongoose.startSession();
 
-  // para disparar mail after-commit sin depender de variables internas
   let mailUser = null;
   let mailAp = null;
   let mailServiceName = null;
@@ -376,7 +371,6 @@ router.post("/", async (req, res) => {
         if ((user.credits || 0) <= 0) throw new Error("NO_CREDITS");
       }
 
-      // ya tiene turno a esa hora
       const alreadyByUser = await Appointment.findOne({
         date,
         time,
@@ -404,20 +398,17 @@ router.post("/", async (req, res) => {
       const raTaken = existingAtSlot.some((a) => a.service === "Rehabilitacion Activa") ? 1 : 0;
       const otherReservedCount = arTaken + raTaken;
 
-      // otros servicios: max 1 por servicio/hora
       if (!basic.isEpService) {
         const alreadyService = existingAtSlot.some((a) => a.service === service);
         if (alreadyService) throw new Error("SERVICE_ALREADY_TAKEN");
       }
 
-      // EP cap
       if (basic.isEpService) {
         const hoursToStart = (basic.slotDate.getTime() - Date.now()) / (1000 * 60 * 60);
         const epCap = calcEpCap({ hoursToStart, otherReservedCount });
         if (epCount >= epCap) throw new Error(hoursToStart > 12 ? "EP_CAP_4" : "EP_CAP_TOTAL");
       }
 
-      // consumir crédito
       let usedLotId = null;
       let usedLotExp = null;
 
@@ -465,16 +456,13 @@ router.post("/", async (req, res) => {
 
       out = serializeAppointment(populated);
 
-      // ✅ guardamos para mailing después del commit
-      mailUser = { ...user.toObject(), _id: user._id }; // snapshot
+      mailUser = { ...user.toObject(), _id: user._id };
       mailAp = { date, time, service };
       mailServiceName = service;
     });
 
-    // ✅ RESPONDE RÁPIDO
     res.status(201).json(out);
 
-    // ✅ MAIL DESPUÉS (no bloquea, no afecta UX)
     if (mailUser && mailAp) {
       fireAndForget(async () => {
         try {
@@ -525,7 +513,6 @@ router.post("/", async (req, res) => {
       return res.status(403).json({ error: `No tenés créditos válidos para este servicio (${sk}).` });
     }
 
-    // ✅ NUEVO: si se rechaza por anticipación mínima, cae como 400 por validateBasicSlotRules
     return res.status(500).json({ error: "Error al crear el turno." });
   } finally {
     session.endSession();
@@ -534,8 +521,6 @@ router.post("/", async (req, res) => {
 
 /* =========================
    POST /appointments/batch
-   ✅ 1 request, valida todo, crea todo
-   ✅ mail after-commit con fireAndForget
 ========================= */
 router.post("/batch", async (req, res) => {
   const session = await mongoose.startSession();
@@ -590,7 +575,6 @@ router.post("/batch", async (req, res) => {
         if ((user.credits || 0) <= 0) throw new Error("NO_CREDITS");
       }
 
-      // no duplicar mismo horario dentro del batch
       const slotSet = new Set(normalized.map((x) => slotKey(x.date, x.time)));
       if (slotSet.size !== normalized.length) {
         const e = new Error("DUP_SLOT_IN_BATCH");
@@ -598,7 +582,6 @@ router.post("/batch", async (req, res) => {
         throw e;
       }
 
-      // si ya tiene turno en alguno de esos horarios
       const orSlots = normalized.map((x) => ({ date: x.date, time: x.time }));
       const alreadyByUserAny = await Appointment.findOne({
         user: user._id,
@@ -610,7 +593,6 @@ router.post("/batch", async (req, res) => {
 
       if (alreadyByUserAny) throw new Error("ALREADY_HAVE_SLOT");
 
-      // traer existentes por esos slots
       const existing = await Appointment.find({
         status: "reserved",
         $or: orSlots,
@@ -625,7 +607,6 @@ router.post("/batch", async (req, res) => {
         bySlot.get(k).push(ap);
       }
 
-      // validación por slot como si se agregaran
       for (const it of normalized) {
         const k = slotKey(it.date, it.time);
         const cur = bySlot.get(k) || [];
@@ -664,7 +645,6 @@ router.post("/batch", async (req, res) => {
         bySlot.set(k, cur);
       }
 
-      // crear turnos + descontar lotes
       createdItems = [];
 
       for (const it of normalized) {
@@ -721,15 +701,12 @@ router.post("/batch", async (req, res) => {
         await user.save({ session });
       }
 
-      // snapshot para mail after commit
       mailUser = { ...user.toObject(), _id: user._id };
       mailItems = createdItems.map((x) => ({ date: x.date, time: x.time, service: x.service }));
     });
 
-    // responder rápido
     res.status(201).json({ items: createdItems });
 
-    // mail after-commit
     if (mailUser && mailItems?.length) {
       fireAndForget(async () => {
         try {
@@ -769,9 +746,7 @@ router.post("/batch", async (req, res) => {
     if (msg === "NO_CREDITS") return res.status(403).json({ error: "Sin créditos disponibles." });
 
     if (msg === "DUP_SLOT_IN_BATCH")
-      return res.status(409).json({
-        error: "No podés reservar 2 turnos en el mismo horario en un solo batch.",
-      });
+      return res.status(409).json({ error: "No podés reservar 2 turnos en el mismo horario en un solo batch." });
 
     if (msg === "ALREADY_HAVE_SLOT")
       return res.status(409).json({ error: "Ya tenés un turno reservado en alguno de esos horarios." });
@@ -805,7 +780,7 @@ router.post("/batch", async (req, res) => {
 
 /* =========================
    PATCH /appointments/:id/cancel
-   ✅ mail after-commit
+   ✅ reintegro depende del servicio
 ========================= */
 router.patch("/:id/cancel", async (req, res) => {
   const session = await mongoose.startSession();
@@ -870,7 +845,13 @@ router.patch("/:id/cancel", async (req, res) => {
       ap.status = "cancelled";
       await ap.save({ session });
 
-      const shouldRefund = user.role !== "admin" && hours >= REFUND_CUTOFF_HOURS;
+      // ✅ corte por servicio
+      const refundCutoffHours = getRefundCutoffHoursByService(ap.service);
+
+      // ✅ solo reintegra si:
+      // - no es admin
+      // - y cumple el corte por servicio
+      const shouldRefund = user.role !== "admin" && hours >= refundCutoffHours;
 
       if (user.role !== "admin") {
         user.history = user.history || [];
@@ -921,14 +902,13 @@ router.patch("/:id/cancel", async (req, res) => {
       payload = {
         ...serializeAppointment(populated),
         refund: shouldRefund,
-        refundCutoffHours: REFUND_CUTOFF_HOURS,
+        refundCutoffHours, // ✅ ahora depende del servicio
       };
 
-      // snapshot mail after
       mailUser = { ...user.toObject(), _id: user._id };
       mailAp = { date: ap.date, time: ap.time, service: ap.service };
       mailServiceName = ap.service;
-      mailMeta = { refund: shouldRefund, refundCutoffHours: REFUND_CUTOFF_HOURS };
+      mailMeta = { refund: shouldRefund, refundCutoffHours };
     });
 
     res.json(payload);
