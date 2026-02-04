@@ -20,6 +20,12 @@ const router = express.Router();
 const MAX_ADVANCE_DAYS = 14;
 
 /* =========================
+   ✅ NUEVO: anticipación mínima
+   Ej: 11:00 -> no deja reservar 12:00
+========================= */
+const MIN_LEAD_MINUTES = 60;
+
+/* =========================
    ADMIN MAIL (fallback)
 ========================= */
 const ADMIN_EMAIL = process.env.ADMIN_EMAIL || "duoclub.ar@gmail.com";
@@ -71,6 +77,23 @@ function validateBookingWindow(slotDate) {
     return {
       ok: false,
       error: `Solo se puede reservar hasta ${MAX_ADVANCE_DAYS} días de anticipación.`,
+    };
+  }
+  return { ok: true };
+}
+
+/* =========================
+   ✅ NUEVO: validación anticipación mínima
+========================= */
+function validateMinLeadTime(slotDate) {
+  const now = new Date();
+  const cutoff = new Date(now.getTime() + MIN_LEAD_MINUTES * 60 * 1000);
+
+  // si el turno es <= ahora + 60 min => NO
+  if (slotDate.getTime() <= cutoff.getTime()) {
+    return {
+      ok: false,
+      error: `Tenés que reservar con al menos ${MIN_LEAD_MINUTES} minutos de anticipación.`,
     };
   }
   return { ok: true };
@@ -218,7 +241,9 @@ function serializeAppointment(ap) {
 function requiresApto(user) {
   if (!user?.createdAt) return false;
   const created = new Date(user.createdAt);
-  const days = Math.floor((Date.now() - created.getTime()) / (1000 * 60 * 60 * 24));
+  const days = Math.floor(
+    (Date.now() - created.getTime()) / (1000 * 60 * 60 * 24)
+  );
   return days > 20 && !user.aptoPath;
 }
 
@@ -258,7 +283,10 @@ function validateBasicSlotRules({ date, time, service }) {
     const [hStr] = String(time).split(":");
     const h = Number(hStr);
     if (h < 8 || h > 12) {
-      return { ok: false, error: "Los sábados solo se puede reservar de 08:00 a 12:00." };
+      return {
+        ok: false,
+        error: "Los sábados solo se puede reservar de 08:00 a 12:00.",
+      };
     }
   }
 
@@ -268,12 +296,19 @@ function validateBasicSlotRules({ date, time, service }) {
   const w = validateBookingWindow(slotDate);
   if (!w.ok) return w;
 
+  // ✅ NUEVO: 60 minutos mínimo
+  const lead = validateMinLeadTime(slotDate);
+  if (!lead.ok) return lead;
+
   const isEpService = service === EP_NAME;
 
   // tarde solo EP
   if (turno === "tarde" && !isEpService) {
-    return { ok: false, error: "En el turno tarde solo está disponible Entrenamiento Personal." };
-    }
+    return {
+      ok: false,
+      error: "En el turno tarde solo está disponible Entrenamiento Personal.",
+    };
+  }
 
   return { ok: true, turno, slotDate, isEpService };
 }
@@ -293,9 +328,7 @@ router.get("/", async (req, res) => {
     if (from && to) query.date = { $gte: from, $lt: to };
     else if (from) query.date = { $gte: from };
 
-    const list = await Appointment.find(query)
-      .populate("user", "name email")
-      .lean();
+    const list = await Appointment.find(query).populate("user", "name email").lean();
 
     res.json((list || []).map(serializeAppointment));
   } catch (err) {
@@ -492,6 +525,7 @@ router.post("/", async (req, res) => {
       return res.status(403).json({ error: `No tenés créditos válidos para este servicio (${sk}).` });
     }
 
+    // ✅ NUEVO: si se rechaza por anticipación mínima, cae como 400 por validateBasicSlotRules
     return res.status(500).json({ error: "Error al crear el turno." });
   } finally {
     session.endSession();
@@ -735,7 +769,9 @@ router.post("/batch", async (req, res) => {
     if (msg === "NO_CREDITS") return res.status(403).json({ error: "Sin créditos disponibles." });
 
     if (msg === "DUP_SLOT_IN_BATCH")
-      return res.status(409).json({ error: "No podés reservar 2 turnos en el mismo horario en un solo batch." });
+      return res.status(409).json({
+        error: "No podés reservar 2 turnos en el mismo horario en un solo batch.",
+      });
 
     if (msg === "ALREADY_HAVE_SLOT")
       return res.status(409).json({ error: "Ya tenés un turno reservado en alguno de esos horarios." });
