@@ -20,9 +20,10 @@ const router = express.Router();
 const MAX_ADVANCE_DAYS = 14;
 
 /* =========================
-   ✅ Anticipación mínima para reservar
+   ✅ CRÉDITOS: vencen SI O SI a 30 días
+   - aplica para créditos acreditados + reintegros
 ========================= */
-const MIN_LEAD_MINUTES = 60;
+const CREDITS_EXPIRE_DAYS = 30;
 
 /* =========================
    ADMIN MAIL (fallback)
@@ -81,19 +82,6 @@ function validateBookingWindow(slotDate) {
   return { ok: true };
 }
 
-function validateMinLeadTime(slotDate) {
-  const now = new Date();
-  const cutoff = new Date(now.getTime() + MIN_LEAD_MINUTES * 60 * 1000);
-
-  if (slotDate.getTime() <= cutoff.getTime()) {
-    return {
-      ok: false,
-      error: `Tenés que reservar con al menos ${MIN_LEAD_MINUTES} minutos de anticipación.`,
-    };
-  }
-  return { ok: true };
-}
-
 function isSaturday(dateStr) {
   const [y, m, d] = String(dateStr || "").split("-").map(Number);
   if (!y || !m || !d) return false;
@@ -147,16 +135,11 @@ function serviceToKey(serviceName) {
   return "EP";
 }
 
-function isPlusActive(user) {
-  const m = user?.membership || {};
-  const tier = String(m.tier || "").toLowerCase().trim();
-  if (tier !== "plus") return false;
-  if (!m.activeUntil) return false;
-  return new Date(m.activeUntil) > new Date();
-}
-
-function getCreditsExpireDays(user) {
-  return isPlusActive(user) ? 40 : 30;
+/**
+ * ✅ SI O SI 30 días (no depende de Plus/Basic)
+ */
+function getCreditsExpireDays(_user) {
+  return CREDITS_EXPIRE_DAYS;
 }
 
 function recalcUserCredits(user) {
@@ -209,6 +192,10 @@ function findLotById(user, lotId) {
   return lots.find((l) => String(l._id) === String(lotId)) || null;
 }
 
+/**
+ * ✅ SERIALIZER con userFullName
+ * - robusto aunque falten campos
+ */
 function serializeAppointment(ap) {
   const json = ap?.toObject ? ap.toObject() : ap;
 
@@ -219,6 +206,10 @@ function serializeAppointment(ap) {
     userObj?.toString?.() ||
     "";
 
+  const userName = String(userObj?.name || "").trim();
+  const userLastName = String(userObj?.lastName || "").trim();
+  const userFullName = [userName, userLastName].filter(Boolean).join(" ").trim();
+
   return {
     id: json?._id?.toString?.() || json?.id,
     date: json?.date,
@@ -227,7 +218,11 @@ function serializeAppointment(ap) {
     status: json?.status || "reserved",
     coach: json?.coach || "",
     userId,
-    userName: userObj?.name || "",
+
+    userName,
+    userLastName,
+    userFullName, // ✅ NUEVO
+
     userEmail: userObj?.email || "",
     creditExpiresAt: json?.creditExpiresAt || null,
   };
@@ -254,18 +249,12 @@ function calcEpCap({ hoursToStart, otherReservedCount }) {
 }
 
 /* =========================
-   ✅ CANCELACIÓN: reintegro por servicio
-   - EP: 2hs
-   - resto: 12hs
+   CANCELACIÓN (REINTEGRO)
+   - EP: reintegra si cancelás con >= 2hs
+   - Otros: reintegra si cancelás con >= 12hs
 ========================= */
-const REFUND_CUTOFF_HOURS_DEFAULT = 12;
 const REFUND_CUTOFF_HOURS_EP = 2;
-
-function getRefundCutoffHoursByService(serviceName) {
-  // Si querés más robusto, podés usar serviceToKey(serviceName)
-  if (String(serviceName || "").trim() === EP_NAME) return REFUND_CUTOFF_HOURS_EP;
-  return REFUND_CUTOFF_HOURS_DEFAULT;
-}
+const REFUND_CUTOFF_HOURS_OTHERS = 12;
 
 /* =========================
    Helpers: validación de item
@@ -295,9 +284,6 @@ function validateBasicSlotRules({ date, time, service }) {
   const w = validateBookingWindow(slotDate);
   if (!w.ok) return w;
 
-  const lead = validateMinLeadTime(slotDate);
-  if (!lead.ok) return lead;
-
   const isEpService = service === EP_NAME;
 
   // tarde solo EP
@@ -324,7 +310,7 @@ router.get("/", async (req, res) => {
     else if (from) query.date = { $gte: from };
 
     const list = await Appointment.find(query)
-      .populate("user", "name email")
+      .populate("user", "name lastName email")
       .lean();
 
     res.json((list || []).map(serializeAppointment));
@@ -341,6 +327,7 @@ router.use(protect);
 
 /* =========================
    POST /appointments
+   ✅ mails fuera de la transacción
 ========================= */
 router.post("/", async (req, res) => {
   const session = await mongoose.startSession();
@@ -371,6 +358,7 @@ router.post("/", async (req, res) => {
         if ((user.credits || 0) <= 0) throw new Error("NO_CREDITS");
       }
 
+      // ya tiene turno a esa hora
       const alreadyByUser = await Appointment.findOne({
         date,
         time,
@@ -398,17 +386,20 @@ router.post("/", async (req, res) => {
       const raTaken = existingAtSlot.some((a) => a.service === "Rehabilitacion Activa") ? 1 : 0;
       const otherReservedCount = arTaken + raTaken;
 
+      // otros servicios: max 1 por servicio/hora
       if (!basic.isEpService) {
         const alreadyService = existingAtSlot.some((a) => a.service === service);
         if (alreadyService) throw new Error("SERVICE_ALREADY_TAKEN");
       }
 
+      // EP cap
       if (basic.isEpService) {
         const hoursToStart = (basic.slotDate.getTime() - Date.now()) / (1000 * 60 * 60);
         const epCap = calcEpCap({ hoursToStart, otherReservedCount });
         if (epCount >= epCap) throw new Error(hoursToStart > 12 ? "EP_CAP_4" : "EP_CAP_TOTAL");
       }
 
+      // consumir crédito
       let usedLotId = null;
       let usedLotExp = null;
 
@@ -451,7 +442,7 @@ router.post("/", async (req, res) => {
       );
 
       const populated = await Appointment.findById(created[0]._id)
-        .populate("user", "name email")
+        .populate("user", "name lastName email")
         .session(session);
 
       out = serializeAppointment(populated);
@@ -521,6 +512,8 @@ router.post("/", async (req, res) => {
 
 /* =========================
    POST /appointments/batch
+   ✅ 1 request, valida todo, crea todo
+   ✅ mail after-commit con fireAndForget
 ========================= */
 router.post("/batch", async (req, res) => {
   const session = await mongoose.startSession();
@@ -558,7 +551,6 @@ router.post("/batch", async (req, res) => {
     });
 
     const userId = req.user._id || req.user.id;
-
     let createdItems = [];
 
     await session.withTransaction(async () => {
@@ -690,7 +682,7 @@ router.post("/batch", async (req, res) => {
         );
 
         const populated = await Appointment.findById(created[0]._id)
-          .populate("user", "name email")
+          .populate("user", "name lastName email")
           .session(session);
 
         createdItems.push(serializeAppointment(populated));
@@ -780,7 +772,10 @@ router.post("/batch", async (req, res) => {
 
 /* =========================
    PATCH /appointments/:id/cancel
-   ✅ reintegro depende del servicio
+   ✅ mail after-commit
+   ✅ reintegro por servicio:
+      - EP: >=2hs
+      - Otros: >=12hs
 ========================= */
 router.patch("/:id/cancel", async (req, res) => {
   const session = await mongoose.startSession();
@@ -792,7 +787,6 @@ router.patch("/:id/cancel", async (req, res) => {
 
   try {
     const { id } = req.params;
-
     let payload = null;
 
     await session.withTransaction(async () => {
@@ -845,13 +839,10 @@ router.patch("/:id/cancel", async (req, res) => {
       ap.status = "cancelled";
       await ap.save({ session });
 
-      // ✅ corte por servicio
-      const refundCutoffHours = getRefundCutoffHoursByService(ap.service);
+      const isEP = String(ap.service || "") === EP_NAME;
+      const cutoff = isEP ? REFUND_CUTOFF_HOURS_EP : REFUND_CUTOFF_HOURS_OTHERS;
 
-      // ✅ solo reintegra si:
-      // - no es admin
-      // - y cumple el corte por servicio
-      const shouldRefund = user.role !== "admin" && hours >= refundCutoffHours;
+      const shouldRefund = user.role !== "admin" && hours >= cutoff;
 
       if (user.role !== "admin") {
         user.history = user.history || [];
@@ -875,6 +866,7 @@ router.patch("/:id/cancel", async (req, res) => {
               lot.remaining = Number(lot.remaining || 0) + 1;
             }
           } else {
+            // ✅ reintegro SI O SI con vencimiento 30 días desde HOY
             const exp = new Date(now);
             exp.setDate(exp.getDate() + Number(getCreditsExpireDays(user) || 30));
 
@@ -896,19 +888,19 @@ router.patch("/:id/cancel", async (req, res) => {
       }
 
       const populated = await Appointment.findById(ap._id)
-        .populate("user", "name email")
+        .populate("user", "name lastName email")
         .session(session);
 
       payload = {
         ...serializeAppointment(populated),
         refund: shouldRefund,
-        refundCutoffHours, // ✅ ahora depende del servicio
+        refundCutoffHours: cutoff,
       };
 
       mailUser = { ...user.toObject(), _id: user._id };
       mailAp = { date: ap.date, time: ap.time, service: ap.service };
       mailServiceName = ap.service;
-      mailMeta = { refund: shouldRefund, refundCutoffHours };
+      mailMeta = { refund: shouldRefund, refundCutoffHours: cutoff };
     });
 
     res.json(payload);
