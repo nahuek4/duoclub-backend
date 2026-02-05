@@ -1,10 +1,10 @@
 // backend/src/routes/orders.js
 import express from "express";
+import mongoose from "mongoose";
 import { protect, adminOnly } from "../middleware/auth.js";
 import PricingPlan from "../models/PricingPlan.js";
 import Order from "../models/Order.js";
 import User from "../models/User.js";
-import mongoose from "mongoose";
 
 import {
   fireAndForget,
@@ -135,15 +135,18 @@ function ymd(d = new Date()) {
 function hm(d = new Date()) {
   return `${pad2(d.getHours())}:${pad2(d.getMinutes())}`;
 }
+
 function safeServiceFromOrder(order) {
   const hasItems = Array.isArray(order?.items) && order.items.length > 0;
   if (hasItems) {
     const kinds = order.items
       .map((it) => String(it?.kind || "").toUpperCase())
       .filter(Boolean);
+
     if (kinds.includes("MEMBERSHIP") && kinds.includes("CREDITS"))
       return "MEMBERSHIP+CREDITS";
     if (kinds.includes("MEMBERSHIP")) return "MEMBERSHIP";
+
     if (kinds.includes("CREDITS")) {
       const sks = order.items
         .filter((it) => String(it?.kind || "").toUpperCase() === "CREDITS")
@@ -156,6 +159,7 @@ function safeServiceFromOrder(order) {
     }
     return "ITEMS";
   }
+
   return String(order?.serviceKey || "ORDER").toUpperCase().trim() || "ORDER";
 }
 
@@ -519,6 +523,7 @@ router.post("/checkout", protect, async (req, res) => {
       totalFinal,
       status: "pending",
       applied: false,
+      creditsApplied: false,
     });
 
     if (pm === "CASH") {
@@ -653,10 +658,12 @@ router.get("/me", protect, async (req, res) => {
    ADMIN
 ======================= */
 router.get("/", protect, adminOnly, async (req, res) => {
+  // ✅ AHORA trae nombre completo también (name + lastName + fullName si existe)
   const list = await Order.find()
-    .populate("user", "name email")
+    .populate("user", "name lastName fullName email")
     .sort({ createdAt: -1 })
     .lean();
+
   res.json(list);
 });
 
