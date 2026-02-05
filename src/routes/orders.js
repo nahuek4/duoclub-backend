@@ -21,6 +21,9 @@ const router = express.Router();
 const PLUS_PRICE = Number(process.env.PLUS_PRICE || 20000);
 const PLUS_DISCOUNT_PCT = 15;
 
+// ✅ VENCIMIENTO DE CRÉDITOS: 30 días SI O SI
+const CREDITS_EXPIRE_DAYS = 30;
+
 /* =======================
    Helpers membresía / créditos
 ======================= */
@@ -45,14 +48,18 @@ function ensureBasicIfExpired(user) {
     user.membership.activeUntil = null;
     user.membership.cancelHours = 24;
     user.membership.cancelsLeft = 1;
-    user.membership.creditsExpireDays = 30;
+
+    // ✅ SI O SI 30
+    user.membership.creditsExpireDays = CREDITS_EXPIRE_DAYS;
   }
 
   if (!user.membership.tier) {
     user.membership.tier = "basic";
     user.membership.cancelHours = 24;
     user.membership.cancelsLeft = 1;
-    user.membership.creditsExpireDays = 30;
+
+    // ✅ SI O SI 30
+    user.membership.creditsExpireDays = CREDITS_EXPIRE_DAYS;
   }
 }
 
@@ -72,10 +79,12 @@ function addPlusMonths(user, months = 1) {
   user.membership.tier = "plus";
   user.membership.activeUntil = until;
 
-  // ✅ reglas Plus
+  // ✅ reglas Plus (se mantienen)
   user.membership.cancelHours = 12;
   user.membership.cancelsLeft = 2;
-  user.membership.creditsExpireDays = 40;
+
+  // ✅ PERO vencimientos SI O SI 30 (no 40)
+  user.membership.creditsExpireDays = CREDITS_EXPIRE_DAYS;
 }
 
 function activatePlus(user) {
@@ -97,7 +106,8 @@ function addCreditLot(user, { amount, source, orderId, serviceKey }) {
   const now = new Date();
   ensureBasicIfExpired(user);
 
-  const expireDays = isPlusActive(user) ? 40 : 30;
+  // ✅ SI O SI 30 (aunque sea Plus)
+  const expireDays = CREDITS_EXPIRE_DAYS;
 
   const exp = new Date(now);
   exp.setDate(exp.getDate() + expireDays);
@@ -168,22 +178,16 @@ async function notifyAdminIfNeeded(order) {
 
 /* =======================
    ✅ NUEVO: Notificar pago (idempotente)
-   - Manda mail al cliente cuando el admin marca PAGADO
-   - Evita duplicados si clickean dos veces
 ======================= */
 async function notifyOrderPaidIfNeeded(order) {
   if (!order) return;
 
-  // ✅ evita doble envío si el admin toca 2 veces
   if (order.userPaidNotifiedAt) return;
 
   try {
     const u = await User.findById(order.user).lean().catch(() => null);
 
-    // mail al cliente
     if (u?.email) await sendUserOrderPaidEmail(order, u);
-
-    // mail al admin (opcional)
     await sendAdminOrderPaidEmail(order, u);
 
     order.userPaidNotifiedAt = new Date();
@@ -195,8 +199,6 @@ async function notifyOrderPaidIfNeeded(order) {
 
 /* =======================
    Aplicar créditos SOLO (idempotente)
-   - NO cambia status
-   - NO activa DUO+
 ======================= */
 async function applyCreditsOnlyIfNeeded(order) {
   if (!order) return { ok: false, error: "Orden inválida." };
@@ -520,7 +522,6 @@ router.post("/checkout", protect, async (req, res) => {
     });
 
     if (pm === "CASH") {
-      // ✅ responder rápido
       res.status(201).json({
         ok: true,
         status: "pending",
@@ -530,7 +531,6 @@ router.post("/checkout", protect, async (req, res) => {
         message: "Pedido generado correctamente. Coordiná el pago con el staff.",
       });
 
-      // ✅ mails async (no bloquea)
       fireAndForget(() => notifyAdminIfNeeded(order), "MAIL_ADMIN_NEW_ORDER_CASH");
 
       fireAndForget(async () => {
@@ -612,7 +612,6 @@ router.post("/", protect, async (req, res) => {
     if (pm === "CASH") {
       res.status(201).json({ ok: true, status: "pending" });
 
-      // ✅ mails async
       fireAndForget(() => notifyAdminIfNeeded(order), "MAIL_ADMIN_NEW_ORDER_LEGACY_CASH");
       fireAndForget(async () => {
         const u = await User.findById(order.user).lean().catch(() => null);
@@ -717,22 +716,19 @@ router.patch("/:id/mark-paid", protect, adminOnly, async (req, res) => {
     }
 
     const st = String(order.status || "").toLowerCase();
-    const wasPaid = st === "paid"; // ✅ clave
+    const wasPaid = st === "paid";
 
-    // ✅ solo si NO estaba pagada, la pasamos a paid
     if (!wasPaid) {
       order.status = "paid";
       order.paidAt = new Date();
       await order.save();
     }
 
-    // ✅ igual aplicamos (idempotente)
     const applied = await applyOrderIfNeeded(order);
     if (!applied.ok) {
       return res.status(500).json({ error: applied.error || "No se pudo aplicar." });
     }
 
-    // ✅ SOLO SI HUBO CAMBIO pending->paid (o no-paid->paid)
     if (!wasPaid) {
       fireAndForget(() => notifyOrderPaidIfNeeded(order), "MAIL_ORDER_PAID");
     }

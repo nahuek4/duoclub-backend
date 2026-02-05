@@ -18,6 +18,12 @@ import { fireAndForget, sendUserApprovedEmail, sendUserApprovalResultEmail } fro
 const router = express.Router();
 
 /* ============================================
+   ✅ CONFIG GLOBAL: VENCIMIENTO CRÉDITOS
+   - 30 días SI O SI (sin Plus)
+============================================ */
+const CREDITS_EXPIRE_DAYS = 30;
+
+/* ============================================
    CONFIGURACIÓN DE RUTAS / PATHS
 ============================================ */
 
@@ -88,7 +94,7 @@ function isPlusActive(user) {
   return new Date(m.activeUntil) > new Date();
 }
 
-// ✅ NUEVO: BASIC=2 / PLUS=3
+// ✅ NUEVO: BASIC=2 / PLUS=3 (esto NO toca vencimientos)
 function getMonthlyCancelLimit(user) {
   return isPlusActive(user) ? 3 : 2;
 }
@@ -105,7 +111,9 @@ function normalizeMembershipForUI(user) {
   const limit = getMonthlyCancelLimit(user);
 
   const cancelHoursDefault = plus ? 12 : 24;
-  const expireDaysDefault = plus ? 40 : 30;
+
+  // ✅ SIN PLUS EN VENCIMIENTOS: siempre 30
+  const expireDaysDefault = CREDITS_EXPIRE_DAYS;
 
   const tierNorm = String(m.tier || (plus ? "plus" : "basic"))
     .toLowerCase()
@@ -116,7 +124,7 @@ function normalizeMembershipForUI(user) {
     activeUntil: m.activeUntil || null,
     cancelHours: clamp(m.cancelHours ?? cancelHoursDefault, 1, 999),
     cancelsLeft: clamp(m.cancelsLeft ?? limit, 0, limit), // ✅ clamp 0..(2/3)
-    creditsExpireDays: clamp(m.creditsExpireDays ?? expireDaysDefault, 1, 999),
+    creditsExpireDays: clamp(m.creditsExpireDays ?? expireDaysDefault, 1, 999), // ✅ 30 default
   };
 }
 
@@ -271,7 +279,9 @@ function consumeCreditsForService(user, toRemove, serviceKey) {
 
 function addCreditLot(user, { amount, serviceKey = "ALL", source = "admin-adjust" }) {
   const now = nowDate();
-  const days = isPlusActive(user) ? 40 : 30;
+
+  // ✅ SIN PLUS EN VENCIMIENTOS: SI O SI 30
+  const days = CREDITS_EXPIRE_DAYS;
 
   const exp = new Date(now);
   exp.setDate(exp.getDate() + days);
@@ -450,11 +460,6 @@ router.get("/pending", adminOnly, async (req, res) => {
 
 /* =========================================================
    ✅ PATCH /users/:id/approval
-   - Mantener "en espera hasta que admin apruebe"
-   - Si aprueba: suspended=false
-   - Si rechaza: suspended=true
-   - No aprobar si NO verificó email
-   - Mail al usuario aprobado/rechazado (+ link a DUO) — 1 sola vez
 ========================================================= */
 router.patch("/:id/approval", adminOnly, async (req, res) => {
   try {
@@ -479,14 +484,10 @@ router.patch("/:id/approval", adminOnly, async (req, res) => {
 
     // =========================================================
     // ✅ CASO RECHAZADO -> BORRAR CUENTA
-    // - mandamos mail de rechazo (si corresponde)
-    // - borramos el usuario
-    // - así puede registrarse de nuevo con el mismo email
     // =========================================================
     if (status === "rejected") {
       const to = String(user.email || "").trim();
 
-      // mandamos mail solo si hay email y si no estaba ya rechazado
       const shouldSendRejectionMail = !!to && prevStatus !== "rejected";
 
       if (shouldSendRejectionMail) {
@@ -496,8 +497,6 @@ router.patch("/:id/approval", adminOnly, async (req, res) => {
         );
       }
 
-      // ✅ BORRADO DEFINITIVO
-      // (Opcional) también borramos turnos asociados por limpieza
       await Appointment.deleteMany({ user: user._id });
       await user.deleteOne();
 
@@ -542,7 +541,6 @@ router.patch("/:id/approval", adminOnly, async (req, res) => {
     return res.status(500).json({ error: "Error al actualizar aprobación." });
   }
 });
-
 
 router.put("/:id", async (req, res) => {
   try {
