@@ -40,6 +40,21 @@ function formatARDateTime(dateLike) {
   }
 }
 
+/* =========================================================
+   ✅ helpers para render Q/A
+========================================================= */
+
+function qaRow(question, answer) {
+  return kvRow(question, cleanStr(answer));
+}
+
+function qaRowRaw(question, rawHtml) {
+  return kvRowRaw(question, rawHtml || "-");
+}
+
+/* =========================================================
+   ✅ summary FULL (Step1 + Step2)
+========================================================= */
 function admissionSummary(adm = {}, user = null) {
   const s1 = adm?.step1 || {};
   const s2 = adm?.step2 || {};
@@ -61,14 +76,13 @@ function admissionSummary(adm = {}, user = null) {
     ? cleanStr(`${s1.city || ""} (${s1.cityOther})`.trim())
     : cleanStr(s1.city);
 
-  const fitnessLevel = cleanStr(s1.fitnessLevel);
-  const weight = cleanStr(s1.weight);
-  const height = cleanStr(s1.height);
-
-  const immediateGoal = cleanStr(s2.immediateGoal);
-  const modality = cleanStr(s2.modality);
-  const weeklySessions = cleanStr(s2.weeklySessions);
-  const needsRehab = cleanStr(s2.needsRehab);
+  // -------------------------
+  // STEP 1 (según tu form)
+  // -------------------------
+  const birth =
+    s1.birthDay && s1.birthMonth && s1.birthYear
+      ? `${cleanStr(s1.birthDay)} / ${cleanStr(s1.birthMonth)} / ${cleanStr(s1.birthYear)}`
+      : "-";
 
   const hasContraindication =
     s1.hasContraindication === "SI"
@@ -85,33 +99,158 @@ function admissionSummary(adm = {}, user = null) {
       ? `SI (${cleanStr(s1.injuryDetail)})`
       : cleanStr(s1.hadInjuryLastYear);
 
-  const relevantInfo = cleanStr(s1.relevantInfo);
+  const diabetes =
+    s1.diabetes === "SI" ? `SI (${cleanStr(s1.diabetesType)})` : cleanStr(s1.diabetes);
+
+  const smokes =
+    s1.smokes === "SI"
+      ? `SI (${cleanStr(s1.cigarettesPerDay)} cig/día)`
+      : cleanStr(s1.smokes);
+
+  const heartProblems =
+    s1.heartProblems === "SI"
+      ? `SI (${cleanStr(s1.heartDetail)})`
+      : cleanStr(s1.heartProblems);
+
+  const oncologicTreatment = cleanStr(s1.oncologicTreatment);
+
+  const orthoProblem =
+    s1.orthoProblem === "SI"
+      ? `SI (${cleanStr(s1.orthoDetail)})`
+      : cleanStr(s1.orthoProblem);
+
+  const pregnant =
+    s1.pregnant === "SI"
+      ? `SI (${cleanStr(s1.pregnantWeeks)} semanas)`
+      : cleanStr(s1.pregnant);
+
+  // -------------------------
+  // STEP 2 (según tu Step2)
+  // -------------------------
+  const needsRehab = cleanStr(s2.needsRehab);
+
+  const rehab_hasDiagnosisOrder =
+    needsRehab !== "SI"
+      ? "N/A"
+      : s2.hasDiagnosisOrder === "SI"
+        ? `SI (${cleanStr(s2.diagnosisDetail)})`
+        : cleanStr(s2.hasDiagnosisOrder);
+
+  const rehab_symptoms = needsRehab !== "SI" ? "N/A" : cleanStr(s2.symptoms);
+  const rehab_symptomDate = needsRehab !== "SI" ? "N/A" : cleanStr(s2.symptomDate);
+
+  const rehab_medicalConsult =
+    needsRehab !== "SI"
+      ? "N/A"
+      : s2.medicalConsult === "SI"
+        ? `SI (${cleanStr(s2.medicalConsultWhen)})`
+        : cleanStr(s2.medicalConsult);
+
+  const rehab_diagnosticStudy =
+    needsRehab !== "SI"
+      ? "N/A"
+      : s2.diagnosticStudy === "OTRO"
+        ? `OTRO (${cleanStr(s2.diagnosticStudyOther)})`
+        : cleanStr(s2.diagnosticStudy);
+
+  const rehab_howHappened = needsRehab !== "SI" ? "N/A" : cleanStr(s2.howHappened);
+  const rehab_dailyDiscomfort = needsRehab !== "SI" ? "N/A" : cleanStr(s2.dailyDiscomfort);
+  const rehab_mobilityIssue = needsRehab !== "SI" ? "N/A" : cleanStr(s2.mobilityIssue);
+
+  const rehab_takesMedication =
+    needsRehab !== "SI"
+      ? "N/A"
+      : s2.takesMedication === "SI"
+        ? `SI (${cleanStr(s2.medicationDetail)})`
+        : cleanStr(s2.takesMedication);
+
+  // deporte
+  const practicesCompetitiveSport = cleanStr(s2.practicesCompetitiveSport);
+
+  const competitionLevel = practicesCompetitiveSport !== "SI" ? "N/A" : cleanStr(s2.competitionLevel);
+  const sportName = practicesCompetitiveSport !== "SI" ? "N/A" : cleanStr(s2.sportName);
+  const sportPosition = practicesCompetitiveSport !== "SI" ? "N/A" : cleanStr(s2.sportPosition);
+
+  // plan
+  const immediateGoal = cleanStr(s2.immediateGoal);
+
+  const trainAlone =
+    s2.trainAlone === "SOMOS"
+      ? `SOMOS (${cleanStr(s2.groupCount)})`
+      : cleanStr(s2.trainAlone);
+
+  const idealSchedule = cleanStr(s2.idealSchedule);
+  const preferredDays = cleanStr(s2.preferredDays);
+  const weeklySessions = cleanStr(s2.weeklySessions);
+  const modality = cleanStr(s2.modality);
+
+  // consentimiento
+  const acceptsConsent =
+    s2.acceptsConsent === true ? "SI" : s2.acceptsConsent === false ? "NO" : cleanStr(s2.acceptsConsent);
 
   return {
     admissionId,
     publicId,
     createdDate,
     createdTime,
+
+    // identidad
     fullName,
     email,
     phone,
     city,
-    fitnessLevel,
-    weight,
-    height,
+
+    // STEP1
+    birth,
+    height: cleanStr(s1.height),
+    weight: cleanStr(s1.weight),
+    fitnessLevel: cleanStr(s1.fitnessLevel),
     hasContraindication,
+    lastSupervisedTraining: cleanStr(s1.lastSupervisedTraining),
+    lastMedicalExam: cleanStr(s1.lastMedicalExam),
+    hasPain: cleanStr(s1.hasPain),
     hasCondition,
     hadInjuryLastYear,
-    relevantInfo,
-    immediateGoal,
-    modality,
-    weeklySessions,
+    diabetes,
+    bloodPressure: cleanStr(s1.bloodPressure),
+    smokes,
+    heartProblems,
+    oncologicTreatment,
+    orthoProblem,
+    pregnant,
+    lastBloodTest: cleanStr(s1.lastBloodTest),
+    relevantInfo: cleanStr(s1.relevantInfo),
+
+    // STEP2
     needsRehab,
+    rehab_hasDiagnosisOrder,
+    rehab_symptoms,
+    rehab_symptomDate,
+    rehab_medicalConsult,
+    rehab_diagnosticStudy,
+    rehab_howHappened,
+    rehab_dailyDiscomfort,
+    rehab_mobilityIssue,
+    rehab_takesMedication,
+
+    practicesCompetitiveSport,
+    competitionLevel,
+    sportName,
+    sportPosition,
+
+    immediateGoal,
+    trainAlone,
+    idealSchedule,
+    preferredDays,
+    weeklySessions,
+    modality,
+
+    acceptsConsent,
   };
 }
 
 /* =========================================================
-   ADMIN email
+   ADMIN email (FULL Q/A)
 ========================================================= */
 export async function sendAdminAdmissionCompletedEmail(admissionDoc = {}, pseudoUser = null) {
   const to = ADMIN_EMAIL;
@@ -129,33 +268,72 @@ export async function sendAdminAdmissionCompletedEmail(admissionDoc = {}, pseudo
 
   const subject = `🧾 Formulario completo (Admisión) — ${s.fullName} · #${s.publicId}`;
 
+  // ✅ Texto (fallback) con preguntas/resp completas
   const text = [
-    "Formulario de admisión completado (Step2)",
+    "Formulario de admisión completado (Step1 + Step2)",
     "",
-    `PublicId: ${s.publicId}`,
+    `Código: #${s.publicId}`,
     `AdmissionId: ${s.admissionId}`,
     `Creado: ${s.createdDate} ${s.createdTime}`,
     "",
+    "=== DATOS DE CONTACTO ===",
     `Nombre: ${s.fullName}`,
     `Email: ${s.email}`,
     `Tel: ${s.phone}`,
     `Ciudad: ${s.city}`,
     "",
-    `Fitness: ${s.fitnessLevel}`,
+    "=== STEP 1 · DATOS PERSONALES / FÍSICO / SALUD ===",
+    `Fecha nacimiento: ${s.birth}`,
     `Altura: ${s.height}`,
     `Peso: ${s.weight}`,
-    "",
-    `Contraindicación: ${s.hasContraindication}`,
-    `Condición: ${s.hasCondition}`,
+    `Condición física actual: ${s.fitnessLevel}`,
+    `Contraindicación médica: ${s.hasContraindication}`,
+    `Último entrenamiento supervisado: ${s.lastSupervisedTraining}`,
+    `Último examen médico: ${s.lastMedicalExam}`,
+    `Dolor habitual: ${s.hasPain}`,
+    `Enfermedad que condicione rendimiento: ${s.hasCondition}`,
     `Lesión último año: ${s.hadInjuryLastYear}`,
-    `Info relevante: ${s.relevantInfo}`,
+    `Diabetes: ${s.diabetes}`,
+    `Presión arterial: ${s.bloodPressure}`,
+    `Fumás: ${s.smokes}`,
+    `Problemas cardíacos: ${s.heartProblems}`,
+    `Tratamiento oncológico: ${s.oncologicTreatment}`,
+    `Problema ortopédico: ${s.orthoProblem}`,
+    `Embarazada: ${s.pregnant}`,
+    `Último análisis de sangre: ${s.lastBloodTest}`,
+    `Información relevante: ${s.relevantInfo}`,
     "",
-    `Step2 · Rehab: ${s.needsRehab}`,
-    `Step2 · Objetivo: ${s.immediateGoal}`,
-    `Step2 · Modalidad: ${s.modality}`,
-    `Step2 · Sesiones/sem: ${s.weeklySessions}`,
+    "=== STEP 2 · REHABILITACIÓN ===",
+    `Necesita rehabilitación: ${s.needsRehab}`,
+    `Diagnóstico y orden médica: ${s.rehab_hasDiagnosisOrder}`,
+    `Síntomas: ${s.rehab_symptoms}`,
+    `Fecha lesión/aparición síntomas: ${s.rehab_symptomDate}`,
+    `Consulta médica: ${s.rehab_medicalConsult}`,
+    `Estudios de diagnóstico: ${s.rehab_diagnosticStudy}`,
+    `Cómo sucedió: ${s.rehab_howHappened}`,
+    `Malestar diario: ${s.rehab_dailyDiscomfort}`,
+    `Imposibilidad para desplazarte: ${s.rehab_mobilityIssue}`,
+    `Toma medicación: ${s.rehab_takesMedication}`,
+    "",
+    "=== STEP 2 · ACTUALIDAD DEPORTIVA ===",
+    `Deporte competitivo: ${s.practicesCompetitiveSport}`,
+    `Nivel: ${s.competitionLevel}`,
+    `Deporte: ${s.sportName}`,
+    `Puesto: ${s.sportPosition}`,
+    "",
+    "=== STEP 2 · NUEVO PLAN ===",
+    `Objetivo inmediato: ${s.immediateGoal}`,
+    `Entrenaría solo/a: ${s.trainAlone}`,
+    `Rango horario ideal: ${s.idealSchedule}`,
+    `Días preferenciales: ${s.preferredDays}`,
+    `Sesiones semanales: ${s.weeklySessions}`,
+    `Modalidad: ${s.modality}`,
+    "",
+    "=== CONSENTIMIENTO ===",
+    `Aceptó términos: ${s.acceptsConsent}`,
   ].join("\n");
 
+  // ✅ HTML FULL con secciones y preguntas
   const bodyHtml = `
     <div style="display:flex; align-items:center; gap:10px; margin-bottom:12px;">
       <div style="font-size:18px; font-weight:800;">Formulario completado</div>
@@ -166,36 +344,95 @@ export async function sendAdminAdmissionCompletedEmail(admissionDoc = {}, pseudo
 
     <div style="border:1px solid #eee; border-radius:14px; overflow:hidden;">
       <table role="presentation" cellpadding="0" cellspacing="0" width="100%" style="border-collapse:collapse;">
-        ${kvRow("PublicId", `#${s.publicId}`)}
-        ${kvRow("AdmissionId", s.admissionId)}
-        ${kvRow("Creado", `${s.createdDate} ${s.createdTime}`)}
-        ${kvRow("Nombre", s.fullName)}
-        ${kvRow("Email", s.email)}
-        ${kvRow("Teléfono", s.phone)}
-        ${kvRow("Ciudad", s.city)}
+        ${qaRow("Código", `#${s.publicId}`)}
+        ${qaRow("AdmissionId", s.admissionId)}
+        ${qaRow("Creado", `${s.createdDate} ${s.createdTime}`)}
+        ${qaRow("Nombre y apellido", s.fullName)}
+        ${qaRow("Mail", s.email)}
+        ${qaRow("Teléfono de contacto", s.phone)}
+        ${qaRow("Ciudad", s.city)}
       </table>
     </div>
 
-    <div style="margin-top:14px; font-size:13px; font-weight:800;">Resumen Step1</div>
+    <div style="margin-top:14px; font-size:13px; font-weight:900;">STEP 1 · Datos personales</div>
     <div style="border:1px solid #eee; border-radius:14px; overflow:hidden; margin-top:8px;">
       <table role="presentation" cellpadding="0" cellspacing="0" width="100%" style="border-collapse:collapse;">
-        ${kvRow("Fitness", s.fitnessLevel)}
-        ${kvRow("Altura", s.height)}
-        ${kvRow("Peso", s.weight)}
-        ${kvRow("Contraindicación", s.hasContraindication)}
-        ${kvRow("Condición", s.hasCondition)}
-        ${kvRow("Lesión último año", s.hadInjuryLastYear)}
-        ${kvRow("Info relevante", s.relevantInfo)}
+        ${qaRow("Fecha de nacimiento", s.birth)}
+        ${qaRow("Altura", s.height)}
+        ${qaRow("Peso aproximado", s.weight)}
       </table>
     </div>
 
-    <div style="margin-top:14px; font-size:13px; font-weight:800;">Resumen Step2</div>
+    <div style="margin-top:14px; font-size:13px; font-weight:900;">STEP 1 · Tu actualidad física</div>
     <div style="border:1px solid #eee; border-radius:14px; overflow:hidden; margin-top:8px;">
       <table role="presentation" cellpadding="0" cellspacing="0" width="100%" style="border-collapse:collapse;">
-        ${kvRow("Rehab", s.needsRehab)}
-        ${kvRow("Objetivo", s.immediateGoal)}
-        ${kvRow("Modalidad", s.modality)}
-        ${kvRow("Sesiones/sem", s.weeklySessions)}
+        ${qaRow("Cómo considerás tu condición física actual", s.fitnessLevel)}
+        ${qaRow("Tenés alguna contraindicación médica?", s.hasContraindication)}
+        ${qaRow("Cuándo fue la última vez que entrenaste supervisado/a?", s.lastSupervisedTraining)}
+        ${qaRow("Cuándo realizaste el último examen médico?", s.lastMedicalExam)}
+        ${qaRow("Sufrís algún dolor habitualmente?", s.hasPain)}
+        ${qaRow("Tenés diagnosticada alguna enfermedad que condicione tu rendimiento?", s.hasCondition)}
+        ${qaRow("Cursaste alguna lesión el último año?", s.hadInjuryLastYear)}
+      </table>
+    </div>
+
+    <div style="margin-top:14px; font-size:13px; font-weight:900;">STEP 1 · Acerca de tu salud general</div>
+    <div style="border:1px solid #eee; border-radius:14px; overflow:hidden; margin-top:8px;">
+      <table role="presentation" cellpadding="0" cellspacing="0" width="100%" style="border-collapse:collapse;">
+        ${qaRow("Diabetes", s.diabetes)}
+        ${qaRow("Presión arterial", s.bloodPressure)}
+        ${qaRow("Fumás?", s.smokes)}
+        ${qaRow("Problemas cardíacos", s.heartProblems)}
+        ${qaRow("Tratamiento oncológico", s.oncologicTreatment)}
+        ${qaRow("Problema ortopédico", s.orthoProblem)}
+        ${qaRow("Actualmente embarazada?", s.pregnant)}
+        ${qaRow("Cuando realizaste el último análisis de sangre", s.lastBloodTest)}
+        ${qaRow("Información relevante", s.relevantInfo)}
+      </table>
+    </div>
+
+    <div style="margin-top:14px; font-size:13px; font-weight:900;">STEP 2 · Rehabilitación</div>
+    <div style="border:1px solid #eee; border-radius:14px; overflow:hidden; margin-top:8px;">
+      <table role="presentation" cellpadding="0" cellspacing="0" width="100%" style="border-collapse:collapse;">
+        ${qaRow("Necesita rehabilitación", s.needsRehab)}
+        ${qaRow("Tenés diagnóstico y órden médica para iniciar tu rehabilitación?", s.rehab_hasDiagnosisOrder)}
+        ${qaRow("Cuáles son tus síntomas", s.rehab_symptoms)}
+        ${qaRow("Recordás fecha de lesión o aparición de síntomas?", s.rehab_symptomDate)}
+        ${qaRow("Realizaste consulta médica?", s.rehab_medicalConsult)}
+        ${qaRow("Realizaste estudios de diagnóstico?", s.rehab_diagnosticStudy)}
+        ${qaRow("Cómo sucedió?", s.rehab_howHappened)}
+        ${qaRow("Cómo calificarías tu malestar diario?", s.rehab_dailyDiscomfort)}
+        ${qaRow("Tenés imposibilidad para desplazarte?", s.rehab_mobilityIssue)}
+        ${qaRow("Tomás medicación?", s.rehab_takesMedication)}
+      </table>
+    </div>
+
+    <div style="margin-top:14px; font-size:13px; font-weight:900;">STEP 2 · Tu actualidad deportiva</div>
+    <div style="border:1px solid #eee; border-radius:14px; overflow:hidden; margin-top:8px;">
+      <table role="presentation" cellpadding="0" cellspacing="0" width="100%" style="border-collapse:collapse;">
+        ${qaRow("Practicás un deporte de forma competitiva?", s.practicesCompetitiveSport)}
+        ${qaRow("Competís a nivel", s.competitionLevel)}
+        ${qaRow("Cuál es tu deporte", s.sportName)}
+        ${qaRow("Cuál es tu puesto frecuente", s.sportPosition)}
+      </table>
+    </div>
+
+    <div style="margin-top:14px; font-size:13px; font-weight:900;">STEP 2 · Tu nuevo plan</div>
+    <div style="border:1px solid #eee; border-radius:14px; overflow:hidden; margin-top:8px;">
+      <table role="presentation" cellpadding="0" cellspacing="0" width="100%" style="border-collapse:collapse;">
+        ${qaRow("Cuál es tu objetivo inmediato?", s.immediateGoal)}
+        ${qaRow("Entrenarías solo/a?", s.trainAlone)}
+        ${qaRow("Cuál es tu rango horario ideal?", s.idealSchedule)}
+        ${qaRow("Tenés días preferenciales?", s.preferredDays)}
+        ${qaRow("Qué frecuencia querés destinar? (sesiones semanales)", s.weeklySessions)}
+        ${qaRow("Qué modalidad te gustaría contratar?", s.modality)}
+      </table>
+    </div>
+
+    <div style="margin-top:14px; font-size:13px; font-weight:900;">Consentimiento</div>
+    <div style="border:1px solid #eee; border-radius:14px; overflow:hidden; margin-top:8px;">
+      <table role="presentation" cellpadding="0" cellspacing="0" width="100%" style="border-collapse:collapse;">
+        ${qaRow("Aceptó términos", s.acceptsConsent)}
       </table>
     </div>
   `;
@@ -210,7 +447,7 @@ export async function sendAdminAdmissionCompletedEmail(admissionDoc = {}, pseudo
 }
 
 /* =========================================================
-   USER email
+   USER email (sin cambios)
 ========================================================= */
 export async function sendUserAdmissionReceivedEmail(admissionDoc = {}, pseudoUser = null) {
   const email = cleanStr(pseudoUser?.email || admissionDoc?.step1?.email, "").trim();
@@ -270,10 +507,7 @@ export async function sendUserAdmissionReceivedEmail(admissionDoc = {}, pseudoUs
 }
 
 /* =========================================================
-   ✅ USER email: Alta aprobada (con password temporal opcional)
-   - Usar desde:
-     - POST /users (admin create)
-     - PATCH /users/:id/approval cuando status=approved
+   ✅ USER email: Alta aprobada (sin cambios)
 ========================================================= */
 export async function sendUserApprovedEmail({
   to,
