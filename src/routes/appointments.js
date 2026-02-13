@@ -221,7 +221,7 @@ function serializeAppointment(ap) {
 
     userName,
     userLastName,
-    userFullName, // ✅ NUEVO
+    userFullName,
 
     userEmail: userObj?.email || "",
     creditExpiresAt: json?.creditExpiresAt || null,
@@ -298,32 +298,125 @@ function slotKey(date, time) {
   return `${date}__${time}`;
 }
 
-/* =========================
-   PUBLIC: GET /appointments
-========================= */
-router.get("/", async (req, res) => {
-  try {
-    const { from, to } = req.query || {};
-    const query = {};
+function isValidYMD(s) {
+  if (typeof s !== "string") return false;
+  return /^\d{4}-\d{2}-\d{2}$/.test(s);
+}
 
-    if (from && to) query.date = { $gte: from, $lt: to };
-    else if (from) query.date = { $gte: from };
-
-    const list = await Appointment.find(query)
-      .populate("user", "name lastName email")
-      .lean();
-
-    res.json((list || []).map(serializeAppointment));
-  } catch (err) {
-    console.error("Error en GET /appointments:", err);
-    res.status(500).json({ error: "Error al obtener turnos." });
-  }
-});
+function ymdAR(d = new Date()) {
+  // para evitar “ayer/hoy” por TZ, usamos fecha local del server.
+  // si tu server está en UTC y querés AR fijo, decime y lo dejamos con TZ explícita.
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, "0");
+  const day = String(d.getDate()).padStart(2, "0");
+  return `${y}-${m}-${day}`;
+}
 
 /* =========================
    AUTH required
 ========================= */
 router.use(protect);
+
+/* =========================
+   GET /appointments  (SEGURO)
+   - scope=mine (default): SOLO del usuario logueado, SOLO próximas (>= hoy), NO cancelled
+   - scope=calendar: SOLO datos mínimos (sin user), para pintar calendario (reserved)
+   - scope=all: SOLO admin (puede incluir populate)
+   Query:
+     from=YYYY-MM-DD
+     to=YYYY-MM-DD (to es exclusivo)
+     includePast=1 (solo para mine)
+========================= */
+router.get("/", async (req, res) => {
+  try {
+    const scope = String(req.query?.scope || "mine");
+    const from = req.query?.from;
+    const to = req.query?.to;
+    const includePast = String(req.query?.includePast || "0") === "1";
+
+    const hasFrom = isValidYMD(from);
+    const hasTo = isValidYMD(to);
+
+    const tokenUserId = req.user?._id || req.user?.id;
+    const isAdmin = req.user?.role === "admin";
+
+    // ----- scope=calendar (sin datos sensibles)
+    if (scope === "calendar") {
+      const q = { status: "reserved" };
+
+      if (hasFrom && hasTo) q.date = { $gte: from, $lt: to };
+      else if (hasFrom) q.date = { $gte: from };
+      else {
+        // default “mes actual + 40 días” aprox
+        const today = ymdAR();
+        q.date = { $gte: today };
+      }
+
+      const list = await Appointment.find(q)
+        .select("_id date time service status")
+        .lean();
+
+      return res.json(
+        (list || []).map((a) => ({
+          id: a?._id?.toString?.() || String(a?._id || ""),
+          date: a?.date,
+          time: a?.time,
+          service: a?.service || "",
+          status: a?.status || "reserved",
+        }))
+      );
+    }
+
+    // ----- scope=all (admin)
+    if (scope === "all") {
+      if (!isAdmin) return res.status(403).json({ error: "No autorizado." });
+
+      const q = {};
+      if (hasFrom && hasTo) q.date = { $gte: from, $lt: to };
+      else if (hasFrom) q.date = { $gte: from };
+
+      const list = await Appointment.find(q)
+        .populate("user", "name lastName email")
+        .lean();
+
+      return res.json((list || []).map(serializeAppointment));
+    }
+
+    // ----- scope=mine (default)
+    {
+      const q = { user: tokenUserId, status: { $ne: "cancelled" } };
+
+      if (hasFrom && hasTo) {
+        q.date = { $gte: from, $lt: to };
+      } else if (hasFrom) {
+        q.date = { $gte: from };
+      } else if (!includePast) {
+        q.date = { $gte: ymdAR() };
+      }
+
+      const list = await Appointment.find(q)
+        .sort({ date: 1, time: 1 })
+        .lean();
+
+      // para “mine” no necesitamos populate: ya es del usuario.
+      return res.json(
+        (list || []).map((a) => ({
+          id: a?._id?.toString?.() || String(a?._id || ""),
+          date: a?.date,
+          time: a?.time,
+          service: a?.service || "",
+          status: a?.status || "reserved",
+          coach: a?.coach || "",
+          creditExpiresAt: a?.creditExpiresAt || null,
+          userId: String(a?.user || ""),
+        }))
+      );
+    }
+  } catch (err) {
+    console.error("Error en GET /appointments:", err);
+    res.status(500).json({ error: "Error al obtener turnos." });
+  }
+});
 
 /* =========================
    POST /appointments
@@ -738,7 +831,9 @@ router.post("/batch", async (req, res) => {
     if (msg === "NO_CREDITS") return res.status(403).json({ error: "Sin créditos disponibles." });
 
     if (msg === "DUP_SLOT_IN_BATCH")
-      return res.status(409).json({ error: "No podés reservar 2 turnos en el mismo horario en un solo batch." });
+      return res
+        .status(409)
+        .json({ error: "No podés reservar 2 turnos en el mismo horario en un solo batch." });
 
     if (msg === "ALREADY_HAVE_SLOT")
       return res.status(409).json({ error: "Ya tenés un turno reservado en alguno de esos horarios." });
@@ -930,7 +1025,8 @@ router.patch("/:id/cancel", async (req, res) => {
         return res.status(403).json({ error: "Solo el dueño del turno o un admin pueden cancelarlo." });
       if (msg === "ALREADY_CANCELLED") return res.status(400).json({ error: "El turno ya estaba cancelado." });
       if (msg === "INVALID_AP_DATE") return res.status(400).json({ error: "Turno con fecha/hora inválida." });
-      if (msg === "PAST_APPOINTMENT") return res.status(400).json({ error: "No se puede cancelar un turno que ya pasó." });
+      if (msg === "PAST_APPOINTMENT")
+        return res.status(400).json({ error: "No se puede cancelar un turno que ya pasó." });
       if (msg === "USER_NOT_FOUND") return res.status(404).json({ error: "Usuario no encontrado." });
       return res.status(http).json({ error: "Error al cancelar el turno." });
     }
