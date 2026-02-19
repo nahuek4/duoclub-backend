@@ -21,9 +21,11 @@ const router = express.Router();
 ========================= */
 const MAX_ADVANCE_DAYS = 14;
 
+// ✅ mínimo de anticipación (en minutos)
+const MIN_BOOKING_MINUTES = Number(process.env.MIN_BOOKING_MINUTES || 60);
+
 /* =========================
    ✅ CRÉDITOS: vencen SI O SI a 30 días
-   - aplica para créditos acreditados + reintegros
 ========================= */
 const CREDITS_EXPIRE_DAYS = 30;
 
@@ -65,7 +67,7 @@ function buildSlotDate(dateStr, timeStr) {
   const [year, month, day] = String(dateStr).split("-").map(Number);
   const [hour, minute] = String(timeStr).split(":").map(Number);
   if (!year || !month || !day) return null;
-  return new Date(year, month - 1, day, hour || 0, minute || 0);
+  return new Date(year, month - 1, day, hour || 0, minute || 0, 0, 0);
 }
 
 function validateBookingWindow(slotDate) {
@@ -79,6 +81,19 @@ function validateBookingWindow(slotDate) {
     return {
       ok: false,
       error: `Solo se puede reservar hasta ${MAX_ADVANCE_DAYS} días de anticipación.`,
+    };
+  }
+  return { ok: true };
+}
+
+// ✅ regla mínima de anticipación
+function validateMinAdvance(slotDate) {
+  const now = new Date();
+  const limit = new Date(now.getTime() + MIN_BOOKING_MINUTES * 60 * 1000);
+  if (slotDate.getTime() < limit.getTime()) {
+    return {
+      ok: false,
+      error: `El turno debe reservarse con al menos ${MIN_BOOKING_MINUTES} minutos de anticipación.`,
     };
   }
   return { ok: true };
@@ -121,7 +136,6 @@ function stripAccents(s) {
     .replace(/[\u0300-\u036f]/g, "");
 }
 
-// AR eliminado + RF agregado
 function serviceToKey(serviceName) {
   const s = stripAccents(serviceName).toLowerCase().trim();
 
@@ -137,9 +151,6 @@ function serviceToKey(serviceName) {
   return "EP";
 }
 
-/**
- * ✅ SI O SI 30 días (no depende de Plus/Basic)
- */
 function getCreditsExpireDays(_user) {
   return CREDITS_EXPIRE_DAYS;
 }
@@ -194,10 +205,6 @@ function findLotById(user, lotId) {
   return lots.find((l) => String(l._id) === String(lotId)) || null;
 }
 
-/**
- * ✅ SERIALIZER con userFullName
- * - robusto aunque falten campos
- */
 function serializeAppointment(ap) {
   const json = ap?.toObject ? ap.toObject() : ap;
 
@@ -247,19 +254,14 @@ const RA_NAME = "Rehabilitacion Activa";
 const RF_NAME = "Reeducacion Funcional";
 
 function calcEpCap({ hoursToStart, hasRF, hasRA, otherReservedCount }) {
-  // base EP: 4
   let cap = 4;
 
-  // a 2hs o menos: si NO hay RF y NO hay RA => puede subir a 6
-  // si hay RF => puede subir a 5
-  // si solo hay RA => queda en 4
   if (hoursToStart <= 2) {
-    if (!hasRF && !hasRA) cap = TOTAL_CAP; // 6
+    if (!hasRF && !hasRA) cap = TOTAL_CAP;
     else if (hasRF) cap = 5;
     else cap = 4;
   }
 
-  // nunca exceder cupo total restante luego de RF/RA
   const totalLimit = Math.max(0, TOTAL_CAP - Number(otherReservedCount || 0));
   cap = Math.min(cap, totalLimit);
 
@@ -268,8 +270,6 @@ function calcEpCap({ hoursToStart, hasRF, hasRA, otherReservedCount }) {
 
 /* =========================
    CANCELACIÓN (REINTEGRO)
-   - EP: reintegra si cancelás con >= 2hs
-   - Otros: reintegra si cancelás con >= 12hs
 ========================= */
 const REFUND_CUTOFF_HOURS_EP = 2;
 const REFUND_CUTOFF_HOURS_OTHERS = 12;
@@ -302,6 +302,10 @@ function validateBasicSlotRules({ date, time, service }) {
   const w = validateBookingWindow(slotDate);
   if (!w.ok) return w;
 
+  // ✅ mínimo anticipación
+  const adv = validateMinAdvance(slotDate);
+  if (!adv.ok) return adv;
+
   const isEpService = service === EP_NAME;
 
   // tarde solo EP
@@ -322,8 +326,6 @@ function isValidYMD(s) {
 }
 
 function ymdAR(d = new Date()) {
-  // para evitar “ayer/hoy” por TZ, usamos fecha local del server.
-  // si tu server está en UTC y querés AR fijo, decime y lo dejamos con TZ explícita.
   const y = d.getFullYear();
   const m = String(d.getMonth() + 1).padStart(2, "0");
   const day = String(d.getDate()).padStart(2, "0");
@@ -336,14 +338,7 @@ function ymdAR(d = new Date()) {
 router.use(protect);
 
 /* =========================
-   GET /appointments  (SEGURO)
-   - scope=mine (default): SOLO del usuario logueado, SOLO próximas (>= hoy), NO cancelled
-   - scope=calendar: SOLO datos mínimos (sin user), para pintar calendario (reserved)
-   - scope=all: SOLO admin (puede incluir populate)
-   Query:
-     from=YYYY-MM-DD
-     to=YYYY-MM-DD (to es exclusivo)
-     includePast=1 (solo para mine)
+   GET /appointments
 ========================= */
 router.get("/", async (req, res) => {
   try {
@@ -358,14 +353,12 @@ router.get("/", async (req, res) => {
     const tokenUserId = req.user?._id || req.user?.id;
     const isAdmin = req.user?.role === "admin";
 
-    // ----- scope=calendar (sin datos sensibles)
     if (scope === "calendar") {
       const q = { status: "reserved" };
 
       if (hasFrom && hasTo) q.date = { $gte: from, $lt: to };
       else if (hasFrom) q.date = { $gte: from };
       else {
-        // default “mes actual + 40 días” aprox
         const today = ymdAR();
         q.date = { $gte: today };
       }
@@ -385,7 +378,6 @@ router.get("/", async (req, res) => {
       );
     }
 
-    // ----- scope=all (admin)
     if (scope === "all") {
       if (!isAdmin) return res.status(403).json({ error: "No autorizado." });
 
@@ -400,23 +392,18 @@ router.get("/", async (req, res) => {
       return res.json((list || []).map(serializeAppointment));
     }
 
-    // ----- scope=mine (default)
+    // mine default
     {
       const q = { user: tokenUserId, status: { $ne: "cancelled" } };
 
-      if (hasFrom && hasTo) {
-        q.date = { $gte: from, $lt: to };
-      } else if (hasFrom) {
-        q.date = { $gte: from };
-      } else if (!includePast) {
-        q.date = { $gte: ymdAR() };
-      }
+      if (hasFrom && hasTo) q.date = { $gte: from, $lt: to };
+      else if (hasFrom) q.date = { $gte: from };
+      else if (!includePast) q.date = { $gte: ymdAR() };
 
       const list = await Appointment.find(q)
         .sort({ date: 1, time: 1 })
         .lean();
 
-      // para “mine” no necesitamos populate: ya es del usuario.
       return res.json(
         (list || []).map((a) => ({
           id: a?._id?.toString?.() || String(a?._id || ""),
@@ -438,7 +425,6 @@ router.get("/", async (req, res) => {
 
 /* =========================
    POST /appointments
-   ✅ mails fuera de la transacción
 ========================= */
 router.post("/", async (req, res) => {
   const session = await mongoose.startSession();
@@ -469,15 +455,12 @@ router.post("/", async (req, res) => {
         if ((user.credits || 0) <= 0) throw new Error("NO_CREDITS");
       }
 
-      // ya tiene turno a esa hora
       const alreadyByUser = await Appointment.findOne({
         date,
         time,
         user: user._id,
         status: "reserved",
-      })
-        .session(session)
-        .lean();
+      }).session(session).lean();
 
       if (alreadyByUser) throw new Error("ALREADY_HAVE_SLOT");
 
@@ -485,21 +468,15 @@ router.post("/", async (req, res) => {
         date,
         time,
         status: "reserved",
-      })
-        .session(session)
-        .lean();
+      }).session(session).lean();
 
       let willWaitlist = false;
 
-      // si el cupo total está lleno:
-      // - para EP -> lista de espera
-      // - para RF/RA -> conflicto
       if (existingAtSlot.length >= TOTAL_CAP) {
         if (basic.isEpService) willWaitlist = true;
         else throw new Error("TOTAL_CAP_REACHED");
       }
 
-      // cupos EP (base 4, y regla 2hs antes)
       const epCount = existingAtSlot.filter((a) => a.service === EP_NAME).length;
       const rfTaken = existingAtSlot.some((a) => a.service === RF_NAME) ? 1 : 0;
       const raTaken = existingAtSlot.some((a) => a.service === RA_NAME) ? 1 : 0;
@@ -507,8 +484,7 @@ router.post("/", async (req, res) => {
       const otherReservedCount = rfTaken + raTaken;
 
       if (basic.isEpService) {
-        const hoursToStart =
-          (basic.slotDate.getTime() - Date.now()) / (1000 * 60 * 60);
+        const hoursToStart = (basic.slotDate.getTime() - Date.now()) / (1000 * 60 * 60);
 
         const epCap = calcEpCap({
           hoursToStart,
@@ -520,7 +496,7 @@ router.post("/", async (req, res) => {
         if (epCount >= epCap) willWaitlist = true;
       }
 
-      // ✅ NO reservamos si no hay cupo EP: lista de espera (sin consumir crédito)
+      // ✅ WAITLIST EP (sin consumir crédito)
       if (willWaitlist && basic.isEpService) {
         const wlExists = await WaitlistEntry.findOne({
           user: user._id,
@@ -533,19 +509,12 @@ router.post("/", async (req, res) => {
         if (wlExists) throw new Error("ALREADY_IN_WAITLIST");
 
         await WaitlistEntry.create(
-          [
-            { user: user._id, date, time, service: EP_NAME, status: "waiting" },
-          ],
+          [{ user: user._id, date, time, service: EP_NAME, status: "waiting" }],
           { session }
         );
 
-        created = {
-          kind: "waitlist",
-          date,
-          time,
-          service: EP_NAME,
-          status: "waiting",
-        };
+        out = { kind: "waitlist", date, time, service: EP_NAME, status: "waiting" };
+        // mail NO corresponde (no está reservado)
         return;
       }
 
@@ -577,17 +546,15 @@ router.post("/", async (req, res) => {
       }
 
       const created = await Appointment.create(
-        [
-          {
-            date,
-            time,
-            service,
-            user: user._id,
-            status: "reserved",
-            creditLotId: usedLotId,
-            creditExpiresAt: usedLotExp,
-          },
-        ],
+        [{
+          date,
+          time,
+          service,
+          user: user._id,
+          status: "reserved",
+          creditLotId: usedLotId,
+          creditExpiresAt: usedLotExp,
+        }],
         { session }
       );
 
@@ -605,7 +572,7 @@ router.post("/", async (req, res) => {
     const httpCode = out?.kind === "waitlist" ? 202 : 201;
     res.status(httpCode).json(out);
 
-    if (mailUser && mailAp) {
+    if (mailUser && mailAp && out?.kind !== "waitlist") {
       fireAndForget(async () => {
         try {
           await sendAppointmentBookedEmail(mailUser, mailAp, mailServiceName);
@@ -640,19 +607,6 @@ router.post("/", async (req, res) => {
     if (msg === "TOTAL_CAP_REACHED")
       return res.status(409).json({ error: "Se alcanzó el cupo total disponible para este horario." });
 
-    if (msg === "SERVICE_ALREADY_TAKEN")
-      return res.status(409).json({ error: "Ese servicio ya está ocupado en este horario." });
-
-    if (msg === "EP_CAP_4")
-      return res.status(409).json({
-        error: "Se alcanzó el cupo de Entrenamiento Personal para ese horario. Te podés sumar a la lista de espera.",
-      });
-
-    if (msg === "EP_CAP_TOTAL")
-      return res.status(409).json({
-        error: "Se alcanzó el cupo de Entrenamiento Personal para este horario.",
-      });
-
     if (msg.startsWith("NO_CREDITS_FOR_")) {
       const sk = msg.replace("NO_CREDITS_FOR_", "");
       return res.status(403).json({ error: `No tenés créditos válidos para este servicio (${sk}).` });
@@ -666,8 +620,6 @@ router.post("/", async (req, res) => {
 
 /* =========================
    POST /appointments/batch
-   ✅ 1 request, valida todo, crea todo
-   ✅ mail after-commit con fireAndForget
 ========================= */
 router.post("/batch", async (req, res) => {
   const session = await mongoose.startSession();
@@ -706,6 +658,7 @@ router.post("/batch", async (req, res) => {
 
     const userId = req.user._id || req.user.id;
     let createdItems = [];
+    let waitlistedItems = [];
 
     await session.withTransaction(async () => {
       const user = await User.findById(userId).session(session);
@@ -733,18 +686,14 @@ router.post("/batch", async (req, res) => {
         user: user._id,
         status: "reserved",
         $or: orSlots,
-      })
-        .session(session)
-        .lean();
+      }).session(session).lean();
 
       if (alreadyByUserAny) throw new Error("ALREADY_HAVE_SLOT");
 
       const existing = await Appointment.find({
         status: "reserved",
         $or: orSlots,
-      })
-        .session(session)
-        .lean();
+      }).session(session).lean();
 
       const bySlot = new Map();
       for (const ap of existing) {
@@ -753,6 +702,7 @@ router.post("/batch", async (req, res) => {
         bySlot.get(k).push(ap);
       }
 
+      // marcar waitlist / validar cupos
       for (const it of normalized) {
         const k = slotKey(it.date, it.time);
         const cur = bySlot.get(k) || [];
@@ -767,7 +717,6 @@ router.post("/batch", async (req, res) => {
           throw e;
         }
 
-        // cupos EP (base 4, y regla 2hs antes)
         if (it.service === EP_NAME) {
           const epCount = cur.filter((a) => a.service === EP_NAME).length;
           const rfTaken = cur.some((a) => a.service === RF_NAME) ? 1 : 0;
@@ -775,8 +724,8 @@ router.post("/batch", async (req, res) => {
 
           const otherReservedCount = rfTaken + raTaken;
 
-          const hoursToStart =
-            (slotDate.getTime() - Date.now()) / (1000 * 60 * 60);
+          // ✅ FIX: usar it.slotDate (ya viene de validateBasicSlotRules)
+          const hoursToStart = (it.slotDate.getTime() - Date.now()) / (1000 * 60 * 60);
 
           const epCap = calcEpCap({
             hoursToStart,
@@ -810,7 +759,6 @@ router.post("/batch", async (req, res) => {
       }
 
       for (const it of normalized) {
-        // ✅ EP sin cupo -> WAITLIST (sin consumir crédito)
         if (it.waitlist) {
           const wlExists = await WaitlistEntry.findOne({
             user: user._id,
@@ -822,15 +770,13 @@ router.post("/batch", async (req, res) => {
 
           if (!wlExists) {
             await WaitlistEntry.create(
-              [
-                {
-                  user: user._id,
-                  date: it.date,
-                  time: it.time,
-                  service: EP_NAME,
-                  status: "waiting",
-                },
-              ],
+              [{
+                user: user._id,
+                date: it.date,
+                time: it.time,
+                service: EP_NAME,
+                status: "waiting",
+              }],
               { session }
             );
           }
@@ -872,17 +818,15 @@ router.post("/batch", async (req, res) => {
         }
 
         const created = await Appointment.create(
-          [
-            {
-              date: it.date,
-              time: it.time,
-              service: it.service,
-              user: user._id,
-              status: "reserved",
-              creditLotId: usedLotId,
-              creditExpiresAt: usedLotExp,
-            },
-          ],
+          [{
+            date: it.date,
+            time: it.time,
+            service: it.service,
+            user: user._id,
+            status: "reserved",
+            creditLotId: usedLotId,
+            creditExpiresAt: usedLotExp,
+          }],
           { session }
         );
 
@@ -943,28 +887,13 @@ router.post("/batch", async (req, res) => {
     if (msg === "NO_CREDITS") return res.status(403).json({ error: "Sin créditos disponibles." });
 
     if (msg === "DUP_SLOT_IN_BATCH")
-      return res
-        .status(409)
-        .json({ error: "No podés reservar 2 turnos en el mismo horario en un solo batch." });
+      return res.status(409).json({ error: "No podés reservar 2 turnos en el mismo horario en un solo batch." });
 
     if (msg === "ALREADY_HAVE_SLOT")
       return res.status(409).json({ error: "Ya tenés un turno reservado en alguno de esos horarios." });
 
     if (msg === "TOTAL_CAP_REACHED")
       return res.status(409).json({ error: "Se alcanzó el cupo total disponible para alguno de los horarios." });
-
-    if (msg === "SERVICE_ALREADY_TAKEN")
-      return res.status(409).json({ error: "Algún servicio ya está ocupado en ese horario." });
-
-    if (msg === "EP_CAP_4")
-      return res.status(409).json({
-        error: "Se alcanzó el cupo de Entrenamiento Personal para ese horario. Te podés sumar a la lista de espera.",
-      });
-
-    if (msg === "EP_CAP_TOTAL")
-      return res.status(409).json({
-        error: "Se alcanzó el cupo de Entrenamiento Personal para ese horario.",
-      });
 
     if (msg.startsWith("NO_CREDITS_FOR_")) {
       const sk = msg.replace("NO_CREDITS_FOR_", "");
@@ -979,10 +908,7 @@ router.post("/batch", async (req, res) => {
 
 /* =========================
    PATCH /appointments/:id/cancel
-   ✅ mail after-commit
-   ✅ reintegro por servicio:
-      - EP: >=2hs
-      - Otros: >=12hs
+   (tu código original igual)
 ========================= */
 router.patch("/:id/cancel", async (req, res) => {
   const session = await mongoose.startSession();
@@ -1073,7 +999,6 @@ router.patch("/:id/cancel", async (req, res) => {
               lot.remaining = Number(lot.remaining || 0) + 1;
             }
           } else {
-            // ✅ reintegro SI O SI con vencimiento 30 días desde HOY
             const exp = new Date(now);
             exp.setDate(exp.getDate() + Number(getCreditsExpireDays(user) || 30));
 
@@ -1112,7 +1037,6 @@ router.patch("/:id/cancel", async (req, res) => {
 
     res.json(payload);
 
-    // ✅ si se libera un cupo, avisar a TODA la waitlist (sin orden)
     if (mailAp?.date && mailAp?.time) {
       fireAndForget(async () => {
         await notifyWaitlistForSlot({ date: mailAp.date, time: mailAp.time });
