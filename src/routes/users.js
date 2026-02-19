@@ -13,7 +13,11 @@ import { protect, adminOnly } from "../middleware/auth.js";
 import multer from "multer";
 
 // ✅ MAIL
-import { fireAndForget, sendUserApprovedEmail, sendUserApprovalResultEmail } from "../mail.js";
+import {
+  fireAndForget,
+  sendUserApprovedEmail,
+  sendUserApprovalResultEmail,
+} from "../mail.js";
 
 const router = express.Router();
 
@@ -94,7 +98,7 @@ function isPlusActive(user) {
   return new Date(m.activeUntil) > new Date();
 }
 
-// ✅ NUEVO: BASIC=2 / PLUS=3 (esto NO toca vencimientos)
+// ✅ BASIC=2 / PLUS=3 (esto NO toca vencimientos)
 function getMonthlyCancelLimit(user) {
   return isPlusActive(user) ? 3 : 2;
 }
@@ -124,7 +128,11 @@ function normalizeMembershipForUI(user) {
     activeUntil: m.activeUntil || null,
     cancelHours: clamp(m.cancelHours ?? cancelHoursDefault, 1, 999),
     cancelsLeft: clamp(m.cancelsLeft ?? limit, 0, limit), // ✅ clamp 0..(2/3)
-    creditsExpireDays: clamp(m.creditsExpireDays ?? expireDaysDefault, 1, 999), // ✅ 30 default
+    creditsExpireDays: clamp(
+      m.creditsExpireDays ?? expireDaysDefault,
+      1,
+      999
+    ), // ✅ 30 default
   };
 }
 
@@ -144,36 +152,34 @@ function recalcUserCredits(user) {
 function normalizeLotServiceKey(lot) {
   const raw = lot?.serviceKey;
   const sk = String(raw || "").toUpperCase().trim();
-  return sk || "ALL";
+  // ✅ por defecto EP (no existe ALL)
+  return sk || "EP";
 }
 
-// ✅ servicios válidos (RF fuera)
-const ALLOWED_SERVICE_KEYS = new Set(["ALL", "EP", "AR", "RA", "NUT"]);
-
 /* ============================================
-   ✅ Servicios disponibles (UI) desde creditLots
-   - RF ELIMINADO
+   ✅ Servicios oficiales (SIN ALL)
+   - EP  Entrenamiento Personal
+   - RF  Reeducacion Funcional
+   - RA  Rehabilitacion Activa
+   - NUT Nutricion
 ============================================ */
+
+const ALLOWED_SERVICE_KEYS = new Set(["EP", "RF", "RA", "NUT"]);
 
 const SERVICE_KEY_TO_NAME = {
   EP: "Entrenamiento Personal",
-  AR: "Alto Rendimiento",
+  RF: "Reeducacion Funcional",
   RA: "Rehabilitacion Activa",
   NUT: "Nutricion",
 };
 
-const ALL_UI_SERVICES = [
-  "Entrenamiento Personal",
-  "Alto Rendimiento",
-  "Rehabilitacion Activa",
-];
+const UI_SERVICES = Object.values(SERVICE_KEY_TO_NAME);
 
 function computeServiceAccessFromLots(u) {
   const now = new Date();
   const lots = Array.isArray(u?.creditLots) ? u.creditLots : [];
 
-  let universal = 0;
-  const byKey = { EP: 0, AR: 0, RA: 0, NUT: 0 };
+  const byKey = { EP: 0, RF: 0, RA: 0, NUT: 0 };
 
   for (const lot of lots) {
     const remaining = Number(lot?.remaining || 0);
@@ -183,41 +189,20 @@ function computeServiceAccessFromLots(u) {
     if (exp && exp <= now) continue;
 
     const sk = String(lot?.serviceKey || "").toUpperCase().trim();
-
-    if (sk === "ALL") {
-      universal += remaining;
-      continue;
-    }
-
-    // ✅ solo keys válidas (RF queda afuera)
     if (byKey[sk] !== undefined) byKey[sk] += remaining;
   }
 
-  let allowedServices = [];
-
-  if (universal > 0) {
-    allowedServices = [...ALL_UI_SERVICES];
-  } else {
-    allowedServices = Object.entries(byKey)
-      .filter(([k, v]) => v > 0 && SERVICE_KEY_TO_NAME[k])
-      .map(([k]) => SERVICE_KEY_TO_NAME[k])
-      .filter((name) => ALL_UI_SERVICES.includes(name));
-  }
+  const allowedServices = Object.entries(byKey)
+    .filter(([, v]) => v > 0)
+    .map(([k]) => SERVICE_KEY_TO_NAME[k])
+    .filter(Boolean);
 
   const serviceCredits = {};
-  for (const k of Object.keys(byKey)) {
-    const name = SERVICE_KEY_TO_NAME[k];
-    if (!name) continue;
-    if (ALL_UI_SERVICES.includes(name) && byKey[k] > 0) {
-      serviceCredits[name] = byKey[k];
-    }
+  for (const [k, v] of Object.entries(byKey)) {
+    if (v > 0) serviceCredits[SERVICE_KEY_TO_NAME[k]] = v;
   }
 
-  return {
-    allowedServices,
-    serviceCredits,
-    universalCredits: universal,
-  };
+  return { allowedServices, serviceCredits };
 }
 
 /* ============================================
@@ -226,7 +211,7 @@ function computeServiceAccessFromLots(u) {
 
 function sumCreditsForService(user, serviceKey) {
   const now = nowDate();
-  const want = String(serviceKey || "ALL").toUpperCase().trim() || "ALL";
+  const want = String(serviceKey || "EP").toUpperCase().trim() || "EP";
   const lots = Array.isArray(user.creditLots) ? user.creditLots : [];
 
   return lots.reduce((acc, lot) => {
@@ -237,8 +222,7 @@ function sumCreditsForService(user, serviceKey) {
     const rem = Number(lot.remaining || 0);
     if (rem <= 0) return acc;
 
-    if (want === "ALL") return acc + rem;
-    if (lk === "ALL" || lk === want) return acc + rem;
+    if (lk === want) return acc + rem;
     return acc;
   }, 0);
 }
@@ -247,17 +231,13 @@ function consumeCreditsForService(user, toRemove, serviceKey) {
   const now = nowDate();
   let left = Math.max(0, Number(toRemove || 0));
 
-  const want = String(serviceKey || "ALL").toUpperCase().trim() || "ALL";
+  const want = String(serviceKey || "EP").toUpperCase().trim() || "EP";
   const lots = Array.isArray(user.creditLots) ? user.creditLots : [];
 
   const sorted = lots
     .filter((l) => Number(l.remaining || 0) > 0)
     .filter((l) => !l.expiresAt || new Date(l.expiresAt) > now)
-    .filter((l) => {
-      if (want === "ALL") return true;
-      const lk = normalizeLotServiceKey(l);
-      return lk === want || lk === "ALL";
-    })
+    .filter((l) => normalizeLotServiceKey(l) === want)
     .sort((a, b) => {
       const ae = a.expiresAt ? new Date(a.expiresAt).getTime() : Infinity;
       const be = b.expiresAt ? new Date(b.expiresAt).getTime() : Infinity;
@@ -277,18 +257,23 @@ function consumeCreditsForService(user, toRemove, serviceKey) {
   recalcUserCredits(user);
 }
 
-function addCreditLot(user, { amount, serviceKey = "ALL", source = "admin-adjust" }) {
+function addCreditLot(
+  user,
+  { amount, serviceKey = "EP", source = "admin-adjust" }
+) {
   const now = nowDate();
 
-  // ✅ SIN PLUS EN VENCIMIENTOS: SI O SI 30
+  // ✅ vencimiento fijo 30 días
   const days = CREDITS_EXPIRE_DAYS;
 
   const exp = new Date(now);
   exp.setDate(exp.getDate() + days);
 
+  const sk = String(serviceKey || "EP").toUpperCase().trim() || "EP";
+
   user.creditLots = user.creditLots || [];
   user.creditLots.push({
-    serviceKey: String(serviceKey || "ALL").toUpperCase().trim(),
+    serviceKey: sk,
     amount: Number(amount || 0),
     remaining: Number(amount || 0),
     expiresAt: exp,
@@ -303,16 +288,21 @@ function addCreditLot(user, { amount, serviceKey = "ALL", source = "admin-adjust
 function buildCreditsByService(user) {
   return {
     EP: sumCreditsForService(user, "EP"),
-    AR: sumCreditsForService(user, "AR"),
+    RF: sumCreditsForService(user, "RF"),
     RA: sumCreditsForService(user, "RA"),
     NUT: sumCreditsForService(user, "NUT"),
-    ALL: sumCreditsForService(user, "ALL"),
   };
 }
 
 function stripSensitive(u) {
   if (!u || typeof u !== "object") return u;
-  const { password, emailVerificationToken, emailVerificationExpires, __v, ...rest } = u;
+  const {
+    password,
+    emailVerificationToken,
+    emailVerificationExpires,
+    __v,
+    ...rest
+  } = u;
   return rest;
 }
 
@@ -344,8 +334,19 @@ router.get("/registrations/list", adminOnly, async (req, res) => {
 
 router.post("/", adminOnly, async (req, res) => {
   try {
-    const { name, lastName, email, phone, dni, age, weight, notes, credits, role, password } =
-      req.body || {};
+    const {
+      name,
+      lastName,
+      email,
+      phone,
+      dni,
+      age,
+      weight,
+      notes,
+      credits,
+      role,
+      password,
+    } = req.body || {};
 
     const n = String(name || "").trim();
     const ln = String(lastName || "").trim();
@@ -395,7 +396,12 @@ router.post("/", adminOnly, async (req, res) => {
 
     const initialCredits = Number(credits ?? 0);
     if (initialCredits > 0) {
-      addCreditLot(user, { amount: initialCredits, serviceKey: "ALL", source: "admin-create" });
+      // ✅ como no existe ALL, por defecto se cargan a EP
+      addCreditLot(user, {
+        amount: initialCredits,
+        serviceKey: "EP",
+        source: "admin-create",
+      });
       await user.save();
     }
 
@@ -411,7 +417,10 @@ router.post("/", adminOnly, async (req, res) => {
       "MAIL_APPROVED_CREATE"
     );
 
-    const uLean = (await User.findById(user._id).lean()) || user.toObject?.() || user;
+    const uLean =
+      (await User.findById(user._id).lean()) ||
+      user.toObject?.() ||
+      user;
     const svc = computeServiceAccessFromLots(uLean);
     const membership = normalizeMembershipForUI(uLean);
 
@@ -428,7 +437,9 @@ router.post("/", adminOnly, async (req, res) => {
     console.error("Error en POST /users:", err);
 
     if (err.code === 11000 && err.keyPattern?.email) {
-      return res.status(400).json({ error: "Ya existe un usuario con ese email." });
+      return res
+        .status(400)
+        .json({ error: "Ya existe un usuario con ese email." });
     }
 
     res.status(500).json({ error: "Error al crear usuario." });
@@ -487,7 +498,6 @@ router.patch("/:id/approval", adminOnly, async (req, res) => {
     // =========================================================
     if (status === "rejected") {
       const to = String(user.email || "").trim();
-
       const shouldSendRejectionMail = !!to && prevStatus !== "rejected";
 
       if (shouldSendRejectionMail) {
@@ -527,7 +537,10 @@ router.patch("/:id/approval", adminOnly, async (req, res) => {
     await user.save();
 
     if (shouldSendApprovalMail) {
-      fireAndForget(() => sendUserApprovalResultEmail(user, "approved"), "MAIL_APPROVED_WEB");
+      fireAndForget(
+        () => sendUserApprovalResultEmail(user, "approved"),
+        "MAIL_APPROVED_WEB"
+      );
     }
 
     return res.json({
@@ -555,10 +568,16 @@ router.put("/:id", async (req, res) => {
       });
     }
 
-    const name = typeof req.body?.name === "string" ? req.body.name.trim() : undefined;
-    const lastName = typeof req.body?.lastName === "string" ? req.body.lastName.trim() : undefined;
-    const phone = typeof req.body?.phone === "string" ? req.body.phone.trim() : undefined;
-    const dni = typeof req.body?.dni === "string" ? req.body.dni.trim() : undefined;
+    const name =
+      typeof req.body?.name === "string" ? req.body.name.trim() : undefined;
+    const lastName =
+      typeof req.body?.lastName === "string"
+        ? req.body.lastName.trim()
+        : undefined;
+    const phone =
+      typeof req.body?.phone === "string" ? req.body.phone.trim() : undefined;
+    const dni =
+      typeof req.body?.dni === "string" ? req.body.dni.trim() : undefined;
 
     if (dni !== undefined && dni !== "" && !/^\d{6,10}$/.test(dni)) {
       return res.status(400).json({ error: "DNI inválido." });
@@ -763,7 +782,7 @@ async function updateCredits(req, res) {
     if (!user) return res.status(404).json({ error: "Usuario no encontrado." });
 
     const applyOne = ({ credits: c, delta: d, serviceKey: skRaw, source: src }) => {
-      const sk = String(skRaw || "ALL").toUpperCase().trim() || "ALL";
+      const sk = String(skRaw || "EP").toUpperCase().trim() || "EP";
       if (!ALLOWED_SERVICE_KEYS.has(sk)) {
         const err = new Error("serviceKey inválido.");
         err.status = 400;
@@ -916,7 +935,12 @@ router.post("/:id/apto", uploadApto.single("apto"), async (req, res) => {
 
     if (user.aptoPath) {
       try {
-        const old = path.join(__dirname, "..", "..", user.aptoPath.replace(/^\//, ""));
+        const old = path.join(
+          __dirname,
+          "..",
+          "..",
+          user.aptoPath.replace(/^\//, "")
+        );
         if (fs.existsSync(old)) fs.unlinkSync(old);
       } catch {}
     }
@@ -943,12 +967,19 @@ router.get("/:id/apto", async (req, res) => {
     const isAdmin = req.user.role === "admin";
     const isSelf = req.user._id.toString() === id;
 
-    if (!isAdmin && !isSelf) return res.status(403).json({ error: "No autorizado." });
+    if (!isAdmin && !isSelf)
+      return res.status(403).json({ error: "No autorizado." });
 
     const user = await User.findById(id);
-    if (!user || !user.aptoPath) return res.status(404).json({ error: "Apto no encontrado." });
+    if (!user || !user.aptoPath)
+      return res.status(404).json({ error: "Apto no encontrado." });
 
-    const filePath = path.join(__dirname, "..", "..", user.aptoPath.replace(/^\//, ""));
+    const filePath = path.join(
+      __dirname,
+      "..",
+      "..",
+      user.aptoPath.replace(/^\//, "")
+    );
     res.sendFile(filePath);
   } catch (err) {
     console.error("Error en GET /users/:id/apto:", err);
@@ -963,14 +994,20 @@ router.delete("/:id/apto", async (req, res) => {
     const isAdmin = req.user.role === "admin";
     const isSelf = req.user._id.toString() === id;
 
-    if (!isAdmin && !isSelf) return res.status(403).json({ error: "No autorizado." });
+    if (!isAdmin && !isSelf)
+      return res.status(403).json({ error: "No autorizado." });
 
     const user = await User.findById(id);
     if (!user) return res.status(404).json({ error: "Usuario no encontrado." });
 
     if (user.aptoPath) {
       try {
-        const file = path.join(__dirname, "..", "..", user.aptoPath.replace(/^\//, ""));
+        const file = path.join(
+          __dirname,
+          "..",
+          "..",
+          user.aptoPath.replace(/^\//, "")
+        );
         if (fs.existsSync(file)) fs.unlinkSync(file);
       } catch {}
     }
@@ -1008,7 +1045,12 @@ router.post("/:id/photo", avatarUpload.single("photo"), async (req, res) => {
 
     if (user.photoPath) {
       try {
-        const old = path.join(__dirname, "..", "..", user.photoPath.replace(/^\//, ""));
+        const old = path.join(
+          __dirname,
+          "..",
+          "..",
+          user.photoPath.replace(/^\//, "")
+        );
         if (fs.existsSync(old)) fs.unlinkSync(old);
       } catch {}
     }

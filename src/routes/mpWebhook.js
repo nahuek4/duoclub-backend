@@ -93,7 +93,7 @@ function addCreditLot(user, { amount, source, orderId, serviceKey }) {
   const now = new Date();
   ensureBasicIfExpired(user);
 
-  const expireDays = isPlusActive(user) ? 40 : 30;
+  const expireDays = 30; // ✅ siempre 30 dias
   const exp = new Date(now);
   exp.setDate(exp.getDate() + expireDays);
 
@@ -123,7 +123,7 @@ async function applyOrderIfNeeded(order) {
 
   const hasItems = Array.isArray(order.items) && order.items.length > 0;
 
-  // 1) membership primero (para que expireDays sea 40 si corresponde)
+  // 1) membership primero (independiente del vencimiento de creditos)
   if (hasItems) {
     const hasPlus = order.items.some((it) => String(it.kind).toUpperCase() === "MEMBERSHIP");
     if (hasPlus) activatePlus(user);

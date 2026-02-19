@@ -58,30 +58,25 @@ function getBackendBase(req) {
 
 /* ============================================
    ✅ Servicios disponibles (UI) desde creditLots
-   - RF ELIMINADO
+   Servicios oficiales:
+   - EP  Entrenamiento Personal
+   - RF  Reeducacion Funcional
+   - RA  Rehabilitacion Activa
+   - NUT Nutricion
 ============================================ */
 
 const SERVICE_KEY_TO_NAME = {
   EP: "Entrenamiento Personal",
-  AR: "Alto Rendimiento",
+  RF: "Reeducacion Funcional",
   RA: "Rehabilitacion Activa",
   NUT: "Nutricion",
 };
-
-const ALL_UI_SERVICES = [
-  "Entrenamiento Personal",
-  "Alto Rendimiento",
-  "Rehabilitacion Activa",
-];
 
 function computeServiceAccessFromLots(u) {
   const now = new Date();
   const lots = Array.isArray(u?.creditLots) ? u.creditLots : [];
 
-  let universal = 0;
-
-  // ✅ RF eliminado
-  const byKey = { EP: 0, AR: 0, RA: 0, NUT: 0 };
+  const byKey = { EP: 0, RF: 0, RA: 0, NUT: 0 };
 
   for (const lot of lots) {
     const remaining = Number(lot?.remaining || 0);
@@ -91,40 +86,19 @@ function computeServiceAccessFromLots(u) {
     if (exp && exp <= now) continue;
 
     const sk = String(lot?.serviceKey || "").toUpperCase().trim();
-
-    if (sk === "ALL") {
-      universal += remaining;
-      continue;
-    }
-
     if (byKey[sk] !== undefined) byKey[sk] += remaining;
   }
 
-  let allowedServices = [];
-
-  if (universal > 0) {
-    allowedServices = [...ALL_UI_SERVICES];
-  } else {
-    allowedServices = Object.entries(byKey)
-      .filter(([k, v]) => v > 0 && SERVICE_KEY_TO_NAME[k])
-      .map(([k]) => SERVICE_KEY_TO_NAME[k])
-      .filter((name) => ALL_UI_SERVICES.includes(name));
-  }
+  const allowedServices = Object.entries(byKey)
+    .filter(([, v]) => v > 0)
+    .map(([k]) => SERVICE_KEY_TO_NAME[k]);
 
   const serviceCredits = {};
-  for (const k of Object.keys(byKey)) {
-    const name = SERVICE_KEY_TO_NAME[k];
-    if (!name) continue;
-    if (ALL_UI_SERVICES.includes(name) && byKey[k] > 0) {
-      serviceCredits[name] = byKey[k];
-    }
+  for (const [k, v] of Object.entries(byKey)) {
+    if (v > 0) serviceCredits[SERVICE_KEY_TO_NAME[k]] = v;
   }
 
-  return {
-    allowedServices,
-    serviceCredits,
-    universalCredits: universal,
-  };
+  return { allowedServices, serviceCredits };
 }
 
 /* ============================================

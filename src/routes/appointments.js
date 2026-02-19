@@ -147,7 +147,7 @@ function serviceToKey(serviceName) {
   if (s.includes("nutricion")) return "NUT";
 
   const up = String(serviceName || "").toUpperCase().trim();
-  const allowed = new Set(["EP", "RA", "RF", "NUT", "ALL"]);
+  const allowed = new Set(["EP", "RA", "RF", "NUT"]);
   if (allowed.has(up)) return up;
 
   return "EP";
@@ -187,7 +187,7 @@ function pickLotToConsume(user, wantedServiceKey) {
     .filter((l) => !l.expiresAt || new Date(l.expiresAt) > now)
     .filter((l) => {
       const lk = normalizeLotServiceKey(l);
-      return lk === "ALL" || lk === want;
+      return lk === want;
     })
     .sort((a, b) => {
       const ae = a.expiresAt ? new Date(a.expiresAt).getTime() : Infinity;
