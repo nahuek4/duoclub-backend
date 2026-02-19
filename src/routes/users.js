@@ -41,7 +41,7 @@ if (!fs.existsSync(uploadDir)) {
 }
 
 /* ============================================
-   MULTER PARA APTOS (PDF)
+   MULTER PARA APTOS (PDF) ✅ ROBUSTO
 ============================================ */
 
 const aptoStorage = multer.diskStorage({
@@ -55,8 +55,40 @@ const aptoStorage = multer.diskStorage({
 
 const uploadApto = multer({
   storage: aptoStorage,
-  limits: { fileSize: 10 * 1024 * 1024 },
+  limits: { fileSize: 10 * 1024 * 1024 }, // 10MB
+  fileFilter: (req, file, cb) => {
+    const nameOk = String(file.originalname || "")
+      .toLowerCase()
+      .endsWith(".pdf");
+    const mimeOk = file.mimetype === "application/pdf";
+    if (!nameOk && !mimeOk) {
+      return cb(new Error("Solo se permite PDF."));
+    }
+    cb(null, true);
+  },
 });
+
+// Wrapper para capturar errores de multer (fileSize, mimetype, etc.)
+function uploadAptoSingle(req, res, next) {
+  const handler = uploadApto.single("apto");
+  handler(req, res, (err) => {
+    if (!err) return next();
+
+    if (err.code === "LIMIT_FILE_SIZE") {
+      return res.status(400).json({ error: "El PDF supera el límite de 10MB." });
+    }
+
+    return res
+      .status(400)
+      .json({ error: err.message || "Error al subir el archivo." });
+  });
+}
+
+function safeUnlink(absPath) {
+  try {
+    if (absPath && fs.existsSync(absPath)) fs.unlinkSync(absPath);
+  } catch {}
+}
 
 /* ============================================
    MULTER PARA FOTO DE PACIENTE (AVATAR)
@@ -92,7 +124,7 @@ function nowDate() {
 
 function isPlusActive(user) {
   const m = user?.membership || {};
-  const tier = String(m.tier || "").toLowerCase().trim(); // ✅ case-insensitive
+  const tier = String(m.tier || "").toLowerCase().trim();
   if (tier !== "plus") return false;
   if (!m.activeUntil) return false;
   return new Date(m.activeUntil) > new Date();
@@ -127,12 +159,8 @@ function normalizeMembershipForUI(user) {
     tier: tierNorm || "basic",
     activeUntil: m.activeUntil || null,
     cancelHours: clamp(m.cancelHours ?? cancelHoursDefault, 1, 999),
-    cancelsLeft: clamp(m.cancelsLeft ?? limit, 0, limit), // ✅ clamp 0..(2/3)
-    creditsExpireDays: clamp(
-      m.creditsExpireDays ?? expireDaysDefault,
-      1,
-      999
-    ), // ✅ 30 default
+    cancelsLeft: clamp(m.cancelsLeft ?? limit, 0, limit),
+    creditsExpireDays: clamp(m.creditsExpireDays ?? expireDaysDefault, 1, 999),
   };
 }
 
@@ -152,16 +180,11 @@ function recalcUserCredits(user) {
 function normalizeLotServiceKey(lot) {
   const raw = lot?.serviceKey;
   const sk = String(raw || "").toUpperCase().trim();
-  // ✅ por defecto EP (no existe ALL)
   return sk || "EP";
 }
 
 /* ============================================
    ✅ Servicios oficiales (SIN ALL)
-   - EP  Entrenamiento Personal
-   - RF  Reeducacion Funcional
-   - RA  Rehabilitacion Activa
-   - NUT Nutricion
 ============================================ */
 
 const ALLOWED_SERVICE_KEYS = new Set(["EP", "RF", "RA", "NUT"]);
@@ -263,7 +286,6 @@ function addCreditLot(
 ) {
   const now = nowDate();
 
-  // ✅ vencimiento fijo 30 días
   const days = CREDITS_EXPIRE_DAYS;
 
   const exp = new Date(now);
@@ -390,13 +412,11 @@ router.post("/", adminOnly, async (req, res) => {
       aptoPath: "",
       aptoStatus: "",
 
-      // ✅ NUEVO: ya lo aprobaste desde admin-create, mandamos mail 1 vez
       welcomeApprovedEmailSentAt: new Date(),
     });
 
     const initialCredits = Number(credits ?? 0);
     if (initialCredits > 0) {
-      // ✅ como no existe ALL, por defecto se cargan a EP
       addCreditLot(user, {
         amount: initialCredits,
         serviceKey: "EP",
@@ -405,7 +425,6 @@ router.post("/", adminOnly, async (req, res) => {
       await user.save();
     }
 
-    // ✅ enviar mail de alta aprobada + password temporal (fire-and-forget)
     fireAndForget(
       async () => {
         await sendUserApprovedEmail({
@@ -418,9 +437,7 @@ router.post("/", adminOnly, async (req, res) => {
     );
 
     const uLean =
-      (await User.findById(user._id).lean()) ||
-      user.toObject?.() ||
-      user;
+      (await User.findById(user._id).lean()) || user.toObject?.() || user;
     const svc = computeServiceAccessFromLots(uLean);
     const membership = normalizeMembershipForUI(uLean);
 
@@ -437,9 +454,7 @@ router.post("/", adminOnly, async (req, res) => {
     console.error("Error en POST /users:", err);
 
     if (err.code === 11000 && err.keyPattern?.email) {
-      return res
-        .status(400)
-        .json({ error: "Ya existe un usuario con ese email." });
+      return res.status(400).json({ error: "Ya existe un usuario con ese email." });
     }
 
     res.status(500).json({ error: "Error al crear usuario." });
@@ -469,9 +484,6 @@ router.get("/pending", adminOnly, async (req, res) => {
   }
 });
 
-/* =========================================================
-   ✅ PATCH /users/:id/approval
-========================================================= */
 router.patch("/:id/approval", adminOnly, async (req, res) => {
   try {
     const { id } = req.params;
@@ -484,7 +496,6 @@ router.patch("/:id/approval", adminOnly, async (req, res) => {
     const user = await User.findById(id);
     if (!user) return res.status(404).json({ error: "Usuario no encontrado." });
 
-    // ✅ regla: NO aprobar si no verificó email
     if (status === "approved" && !user.emailVerified) {
       return res.status(400).json({
         error: "No se puede aprobar: el email no está verificado.",
@@ -493,9 +504,6 @@ router.patch("/:id/approval", adminOnly, async (req, res) => {
 
     const prevStatus = String(user.approvalStatus || "pending");
 
-    // =========================================================
-    // ✅ CASO RECHAZADO -> BORRAR CUENTA
-    // =========================================================
     if (status === "rejected") {
       const to = String(user.email || "").trim();
       const shouldSendRejectionMail = !!to && prevStatus !== "rejected";
@@ -517,9 +525,6 @@ router.patch("/:id/approval", adminOnly, async (req, res) => {
       });
     }
 
-    // =========================================================
-    // ✅ CASO APROBADO -> activar + mail 1 sola vez
-    // =========================================================
     user.approvalStatus = "approved";
     user.suspended = false;
 
@@ -610,7 +615,12 @@ router.put("/:id", async (req, res) => {
     }
 
     const creditsByService = buildCreditsByService(u);
-    return res.json({ ...stripSensitive(u), ...svc, membership, creditsByService });
+    return res.json({
+      ...stripSensitive(u),
+      ...svc,
+      membership,
+      creditsByService,
+    });
   } catch (err) {
     console.error("Error en PUT /users/:id:", err);
     return res.status(500).json({ error: "Error interno." });
@@ -770,9 +780,6 @@ router.post("/:id/clinical-notes", adminOnly, async (req, res) => {
   }
 });
 
-/* ============================================
-   CRÉDITOS (ADMIN) ✅ POR SERVICIO (creditLots)
-============================================ */
 async function updateCredits(req, res) {
   try {
     const { id } = req.params;
@@ -863,9 +870,6 @@ async function updateCredits(req, res) {
 router.patch("/:id/credits", adminOnly, updateCredits);
 router.post("/:id/credits", adminOnly, updateCredits);
 
-/* ============================================
-   RESET PASSWORD (ADMIN)
-============================================ */
 router.post("/:id/reset-password", adminOnly, async (req, res) => {
   try {
     const { id } = req.params;
@@ -887,9 +891,6 @@ router.post("/:id/reset-password", adminOnly, async (req, res) => {
   }
 });
 
-/* ============================================
-   SUSPENDER / REACTIVAR (ADMIN)
-============================================ */
 router.patch("/:id/suspend", adminOnly, async (req, res) => {
   try {
     const { id } = req.params;
@@ -909,9 +910,10 @@ router.patch("/:id/suspend", adminOnly, async (req, res) => {
 });
 
 /* ============================================
-   SUBIR APTO (PDF)
+   ✅ APTO: SUBIR / VER / BORRAR (con wrapper multer)
 ============================================ */
-router.post("/:id/apto", uploadApto.single("apto"), async (req, res) => {
+
+router.post("/:id/apto", uploadAptoSingle, async (req, res) => {
   try {
     const { id } = req.params;
 
@@ -928,35 +930,29 @@ router.post("/:id/apto", uploadApto.single("apto"), async (req, res) => {
       return res.status(400).json({ error: "No se recibió ningún archivo." });
     }
 
-    const relativePath = "/uploads/" + req.file.filename;
-
     const user = await User.findById(id);
     if (!user) return res.status(404).json({ error: "Usuario no encontrado." });
 
+    // borrar anterior si existía
     if (user.aptoPath) {
-      try {
-        const old = path.join(
-          __dirname,
-          "..",
-          "..",
-          user.aptoPath.replace(/^\//, "")
-        );
-        if (fs.existsSync(old)) fs.unlinkSync(old);
-      } catch {}
+      const oldAbs = path.join(__dirname, "..", "..", user.aptoPath.replace(/^\//, ""));
+      safeUnlink(oldAbs);
     }
+
+    const relativePath = "/uploads/" + req.file.filename;
 
     user.aptoPath = relativePath;
     user.aptoStatus = "uploaded";
     await user.save();
 
-    res.json({
+    return res.json({
       ok: true,
       message: "Apto subido correctamente.",
       aptoPath: user.aptoPath,
     });
   } catch (err) {
     console.error("Error en POST /users/:id/apto:", err);
-    res.status(500).json({ error: "Error al subir el apto." });
+    return res.status(500).json({ error: "Error al subir el apto." });
   }
 });
 
@@ -967,23 +963,26 @@ router.get("/:id/apto", async (req, res) => {
     const isAdmin = req.user.role === "admin";
     const isSelf = req.user._id.toString() === id;
 
-    if (!isAdmin && !isSelf)
+    if (!isAdmin && !isSelf) {
       return res.status(403).json({ error: "No autorizado." });
+    }
 
     const user = await User.findById(id);
-    if (!user || !user.aptoPath)
+    if (!user || !user.aptoPath) {
       return res.status(404).json({ error: "Apto no encontrado." });
+    }
 
-    const filePath = path.join(
-      __dirname,
-      "..",
-      "..",
-      user.aptoPath.replace(/^\//, "")
-    );
-    res.sendFile(filePath);
+    const filePath = path.join(__dirname, "..", "..", user.aptoPath.replace(/^\//, ""));
+    if (!fs.existsSync(filePath)) {
+      return res.status(404).json({ error: "El archivo no existe en el servidor." });
+    }
+
+    res.setHeader("Content-Type", "application/pdf");
+    res.setHeader("Content-Disposition", 'inline; filename="apto.pdf"');
+    return res.sendFile(filePath);
   } catch (err) {
     console.error("Error en GET /users/:id/apto:", err);
-    res.status(500).json({ error: "Error al obtener apto." });
+    return res.status(500).json({ error: "Error al obtener apto." });
   }
 });
 
@@ -994,34 +993,32 @@ router.delete("/:id/apto", async (req, res) => {
     const isAdmin = req.user.role === "admin";
     const isSelf = req.user._id.toString() === id;
 
-    if (!isAdmin && !isSelf)
+    if (!isAdmin && !isSelf) {
       return res.status(403).json({ error: "No autorizado." });
+    }
 
     const user = await User.findById(id);
     if (!user) return res.status(404).json({ error: "Usuario no encontrado." });
 
     if (user.aptoPath) {
-      try {
-        const file = path.join(
-          __dirname,
-          "..",
-          "..",
-          user.aptoPath.replace(/^\//, "")
-        );
-        if (fs.existsSync(file)) fs.unlinkSync(file);
-      } catch {}
+      const fileAbs = path.join(__dirname, "..", "..", user.aptoPath.replace(/^\//, ""));
+      safeUnlink(fileAbs);
     }
 
     user.aptoPath = "";
     user.aptoStatus = "";
     await user.save();
 
-    res.json({ ok: true, message: "Apto eliminado correctamente." });
+    return res.json({ ok: true, message: "Apto eliminado correctamente." });
   } catch (err) {
     console.error("Error en DELETE /users/:id/apto:", err);
-    res.status(500).json({ error: "Error al borrar apto." });
+    return res.status(500).json({ error: "Error al borrar apto." });
   }
 });
+
+/* ============================================
+   FOTO (AVATAR)
+============================================ */
 
 router.post("/:id/photo", avatarUpload.single("photo"), async (req, res) => {
   try {
@@ -1044,15 +1041,8 @@ router.post("/:id/photo", avatarUpload.single("photo"), async (req, res) => {
     if (!user) return res.status(404).json({ error: "Usuario no encontrado." });
 
     if (user.photoPath) {
-      try {
-        const old = path.join(
-          __dirname,
-          "..",
-          "..",
-          user.photoPath.replace(/^\//, "")
-        );
-        if (fs.existsSync(old)) fs.unlinkSync(old);
-      } catch {}
+      const old = path.join(__dirname, "..", "..", user.photoPath.replace(/^\//, ""));
+      safeUnlink(old);
     }
 
     const relativePath = "/uploads/" + req.file.filename;
