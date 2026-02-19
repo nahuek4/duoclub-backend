@@ -21,15 +21,11 @@ import adminEvaluationsRoutes from "./routes/adminEvaluations.js";
 import evaluationsRoutes from "./routes/evaluations.js";
 import testMailRouter from "./routes/testMail.js";
 
-// ✅ jobs
+// jobs base
 import { startAppointmentReminderScheduler } from "./jobs/startReminders.js";
-import { startWaitlistScheduler } from "./jobs/startWaitlist.js";
 
 // ✅ NUEVO: links de aprobar/rechazar del mail (vive en /auth)
 import adminApprovalLinksRoutes from "./routes/adminApprovalLinks.js";
-
-// ✅ ROUTE waitlist (asegurate de tener este archivo)
-import waitlistRouter from "./routes/waitlist.js";
 
 dotenv.config();
 
@@ -59,13 +55,6 @@ startAppointmentReminderScheduler({
 });
 
 /* =========================
-   ✅ WAITLIST (AUTO)
-========================= */
-startWaitlistScheduler({
-  everyMinutes: Number(process.env.WAITLIST_EVERY_MINUTES || 2),
-});
-
-/* =========================
    MIDDLEWARES BASE
 ========================= */
 app.use(
@@ -74,31 +63,32 @@ app.use(
   })
 );
 
-app.use(express.json());
+app.use(express.json({ limit: "2mb" }));
 
 /* =========================
-   ✅ CORS (ESTABLE + PRE-FLIGHT PERFECTO)
-   - IMPORTANTÍSIMO: NO tirar error en origin()
-   - IMPORTANTÍSIMO: app.options usa el MISMO corsOptions
+   ✅ CORS (estable + preflight ok)
 ========================= */
-const allowedOrigins = new Set([
+const allowedOrigins = [
   "http://localhost:5173",
   "http://127.0.0.1:5173",
   "https://duoclub.ar",
   "https://www.duoclub.ar",
   "https://app.duoclub.ar",
   "https://www.app.duoclub.ar",
-]);
+];
 
 const corsOptions = {
   origin(origin, cb) {
     // Permite Postman/curl (sin Origin)
     if (!origin) return cb(null, true);
 
-    if (allowedOrigins.has(origin)) return cb(null, true);
+    // Normalizamos por si viene con espacios
+    const o = String(origin).trim();
 
-    // ❗ NO devolver Error acá: si no, el browser ve “sin ACAO”
-    return cb(null, false);
+    if (allowedOrigins.includes(o)) return cb(null, true);
+
+    // Importante: devolvemos error controlado (va al handler de abajo)
+    return cb(new Error("Not allowed by CORS: " + o));
   },
   credentials: true,
   methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
@@ -107,7 +97,8 @@ const corsOptions = {
 };
 
 app.use(cors(corsOptions));
-// ✅ preflight global usando las mismas opciones
+
+// ✅ responder preflight con CORS correctamente (antes de rate-limit)
 app.options("*", cors(corsOptions));
 
 /* =========================
@@ -118,11 +109,13 @@ const apiLimiter = rateLimit({
   max: 200,
   standardHeaders: true,
   legacyHeaders: false,
+
+  // ✅ CLAVE: NO rate-limitear preflight
+  skip: (req) => req.method === "OPTIONS",
 });
 
 app.use("/auth", apiLimiter);
 app.use("/appointments", apiLimiter);
-app.use("/waitlist", apiLimiter);
 
 /* =========================
    STATIC
@@ -158,7 +151,34 @@ app.use("/admin/evaluations", adminEvaluationsRoutes);
 app.use("/evaluations", evaluationsRoutes);
 app.use("/api/test-mail", testMailRouter);
 
-app.use("/waitlist", waitlistRouter);
+/* =========================
+   ✅ WAITLIST (opcional, no rompe deploy si falta)
+========================= */
+try {
+  const modRouter = await import("./routes/waitlist.js");
+  const waitlistRouter = modRouter?.default;
+  if (waitlistRouter) {
+    app.use("/waitlist", waitlistRouter);
+    console.log("✅ /waitlist route mounted");
+  } else {
+    console.log("⚠️ ./routes/waitlist.js no exporta default router");
+  }
+} catch (e) {
+  console.log("⚠️ waitlist router not mounted:", e?.message || e);
+}
+
+try {
+  const modJob = await import("./jobs/startWaitlist.js");
+  const startWaitlistScheduler = modJob?.startWaitlistScheduler;
+  if (typeof startWaitlistScheduler === "function") {
+    startWaitlistScheduler({
+      everyMinutes: Number(process.env.WAITLIST_EVERY_MINUTES || 2),
+    });
+    console.log("✅ waitlist scheduler started");
+  }
+} catch (e) {
+  console.log("⚠️ waitlist scheduler not started:", e?.message || e);
+}
 
 /* =========================
    RUTA BASE
@@ -168,8 +188,7 @@ app.get("/", (req, res) => {
 });
 
 /* =========================
-   ✅ ERROR HANDLER CORS
-   - si origin no permitido => 403 prolijo (pero CON headers si el origin era válido)
+   ERROR HANDLER CORS (para ver el motivo real)
 ========================= */
 app.use((err, req, res, next) => {
   if (String(err?.message || "").startsWith("Not allowed by CORS")) {
@@ -190,4 +209,5 @@ app.use((req, res) => {
 ========================= */
 app.listen(PORT, () => {
   console.log(`✅ Servidor escuchando en http://localhost:${PORT}`);
+  console.log("✅ Allowed origins:", allowedOrigins);
 });
