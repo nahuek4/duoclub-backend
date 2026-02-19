@@ -1,83 +1,80 @@
 // backend/src/lib/credits.js
 
-export const CREDITS_EXPIRE_DAYS = 30;
+import { EP_NAME, RA_NAME, RF_NAME } from "./slotCapacity.js";
 
-function stripAccents(s) {
+// Normaliza nombre para comparar (sin tildes, lower)
+function norm(s) {
   return String(s || "")
+    .trim()
+    .toLowerCase()
     .normalize("NFD")
     .replace(/[\u0300-\u036f]/g, "");
 }
 
-/**
- * Convierte nombre de servicio a key:
- * - EP / RA / RF / NUT
- * - admite que ya venga la key
- */
+// Mapea nombre de servicio (UI/DB) a key de creditLots
 export function serviceToKey(serviceName) {
-  const s = stripAccents(serviceName).toLowerCase().trim();
+  const n = norm(serviceName);
 
-  if (s.includes("entrenamiento") && s.includes("personal")) return "EP";
-  if (s.includes("rehabilitacion") && s.includes("activa")) return "RA";
-  if (s.includes("reeducacion") && s.includes("funcional")) return "RF";
-  if (s.includes("nutricion")) return "NUT";
+  if (n === norm(EP_NAME)) return "EP";
+  if (n === norm(RA_NAME)) return "RA";
+  if (n === norm(RF_NAME)) return "RF";
 
-  const up = String(serviceName || "").toUpperCase().trim();
-  const allowed = new Set(["EP", "RA", "RF", "NUT", "ALL"]);
-  if (allowed.has(up)) return up;
+  // fallback: si guardás "EP", "RA", etc en algún lado
+  if (["ep", "ra", "rf"].includes(n.toUpperCase())) return n.toUpperCase();
 
-  return "EP";
+  return "ALL";
 }
 
-export function nowDate() {
-  return new Date();
-}
-
-export function getCreditsExpireDays(_user) {
-  // pedido: SI O SI 30 días
-  return CREDITS_EXPIRE_DAYS;
-}
-
+// Recalcula cache user.credits a partir de creditLots
 export function recalcUserCredits(user) {
-  const now = nowDate();
-  const lots = Array.isArray(user.creditLots) ? user.creditLots : [];
-
-  const sum = lots.reduce((acc, lot) => {
-    const exp = lot.expiresAt ? new Date(lot.expiresAt) : null;
-    if (exp && exp <= now) return acc;
-    return acc + Number(lot.remaining || 0);
-  }, 0);
-
-  user.credits = sum;
-}
-
-export function normalizeLotServiceKey(lot) {
-  const raw = lot?.serviceKey;
-  const sk = String(raw || "").toUpperCase().trim();
-  return sk || "EP";
-}
-
-export function pickLotToConsume(user, wantedServiceKey) {
-  const now = nowDate();
-  const want = String(wantedServiceKey || "").toUpperCase().trim() || "EP";
+  if (!user) return 0;
+  const now = new Date();
 
   const lots = Array.isArray(user.creditLots) ? user.creditLots : [];
+  let total = 0;
 
-  const sorted = lots
-    .filter((l) => Number(l.remaining || 0) > 0)
-    .filter((l) => !l.expiresAt || new Date(l.expiresAt) > now)
-    .filter((l) => {
-      const lk = normalizeLotServiceKey(l);
-      return lk === "ALL" || lk === want;
-    })
-    .sort((a, b) => {
-      const ae = a.expiresAt ? new Date(a.expiresAt).getTime() : Infinity;
-      const be = b.expiresAt ? new Date(b.expiresAt).getTime() : Infinity;
-      if (ae !== be) return ae - be;
+  for (const lot of lots) {
+    const rem = Number(lot?.remaining || 0);
+    if (rem <= 0) continue;
 
-      const ac = a.createdAt ? new Date(a.createdAt).getTime() : 0;
-      const bc = b.createdAt ? new Date(b.createdAt).getTime() : 0;
-      return ac - bc;
+    const exp = lot?.expiresAt ? new Date(lot.expiresAt) : null;
+    if (exp && exp <= now) continue;
+
+    total += rem;
+  }
+
+  user.credits = total;
+  return total;
+}
+
+// Elige el lote a consumir (prioridad: específico del servicio, luego ALL; menor vencimiento primero)
+export function pickLotToConsume(user, serviceKey) {
+  if (!user) return null;
+  const sk = String(serviceKey || "ALL").toUpperCase().trim();
+  const now = new Date();
+
+  const lots = Array.isArray(user.creditLots) ? user.creditLots : [];
+  const active = lots
+    .filter((lot) => Number(lot?.remaining || 0) > 0)
+    .filter((lot) => {
+      const exp = lot?.expiresAt ? new Date(lot.expiresAt) : null;
+      return !exp || exp > now;
     });
 
-  return sorted[0] || null;
+  const rank = (lot) => {
+    const exp = lot?.expiresAt ? new Date(lot.expiresAt).getTime() : Number.MAX_SAFE_INTEGER;
+    return exp;
+  };
+
+  const specific = active
+    .filter((lot) => String(lot?.serviceKey || "").toUpperCase().trim() === sk)
+    .sort((a, b) => rank(a) - rank(b));
+
+  if (specific.length) return specific[0];
+
+  const all = active
+    .filter((lot) => String(lot?.serviceKey || "").toUpperCase().trim() === "ALL")
+    .sort((a, b) => rank(a) - rank(b));
+
+  return all[0] || null;
 }

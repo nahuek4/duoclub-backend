@@ -1,56 +1,46 @@
 // backend/src/jobs/startWaitlist.js
 import WaitlistEntry from "../models/WaitlistEntry.js";
 import { notifyWaitlistForSlot } from "../routes/waitlist.js";
-import { EP_NAME } from "../lib/slotCapacity.js";
 
-function buildSlotDate(dateStr, timeStr) {
-  if (!dateStr || !timeStr) return null;
-  const [year, month, day] = String(dateStr).split("-").map(Number);
-  const [hour, minute] = String(timeStr).split(":").map(Number);
-  if (!year || !month || !day) return null;
-  return new Date(year, month - 1, day, hour || 0, minute || 0);
-}
-
+/**
+ * Scheduler:
+ * - Revisa periódicamente si hay slots con gente esperando (status=waiting)
+ * - Si el slot tiene disponibilidad REAL (según reglas), notifica a TODOS y les genera token.
+ * - No hay orden: se notifica a todos juntos, como pediste.
+ *
+ * Nota:
+ * - Para evitar spam, una vez notificado pasa a status="notified".
+ * - El claim consume crédito recién cuando el usuario confirma.
+ */
 export function startWaitlistScheduler({ everyMinutes = 2 } = {}) {
-  const ms = Math.max(1, Number(everyMinutes || 2)) * 60 * 1000;
+  const mins = Math.max(1, Number(everyMinutes || 2));
+  console.log("[WAITLIST] scheduler start", { everyMinutes: mins });
 
-  console.log("[WAITLIST] scheduler starting", { everyMinutes: ms / 60000 });
-
-  const tick = async () => {
+  async function tick() {
     try {
-      const now = new Date();
+      // agarramos slots únicos con waiting
+      const slots = await WaitlistEntry.aggregate([
+        { $match: { status: "waiting" } },
+        { $group: { _id: { date: "$date", time: "$time" } } },
+        { $limit: 200 }, // seguridad
+      ]);
 
-      // slots con waitlist “waiting” (no notificado aún)
-      const list = await WaitlistEntry.find({
-        status: "waiting",
-        service: EP_NAME,
-      })
-        .select("date time service status")
-        .lean();
+      for (const s of slots) {
+        const date = s?._id?.date;
+        const time = s?._id?.time;
+        if (!date || !time) continue;
 
-      // agrupar por slot
-      const slots = new Map();
-      for (const w of list) {
-        const slotDate = buildSlotDate(w.date, w.time);
-        if (!slotDate) continue;
-        if (slotDate <= now) continue;
-
-        const k = `${w.date}__${w.time}`;
-        slots.set(k, { date: w.date, time: w.time });
-      }
-
-      for (const s of slots.values()) {
-        // incluye regla 2hs antes (si libera cupo, notifica)
-        await notifyWaitlistForSlot(s);
+        // notifyWaitlistForSlot ya valida disponibilidad real + crea tokens + manda mails
+        await notifyWaitlistForSlot({ date, time });
       }
     } catch (e) {
-      console.error("[WAITLIST] tick error:", e);
+      console.log("[WAITLIST] tick error:", e?.message || e);
     }
-  };
+  }
 
-  tick(); // arrancar ya
-  const interval = setInterval(tick, ms);
-  interval.unref?.();
+  // primer tick pronto
+  setTimeout(tick, 1500);
 
-  return () => clearInterval(interval);
+  // luego cada N minutos
+  setInterval(tick, mins * 60 * 1000);
 }
