@@ -10,6 +10,8 @@ import cors from "cors";
 import connectDB from "./config/db.js";
 
 import authRoutes from "./routes/auth.js";
+import adminApprovalLinksRoutes from "./routes/adminApprovalLinks.js";
+
 import userRoutes from "./routes/users.js";
 import appointmentRoutes from "./routes/appointments.js";
 import servicesRoutes from "./routes/services.js";
@@ -21,19 +23,17 @@ import adminEvaluationsRoutes from "./routes/adminEvaluations.js";
 import evaluationsRoutes from "./routes/evaluations.js";
 import testMailRouter from "./routes/testMail.js";
 
-// jobs base
-import { startAppointmentReminderScheduler } from "./jobs/startReminders.js";
+// ✅ waitlist
+import waitlistRouter from "./routes/waitlist.js";
 
-// ✅ NUEVO: links de aprobar/rechazar del mail (vive en /auth)
-import adminApprovalLinksRoutes from "./routes/adminApprovalLinks.js";
+import { startAppointmentReminderScheduler } from "./jobs/startReminders.js";
+import { startWaitlistScheduler } from "./jobs/startWaitlist.js";
 
 dotenv.config();
 
 const app = express();
 
-const PORT =
-  process.env.PORT ||
-  (process.env.NODE_ENV === "production" ? 3000 : 4000);
+const PORT = process.env.PORT || (process.env.NODE_ENV === "production" ? 3000 : 4000);
 
 app.set("trust proxy", 1);
 
@@ -63,32 +63,29 @@ app.use(
   })
 );
 
-app.use(express.json({ limit: "2mb" }));
+app.use(express.json());
 
 /* =========================
    ✅ CORS (estable + preflight ok)
 ========================= */
-const allowedOrigins = [
+const allowedOrigins = new Set([
   "http://localhost:5173",
   "http://127.0.0.1:5173",
   "https://duoclub.ar",
   "https://www.duoclub.ar",
   "https://app.duoclub.ar",
   "https://www.app.duoclub.ar",
-];
+]);
 
 const corsOptions = {
   origin(origin, cb) {
     // Permite Postman/curl (sin Origin)
     if (!origin) return cb(null, true);
 
-    // Normalizamos por si viene con espacios
-    const o = String(origin).trim();
+    if (allowedOrigins.has(origin)) return cb(null, true);
 
-    if (allowedOrigins.includes(o)) return cb(null, true);
-
-    // Importante: devolvemos error controlado (va al handler de abajo)
-    return cb(new Error("Not allowed by CORS: " + o));
+    // 👇 Importante: devolvemos error controlado (tu handler lo transforma en 403 JSON)
+    return cb(new Error("Not allowed by CORS: " + origin));
   },
   credentials: true,
   methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
@@ -98,7 +95,7 @@ const corsOptions = {
 
 app.use(cors(corsOptions));
 
-// ✅ responder preflight con CORS correctamente (antes de rate-limit)
+// ✅ responder preflight SIEMPRE
 app.options("*", cors(corsOptions));
 
 /* =========================
@@ -109,9 +106,6 @@ const apiLimiter = rateLimit({
   max: 200,
   standardHeaders: true,
   legacyHeaders: false,
-
-  // ✅ CLAVE: NO rate-limitear preflight
-  skip: (req) => req.method === "OPTIONS",
 });
 
 app.use("/auth", apiLimiter);
@@ -151,34 +145,8 @@ app.use("/admin/evaluations", adminEvaluationsRoutes);
 app.use("/evaluations", evaluationsRoutes);
 app.use("/api/test-mail", testMailRouter);
 
-/* =========================
-   ✅ WAITLIST (opcional, no rompe deploy si falta)
-========================= */
-try {
-  const modRouter = await import("./routes/waitlist.js");
-  const waitlistRouter = modRouter?.default;
-  if (waitlistRouter) {
-    app.use("/waitlist", waitlistRouter);
-    console.log("✅ /waitlist route mounted");
-  } else {
-    console.log("⚠️ ./routes/waitlist.js no exporta default router");
-  }
-} catch (e) {
-  console.log("⚠️ waitlist router not mounted:", e?.message || e);
-}
-
-try {
-  const modJob = await import("./jobs/startWaitlist.js");
-  const startWaitlistScheduler = modJob?.startWaitlistScheduler;
-  if (typeof startWaitlistScheduler === "function") {
-    startWaitlistScheduler({
-      everyMinutes: Number(process.env.WAITLIST_EVERY_MINUTES || 2),
-    });
-    console.log("✅ waitlist scheduler started");
-  }
-} catch (e) {
-  console.log("⚠️ waitlist scheduler not started:", e?.message || e);
-}
+// ✅ waitlist route
+app.use("/waitlist", waitlistRouter);
 
 /* =========================
    RUTA BASE
@@ -188,7 +156,7 @@ app.get("/", (req, res) => {
 });
 
 /* =========================
-   ERROR HANDLER CORS (para ver el motivo real)
+   ERROR HANDLER CORS
 ========================= */
 app.use((err, req, res, next) => {
   if (String(err?.message || "").startsWith("Not allowed by CORS")) {
@@ -209,5 +177,11 @@ app.use((req, res) => {
 ========================= */
 app.listen(PORT, () => {
   console.log(`✅ Servidor escuchando en http://localhost:${PORT}`);
-  console.log("✅ Allowed origins:", allowedOrigins);
+});
+
+/* =========================
+   ✅ WAITLIST SCHEDULER
+========================= */
+startWaitlistScheduler({
+  everyMinutes: Number(process.env.WAITLIST_EVERY_MINUTES || 2),
 });
