@@ -8,6 +8,7 @@ import rateLimit from "express-rate-limit";
 import cors from "cors";
 
 import connectDB from "./config/db.js";
+
 import authRoutes from "./routes/auth.js";
 import userRoutes from "./routes/users.js";
 import appointmentRoutes from "./routes/appointments.js";
@@ -20,12 +21,15 @@ import adminEvaluationsRoutes from "./routes/adminEvaluations.js";
 import evaluationsRoutes from "./routes/evaluations.js";
 import testMailRouter from "./routes/testMail.js";
 
-
+// ✅ jobs
 import { startAppointmentReminderScheduler } from "./jobs/startReminders.js";
 import { startWaitlistScheduler } from "./jobs/startWaitlist.js";
 
-// ✅ NUEVO
+// ✅ NUEVO: links de aprobar/rechazar del mail (vive en /auth)
 import adminApprovalLinksRoutes from "./routes/adminApprovalLinks.js";
+
+// ✅ ROUTE waitlist (asegurate de tener este archivo)
+import waitlistRouter from "./routes/waitlist.js";
 
 dotenv.config();
 
@@ -47,12 +51,18 @@ await connectDB();
 
 /* =========================
    ✅ REMINDERS 24HS (AUTO)
-   - Arranca después de DB
 ========================= */
 startAppointmentReminderScheduler({
   everyMinutes: Number(process.env.REMINDER_EVERY_MINUTES || 10),
   aheadHours: Number(process.env.REMINDER_AHEAD_HOURS || 24),
   windowMinutes: Number(process.env.REMINDER_WINDOW_MINUTES || 10),
+});
+
+/* =========================
+   ✅ WAITLIST (AUTO)
+========================= */
+startWaitlistScheduler({
+  everyMinutes: Number(process.env.WAITLIST_EVERY_MINUTES || 2),
 });
 
 /* =========================
@@ -67,33 +77,38 @@ app.use(
 app.use(express.json());
 
 /* =========================
-   ✅ CORS (estable + preflight ok)
+   ✅ CORS (ESTABLE + PRE-FLIGHT PERFECTO)
+   - IMPORTANTÍSIMO: NO tirar error en origin()
+   - IMPORTANTÍSIMO: app.options usa el MISMO corsOptions
 ========================= */
-const allowedOrigins = [
+const allowedOrigins = new Set([
   "http://localhost:5173",
   "http://127.0.0.1:5173",
   "https://duoclub.ar",
   "https://www.duoclub.ar",
   "https://app.duoclub.ar",
   "https://www.app.duoclub.ar",
-];
+]);
 
-app.use(
-  cors({
-    origin(origin, cb) {
-      // Permite Postman/curl (sin Origin)
-      if (!origin) return cb(null, true);
-      if (allowedOrigins.includes(origin)) return cb(null, true);
-      return cb(new Error("Not allowed by CORS: " + origin));
-    },
-    credentials: true,
-    methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
-    allowedHeaders: ["Content-Type", "Authorization", "Origin", "Accept"],
-  })
-);
+const corsOptions = {
+  origin(origin, cb) {
+    // Permite Postman/curl (sin Origin)
+    if (!origin) return cb(null, true);
 
-// ✅ responder preflight con CORS correctamente
-app.options("*", cors());
+    if (allowedOrigins.has(origin)) return cb(null, true);
+
+    // ❗ NO devolver Error acá: si no, el browser ve “sin ACAO”
+    return cb(null, false);
+  },
+  credentials: true,
+  methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+  allowedHeaders: ["Content-Type", "Authorization", "Origin", "Accept"],
+  optionsSuccessStatus: 204,
+};
+
+app.use(cors(corsOptions));
+// ✅ preflight global usando las mismas opciones
+app.options("*", cors(corsOptions));
 
 /* =========================
    RATE LIMIT
@@ -105,9 +120,9 @@ const apiLimiter = rateLimit({
   legacyHeaders: false,
 });
 
-// ❌ SACAR el if OPTIONS acá
 app.use("/auth", apiLimiter);
 app.use("/appointments", apiLimiter);
+app.use("/waitlist", apiLimiter);
 
 /* =========================
    STATIC
@@ -130,8 +145,6 @@ app.get("/health", (req, res) => {
    RUTAS
 ========================= */
 app.use("/auth", authRoutes);
-
-// ✅ NUEVO: links de aprobar/rechazar del mail (vive en /auth)
 app.use("/auth", adminApprovalLinksRoutes);
 
 app.use("/users", userRoutes);
@@ -144,8 +157,8 @@ app.use("/admission", admissionRoutes);
 app.use("/admin/evaluations", adminEvaluationsRoutes);
 app.use("/evaluations", evaluationsRoutes);
 app.use("/api/test-mail", testMailRouter);
-app.use("/waitlist", waitlistRouter);
 
+app.use("/waitlist", waitlistRouter);
 
 /* =========================
    RUTA BASE
@@ -155,7 +168,8 @@ app.get("/", (req, res) => {
 });
 
 /* =========================
-   ERROR HANDLER CORS (para ver el motivo real)
+   ✅ ERROR HANDLER CORS
+   - si origin no permitido => 403 prolijo (pero CON headers si el origin era válido)
 ========================= */
 app.use((err, req, res, next) => {
   if (String(err?.message || "").startsWith("Not allowed by CORS")) {
@@ -177,5 +191,3 @@ app.use((req, res) => {
 app.listen(PORT, () => {
   console.log(`✅ Servidor escuchando en http://localhost:${PORT}`);
 });
-
-startWaitlistScheduler({ everyMinutes: process.env.WAITLIST_EVERY_MINUTES || 2 });
