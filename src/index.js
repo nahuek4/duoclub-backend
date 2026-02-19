@@ -20,7 +20,9 @@ import adminEvaluationsRoutes from "./routes/adminEvaluations.js";
 import evaluationsRoutes from "./routes/evaluations.js";
 import testMailRouter from "./routes/testMail.js";
 
+
 import { startAppointmentReminderScheduler } from "./jobs/startReminders.js";
+import { startWaitlistScheduler } from "./jobs/startWaitlist.js";
 
 // ✅ NUEVO
 import adminApprovalLinksRoutes from "./routes/adminApprovalLinks.js";
@@ -142,6 +144,8 @@ app.use("/admission", admissionRoutes);
 app.use("/admin/evaluations", adminEvaluationsRoutes);
 app.use("/evaluations", evaluationsRoutes);
 app.use("/api/test-mail", testMailRouter);
+app.use("/waitlist", waitlistRouter);
+
 
 /* =========================
    RUTA BASE
@@ -173,3 +177,5 @@ app.use((req, res) => {
 app.listen(PORT, () => {
   console.log(`✅ Servidor escuchando en http://localhost:${PORT}`);
 });
+
+startWaitlistScheduler({ everyMinutes: process.env.WAITLIST_EVERY_MINUTES || 2 });

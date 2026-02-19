@@ -3,6 +3,8 @@ import express from "express";
 import mongoose from "mongoose";
 import Appointment from "../models/Appointment.js";
 import User from "../models/User.js";
+import WaitlistEntry from "../models/WaitlistEntry.js";
+import { notifyWaitlistForSlot } from "./waitlist.js";
 import { protect } from "../middleware/auth.js";
 
 import {
@@ -119,17 +121,17 @@ function stripAccents(s) {
     .replace(/[\u0300-\u036f]/g, "");
 }
 
-// RF eliminado
+// AR eliminado + RF agregado
 function serviceToKey(serviceName) {
   const s = stripAccents(serviceName).toLowerCase().trim();
 
   if (s.includes("entrenamiento") && s.includes("personal")) return "EP";
   if (s.includes("rehabilitacion") && s.includes("activa")) return "RA";
-  if (s.includes("alto") && s.includes("rendimiento")) return "AR";
+  if (s.includes("reeducacion") && s.includes("funcional")) return "RF";
   if (s.includes("nutricion")) return "NUT";
 
   const up = String(serviceName || "").toUpperCase().trim();
-  const allowed = new Set(["EP", "RA", "AR", "NUT"]);
+  const allowed = new Set(["EP", "RA", "RF", "NUT", "ALL"]);
   if (allowed.has(up)) return up;
 
   return "EP";
@@ -241,11 +243,27 @@ function requiresApto(user) {
 const TOTAL_CAP = 6;
 
 const EP_NAME = "Entrenamiento Personal";
+const RA_NAME = "Rehabilitacion Activa";
+const RF_NAME = "Reeducacion Funcional";
 
-function calcEpCap({ hoursToStart, otherReservedCount }) {
-  const base = hoursToStart > 12 ? 4 : TOTAL_CAP;
-  const dynamic = TOTAL_CAP - otherReservedCount;
-  return Math.max(0, Math.min(base, dynamic));
+function calcEpCap({ hoursToStart, hasRF, hasRA, otherReservedCount }) {
+  // base EP: 4
+  let cap = 4;
+
+  // a 2hs o menos: si NO hay RF y NO hay RA => puede subir a 6
+  // si hay RF => puede subir a 5
+  // si solo hay RA => queda en 4
+  if (hoursToStart <= 2) {
+    if (!hasRF && !hasRA) cap = TOTAL_CAP; // 6
+    else if (hasRF) cap = 5;
+    else cap = 4;
+  }
+
+  // nunca exceder cupo total restante luego de RF/RA
+  const totalLimit = Math.max(0, TOTAL_CAP - Number(otherReservedCount || 0));
+  cap = Math.min(cap, totalLimit);
+
+  return Math.max(0, cap);
 }
 
 /* =========================
@@ -471,25 +489,64 @@ router.post("/", async (req, res) => {
         .session(session)
         .lean();
 
-      if (existingAtSlot.length >= TOTAL_CAP) throw new Error("TOTAL_CAP_REACHED");
+      let willWaitlist = false;
 
-      const epCount = existingAtSlot.filter((a) => a.service === EP_NAME).length;
-
-      const arTaken = existingAtSlot.some((a) => a.service === "Alto Rendimiento") ? 1 : 0;
-      const raTaken = existingAtSlot.some((a) => a.service === "Rehabilitacion Activa") ? 1 : 0;
-      const otherReservedCount = arTaken + raTaken;
-
-      // otros servicios: max 1 por servicio/hora
-      if (!basic.isEpService) {
-        const alreadyService = existingAtSlot.some((a) => a.service === service);
-        if (alreadyService) throw new Error("SERVICE_ALREADY_TAKEN");
+      // si el cupo total está lleno:
+      // - para EP -> lista de espera
+      // - para RF/RA -> conflicto
+      if (existingAtSlot.length >= TOTAL_CAP) {
+        if (basic.isEpService) willWaitlist = true;
+        else throw new Error("TOTAL_CAP_REACHED");
       }
 
-      // EP cap
+      // cupos EP (base 4, y regla 2hs antes)
+      const epCount = existingAtSlot.filter((a) => a.service === EP_NAME).length;
+      const rfTaken = existingAtSlot.some((a) => a.service === RF_NAME) ? 1 : 0;
+      const raTaken = existingAtSlot.some((a) => a.service === RA_NAME) ? 1 : 0;
+
+      const otherReservedCount = rfTaken + raTaken;
+
       if (basic.isEpService) {
-        const hoursToStart = (basic.slotDate.getTime() - Date.now()) / (1000 * 60 * 60);
-        const epCap = calcEpCap({ hoursToStart, otherReservedCount });
-        if (epCount >= epCap) throw new Error(hoursToStart > 12 ? "EP_CAP_4" : "EP_CAP_TOTAL");
+        const hoursToStart =
+          (basic.slotDate.getTime() - Date.now()) / (1000 * 60 * 60);
+
+        const epCap = calcEpCap({
+          hoursToStart,
+          hasRF: !!rfTaken,
+          hasRA: !!raTaken,
+          otherReservedCount,
+        });
+
+        if (epCount >= epCap) willWaitlist = true;
+      }
+
+      // ✅ NO reservamos si no hay cupo EP: lista de espera (sin consumir crédito)
+      if (willWaitlist && basic.isEpService) {
+        const wlExists = await WaitlistEntry.findOne({
+          user: user._id,
+          date,
+          time,
+          service: EP_NAME,
+          status: { $in: ["waiting", "notified"] },
+        }).session(session);
+
+        if (wlExists) throw new Error("ALREADY_IN_WAITLIST");
+
+        await WaitlistEntry.create(
+          [
+            { user: user._id, date, time, service: EP_NAME, status: "waiting" },
+          ],
+          { session }
+        );
+
+        created = {
+          kind: "waitlist",
+          date,
+          time,
+          service: EP_NAME,
+          status: "waiting",
+        };
+        return;
       }
 
       // consumir crédito
@@ -545,7 +602,8 @@ router.post("/", async (req, res) => {
       mailServiceName = service;
     });
 
-    res.status(201).json(out);
+    const httpCode = out?.kind === "waitlist" ? 202 : 201;
+    res.status(httpCode).json(out);
 
     if (mailUser && mailAp) {
       fireAndForget(async () => {
@@ -576,6 +634,9 @@ router.post("/", async (req, res) => {
     if (msg === "ALREADY_HAVE_SLOT")
       return res.status(409).json({ error: "Ya tenés un turno reservado en ese horario." });
 
+    if (msg === "ALREADY_IN_WAITLIST")
+      return res.status(409).json({ error: "Ya estás en lista de espera para ese horario." });
+
     if (msg === "TOTAL_CAP_REACHED")
       return res.status(409).json({ error: "Se alcanzó el cupo total disponible para este horario." });
 
@@ -584,7 +645,7 @@ router.post("/", async (req, res) => {
 
     if (msg === "EP_CAP_4")
       return res.status(409).json({
-        error: "Se alcanzó el cupo de Entrenamiento Personal (máx 4 hasta 12hs antes).",
+        error: "Se alcanzó el cupo de Entrenamiento Personal para ese horario. Te podés sumar a la lista de espera.",
       });
 
     if (msg === "EP_CAP_TOTAL")
@@ -697,32 +758,36 @@ router.post("/batch", async (req, res) => {
         const cur = bySlot.get(k) || [];
 
         if (cur.length >= TOTAL_CAP) {
+          if (it.service === EP_NAME) {
+            it.waitlist = true;
+            continue;
+          }
           const e = new Error("TOTAL_CAP_REACHED");
           e.http = 409;
           throw e;
         }
 
-        const epCount = cur.filter((a) => a.service === EP_NAME).length;
-        const arTaken = cur.some((a) => a.service === "Alto Rendimiento") ? 1 : 0;
-        const raTaken = cur.some((a) => a.service === "Rehabilitacion Activa") ? 1 : 0;
-        const otherReservedCount = arTaken + raTaken;
+        // cupos EP (base 4, y regla 2hs antes)
+        if (it.service === EP_NAME) {
+          const epCount = cur.filter((a) => a.service === EP_NAME).length;
+          const rfTaken = cur.some((a) => a.service === RF_NAME) ? 1 : 0;
+          const raTaken = cur.some((a) => a.service === RA_NAME) ? 1 : 0;
 
-        if (!it.isEpService) {
-          const alreadyService = cur.some((a) => a.service === it.service);
-          if (alreadyService) {
-            const e = new Error("SERVICE_ALREADY_TAKEN");
-            e.http = 409;
-            throw e;
-          }
-        }
+          const otherReservedCount = rfTaken + raTaken;
 
-        if (it.isEpService) {
-          const hoursToStart = (it.slotDate.getTime() - Date.now()) / (1000 * 60 * 60);
-          const epCap = calcEpCap({ hoursToStart, otherReservedCount });
+          const hoursToStart =
+            (slotDate.getTime() - Date.now()) / (1000 * 60 * 60);
+
+          const epCap = calcEpCap({
+            hoursToStart,
+            hasRF: !!rfTaken,
+            hasRA: !!raTaken,
+            otherReservedCount,
+          });
+
           if (epCount >= epCap) {
-            const e = new Error(hoursToStart > 12 ? "EP_CAP_4" : "EP_CAP_TOTAL");
-            e.http = 409;
-            throw e;
+            it.waitlist = true;
+            continue;
           }
         }
 
@@ -731,8 +796,55 @@ router.post("/batch", async (req, res) => {
       }
 
       createdItems = [];
+      waitlistedItems = [];
+
+      const toReserve = normalized.filter((x) => !x.waitlist);
+
+      if (!isAdmin) {
+        recalcUserCredits(user);
+        if ((user.credits || 0) < toReserve.length) {
+          const e = new Error("NO_CREDITS");
+          e.http = 403;
+          throw e;
+        }
+      }
 
       for (const it of normalized) {
+        // ✅ EP sin cupo -> WAITLIST (sin consumir crédito)
+        if (it.waitlist) {
+          const wlExists = await WaitlistEntry.findOne({
+            user: user._id,
+            date: it.date,
+            time: it.time,
+            service: EP_NAME,
+            status: { $in: ["waiting", "notified"] },
+          }).session(session);
+
+          if (!wlExists) {
+            await WaitlistEntry.create(
+              [
+                {
+                  user: user._id,
+                  date: it.date,
+                  time: it.time,
+                  service: EP_NAME,
+                  status: "waiting",
+                },
+              ],
+              { session }
+            );
+          }
+
+          waitlistedItems.push({
+            kind: "waitlist",
+            date: it.date,
+            time: it.time,
+            service: EP_NAME,
+            status: "waiting",
+          });
+          continue;
+        }
+
         let usedLotId = null;
         let usedLotExp = null;
 
@@ -790,7 +902,7 @@ router.post("/batch", async (req, res) => {
       mailItems = createdItems.map((x) => ({ date: x.date, time: x.time, service: x.service }));
     });
 
-    res.status(201).json({ items: createdItems });
+    res.status(201).json({ items: createdItems, waitlisted: waitlistedItems });
 
     if (mailUser && mailItems?.length) {
       fireAndForget(async () => {
@@ -846,7 +958,7 @@ router.post("/batch", async (req, res) => {
 
     if (msg === "EP_CAP_4")
       return res.status(409).json({
-        error: "Se alcanzó el cupo de Entrenamiento Personal (máx 4 hasta 12hs antes).",
+        error: "Se alcanzó el cupo de Entrenamiento Personal para ese horario. Te podés sumar a la lista de espera.",
       });
 
     if (msg === "EP_CAP_TOTAL")
@@ -999,6 +1111,13 @@ router.patch("/:id/cancel", async (req, res) => {
     });
 
     res.json(payload);
+
+    // ✅ si se libera un cupo, avisar a TODA la waitlist (sin orden)
+    if (mailAp?.date && mailAp?.time) {
+      fireAndForget(async () => {
+        await notifyWaitlistForSlot({ date: mailAp.date, time: mailAp.time });
+      }, "WAITLIST_NOTIFY");
+    }
 
     if (mailUser && mailAp) {
       fireAndForget(async () => {

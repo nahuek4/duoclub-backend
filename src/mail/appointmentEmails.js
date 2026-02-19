@@ -488,3 +488,78 @@ export async function sendAppointmentBookedBatchEmail(user, items = []) {
     html
   );
 }
+
+/* =========================================================
+   ✅ WAITLIST: se liberó un cupo
+========================================================= */
+export async function sendWaitlistSlotAvailableEmail(user, ap, meta = {}) {
+  const token = String(meta?.token || "").trim();
+  const totalNotified = Number(meta?.totalNotified || 0);
+
+  const link = token ? `${BRAND_URL}/?waitlist=${encodeURIComponent(token)}` : BRAND_URL;
+
+  const text = [
+    `Se liberó un cupo para tu turno en lista de espera.`,
+    `Fecha: ${ap?.date} ${ap?.time}`,
+    `Servicio: ${ap?.service || "Entrenamiento Personal"}`,
+    totalNotified > 1
+      ? `Avisamos a vos y a otras ${totalNotified - 1} personas. Se asigna al primero que lo confirme.`
+      : `Se asigna al primero que lo confirme.`,
+    `Confirmá acá: ${link}`,
+  ].join("\\n");
+
+  const bodyHtml = `
+    <div style="font-size:18px; font-weight:800; margin-bottom:10px;">📣 Se liberó un cupo</div>
+
+    <div style="color:#333; margin-bottom:12px;">
+      Hola <b>${escapeHtml(user?.name || "")}</b>,
+    </div>
+
+    <div style="color:#333; margin-bottom:12px;">
+      Se liberó un cupo para el turno que tenías en lista de espera:
+    </div>
+
+    <div style="border:1px solid #eee; border-radius:14px; overflow:hidden; margin-bottom:14px;">
+      <div style="padding:12px 12px 0; font-size:13px; font-weight:800;">Detalle</div>
+      <div style="padding:10px 12px 12px; color:#111;">
+        <div><b>Fecha:</b> ${escapeHtml(ap?.date || "")}</div>
+        <div><b>Hora:</b> ${escapeHtml(ap?.time || "")}</div>
+        <div><b>Servicio:</b> ${escapeHtml(ap?.service || "Entrenamiento Personal")}</div>
+      </div>
+    </div>
+
+    ${
+      totalNotified > 1
+        ? `<div style="color:#333; margin-bottom:14px;">
+            Avisamos a vos y a <b>otras ${totalNotified - 1} personas</b>. El turno se asigna al primero que lo confirme.
+          </div>`
+        : `<div style="color:#333; margin-bottom:14px;">
+            El turno se asigna al primero que lo confirme.
+          </div>`
+    }
+
+    <div style="margin:16px 0;">
+      <a href="${link}"
+         style="display:inline-block; background:#111; color:#fff; text-decoration:none; padding:12px 16px; border-radius:12px; font-weight:700;">
+        Confirmar turno
+      </a>
+    </div>
+
+    <div style="font-size:12px; color:#666;">
+      Si al entrar ya no aparece disponible, significa que otra persona lo confirmó primero.
+    </div>
+  `;
+
+  const html = buildEmailLayout({
+    title: `${BRAND_NAME} · Cupo disponible`,
+    preheader: "Se liberó un cupo para tu turno en lista de espera",
+    bodyHtml,
+  });
+
+  await sendMail(
+    user.email,
+    `Se liberó un cupo para tu turno - ${BRAND_NAME}`,
+    text,
+    html
+  );
+}
