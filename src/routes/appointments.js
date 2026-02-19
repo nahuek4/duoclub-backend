@@ -1,9 +1,11 @@
 // backend/src/routes/appointments.js
 import express from "express";
 import mongoose from "mongoose";
+
 import Appointment from "../models/Appointment.js";
 import User from "../models/User.js";
 import WaitlistEntry from "../models/WaitlistEntry.js";
+
 import { notifyWaitlistForSlot } from "./waitlist.js";
 import { protect } from "../middleware/auth.js";
 
@@ -256,12 +258,14 @@ const RF_NAME = "Reeducacion Funcional";
 function calcEpCap({ hoursToStart, hasRF, hasRA, otherReservedCount }) {
   let cap = 4;
 
+  // cerca del inicio -> libera cupo extra (según tus reglas)
   if (hoursToStart <= 2) {
     if (!hasRF && !hasRA) cap = TOTAL_CAP;
     else if (hasRF) cap = 5;
     else cap = 4;
   }
 
+  // nunca superar el total disponible
   const totalLimit = Math.max(0, TOTAL_CAP - Number(otherReservedCount || 0));
   cap = Math.min(cap, totalLimit);
 
@@ -332,10 +336,139 @@ function ymdAR(d = new Date()) {
   return `${y}-${m}-${day}`;
 }
 
+function normSvcName(s) {
+  return String(s || "")
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase()
+    .trim();
+}
+
 /* =========================
    AUTH required
 ========================= */
 router.use(protect);
+
+/* =========================
+   GET /appointments/availability
+   - pinta estado por horario: available | waitlist | full | closed
+========================= */
+router.get("/availability", async (req, res) => {
+  try {
+    const date = String(req.query?.date || "").slice(0, 10);
+    const service = String(req.query?.service || "").trim();
+
+    if (!date || !service) {
+      return res.status(400).json({ error: "Faltan params: date y service." });
+    }
+
+    // times opcional, default si no mandan
+    const times =
+      Array.isArray(req.query?.times) && req.query.times.length
+        ? req.query.times.map((x) => String(x).slice(0, 5))
+        : [
+            "07:00","08:00","09:00","10:00",
+            "11:00","12:00","14:00","15:00",
+            "16:00","17:00","18:00","19:00",
+            "20:00",
+          ];
+
+    const out = [];
+
+    for (const time of times) {
+      const basic = validateBasicSlotRules({ date, time, service });
+
+      // si cae fuera de regla (sábado, ventana, min advance, tarde no EP, etc) => closed
+      if (!basic.ok) {
+        out.push({
+          time,
+          state: "closed",
+          reason: basic.error,
+        });
+        continue;
+      }
+
+      const existing = await Appointment.find({ date, time, status: "reserved" })
+        .select("service")
+        .lean();
+
+      const total = existing.length;
+
+      // FULL total (si el servicio es EP, queremos mostrar waitlist)
+      if (total >= TOTAL_CAP) {
+        if (basic.isEpService) {
+          out.push({
+            time,
+            state: "waitlist",
+            totalReserved: total,
+            epReserved: existing.filter((a) => a.service === EP_NAME).length,
+          });
+        } else {
+          out.push({
+            time,
+            state: "full",
+            totalReserved: total,
+          });
+        }
+        continue;
+      }
+
+      // RF/RA “solo 1 por hora” (si aplica)
+      if (normSvcName(service) === normSvcName(RF_NAME)) {
+        const hasRF = existing.some((a) => a.service === RF_NAME);
+        if (hasRF) {
+          out.push({ time, state: "full", totalReserved: total });
+          continue;
+        }
+      }
+      if (normSvcName(service) === normSvcName(RA_NAME)) {
+        const hasRA = existing.some((a) => a.service === RA_NAME);
+        if (hasRA) {
+          out.push({ time, state: "full", totalReserved: total });
+          continue;
+        }
+      }
+
+      // EP cap dinámico => si llegó al cap, waitlist
+      if (basic.isEpService) {
+        const epCount = existing.filter((a) => a.service === EP_NAME).length;
+        const rfTaken = existing.some((a) => a.service === RF_NAME) ? 1 : 0;
+        const raTaken = existing.some((a) => a.service === RA_NAME) ? 1 : 0;
+        const otherReservedCount = rfTaken + raTaken;
+
+        const hoursToStart = (basic.slotDate.getTime() - Date.now()) / (1000 * 60 * 60);
+        const epCap = calcEpCap({
+          hoursToStart,
+          hasRF: !!rfTaken,
+          hasRA: !!raTaken,
+          otherReservedCount,
+        });
+
+        if (epCount >= epCap) {
+          out.push({
+            time,
+            state: "waitlist",
+            totalReserved: total,
+            epReserved: epCount,
+            epCap,
+          });
+          continue;
+        }
+      }
+
+      out.push({
+        time,
+        state: "available",
+        totalReserved: total,
+      });
+    }
+
+    return res.json({ date, service, slots: out });
+  } catch (e) {
+    console.error("Error en GET /appointments/availability:", e);
+    return res.status(500).json({ error: "Error calculando disponibilidad." });
+  }
+});
 
 /* =========================
    GET /appointments
@@ -907,8 +1040,174 @@ router.post("/batch", async (req, res) => {
 });
 
 /* =========================
+   POST /appointments/waitlist/claim
+   body: { token }
+   - convierte "notified" en reserva real (si hay cupo)
+========================= */
+router.post("/waitlist/claim", async (req, res) => {
+  const session = await mongoose.startSession();
+
+  try {
+    const token = String(req.body?.token || "").trim();
+    if (!token) return res.status(400).json({ error: "Falta token." });
+
+    let payload = null;
+
+    await session.withTransaction(async () => {
+      const wl = await WaitlistEntry.findOne({
+        notifyToken: token,
+        status: "notified",
+      }).session(session);
+
+      if (!wl) {
+        const e = new Error("TOKEN_INVALID");
+        e.http = 404;
+        throw e;
+      }
+
+      if (wl.tokenExpiresAt && new Date(wl.tokenExpiresAt) <= new Date()) {
+        wl.status = "expired";
+        await wl.save({ session });
+        const e = new Error("TOKEN_EXPIRED");
+        e.http = 410;
+        throw e;
+      }
+
+      const user = await User.findById(wl.user).session(session);
+      if (!user) {
+        const e = new Error("USER_NOT_FOUND");
+        e.http = 404;
+        throw e;
+      }
+
+      // Revalidar reglas de slot
+      const basic = validateBasicSlotRules({ date: wl.date, time: wl.time, service: EP_NAME });
+      if (!basic.ok) {
+        const e = new Error("SLOT_NOT_VALID");
+        e.http = 409;
+        throw e;
+      }
+
+      // Revalidar cupos
+      const existingAtSlot = await Appointment.find({
+        date: wl.date,
+        time: wl.time,
+        status: "reserved",
+      }).session(session).lean();
+
+      if (existingAtSlot.length >= TOTAL_CAP) {
+        const e = new Error("NO_LONGER_AVAILABLE");
+        e.http = 409;
+        throw e;
+      }
+
+      const epCount = existingAtSlot.filter((a) => a.service === EP_NAME).length;
+      const rfTaken = existingAtSlot.some((a) => a.service === RF_NAME) ? 1 : 0;
+      const raTaken = existingAtSlot.some((a) => a.service === RA_NAME) ? 1 : 0;
+      const otherReservedCount = rfTaken + raTaken;
+
+      const hoursToStart = (basic.slotDate.getTime() - Date.now()) / (1000 * 60 * 60);
+      const epCap = calcEpCap({
+        hoursToStart,
+        hasRF: !!rfTaken,
+        hasRA: !!raTaken,
+        otherReservedCount,
+      });
+
+      if (epCount >= epCap) {
+        const e = new Error("NO_LONGER_AVAILABLE");
+        e.http = 409;
+        throw e;
+      }
+
+      // si ya lo tenía reservado (caso raro)
+      const alreadyByUser = await Appointment.findOne({
+        date: wl.date,
+        time: wl.time,
+        user: user._id,
+        status: "reserved",
+      }).session(session).lean();
+
+      if (alreadyByUser) {
+        wl.status = "claimed";
+        wl.claimedAt = new Date();
+        await wl.save({ session });
+        payload = { ok: true, alreadyHadIt: true };
+        return;
+      }
+
+      // consumir crédito
+      if (user.role !== "admin") {
+        if (user.suspended) throw new Error("USER_SUSPENDED");
+        if (requiresApto(user)) throw new Error("APTO_REQUIRED");
+
+        recalcUserCredits(user);
+        if ((user.credits || 0) <= 0) throw new Error("NO_CREDITS");
+
+        const sk = serviceToKey(EP_NAME);
+        const lot = pickLotToConsume(user, sk);
+        if (!lot) throw new Error(`NO_CREDITS_FOR_${sk}`);
+
+        lot.remaining = Number(lot.remaining || 0) - 1;
+
+        user.history = user.history || [];
+        user.history.push({
+          action: "reservado_desde_waitlist",
+          date: wl.date,
+          time: wl.time,
+          service: EP_NAME,
+          createdAt: new Date(),
+        });
+
+        recalcUserCredits(user);
+        await user.save({ session });
+      }
+
+      const created = await Appointment.create(
+        [{
+          date: wl.date,
+          time: wl.time,
+          service: EP_NAME,
+          user: user._id,
+          status: "reserved",
+          creditLotId: null,
+          creditExpiresAt: null,
+        }],
+        { session }
+      );
+
+      wl.status = "claimed";
+      wl.claimedAt = new Date();
+      await wl.save({ session });
+
+      payload = { ok: true, appointmentId: String(created[0]._id) };
+    });
+
+    res.json(payload);
+  } catch (err) {
+    const http = err?.http || 500;
+    const msg = String(err?.message || "");
+
+    if (msg === "TOKEN_INVALID") return res.status(404).json({ error: "Token inválido." });
+    if (msg === "TOKEN_EXPIRED") return res.status(410).json({ error: "El link expiró." });
+    if (msg === "NO_LONGER_AVAILABLE") return res.status(409).json({ error: "El cupo ya no está disponible." });
+
+    if (msg === "USER_NOT_FOUND") return res.status(404).json({ error: "Usuario no encontrado." });
+    if (msg === "USER_SUSPENDED") return res.status(403).json({ error: "Cuenta suspendida." });
+    if (msg === "APTO_REQUIRED")
+      return res.status(403).json({ error: "Cuenta suspendida por falta de apto médico." });
+    if (msg === "NO_CREDITS") return res.status(403).json({ error: "Sin créditos disponibles." });
+    if (msg.startsWith("NO_CREDITS_FOR_")) return res.status(403).json({ error: "No tenés créditos válidos." });
+
+    console.error("Error en POST /appointments/waitlist/claim:", err);
+    return res.status(http).json({ error: "No se pudo confirmar el turno." });
+  } finally {
+    session.endSession();
+  }
+});
+
+/* =========================
    PATCH /appointments/:id/cancel
-   (tu código original igual)
 ========================= */
 router.patch("/:id/cancel", async (req, res) => {
   const session = await mongoose.startSession();
@@ -1037,6 +1336,7 @@ router.patch("/:id/cancel", async (req, res) => {
 
     res.json(payload);
 
+    // ✅ si se liberó algo en ese slot, avisar lista de espera
     if (mailAp?.date && mailAp?.time) {
       fireAndForget(async () => {
         await notifyWaitlistForSlot({ date: mailAp.date, time: mailAp.time });

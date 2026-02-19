@@ -1,47 +1,29 @@
 // backend/src/models/WaitlistEntry.js
 import mongoose from "mongoose";
 
-const waitlistSchema = new mongoose.Schema(
+const WaitlistEntrySchema = new mongoose.Schema(
   {
-    user: { type: mongoose.Schema.Types.ObjectId, ref: "User", required: true },
+    user: { type: mongoose.Schema.Types.ObjectId, ref: "User", required: true, index: true },
+    date: { type: String, required: true, index: true }, // YYYY-MM-DD
+    time: { type: String, required: true, index: true }, // HH:mm
+    service: { type: String, required: true }, // "Entrenamiento Personal" (EP)
 
-    date: { type: String, required: true }, // "YYYY-MM-DD"
-    time: { type: String, required: true }, // "HH:mm"
-    service: { type: String, required: true }, // normalmente EP_NAME
+    // waiting -> notified -> claimed | expired | cancelled
+    status: { type: String, default: "waiting", index: true },
 
-    status: {
-      type: String,
-      enum: ["waiting", "notified", "claimed", "cancelled"],
-      default: "waiting",
-    },
-
-    // cuando se notificó al usuario
+    // token para “claim” cuando se libera cupo
+    notifyToken: { type: String, default: null, index: true },
     notifiedAt: { type: Date, default: null },
-
-    // token para "claim" (se consume al confirmar)
-    notifyToken: { type: String, default: "" },
-    notifyTokenExpiresAt: { type: Date, default: null },
-
-    // debug/auditoría
-    lastNotifyError: { type: String, default: "" },
-
+    tokenExpiresAt: { type: Date, default: null },
     claimedAt: { type: Date, default: null },
-    cancelledAt: { type: Date, default: null },
   },
   { timestamps: true }
 );
 
-// ✅ evita que el mismo usuario se anote 2 veces al mismo slot (mientras siga "activa")
-waitlistSchema.index(
+// Evita duplicados activos del mismo usuario al mismo slot
+WaitlistEntrySchema.index(
   { user: 1, date: 1, time: 1, service: 1, status: 1 },
-  {
-    unique: true,
-    partialFilterExpression: { status: { $in: ["waiting", "notified"] } },
-  }
+  { name: "wl_user_slot_status" }
 );
 
-// ✅ ayuda para el scheduler
-waitlistSchema.index({ status: 1, date: 1, time: 1, service: 1 });
-
-const WaitlistEntry = mongoose.model("WaitlistEntry", waitlistSchema);
-export default WaitlistEntry;
+export default mongoose.model("WaitlistEntry", WaitlistEntrySchema);
