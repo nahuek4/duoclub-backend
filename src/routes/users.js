@@ -41,6 +41,16 @@ if (!fs.existsSync(uploadDir)) {
 }
 
 /* ============================================
+   HELPERS: files
+============================================ */
+
+function safeUnlink(absPath) {
+  try {
+    if (absPath && fs.existsSync(absPath)) fs.unlinkSync(absPath);
+  } catch {}
+}
+
+/* ============================================
    MULTER PARA APTOS (PDF) ✅ ROBUSTO
 ============================================ */
 
@@ -57,10 +67,14 @@ const uploadApto = multer({
   storage: aptoStorage,
   limits: { fileSize: 10 * 1024 * 1024 }, // 10MB
   fileFilter: (req, file, cb) => {
+    // ✅ Algunos browsers mandan application/octet-stream aunque sea PDF.
     const nameOk = String(file.originalname || "")
       .toLowerCase()
       .endsWith(".pdf");
-    const mimeOk = file.mimetype === "application/pdf";
+    const mimeOk =
+      file.mimetype === "application/pdf" ||
+      file.mimetype === "application/octet-stream";
+
     if (!nameOk && !mimeOk) {
       return cb(new Error("Solo se permite PDF."));
     }
@@ -68,7 +82,7 @@ const uploadApto = multer({
   },
 });
 
-// Wrapper para capturar errores de multer (fileSize, mimetype, etc.)
+// ✅ middleware para capturar errores de multer (si no, Express te devuelve 500)
 function uploadAptoSingle(req, res, next) {
   const handler = uploadApto.single("apto");
   handler(req, res, (err) => {
@@ -82,12 +96,6 @@ function uploadAptoSingle(req, res, next) {
       .status(400)
       .json({ error: err.message || "Error al subir el archivo." });
   });
-}
-
-function safeUnlink(absPath) {
-  try {
-    if (absPath && fs.existsSync(absPath)) fs.unlinkSync(absPath);
-  } catch {}
 }
 
 /* ============================================
@@ -115,7 +123,7 @@ const avatarUpload = multer({
 });
 
 /* ============================================
-   HELPERS: CREDIT LOTS (compatibles con appointments.js)
+   HELPERS: CREDIT LOTS
 ============================================ */
 
 function nowDate() {
@@ -130,7 +138,6 @@ function isPlusActive(user) {
   return new Date(m.activeUntil) > new Date();
 }
 
-// ✅ BASIC=2 / PLUS=3 (esto NO toca vencimientos)
 function getMonthlyCancelLimit(user) {
   return isPlusActive(user) ? 3 : 2;
 }
@@ -147,8 +154,6 @@ function normalizeMembershipForUI(user) {
   const limit = getMonthlyCancelLimit(user);
 
   const cancelHoursDefault = plus ? 12 : 24;
-
-  // ✅ SIN PLUS EN VENCIMIENTOS: siempre 30
   const expireDaysDefault = CREDITS_EXPIRE_DAYS;
 
   const tierNorm = String(m.tier || (plus ? "plus" : "basic"))
@@ -184,7 +189,7 @@ function normalizeLotServiceKey(lot) {
 }
 
 /* ============================================
-   ✅ Servicios oficiales (SIN ALL)
+   ✅ Servicios oficiales
 ============================================ */
 
 const ALLOWED_SERVICE_KEYS = new Set(["EP", "RF", "RA", "NUT"]);
@@ -227,10 +232,6 @@ function computeServiceAccessFromLots(u) {
 
   return { allowedServices, serviceCredits };
 }
-
-/* ============================================
-   Créditos por servicio (ADMIN UI)
-============================================ */
 
 function sumCreditsForService(user, serviceKey) {
   const now = nowDate();
@@ -280,12 +281,8 @@ function consumeCreditsForService(user, toRemove, serviceKey) {
   recalcUserCredits(user);
 }
 
-function addCreditLot(
-  user,
-  { amount, serviceKey = "EP", source = "admin-adjust" }
-) {
+function addCreditLot(user, { amount, serviceKey = "EP", source = "admin-adjust" }) {
   const now = nowDate();
-
   const days = CREDITS_EXPIRE_DAYS;
 
   const exp = new Date(now);
@@ -318,13 +315,7 @@ function buildCreditsByService(user) {
 
 function stripSensitive(u) {
   if (!u || typeof u !== "object") return u;
-  const {
-    password,
-    emailVerificationToken,
-    emailVerificationExpires,
-    __v,
-    ...rest
-  } = u;
+  const { password, emailVerificationToken, emailVerificationExpires, __v, ...rest } = u;
   return rest;
 }
 
@@ -356,19 +347,8 @@ router.get("/registrations/list", adminOnly, async (req, res) => {
 
 router.post("/", adminOnly, async (req, res) => {
   try {
-    const {
-      name,
-      lastName,
-      email,
-      phone,
-      dni,
-      age,
-      weight,
-      notes,
-      credits,
-      role,
-      password,
-    } = req.body || {};
+    const { name, lastName, email, phone, dni, age, weight, notes, credits, role, password } =
+      req.body || {};
 
     const n = String(name || "").trim();
     const ln = String(lastName || "").trim();
@@ -573,16 +553,11 @@ router.put("/:id", async (req, res) => {
       });
     }
 
-    const name =
-      typeof req.body?.name === "string" ? req.body.name.trim() : undefined;
+    const name = typeof req.body?.name === "string" ? req.body.name.trim() : undefined;
     const lastName =
-      typeof req.body?.lastName === "string"
-        ? req.body.lastName.trim()
-        : undefined;
-    const phone =
-      typeof req.body?.phone === "string" ? req.body.phone.trim() : undefined;
-    const dni =
-      typeof req.body?.dni === "string" ? req.body.dni.trim() : undefined;
+      typeof req.body?.lastName === "string" ? req.body.lastName.trim() : undefined;
+    const phone = typeof req.body?.phone === "string" ? req.body.phone.trim() : undefined;
+    const dni = typeof req.body?.dni === "string" ? req.body.dni.trim() : undefined;
 
     if (dni !== undefined && dni !== "" && !/^\d{6,10}$/.test(dni)) {
       return res.status(400).json({ error: "DNI inválido." });
@@ -615,12 +590,7 @@ router.put("/:id", async (req, res) => {
     }
 
     const creditsByService = buildCreditsByService(u);
-    return res.json({
-      ...stripSensitive(u),
-      ...svc,
-      membership,
-      creditsByService,
-    });
+    return res.json({ ...stripSensitive(u), ...svc, membership, creditsByService });
   } catch (err) {
     console.error("Error en PUT /users/:id:", err);
     return res.status(500).json({ error: "Error interno." });
@@ -780,6 +750,10 @@ router.post("/:id/clinical-notes", adminOnly, async (req, res) => {
   }
 });
 
+/* ============================================
+   ✅ CRÉDITOS (tu lógica existente)
+============================================ */
+
 async function updateCredits(req, res) {
   try {
     const { id } = req.params;
@@ -910,7 +884,7 @@ router.patch("/:id/suspend", adminOnly, async (req, res) => {
 });
 
 /* ============================================
-   ✅ APTO: SUBIR / VER / BORRAR (con wrapper multer)
+   ✅ APTO: SUBIR / VER / BORRAR
 ============================================ */
 
 router.post("/:id/apto", uploadAptoSingle, async (req, res) => {
@@ -933,7 +907,7 @@ router.post("/:id/apto", uploadAptoSingle, async (req, res) => {
     const user = await User.findById(id);
     if (!user) return res.status(404).json({ error: "Usuario no encontrado." });
 
-    // borrar anterior si existía
+    // borrar anterior
     if (user.aptoPath) {
       const oldAbs = path.join(__dirname, "..", "..", user.aptoPath.replace(/^\//, ""));
       safeUnlink(oldAbs);
@@ -952,7 +926,10 @@ router.post("/:id/apto", uploadAptoSingle, async (req, res) => {
     });
   } catch (err) {
     console.error("Error en POST /users/:id/apto:", err);
-    return res.status(500).json({ error: "Error al subir el apto." });
+    return res.status(500).json({
+      error: "Error al subir el apto.",
+      detail: err?.message || String(err),
+    });
   }
 });
 
@@ -963,23 +940,19 @@ router.get("/:id/apto", async (req, res) => {
     const isAdmin = req.user.role === "admin";
     const isSelf = req.user._id.toString() === id;
 
-    if (!isAdmin && !isSelf) {
-      return res.status(403).json({ error: "No autorizado." });
-    }
+    if (!isAdmin && !isSelf) return res.status(403).json({ error: "No autorizado." });
 
     const user = await User.findById(id);
-    if (!user || !user.aptoPath) {
-      return res.status(404).json({ error: "Apto no encontrado." });
-    }
+    if (!user || !user.aptoPath) return res.status(404).json({ error: "Apto no encontrado." });
 
-    const filePath = path.join(__dirname, "..", "..", user.aptoPath.replace(/^\//, ""));
-    if (!fs.existsSync(filePath)) {
+    const abs = path.join(__dirname, "..", "..", user.aptoPath.replace(/^\//, ""));
+    if (!fs.existsSync(abs)) {
       return res.status(404).json({ error: "El archivo no existe en el servidor." });
     }
 
     res.setHeader("Content-Type", "application/pdf");
     res.setHeader("Content-Disposition", 'inline; filename="apto.pdf"');
-    return res.sendFile(filePath);
+    return res.sendFile(abs);
   } catch (err) {
     console.error("Error en GET /users/:id/apto:", err);
     return res.status(500).json({ error: "Error al obtener apto." });
@@ -993,16 +966,14 @@ router.delete("/:id/apto", async (req, res) => {
     const isAdmin = req.user.role === "admin";
     const isSelf = req.user._id.toString() === id;
 
-    if (!isAdmin && !isSelf) {
-      return res.status(403).json({ error: "No autorizado." });
-    }
+    if (!isAdmin && !isSelf) return res.status(403).json({ error: "No autorizado." });
 
     const user = await User.findById(id);
     if (!user) return res.status(404).json({ error: "Usuario no encontrado." });
 
     if (user.aptoPath) {
-      const fileAbs = path.join(__dirname, "..", "..", user.aptoPath.replace(/^\//, ""));
-      safeUnlink(fileAbs);
+      const abs = path.join(__dirname, "..", "..", user.aptoPath.replace(/^\//, ""));
+      safeUnlink(abs);
     }
 
     user.aptoPath = "";
