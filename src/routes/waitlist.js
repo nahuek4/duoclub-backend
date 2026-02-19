@@ -15,7 +15,6 @@ import { EP_NAME, analyzeSlot } from "../lib/slotCapacity.js";
 import { serviceToKey, recalcUserCredits, pickLotToConsume } from "../lib/credits.js";
 
 const router = express.Router();
-
 router.use(protect);
 
 /* =========================
@@ -66,6 +65,7 @@ function tokenExpiryForSlot(slotDate) {
 router.get("/mine", async (req, res) => {
   try {
     const userId = req.user?._id || req.user?.id;
+
     const list = await WaitlistEntry.find({
       user: userId,
       status: { $in: ["waiting", "notified"] },
@@ -94,7 +94,7 @@ router.get("/mine", async (req, res) => {
 /* =========================
    GET /waitlist/claimable
    - Para mostrar modal SOLO si hay un turno notificado
-     y hoy está disponible de verdad.
+     y ahora está disponible de verdad.
 ========================= */
 router.get("/claimable", async (req, res) => {
   try {
@@ -351,7 +351,7 @@ export async function notifyWaitlistForSlot({ date, time }) {
 
     await WaitlistEntry.bulkWrite(bulk.map((b) => b.updateOne));
 
-    // mails async (sin orden)
+    // mails async (sin orden, a todos)
     fireAndForget(async () => {
       await Promise.all(
         bulk.map(async (b) => {
