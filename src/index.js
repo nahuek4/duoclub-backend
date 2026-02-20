@@ -2,6 +2,7 @@
 import express from "express";
 import dotenv from "dotenv";
 import path from "path";
+import fs from "fs";
 import { fileURLToPath } from "url";
 import helmet from "helmet";
 import rateLimit from "express-rate-limit";
@@ -19,7 +20,6 @@ import admissionRoutes from "./routes/admission.js";
 import adminEvaluationsRoutes from "./routes/adminEvaluations.js";
 import evaluationsRoutes from "./routes/evaluations.js";
 import testMailRouter from "./routes/testMail.js";
-
 import waitlistRouter from "./routes/waitlist.js";
 
 import { startAppointmentReminderScheduler } from "./jobs/startReminders.js";
@@ -91,7 +91,7 @@ app.use(
       const o = String(origin).trim();
       if (allowedOrigins.includes(o)) return cb(null, true);
 
-      // Permitir subdominios de duoclub.ar (si en algún momento agregás otro)
+      // Permitir subdominios de duoclub.ar
       if (/^https:\/\/([a-z0-9-]+\.)*duoclub\.ar$/i.test(o)) return cb(null, true);
 
       return cb(new Error("Not allowed by CORS: " + o));
@@ -120,9 +120,13 @@ app.use("/appointments", apiLimiter);
 app.use("/waitlist", apiLimiter);
 
 /* =========================
-   STATIC
+   STATIC (UPLOADS)
 ========================= */
-app.use("/uploads", express.static(path.join(__dirname, "..", "uploads")));
+// ✅ IMPORTANTE: esta carpeta debe coincidir con donde guarda Multer en users.js
+const uploadsDir = path.join(__dirname, "..", "uploads");
+fs.mkdirSync(uploadsDir, { recursive: true });
+
+app.use("/uploads", express.static(uploadsDir));
 
 /* =========================
    HEALTH
@@ -166,7 +170,7 @@ app.get("/", (req, res) => {
 });
 
 /* =========================
-   ERROR HANDLER CORS (para ver el motivo real)
+   ERROR HANDLER CORS
 ========================= */
 app.use((err, req, res, next) => {
   if (String(err?.message || "").startsWith("Not allowed by CORS")) {

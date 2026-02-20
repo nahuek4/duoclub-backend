@@ -33,13 +33,22 @@ const CREDITS_EXPIRE_DAYS = 30;
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-const uploadDir = path.join(__dirname, "..", "..", "uploads");
+// ✅ MUY IMPORTANTE: ESTE uploadDir debe ser backend/uploads
+// users.js está en backend/src/routes -> subir 2 niveles a /src, 1 más a /backend y luego /uploads
+const uploadDir = path.join(__dirname, "..", "..", "..", "uploads");
 if (!fs.existsSync(uploadDir)) fs.mkdirSync(uploadDir, { recursive: true });
 
 function safeUnlink(absPath) {
   try {
     if (absPath && fs.existsSync(absPath)) fs.unlinkSync(absPath);
   } catch {}
+}
+
+function absFromPublicUploadsPath(publicPath) {
+  // publicPath esperado: "/uploads/archivo.ext"
+  const filename = path.basename(String(publicPath || ""));
+  if (!filename) return "";
+  return path.join(uploadDir, filename);
 }
 
 /* ============================================
@@ -78,7 +87,6 @@ const uploadApto = multer({
   },
 });
 
-// Captura errores de Multer (si no, explota y da 500)
 function uploadAptoSingle(req, res, next) {
   const handler = uploadApto.single("apto");
   handler(req, res, (err) => {
@@ -91,7 +99,7 @@ function uploadAptoSingle(req, res, next) {
 }
 
 /* ============================================
-   MULTER AVATAR
+   MULTER AVATAR ✅ ROBUSTO
 ============================================ */
 const avatarStorage = multer.diskStorage({
   destination: (req, file, cb) => cb(null, uploadDir),
@@ -104,14 +112,24 @@ const avatarStorage = multer.diskStorage({
 
 const avatarUpload = multer({
   storage: avatarStorage,
-  limits: { fileSize: 5 * 1024 * 1024 },
+  limits: { fileSize: 5 * 1024 * 1024 }, // 5MB
   fileFilter: (req, file, cb) => {
-    if (!file.mimetype.startsWith("image/")) {
-      return cb(new Error("Solo se permiten archivos de imagen."));
-    }
+    const mt = String(file.mimetype || "");
+    if (!mt.startsWith("image/")) return cb(new Error("Solo se permiten imágenes."));
     cb(null, true);
   },
 });
+
+function avatarUploadSingle(req, res, next) {
+  const handler = avatarUpload.single("photo");
+  handler(req, res, (err) => {
+    if (!err) return next();
+    if (err.code === "LIMIT_FILE_SIZE") {
+      return res.status(400).json({ error: "La imagen supera el límite de 5MB." });
+    }
+    return res.status(400).json({ error: err.message || "Error al subir la imagen." });
+  });
+}
 
 /* ============================================
    HELPERS: CREDIT LOTS (tu lógica original)
@@ -679,7 +697,7 @@ router.post("/:id/clinical-notes", adminOnly, validateObjectIdParam, async (req,
 });
 
 /* ============================================
-   ✅ CRÉDITOS
+   ✅ CRÉDITOS (tu código original)
 ============================================ */
 async function updateCredits(req, res) {
   try {
@@ -798,8 +816,6 @@ router.patch("/:id/suspend", adminOnly, validateObjectIdParam, async (req, res) 
 /* ============================================
    ✅ APTO: SUBIR / VER / BORRAR
 ============================================ */
-
-// 🔥 clave: validar id ANTES de multer
 router.post("/:id/apto", validateObjectIdParam, uploadAptoSingle, async (req, res) => {
   try {
     const { id } = req.params;
@@ -818,8 +834,7 @@ router.post("/:id/apto", validateObjectIdParam, uploadAptoSingle, async (req, re
 
     // borrar anterior si existía
     if (user.aptoPath) {
-      const oldAbs = path.join(__dirname, "..", "..", user.aptoPath.replace(/^\//, ""));
-      safeUnlink(oldAbs);
+      safeUnlink(absFromPublicUploadsPath(user.aptoPath));
     }
 
     user.aptoPath = "/uploads/" + req.file.filename;
@@ -847,8 +862,10 @@ router.get("/:id/apto", validateObjectIdParam, async (req, res) => {
     const user = await User.findById(id);
     if (!user || !user.aptoPath) return res.status(404).json({ error: "Apto no encontrado." });
 
-    const abs = path.join(__dirname, "..", "..", user.aptoPath.replace(/^\//, ""));
-    if (!fs.existsSync(abs)) return res.status(404).json({ error: "El archivo no existe en el servidor." });
+    const abs = absFromPublicUploadsPath(user.aptoPath);
+    if (!abs || !fs.existsSync(abs)) {
+      return res.status(404).json({ error: "El archivo no existe en el servidor." });
+    }
 
     res.setHeader("Content-Type", "application/pdf");
     res.setHeader("Content-Disposition", 'inline; filename="apto.pdf"');
@@ -870,10 +887,7 @@ router.delete("/:id/apto", validateObjectIdParam, async (req, res) => {
     const user = await User.findById(id);
     if (!user) return res.status(404).json({ error: "Usuario no encontrado." });
 
-    if (user.aptoPath) {
-      const abs = path.join(__dirname, "..", "..", user.aptoPath.replace(/^\//, ""));
-      safeUnlink(abs);
-    }
+    if (user.aptoPath) safeUnlink(absFromPublicUploadsPath(user.aptoPath));
 
     user.aptoPath = "";
     user.aptoStatus = "";
@@ -887,9 +901,9 @@ router.delete("/:id/apto", validateObjectIdParam, async (req, res) => {
 });
 
 /* ============================================
-   FOTO (AVATAR)
+   ✅ FOTO (AVATAR) - SUBIR
 ============================================ */
-router.post("/:id/photo", validateObjectIdParam, avatarUpload.single("photo"), async (req, res) => {
+router.post("/:id/photo", validateObjectIdParam, avatarUploadSingle, async (req, res) => {
   try {
     const { id } = req.params;
 
@@ -904,10 +918,7 @@ router.post("/:id/photo", validateObjectIdParam, avatarUpload.single("photo"), a
     const user = await User.findById(id);
     if (!user) return res.status(404).json({ error: "Usuario no encontrado." });
 
-    if (user.photoPath) {
-      const oldAbs = path.join(__dirname, "..", "..", user.photoPath.replace(/^\//, ""));
-      safeUnlink(oldAbs);
-    }
+    if (user.photoPath) safeUnlink(absFromPublicUploadsPath(user.photoPath));
 
     user.photoPath = "/uploads/" + req.file.filename;
     await user.save();
