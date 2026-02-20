@@ -5,6 +5,7 @@ import fs from "fs";
 import { fileURLToPath } from "url";
 
 import bcrypt from "bcryptjs";
+import mongoose from "mongoose";
 
 import User from "../models/User.js";
 import Appointment from "../models/Appointment.js";
@@ -23,26 +24,17 @@ const router = express.Router();
 
 /* ============================================
    ✅ CONFIG GLOBAL: VENCIMIENTO CRÉDITOS
-   - 30 días SI O SI (sin Plus)
 ============================================ */
 const CREDITS_EXPIRE_DAYS = 30;
 
 /* ============================================
-   CONFIGURACIÓN DE RUTAS / PATHS
+   PATHS
 ============================================ */
-
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 const uploadDir = path.join(__dirname, "..", "..", "uploads");
-
-if (!fs.existsSync(uploadDir)) {
-  fs.mkdirSync(uploadDir, { recursive: true });
-}
-
-/* ============================================
-   HELPERS: files
-============================================ */
+if (!fs.existsSync(uploadDir)) fs.mkdirSync(uploadDir, { recursive: true });
 
 function safeUnlink(absPath) {
   try {
@@ -51,9 +43,19 @@ function safeUnlink(absPath) {
 }
 
 /* ============================================
-   MULTER PARA APTOS (PDF) ✅ ROBUSTO
+   ✅ VALIDACIÓN ID (evita CastError -> 500)
 ============================================ */
+function validateObjectIdParam(req, res, next) {
+  const { id } = req.params;
+  if (!mongoose.Types.ObjectId.isValid(String(id || ""))) {
+    return res.status(400).json({ error: "ID inválido." });
+  }
+  next();
+}
 
+/* ============================================
+   MULTER APTOS (PDF) ✅ ROBUSTO
+============================================ */
 const aptoStorage = multer.diskStorage({
   destination: (req, file, cb) => cb(null, uploadDir),
   filename: (req, file, cb) => {
@@ -67,41 +69,30 @@ const uploadApto = multer({
   storage: aptoStorage,
   limits: { fileSize: 10 * 1024 * 1024 }, // 10MB
   fileFilter: (req, file, cb) => {
-    // ✅ Algunos browsers mandan application/octet-stream aunque sea PDF.
-    const nameOk = String(file.originalname || "")
-      .toLowerCase()
-      .endsWith(".pdf");
+    const nameOk = String(file.originalname || "").toLowerCase().endsWith(".pdf");
     const mimeOk =
       file.mimetype === "application/pdf" ||
       file.mimetype === "application/octet-stream";
-
-    if (!nameOk && !mimeOk) {
-      return cb(new Error("Solo se permite PDF."));
-    }
+    if (!nameOk && !mimeOk) return cb(new Error("Solo se permite PDF."));
     cb(null, true);
   },
 });
 
-// ✅ middleware para capturar errores de multer (si no, Express te devuelve 500)
+// Captura errores de Multer (si no, explota y da 500)
 function uploadAptoSingle(req, res, next) {
   const handler = uploadApto.single("apto");
   handler(req, res, (err) => {
     if (!err) return next();
-
     if (err.code === "LIMIT_FILE_SIZE") {
       return res.status(400).json({ error: "El PDF supera el límite de 10MB." });
     }
-
-    return res
-      .status(400)
-      .json({ error: err.message || "Error al subir el archivo." });
+    return res.status(400).json({ error: err.message || "Error al subir el archivo." });
   });
 }
 
 /* ============================================
-   MULTER PARA FOTO DE PACIENTE (AVATAR)
+   MULTER AVATAR
 ============================================ */
-
 const avatarStorage = multer.diskStorage({
   destination: (req, file, cb) => cb(null, uploadDir),
   filename: (req, file, cb) => {
@@ -123,7 +114,7 @@ const avatarUpload = multer({
 });
 
 /* ============================================
-   HELPERS: CREDIT LOTS
+   HELPERS: CREDIT LOTS (tu lógica original)
 ============================================ */
 
 function nowDate() {
@@ -172,25 +163,18 @@ function normalizeMembershipForUI(user) {
 function recalcUserCredits(user) {
   const now = nowDate();
   const lots = Array.isArray(user.creditLots) ? user.creditLots : [];
-
   const sum = lots.reduce((acc, lot) => {
     const exp = lot.expiresAt ? new Date(lot.expiresAt) : null;
     if (exp && exp <= now) return acc;
     return acc + Number(lot.remaining || 0);
   }, 0);
-
   user.credits = sum;
 }
 
 function normalizeLotServiceKey(lot) {
-  const raw = lot?.serviceKey;
-  const sk = String(raw || "").toUpperCase().trim();
+  const sk = String(lot?.serviceKey || "").toUpperCase().trim();
   return sk || "EP";
 }
-
-/* ============================================
-   ✅ Servicios oficiales
-============================================ */
 
 const ALLOWED_SERVICE_KEYS = new Set(["EP", "RF", "RA", "NUT"]);
 
@@ -201,12 +185,9 @@ const SERVICE_KEY_TO_NAME = {
   NUT: "Nutricion",
 };
 
-const UI_SERVICES = Object.values(SERVICE_KEY_TO_NAME);
-
 function computeServiceAccessFromLots(u) {
   const now = new Date();
   const lots = Array.isArray(u?.creditLots) ? u.creditLots : [];
-
   const byKey = { EP: 0, RF: 0, RA: 0, NUT: 0 };
 
   for (const lot of lots) {
@@ -283,10 +264,8 @@ function consumeCreditsForService(user, toRemove, serviceKey) {
 
 function addCreditLot(user, { amount, serviceKey = "EP", source = "admin-adjust" }) {
   const now = nowDate();
-  const days = CREDITS_EXPIRE_DAYS;
-
   const exp = new Date(now);
-  exp.setDate(exp.getDate() + days);
+  exp.setDate(exp.getDate() + CREDITS_EXPIRE_DAYS);
 
   const sk = String(serviceKey || "EP").toUpperCase().trim() || "EP";
 
@@ -320,23 +299,21 @@ function stripSensitive(u) {
 }
 
 /* ============================================
-   TODAS LAS RUTAS REQUIEREN ESTAR LOGUEADO
+   ✅ TODAS LAS RUTAS REQUIEREN LOGIN
 ============================================ */
 router.use(protect);
 
-// ============================================
-// ✅ ADMIN - REGISTRACIONES PENDIENTES
-// ============================================
+/* ============================================
+   ✅ ADMIN - REGISTRACIONES
+============================================ */
 
 router.get("/registrations/list", adminOnly, async (req, res) => {
   try {
     const status = String(req.query.status || "pending");
     const query = {};
-
     if (status === "pending") query.approvalStatus = "pending";
     if (status === "approved") query.approvalStatus = "approved";
     if (status === "rejected") query.approvalStatus = "rejected";
-
     const users = await User.find(query).sort({ createdAt: -1 }).lean();
     return res.json(users.map(stripSensitive));
   } catch (err) {
@@ -397,11 +374,7 @@ router.post("/", adminOnly, async (req, res) => {
 
     const initialCredits = Number(credits ?? 0);
     if (initialCredits > 0) {
-      addCreditLot(user, {
-        amount: initialCredits,
-        serviceKey: "EP",
-        source: "admin-create",
-      });
+      addCreditLot(user, { amount: initialCredits, serviceKey: "EP", source: "admin-create" });
       await user.save();
     }
 
@@ -416,38 +389,31 @@ router.post("/", adminOnly, async (req, res) => {
       "MAIL_APPROVED_CREATE"
     );
 
-    const uLean =
-      (await User.findById(user._id).lean()) || user.toObject?.() || user;
+    const uLean = (await User.findById(user._id).lean()) || user.toObject?.() || user;
     const svc = computeServiceAccessFromLots(uLean);
     const membership = normalizeMembershipForUI(uLean);
 
-    res.status(201).json({
+    return res.status(201).json({
       ok: true,
-      user: {
-        ...stripSensitive(uLean),
-        ...svc,
-        membership,
-      },
+      user: { ...stripSensitive(uLean), ...svc, membership },
       tempPassword: password ? undefined : plainPassword,
     });
   } catch (err) {
     console.error("Error en POST /users:", err);
-
     if (err.code === 11000 && err.keyPattern?.email) {
       return res.status(400).json({ error: "Ya existe un usuario con ese email." });
     }
-
-    res.status(500).json({ error: "Error al crear usuario." });
+    return res.status(500).json({ error: "Error al crear usuario." });
   }
 });
 
 router.get("/", adminOnly, async (req, res) => {
   try {
     const list = await User.find().lean();
-    res.json(list.map(stripSensitive));
+    return res.json(list.map(stripSensitive));
   } catch (err) {
     console.error("Error en GET /users:", err);
-    res.status(500).json({ error: "Error al obtener usuarios." });
+    return res.status(500).json({ error: "Error al obtener usuarios." });
   }
 });
 
@@ -456,15 +422,14 @@ router.get("/pending", adminOnly, async (req, res) => {
     const pending = await User.find({ approvalStatus: "pending" })
       .sort({ createdAt: -1 })
       .lean();
-
-    res.json(pending.map(stripSensitive));
+    return res.json(pending.map(stripSensitive));
   } catch (err) {
     console.error("Error en GET /users/pending:", err);
-    res.status(500).json({ error: "Error al obtener pendientes." });
+    return res.status(500).json({ error: "Error al obtener pendientes." });
   }
 });
 
-router.patch("/:id/approval", adminOnly, async (req, res) => {
+router.patch("/:id/approval", adminOnly, validateObjectIdParam, async (req, res) => {
   try {
     const { id } = req.params;
     const status = String(req.body?.status || "").toLowerCase().trim();
@@ -477,9 +442,7 @@ router.patch("/:id/approval", adminOnly, async (req, res) => {
     if (!user) return res.status(404).json({ error: "Usuario no encontrado." });
 
     if (status === "approved" && !user.emailVerified) {
-      return res.status(400).json({
-        error: "No se puede aprobar: el email no está verificado.",
-      });
+      return res.status(400).json({ error: "No se puede aprobar: el email no está verificado." });
     }
 
     const prevStatus = String(user.approvalStatus || "pending");
@@ -489,10 +452,7 @@ router.patch("/:id/approval", adminOnly, async (req, res) => {
       const shouldSendRejectionMail = !!to && prevStatus !== "rejected";
 
       if (shouldSendRejectionMail) {
-        fireAndForget(
-          () => sendUserApprovalResultEmail(user, "rejected"),
-          "MAIL_REJECT_AND_DELETE"
-        );
+        fireAndForget(() => sendUserApprovalResultEmail(user, "rejected"), "MAIL_REJECT_AND_DELETE");
       }
 
       await Appointment.deleteMany({ user: user._id });
@@ -509,23 +469,15 @@ router.patch("/:id/approval", adminOnly, async (req, res) => {
     user.suspended = false;
 
     const changed = prevStatus !== "approved";
-
     const shouldSendApprovalMail =
-      changed &&
-      !!String(user.email || "").trim() &&
-      !user.welcomeApprovedEmailSentAt;
+      changed && !!String(user.email || "").trim() && !user.welcomeApprovedEmailSentAt;
 
-    if (shouldSendApprovalMail) {
-      user.welcomeApprovedEmailSentAt = new Date();
-    }
+    if (shouldSendApprovalMail) user.welcomeApprovedEmailSentAt = new Date();
 
     await user.save();
 
     if (shouldSendApprovalMail) {
-      fireAndForget(
-        () => sendUserApprovalResultEmail(user, "approved"),
-        "MAIL_APPROVED_WEB"
-      );
+      fireAndForget(() => sendUserApprovalResultEmail(user, "approved"), "MAIL_APPROVED_WEB");
     }
 
     return res.json({
@@ -540,7 +492,7 @@ router.patch("/:id/approval", adminOnly, async (req, res) => {
   }
 });
 
-router.put("/:id", async (req, res) => {
+router.put("/:id", validateObjectIdParam, async (req, res) => {
   try {
     const { id } = req.params;
 
@@ -548,14 +500,11 @@ router.put("/:id", async (req, res) => {
     const isSelf = req.user._id.toString() === id;
 
     if (!isAdmin && !isSelf) {
-      return res.status(403).json({
-        error: "No tenés permiso para editar este usuario.",
-      });
+      return res.status(403).json({ error: "No tenés permiso para editar este usuario." });
     }
 
     const name = typeof req.body?.name === "string" ? req.body.name.trim() : undefined;
-    const lastName =
-      typeof req.body?.lastName === "string" ? req.body.lastName.trim() : undefined;
+    const lastName = typeof req.body?.lastName === "string" ? req.body.lastName.trim() : undefined;
     const phone = typeof req.body?.phone === "string" ? req.body.phone.trim() : undefined;
     const dni = typeof req.body?.dni === "string" ? req.body.dni.trim() : undefined;
 
@@ -573,11 +522,7 @@ router.put("/:id", async (req, res) => {
       return res.status(400).json({ error: "No hay campos para actualizar." });
     }
 
-    const u = await User.findByIdAndUpdate(id, update, {
-      new: true,
-      runValidators: true,
-    }).lean();
-
+    const u = await User.findByIdAndUpdate(id, update, { new: true, runValidators: true }).lean();
     if (!u) return res.status(404).json({ error: "Usuario no encontrado." });
 
     const svc = computeServiceAccessFromLots(u);
@@ -597,7 +542,7 @@ router.put("/:id", async (req, res) => {
   }
 });
 
-router.get("/:id", async (req, res) => {
+router.get("/:id", validateObjectIdParam, async (req, res) => {
   try {
     const { id } = req.params;
 
@@ -605,9 +550,7 @@ router.get("/:id", async (req, res) => {
     const isSelf = req.user._id.toString() === id;
 
     if (!isAdmin && !isSelf) {
-      return res.status(403).json({
-        error: "No tenés permiso para ver este usuario.",
-      });
+      return res.status(403).json({ error: "No tenés permiso para ver este usuario." });
     }
 
     const u = await User.findById(id).lean();
@@ -623,38 +566,31 @@ router.get("/:id", async (req, res) => {
     }
 
     const creditsByService = buildCreditsByService(u);
-
-    return res.json({
-      ...stripSensitive(u),
-      ...svc,
-      membership,
-      creditsByService,
-    });
+    return res.json({ ...stripSensitive(u), ...svc, membership, creditsByService });
   } catch (err) {
     console.error("Error en GET /users/:id:", err);
-    res.status(500).json({ error: "Error interno." });
+    return res.status(500).json({ error: "Error interno." });
   }
 });
 
-router.patch("/:id", adminOnly, async (req, res) => {
+router.patch("/:id", adminOnly, validateObjectIdParam, async (req, res) => {
   try {
     const { id } = req.params;
     const updates = req.body || {};
-
     const u = await User.findByIdAndUpdate(id, updates, { new: true }).lean();
     if (!u) return res.status(404).json({ error: "Usuario no encontrado." });
 
     const svc = computeServiceAccessFromLots(u);
     const membership = normalizeMembershipForUI(u);
 
-    res.json({ ...stripSensitive(u), ...svc, membership });
+    return res.json({ ...stripSensitive(u), ...svc, membership });
   } catch (err) {
     console.error("Error en PATCH /users/:id:", err);
-    res.status(500).json({ error: "Error interno." });
+    return res.status(500).json({ error: "Error interno." });
   }
 });
 
-router.delete("/:id", adminOnly, async (req, res) => {
+router.delete("/:id", adminOnly, validateObjectIdParam, async (req, res) => {
   try {
     const { id } = req.params;
 
@@ -664,17 +600,14 @@ router.delete("/:id", adminOnly, async (req, res) => {
     await Appointment.deleteMany({ user: id });
     await user.deleteOne();
 
-    res.json({
-      ok: true,
-      message: "Usuario y turnos asociados eliminados correctamente.",
-    });
+    return res.json({ ok: true, message: "Usuario y turnos asociados eliminados correctamente." });
   } catch (err) {
     console.error("Error en DELETE /users/:id:", err);
-    res.status(500).json({ error: "Error al eliminar usuario y sus turnos." });
+    return res.status(500).json({ error: "Error al eliminar usuario y sus turnos." });
   }
 });
 
-router.get("/:id/history", async (req, res) => {
+router.get("/:id/history", validateObjectIdParam, async (req, res) => {
   try {
     const { id } = req.params;
 
@@ -682,9 +615,7 @@ router.get("/:id/history", async (req, res) => {
     const isSelf = req.user._id.toString() === id;
 
     if (!isAdmin && !isSelf) {
-      return res.status(403).json({
-        error: "No tenés permisos para ver el historial de este usuario.",
-      });
+      return res.status(403).json({ error: "No tenés permisos para ver el historial de este usuario." });
     }
 
     const appointments = await Appointment.find({ user: id })
@@ -701,34 +632,32 @@ router.get("/:id/history", async (req, res) => {
       createdAt: ap.createdAt,
     }));
 
-    res.json(history);
+    return res.json(history);
   } catch (err) {
     console.error("Error en GET /users/:id/history:", err);
-    res.status(500).json({ error: "Error al obtener historial." });
+    return res.status(500).json({ error: "Error al obtener historial." });
   }
 });
 
-router.get("/:id/clinical-notes", adminOnly, async (req, res) => {
+router.get("/:id/clinical-notes", adminOnly, validateObjectIdParam, async (req, res) => {
   try {
     const { id } = req.params;
     const user = await User.findById(id).lean();
     if (!user) return res.status(404).json({ error: "Paciente no encontrado." });
-    res.json(user.clinicalNotes || []);
+    return res.json(user.clinicalNotes || []);
   } catch (err) {
     console.error("Error en GET /users/:id/clinical-notes:", err);
-    res.status(500).json({ error: "Error al obtener historia clínica." });
+    return res.status(500).json({ error: "Error al obtener historia clínica." });
   }
 });
 
-router.post("/:id/clinical-notes", adminOnly, async (req, res) => {
+router.post("/:id/clinical-notes", adminOnly, validateObjectIdParam, async (req, res) => {
   try {
     const { id } = req.params;
     const { text } = req.body || {};
 
     if (!text || !String(text).trim()) {
-      return res.status(400).json({
-        error: "El texto de la nota clínica es obligatorio.",
-      });
+      return res.status(400).json({ error: "El texto de la nota clínica es obligatorio." });
     }
 
     const user = await User.findById(id);
@@ -742,18 +671,16 @@ router.post("/:id/clinical-notes", adminOnly, async (req, res) => {
     });
 
     await user.save();
-
-    res.json({ ok: true, clinicalNotes: user.clinicalNotes });
+    return res.json({ ok: true, clinicalNotes: user.clinicalNotes });
   } catch (err) {
     console.error("Error en POST /users/:id/clinical-notes:", err);
-    res.status(500).json({ error: "Error al guardar historia clínica." });
+    return res.status(500).json({ error: "Error al guardar historia clínica." });
   }
 });
 
 /* ============================================
-   ✅ CRÉDITOS (tu lógica existente)
+   ✅ CRÉDITOS
 ============================================ */
-
 async function updateCredits(req, res) {
   try {
     const { id } = req.params;
@@ -776,23 +703,15 @@ async function updateCredits(req, res) {
       if (typeof c === "number") {
         const target = Math.max(0, Math.round(c));
         const diff = target - currentForService;
-
-        if (diff > 0) {
-          addCreditLot(user, { amount: diff, serviceKey: sk, source: src || "admin-set" });
-        } else if (diff < 0) {
-          consumeCreditsForService(user, Math.abs(diff), sk);
-        }
+        if (diff > 0) addCreditLot(user, { amount: diff, serviceKey: sk, source: src || "admin-set" });
+        else if (diff < 0) consumeCreditsForService(user, Math.abs(diff), sk);
         return;
       }
 
       if (typeof d === "number") {
         const dd = Math.round(d);
-
-        if (dd > 0) {
-          addCreditLot(user, { amount: dd, serviceKey: sk, source: src || "admin-delta" });
-        } else if (dd < 0) {
-          consumeCreditsForService(user, Math.abs(dd), sk);
-        }
+        if (dd > 0) addCreditLot(user, { amount: dd, serviceKey: sk, source: src || "admin-delta" });
+        else if (dd < 0) consumeCreditsForService(user, Math.abs(dd), sk);
         return;
       }
 
@@ -811,12 +730,7 @@ async function updateCredits(req, res) {
         });
       }
     } else {
-      applyOne({
-        credits,
-        delta,
-        serviceKey,
-        source: source || "admin-single",
-      });
+      applyOne({ credits, delta, serviceKey, source: source || "admin-single" });
     }
 
     recalcUserCredits(user);
@@ -826,7 +740,7 @@ async function updateCredits(req, res) {
     const svc = computeServiceAccessFromLots(user);
     const membership = normalizeMembershipForUI(user);
 
-    res.json({
+    return res.json({
       ok: true,
       credits: Number(user.credits || 0),
       creditsByService,
@@ -837,17 +751,15 @@ async function updateCredits(req, res) {
   } catch (err) {
     console.error("Error en créditos:", err);
     const status = err?.status || 500;
-    res.status(status).json({ error: err?.message || "Error interno." });
+    return res.status(status).json({ error: err?.message || "Error interno." });
   }
 }
+router.patch("/:id/credits", adminOnly, validateObjectIdParam, updateCredits);
+router.post("/:id/credits", adminOnly, validateObjectIdParam, updateCredits);
 
-router.patch("/:id/credits", adminOnly, updateCredits);
-router.post("/:id/credits", adminOnly, updateCredits);
-
-router.post("/:id/reset-password", adminOnly, async (req, res) => {
+router.post("/:id/reset-password", adminOnly, validateObjectIdParam, async (req, res) => {
   try {
     const { id } = req.params;
-
     const user = await User.findById(id);
     if (!user) return res.status(404).json({ error: "Usuario no encontrado." });
 
@@ -858,14 +770,14 @@ router.post("/:id/reset-password", adminOnly, async (req, res) => {
     user.mustChangePassword = true;
     await user.save();
 
-    res.json({ ok: true, tempPassword });
+    return res.json({ ok: true, tempPassword });
   } catch (err) {
     console.error("Error en reset password:", err);
-    res.status(500).json({ error: "Error interno." });
+    return res.status(500).json({ error: "Error interno." });
   }
 });
 
-router.patch("/:id/suspend", adminOnly, async (req, res) => {
+router.patch("/:id/suspend", adminOnly, validateObjectIdParam, async (req, res) => {
   try {
     const { id } = req.params;
     const { suspended } = req.body || {};
@@ -876,10 +788,10 @@ router.patch("/:id/suspend", adminOnly, async (req, res) => {
     user.suspended = !!suspended;
     await user.save();
 
-    res.json({ ok: true, suspended: user.suspended });
+    return res.json({ ok: true, suspended: user.suspended });
   } catch (err) {
     console.error("Error en PATCH /users/:id/suspend:", err);
-    res.status(500).json({ error: "Error al cambiar estado de suspensión." });
+    return res.status(500).json({ error: "Error al cambiar estado de suspensión." });
   }
 });
 
@@ -887,7 +799,8 @@ router.patch("/:id/suspend", adminOnly, async (req, res) => {
    ✅ APTO: SUBIR / VER / BORRAR
 ============================================ */
 
-router.post("/:id/apto", uploadAptoSingle, async (req, res) => {
+// 🔥 clave: validar id ANTES de multer
+router.post("/:id/apto", validateObjectIdParam, uploadAptoSingle, async (req, res) => {
   try {
     const { id } = req.params;
 
@@ -895,35 +808,25 @@ router.post("/:id/apto", uploadAptoSingle, async (req, res) => {
     const isSelf = req.user._id.toString() === id;
 
     if (!isAdmin && !isSelf) {
-      return res.status(403).json({
-        error: "No tenés permisos para subir el apto de este usuario.",
-      });
+      return res.status(403).json({ error: "No tenés permisos para subir el apto de este usuario." });
     }
 
-    if (!req.file) {
-      return res.status(400).json({ error: "No se recibió ningún archivo." });
-    }
+    if (!req.file) return res.status(400).json({ error: "No se recibió ningún archivo." });
 
     const user = await User.findById(id);
     if (!user) return res.status(404).json({ error: "Usuario no encontrado." });
 
-    // borrar anterior
+    // borrar anterior si existía
     if (user.aptoPath) {
       const oldAbs = path.join(__dirname, "..", "..", user.aptoPath.replace(/^\//, ""));
       safeUnlink(oldAbs);
     }
 
-    const relativePath = "/uploads/" + req.file.filename;
-
-    user.aptoPath = relativePath;
+    user.aptoPath = "/uploads/" + req.file.filename;
     user.aptoStatus = "uploaded";
     await user.save();
 
-    return res.json({
-      ok: true,
-      message: "Apto subido correctamente.",
-      aptoPath: user.aptoPath,
-    });
+    return res.json({ ok: true, message: "Apto subido correctamente.", aptoPath: user.aptoPath });
   } catch (err) {
     console.error("Error en POST /users/:id/apto:", err);
     return res.status(500).json({
@@ -933,22 +836,19 @@ router.post("/:id/apto", uploadAptoSingle, async (req, res) => {
   }
 });
 
-router.get("/:id/apto", async (req, res) => {
+router.get("/:id/apto", validateObjectIdParam, async (req, res) => {
   try {
     const { id } = req.params;
 
     const isAdmin = req.user.role === "admin";
     const isSelf = req.user._id.toString() === id;
-
     if (!isAdmin && !isSelf) return res.status(403).json({ error: "No autorizado." });
 
     const user = await User.findById(id);
     if (!user || !user.aptoPath) return res.status(404).json({ error: "Apto no encontrado." });
 
     const abs = path.join(__dirname, "..", "..", user.aptoPath.replace(/^\//, ""));
-    if (!fs.existsSync(abs)) {
-      return res.status(404).json({ error: "El archivo no existe en el servidor." });
-    }
+    if (!fs.existsSync(abs)) return res.status(404).json({ error: "El archivo no existe en el servidor." });
 
     res.setHeader("Content-Type", "application/pdf");
     res.setHeader("Content-Disposition", 'inline; filename="apto.pdf"');
@@ -959,13 +859,12 @@ router.get("/:id/apto", async (req, res) => {
   }
 });
 
-router.delete("/:id/apto", async (req, res) => {
+router.delete("/:id/apto", validateObjectIdParam, async (req, res) => {
   try {
     const { id } = req.params;
 
     const isAdmin = req.user.role === "admin";
     const isSelf = req.user._id.toString() === id;
-
     if (!isAdmin && !isSelf) return res.status(403).json({ error: "No autorizado." });
 
     const user = await User.findById(id);
@@ -990,40 +889,33 @@ router.delete("/:id/apto", async (req, res) => {
 /* ============================================
    FOTO (AVATAR)
 ============================================ */
-
-router.post("/:id/photo", avatarUpload.single("photo"), async (req, res) => {
+router.post("/:id/photo", validateObjectIdParam, avatarUpload.single("photo"), async (req, res) => {
   try {
     const { id } = req.params;
 
     const isAdmin = req.user.role === "admin";
     const isSelf = req.user._id.toString() === id;
-
     if (!isAdmin && !isSelf) {
-      return res.status(403).json({
-        error: "Solo el paciente o un admin pueden subir la foto.",
-      });
+      return res.status(403).json({ error: "Solo el paciente o un admin pueden subir la foto." });
     }
 
-    if (!req.file) {
-      return res.status(400).json({ error: "No se recibió ninguna imagen." });
-    }
+    if (!req.file) return res.status(400).json({ error: "No se recibió ninguna imagen." });
 
     const user = await User.findById(id);
     if (!user) return res.status(404).json({ error: "Usuario no encontrado." });
 
     if (user.photoPath) {
-      const old = path.join(__dirname, "..", "..", user.photoPath.replace(/^\//, ""));
-      safeUnlink(old);
+      const oldAbs = path.join(__dirname, "..", "..", user.photoPath.replace(/^\//, ""));
+      safeUnlink(oldAbs);
     }
 
-    const relativePath = "/uploads/" + req.file.filename;
-    user.photoPath = relativePath;
+    user.photoPath = "/uploads/" + req.file.filename;
     await user.save();
 
-    res.json({ ok: true, photoPath: user.photoPath });
+    return res.json({ ok: true, photoPath: user.photoPath });
   } catch (err) {
     console.error("Error en POST /users/:id/photo:", err);
-    res.status(500).json({ error: "Error al subir foto del paciente." });
+    return res.status(500).json({ error: "Error al subir foto del paciente." });
   }
 });
 
