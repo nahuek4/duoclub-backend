@@ -71,7 +71,7 @@ app.use(
 app.use(express.json({ limit: "2mb" }));
 
 /* =========================
-   ✅ CORS (estable + preflight ok)
+   ✅ CORS
 ========================= */
 const allowedOrigins = [
   "http://localhost:5173",
@@ -85,13 +85,10 @@ const allowedOrigins = [
 app.use(
   cors({
     origin(origin, cb) {
-      // Permite Postman/curl (sin Origin)
-      if (!origin) return cb(null, true);
-
+      if (!origin) return cb(null, true); // Postman/curl
       const o = String(origin).trim();
-      if (allowedOrigins.includes(o)) return cb(null, true);
 
-      // Permitir subdominios de duoclub.ar
+      if (allowedOrigins.includes(o)) return cb(null, true);
       if (/^https:\/\/([a-z0-9-]+\.)*duoclub\.ar$/i.test(o)) return cb(null, true);
 
       return cb(new Error("Not allowed by CORS: " + o));
@@ -102,7 +99,6 @@ app.use(
   })
 );
 
-// ✅ responder preflight con CORS correctamente
 app.options("*", cors());
 
 /* =========================
@@ -115,17 +111,17 @@ const apiLimiter = rateLimit({
   legacyHeaders: false,
 });
 
-app.use("/auth", apiLimiter);
-app.use("/appointments", apiLimiter);
-app.use("/waitlist", apiLimiter);
+// limit en ambas rutas (con /api y sin /api)
+app.use(["/auth", "/appointments", "/waitlist", "/api/auth", "/api/appointments", "/api/waitlist"], apiLimiter);
 
 /* =========================
    STATIC (UPLOADS)
+   ✅ backend/uploads (al lado de /src)
 ========================= */
-// ✅ IMPORTANTE: esta carpeta debe coincidir con donde guarda Multer en users.js
 const uploadsDir = path.join(__dirname, "..", "uploads");
 fs.mkdirSync(uploadsDir, { recursive: true });
 
+// ✅ Servimos ambos paths para compatibilidad
 app.use("/uploads", express.static(uploadsDir));
 app.use("/api/uploads", express.static(uploadsDir));
 
@@ -143,25 +139,28 @@ app.get("/health", (req, res) => {
 
 /* =========================
    RUTAS
+   ✅ Montamos 2 veces: con / y con /api
+   Así tu front puede usar baseURL "/api" sin rewrite.
 ========================= */
-app.use("/auth", authRoutes);
+function mountRoutes(prefix = "") {
+  app.use(`${prefix}/auth`, authRoutes);
+  app.use(`${prefix}/auth`, adminApprovalLinksRoutes);
 
-// ✅ links de aprobar/rechazar del mail (vive en /auth)
-app.use("/auth", adminApprovalLinksRoutes);
+  app.use(`${prefix}/users`, userRoutes);
+  app.use(`${prefix}/appointments`, appointmentRoutes);
+  app.use(`${prefix}/services`, servicesRoutes);
+  app.use(`${prefix}/pricing`, pricingRoutes);
+  app.use(`${prefix}/orders`, ordersRoutes);
+  app.use(`${prefix}/payments`, mpWebhookRoutes);
+  app.use(`${prefix}/admission`, admissionRoutes);
+  app.use(`${prefix}/admin/evaluations`, adminEvaluationsRoutes);
+  app.use(`${prefix}/evaluations`, evaluationsRoutes);
+  app.use(`${prefix}/api/test-mail`, testMailRouter);
+  app.use(`${prefix}/waitlist`, waitlistRouter);
+}
 
-app.use("/users", userRoutes);
-app.use("/appointments", appointmentRoutes);
-app.use("/services", servicesRoutes);
-app.use("/pricing", pricingRoutes);
-app.use("/orders", ordersRoutes);
-app.use("/payments", mpWebhookRoutes);
-app.use("/admission", admissionRoutes);
-app.use("/admin/evaluations", adminEvaluationsRoutes);
-app.use("/evaluations", evaluationsRoutes);
-app.use("/api/test-mail", testMailRouter);
-
-// ✅ waitlist
-app.use("/waitlist", waitlistRouter);
+mountRoutes("");     // /users, /appointments, etc.
+mountRoutes("/api"); // /api/users, /api/appointments, etc.
 
 /* =========================
    RUTA BASE
