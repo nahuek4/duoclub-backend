@@ -321,8 +321,7 @@ function buildCreditsByService(user) {
 
 function stripSensitive(u) {
   if (!u || typeof u !== "object") return u;
-  const { password, emailVerificationToken, emailVerificationExpires, __v, ...rest } =
-    u;
+  const { password, emailVerificationToken, emailVerificationExpires, __v, ...rest } = u;
   return rest;
 }
 
@@ -351,19 +350,8 @@ router.get("/registrations/list", adminOnly, async (req, res) => {
 
 router.post("/", adminOnly, async (req, res) => {
   try {
-    const {
-      name,
-      lastName,
-      email,
-      phone,
-      dni,
-      age,
-      weight,
-      notes,
-      credits,
-      role,
-      password,
-    } = req.body || {};
+    const { name, lastName, email, phone, dni, age, weight, notes, credits, role, password } =
+      req.body || {};
 
     const n = String(name || "").trim();
     const ln = String(lastName || "").trim();
@@ -412,11 +400,7 @@ router.post("/", adminOnly, async (req, res) => {
 
     const initialCredits = Number(credits ?? 0);
     if (initialCredits > 0) {
-      addCreditLot(user, {
-        amount: initialCredits,
-        serviceKey: "EP",
-        source: "admin-create",
-      });
+      addCreditLot(user, { amount: initialCredits, serviceKey: "EP", source: "admin-create" });
       await user.save();
     }
 
@@ -431,8 +415,7 @@ router.post("/", adminOnly, async (req, res) => {
       "MAIL_APPROVED_CREATE"
     );
 
-    const uLean =
-      (await User.findById(user._id).lean()) || user.toObject?.() || user;
+    const uLean = (await User.findById(user._id).lean()) || user.toObject?.() || user;
     const svc = computeServiceAccessFromLots(uLean);
     const membership = normalizeMembershipForUI(uLean);
 
@@ -485,9 +468,7 @@ router.patch("/:id/approval", adminOnly, validateObjectIdParam, async (req, res)
     if (!user) return res.status(404).json({ error: "Usuario no encontrado." });
 
     if (status === "approved" && !user.emailVerified) {
-      return res
-        .status(400)
-        .json({ error: "No se puede aprobar: el email no está verificado." });
+      return res.status(400).json({ error: "No se puede aprobar: el email no está verificado." });
     }
 
     const prevStatus = String(user.approvalStatus || "pending");
@@ -497,10 +478,7 @@ router.patch("/:id/approval", adminOnly, validateObjectIdParam, async (req, res)
       const shouldSendRejectionMail = !!to && prevStatus !== "rejected";
 
       if (shouldSendRejectionMail) {
-        fireAndForget(
-          () => sendUserApprovalResultEmail(user, "rejected"),
-          "MAIL_REJECT_AND_DELETE"
-        );
+        fireAndForget(() => sendUserApprovalResultEmail(user, "rejected"), "MAIL_REJECT_AND_DELETE");
       }
 
       await Appointment.deleteMany({ user: user._id });
@@ -525,10 +503,7 @@ router.patch("/:id/approval", adminOnly, validateObjectIdParam, async (req, res)
     await user.save();
 
     if (shouldSendApprovalMail) {
-      fireAndForget(
-        () => sendUserApprovalResultEmail(user, "approved"),
-        "MAIL_APPROVED_WEB"
-      );
+      fireAndForget(() => sendUserApprovalResultEmail(user, "approved"), "MAIL_APPROVED_WEB");
     }
 
     return res.json({
@@ -554,12 +529,9 @@ router.put("/:id", validateObjectIdParam, async (req, res) => {
       return res.status(403).json({ error: "No tenés permiso para editar este usuario." });
     }
 
-    const name =
-      typeof req.body?.name === "string" ? req.body.name.trim() : undefined;
-    const lastName =
-      typeof req.body?.lastName === "string" ? req.body.lastName.trim() : undefined;
-    const phone =
-      typeof req.body?.phone === "string" ? req.body.phone.trim() : undefined;
+    const name = typeof req.body?.name === "string" ? req.body.name.trim() : undefined;
+    const lastName = typeof req.body?.lastName === "string" ? req.body.lastName.trim() : undefined;
+    const phone = typeof req.body?.phone === "string" ? req.body.phone.trim() : undefined;
     const dni = typeof req.body?.dni === "string" ? req.body.dni.trim() : undefined;
 
     if (dni !== undefined && dni !== "" && !/^\d{6,10}$/.test(dni)) {
@@ -576,10 +548,7 @@ router.put("/:id", validateObjectIdParam, async (req, res) => {
       return res.status(400).json({ error: "No hay campos para actualizar." });
     }
 
-    const u = await User.findByIdAndUpdate(id, update, {
-      new: true,
-      runValidators: true,
-    }).lean();
+    const u = await User.findByIdAndUpdate(id, update, { new: true, runValidators: true }).lean();
     if (!u) return res.status(404).json({ error: "Usuario no encontrado." });
 
     const svc = computeServiceAccessFromLots(u);
@@ -657,10 +626,7 @@ router.delete("/:id", adminOnly, validateObjectIdParam, async (req, res) => {
     await Appointment.deleteMany({ user: id });
     await user.deleteOne();
 
-    return res.json({
-      ok: true,
-      message: "Usuario y turnos asociados eliminados correctamente.",
-    });
+    return res.json({ ok: true, message: "Usuario y turnos asociados eliminados correctamente." });
   } catch (err) {
     console.error("Error en DELETE /users/:id:", err);
     return res.status(500).json({ error: "Error al eliminar usuario y sus turnos." });
@@ -675,9 +641,7 @@ router.get("/:id/history", validateObjectIdParam, async (req, res) => {
     const isSelf = req.user._id.toString() === id;
 
     if (!isAdmin && !isSelf) {
-      return res
-        .status(403)
-        .json({ error: "No tenés permisos para ver el historial de este usuario." });
+      return res.status(403).json({ error: "No tenés permisos para ver el historial de este usuario." });
     }
 
     const appointments = await Appointment.find({ user: id })
@@ -765,16 +729,14 @@ async function updateCredits(req, res) {
       if (typeof c === "number") {
         const target = Math.max(0, Math.round(c));
         const diff = target - currentForService;
-        if (diff > 0)
-          addCreditLot(user, { amount: diff, serviceKey: sk, source: src || "admin-set" });
+        if (diff > 0) addCreditLot(user, { amount: diff, serviceKey: sk, source: src || "admin-set" });
         else if (diff < 0) consumeCreditsForService(user, Math.abs(diff), sk);
         return;
       }
 
       if (typeof d === "number") {
         const dd = Math.round(d);
-        if (dd > 0)
-          addCreditLot(user, { amount: dd, serviceKey: sk, source: src || "admin-delta" });
+        if (dd > 0) addCreditLot(user, { amount: dd, serviceKey: sk, source: src || "admin-delta" });
         else if (dd < 0) consumeCreditsForService(user, Math.abs(dd), sk);
         return;
       }
@@ -855,9 +817,7 @@ router.patch("/:id/suspend", adminOnly, validateObjectIdParam, async (req, res) 
     return res.json({ ok: true, suspended: user.suspended });
   } catch (err) {
     console.error("Error en PATCH /users/:id/suspend:", err);
-    return res
-      .status(500)
-      .json({ error: "Error al cambiar estado de suspensión." });
+    return res.status(500).json({ error: "Error al cambiar estado de suspensión." });
   }
 });
 
@@ -872,9 +832,7 @@ router.post("/:id/apto", validateObjectIdParam, uploadAptoSingle, async (req, re
     const isSelf = req.user._id.toString() === id;
 
     if (!isAdmin && !isSelf) {
-      return res
-        .status(403)
-        .json({ error: "No tenés permisos para subir el apto de este usuario." });
+      return res.status(403).json({ error: "No tenés permisos para subir el apto de este usuario." });
     }
 
     if (!req.file) return res.status(400).json({ error: "No se recibió ningún archivo." });
@@ -882,26 +840,17 @@ router.post("/:id/apto", validateObjectIdParam, uploadAptoSingle, async (req, re
     const user = await User.findById(id);
     if (!user) return res.status(404).json({ error: "Usuario no encontrado." });
 
-    if (user.aptoPath) {
-      safeUnlink(absFromPublicUploadsPath(user.aptoPath));
-    }
+    if (user.aptoPath) safeUnlink(absFromPublicUploadsPath(user.aptoPath));
 
     // ✅ guardamos bajo /api/uploads (ideal con proxy)
     user.aptoPath = "/api/uploads/" + req.file.filename;
     user.aptoStatus = "uploaded";
     await user.save();
 
-    return res.json({
-      ok: true,
-      message: "Apto subido correctamente.",
-      aptoPath: user.aptoPath,
-    });
+    return res.json({ ok: true, message: "Apto subido correctamente.", aptoPath: user.aptoPath });
   } catch (err) {
     console.error("Error en POST /users/:id/apto:", err);
-    return res.status(500).json({
-      error: "Error al subir el apto.",
-      detail: err?.message || String(err),
-    });
+    return res.status(500).json({ error: "Error al subir el apto.", detail: err?.message || String(err) });
   }
 });
 
