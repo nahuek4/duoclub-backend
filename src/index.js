@@ -124,6 +124,7 @@ fs.mkdirSync(uploadsDir, { recursive: true });
 // ✅ Servimos ambos paths para compatibilidad
 app.use("/uploads", express.static(uploadsDir));
 app.use("/api/uploads", express.static(uploadsDir));
+app.use("/api/uploads", express.static(path.join(process.cwd(), "uploads")));
 
 /* =========================
    HEALTH

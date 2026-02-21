@@ -35,8 +35,11 @@ const __dirname = path.dirname(__filename);
 
 // ✅ uploads root: backend/uploads
 // backend/src/routes  -> backend/src -> backend/uploads
-const uploadDir = path.join(__dirname, "..", "..", "uploads");
-if (!fs.existsSync(uploadDir)) fs.mkdirSync(uploadDir, { recursive: true });
+const uploadRoot = path.join(__dirname, "..", "..", "uploads");
+const aptosDir = path.join(uploadRoot, "aptos");
+
+if (!fs.existsSync(uploadRoot)) fs.mkdirSync(uploadRoot, { recursive: true });
+if (!fs.existsSync(aptosDir)) fs.mkdirSync(aptosDir, { recursive: true });
 
 function safeUnlink(absPath) {
   try {
@@ -64,7 +67,7 @@ function absFromPublicUploadsPath(publicPath) {
   const raw = String(publicPath || "").trim();
   if (!raw) return "";
 
-  const clean = raw.split("?")[0].split("#")[0]; // ✅ FIX: sin cache bust
+  const clean = raw.split("?")[0].split("#")[0]; // ✅ sin cache bust
   const parts = clean.split("/").filter(Boolean);
 
   // buscamos el segmento "uploads"
@@ -72,7 +75,7 @@ function absFromPublicUploadsPath(publicPath) {
   if (uploadsIdx === -1) {
     // fallback: solo filename
     const filename = path.basename(clean);
-    return filename ? path.join(uploadDir, filename) : "";
+    return filename ? path.join(uploadRoot, filename) : "";
   }
 
   // todo lo que viene después de uploads/ (puede incluir subcarpetas)
@@ -82,7 +85,7 @@ function absFromPublicUploadsPath(publicPath) {
   const safeParts = relParts.map((p) => path.basename(p)).filter(Boolean);
   if (!safeParts.length) return "";
 
-  return path.join(uploadDir, ...safeParts);
+  return path.join(uploadRoot, ...safeParts);
 }
 
 /* ============================================
@@ -100,7 +103,7 @@ function validateObjectIdParam(req, res, next) {
    MULTER APTOS (PDF) ✅ ROBUSTO
 ============================================ */
 const aptoStorage = multer.diskStorage({
-  destination: (req, file, cb) => cb(null, uploadDir),
+  destination: (req, file, cb) => cb(null, aptosDir), // ✅ aptos/
   filename: (req, file, cb) => {
     const ext = path.extname(file.originalname) || ".pdf";
     const base = "apto-" + req.params.id + "-" + Date.now();
@@ -140,7 +143,7 @@ function uploadAptoSingle(req, res, next) {
    MULTER AVATAR ✅ ROBUSTO
 ============================================ */
 const avatarStorage = multer.diskStorage({
-  destination: (req, file, cb) => cb(null, uploadDir),
+  destination: (req, file, cb) => cb(null, uploadRoot),
   filename: (req, file, cb) => {
     const ext = path.extname(file.originalname) || ".jpg";
     const base = "avatar-" + req.params.id + "-" + Date.now();
@@ -948,8 +951,8 @@ router.post("/:id/apto", validateObjectIdParam, uploadAptoSingle, async (req, re
       safeUnlink(absFromPublicUploadsPath(user.aptoPath));
     }
 
-    // ✅ guardamos bajo /api/uploads (ideal con proxy)
-    user.aptoPath = "/api/uploads/" + req.file.filename;
+    // ✅ guardamos bajo /api/uploads/aptos
+    user.aptoPath = "/api/uploads/aptos/" + req.file.filename;
     user.aptoStatus = "uploaded";
     await user.save();
 
@@ -996,6 +999,7 @@ router.get("/:id/apto", validateObjectIdParam, async (req, res) => {
   }
 });
 
+// ✅ FIX: BORRAR SIN user.save() (evita required validation lastName/phone)
 router.delete("/:id/apto", validateObjectIdParam, async (req, res) => {
   try {
     const { id } = req.params;
@@ -1005,16 +1009,27 @@ router.delete("/:id/apto", validateObjectIdParam, async (req, res) => {
     if (!isAdmin && !isSelf)
       return res.status(403).json({ error: "No autorizado." });
 
-    const user = await User.findById(id);
+    // Traigo solo aptoPath/aptoStatus para evitar tocar user completo
+    const user = await User.findById(id).select("aptoPath aptoStatus");
     if (!user) return res.status(404).json({ error: "Usuario no encontrado." });
 
     if (user.aptoPath) {
       safeUnlink(absFromPublicUploadsPath(user.aptoPath));
+
+      // compat extra por si quedó guardado como /api/uploads/<file> pero vive en /uploads/aptos/<file>
+      try {
+        const filename = path.basename(
+          String(user.aptoPath).split("?")[0].split("#")[0]
+        );
+        if (filename) safeUnlink(path.join(aptosDir, filename));
+      } catch {}
     }
 
-    user.aptoPath = "";
-    user.aptoStatus = "";
-    await user.save();
+    // ✅ updateOne NO revalida todos los required del doc como save()
+    await User.updateOne(
+      { _id: id },
+      { $set: { aptoPath: "", aptoStatus: "" } }
+    );
 
     return res.json({ ok: true, message: "Apto eliminado correctamente." });
   } catch (err) {
@@ -1052,7 +1067,6 @@ router.post("/:id/photo", validateObjectIdParam, avatarUploadSingle, async (req,
       safeUnlink(absFromPublicUploadsPath(user.photoPath));
     }
 
-    // ✅ guardamos bajo /api/uploads (ideal con proxy)
     user.photoPath = "/api/uploads/" + req.file.filename;
     await user.save();
 
