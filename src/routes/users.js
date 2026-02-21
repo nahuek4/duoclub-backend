@@ -33,23 +33,56 @@ const CREDITS_EXPIRE_DAYS = 30;
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-// ✅ FIX REAL: routes -> src -> backend/uploads
-// backend/src/routes  ->  backend/src  -> backend/uploads
+// ✅ uploads root: backend/uploads
+// backend/src/routes  -> backend/src -> backend/uploads
 const uploadDir = path.join(__dirname, "..", "..", "uploads");
 if (!fs.existsSync(uploadDir)) fs.mkdirSync(uploadDir, { recursive: true });
 
 function safeUnlink(absPath) {
   try {
     if (absPath && fs.existsSync(absPath)) fs.unlinkSync(absPath);
-  } catch {}
+  } catch {
+    // no-op (no queremos 500 por unlink)
+  }
 }
 
+/**
+ * ✅ Convierte un publicPath a una ruta absoluta real dentro de backend/uploads
+ * Acepta:
+ *  - "/uploads/file.jpg"
+ *  - "/api/uploads/file.jpg"
+ *  - "/uploads/aptos/file.pdf"
+ *  - "/api/uploads/aptos/file.pdf"
+ *  - también con query/hash: "/api/uploads/x.jpg?t=123"
+ *
+ * Importante:
+ *  - limpia ?query y #hash
+ *  - preserva subcarpetas dentro de uploads/
+ *  - sanitiza cada segmento con path.basename (evita traversal)
+ */
 function absFromPublicUploadsPath(publicPath) {
-  // acepta "/uploads/file" o "/api/uploads/file"
-  const p = String(publicPath || "").trim();
-  const filename = path.basename(p);
-  if (!filename) return "";
-  return path.join(uploadDir, filename);
+  const raw = String(publicPath || "").trim();
+  if (!raw) return "";
+
+  const clean = raw.split("?")[0].split("#")[0]; // ✅ FIX: sin cache bust
+  const parts = clean.split("/").filter(Boolean);
+
+  // buscamos el segmento "uploads"
+  const uploadsIdx = parts.findIndex((p) => p === "uploads");
+  if (uploadsIdx === -1) {
+    // fallback: solo filename
+    const filename = path.basename(clean);
+    return filename ? path.join(uploadDir, filename) : "";
+  }
+
+  // todo lo que viene después de uploads/ (puede incluir subcarpetas)
+  const relParts = parts.slice(uploadsIdx + 1);
+  if (!relParts.length) return "";
+
+  const safeParts = relParts.map((p) => path.basename(p)).filter(Boolean);
+  if (!safeParts.length) return "";
+
+  return path.join(uploadDir, ...safeParts);
 }
 
 /* ============================================
@@ -142,7 +175,7 @@ function avatarUploadSingle(req, res, next) {
 }
 
 /* ============================================
-   HELPERS: CREDIT LOTS
+   HELPERS: CREDIT LOTS (tu lógica original)
 ============================================ */
 function nowDate() {
   return new Date();
@@ -289,7 +322,10 @@ function consumeCreditsForService(user, toRemove, serviceKey) {
   recalcUserCredits(user);
 }
 
-function addCreditLot(user, { amount, serviceKey = "EP", source = "admin-adjust" }) {
+function addCreditLot(
+  user,
+  { amount, serviceKey = "EP", source = "admin-adjust" }
+) {
   const now = nowDate();
   const exp = new Date(now);
   exp.setDate(exp.getDate() + CREDITS_EXPIRE_DAYS);
@@ -449,7 +485,9 @@ router.post("/", adminOnly, async (req, res) => {
   } catch (err) {
     console.error("Error en POST /users:", err);
     if (err.code === 11000 && err.keyPattern?.email) {
-      return res.status(400).json({ error: "Ya existe un usuario con ese email." });
+      return res
+        .status(400)
+        .json({ error: "Ya existe un usuario con ese email." });
     }
     return res.status(500).json({ error: "Error al crear usuario." });
   }
@@ -604,12 +642,7 @@ router.put("/:id", validateObjectIdParam, async (req, res) => {
     }
 
     const creditsByService = buildCreditsByService(u);
-    return res.json({
-      ...stripSensitive(u),
-      ...svc,
-      membership,
-      creditsByService,
-    });
+    return res.json({ ...stripSensitive(u), ...svc, membership, creditsByService });
   } catch (err) {
     console.error("Error en PUT /users/:id:", err);
     return res.status(500).json({ error: "Error interno." });
@@ -642,12 +675,7 @@ router.get("/:id", validateObjectIdParam, async (req, res) => {
     }
 
     const creditsByService = buildCreditsByService(u);
-    return res.json({
-      ...stripSensitive(u),
-      ...svc,
-      membership,
-      creditsByService,
-    });
+    return res.json({ ...stripSensitive(u), ...svc, membership, creditsByService });
   } catch (err) {
     console.error("Error en GET /users/:id:", err);
     return res.status(500).json({ error: "Error interno." });
@@ -747,9 +775,9 @@ router.post("/:id/clinical-notes", adminOnly, validateObjectIdParam, async (req,
     const { text } = req.body || {};
 
     if (!text || !String(text).trim()) {
-      return res
-        .status(400)
-        .json({ error: "El texto de la nota clínica es obligatorio." });
+      return res.status(400).json({
+        error: "El texto de la nota clínica es obligatorio.",
+      });
     }
 
     const user = await User.findById(id);
@@ -773,7 +801,7 @@ router.post("/:id/clinical-notes", adminOnly, validateObjectIdParam, async (req,
 });
 
 /* ============================================
-   ✅ CRÉDITOS
+   ✅ CRÉDITOS (tu código original)
 ============================================ */
 async function updateCredits(req, res) {
   try {
@@ -798,11 +826,7 @@ async function updateCredits(req, res) {
         const target = Math.max(0, Math.round(c));
         const diff = target - currentForService;
         if (diff > 0)
-          addCreditLot(user, {
-            amount: diff,
-            serviceKey: sk,
-            source: src || "admin-set",
-          });
+          addCreditLot(user, { amount: diff, serviceKey: sk, source: src || "admin-set" });
         else if (diff < 0) consumeCreditsForService(user, Math.abs(diff), sk);
         return;
       }
@@ -810,11 +834,7 @@ async function updateCredits(req, res) {
       if (typeof d === "number") {
         const dd = Math.round(d);
         if (dd > 0)
-          addCreditLot(user, {
-            amount: dd,
-            serviceKey: sk,
-            source: src || "admin-delta",
-          });
+          addCreditLot(user, { amount: dd, serviceKey: sk, source: src || "admin-delta" });
         else if (dd < 0) consumeCreditsForService(user, Math.abs(dd), sk);
         return;
       }
@@ -912,9 +932,9 @@ router.post("/:id/apto", validateObjectIdParam, uploadAptoSingle, async (req, re
     const isSelf = req.user._id.toString() === id;
 
     if (!isAdmin && !isSelf) {
-      return res
-        .status(403)
-        .json({ error: "No tenés permisos para subir el apto de este usuario." });
+      return res.status(403).json({
+        error: "No tenés permisos para subir el apto de este usuario.",
+      });
     }
 
     if (!req.file) {
@@ -953,14 +973,18 @@ router.get("/:id/apto", validateObjectIdParam, async (req, res) => {
 
     const isAdmin = req.user.role === "admin";
     const isSelf = req.user._id.toString() === id;
-    if (!isAdmin && !isSelf) return res.status(403).json({ error: "No autorizado." });
+    if (!isAdmin && !isSelf)
+      return res.status(403).json({ error: "No autorizado." });
 
     const user = await User.findById(id);
-    if (!user || !user.aptoPath) return res.status(404).json({ error: "Apto no encontrado." });
+    if (!user || !user.aptoPath)
+      return res.status(404).json({ error: "Apto no encontrado." });
 
     const abs = absFromPublicUploadsPath(user.aptoPath);
     if (!abs || !fs.existsSync(abs)) {
-      return res.status(404).json({ error: "El archivo no existe en el servidor." });
+      return res
+        .status(404)
+        .json({ error: "El archivo no existe en el servidor." });
     }
 
     res.setHeader("Content-Type", "application/pdf");
@@ -978,12 +1002,15 @@ router.delete("/:id/apto", validateObjectIdParam, async (req, res) => {
 
     const isAdmin = req.user.role === "admin";
     const isSelf = req.user._id.toString() === id;
-    if (!isAdmin && !isSelf) return res.status(403).json({ error: "No autorizado." });
+    if (!isAdmin && !isSelf)
+      return res.status(403).json({ error: "No autorizado." });
 
     const user = await User.findById(id);
     if (!user) return res.status(404).json({ error: "Usuario no encontrado." });
 
-    if (user.aptoPath) safeUnlink(absFromPublicUploadsPath(user.aptoPath));
+    if (user.aptoPath) {
+      safeUnlink(absFromPublicUploadsPath(user.aptoPath));
+    }
 
     user.aptoPath = "";
     user.aptoStatus = "";
@@ -992,7 +1019,10 @@ router.delete("/:id/apto", validateObjectIdParam, async (req, res) => {
     return res.json({ ok: true, message: "Apto eliminado correctamente." });
   } catch (err) {
     console.error("Error en DELETE /users/:id/apto:", err);
-    return res.status(500).json({ error: "Error al borrar apto." });
+    return res.status(500).json({
+      error: "Error al borrar apto.",
+      detail: err?.message || String(err),
+    });
   }
 });
 
@@ -1006,17 +1036,21 @@ router.post("/:id/photo", validateObjectIdParam, avatarUploadSingle, async (req,
     const isAdmin = req.user.role === "admin";
     const isSelf = req.user._id.toString() === id;
     if (!isAdmin && !isSelf) {
-      return res
-        .status(403)
-        .json({ error: "Solo el paciente o un admin pueden subir la foto." });
+      return res.status(403).json({
+        error: "Solo el paciente o un admin pueden subir la foto.",
+      });
     }
 
-    if (!req.file) return res.status(400).json({ error: "No se recibió ninguna imagen." });
+    if (!req.file) {
+      return res.status(400).json({ error: "No se recibió ninguna imagen." });
+    }
 
     const user = await User.findById(id);
     if (!user) return res.status(404).json({ error: "Usuario no encontrado." });
 
-    if (user.photoPath) safeUnlink(absFromPublicUploadsPath(user.photoPath));
+    if (user.photoPath) {
+      safeUnlink(absFromPublicUploadsPath(user.photoPath));
+    }
 
     // ✅ guardamos bajo /api/uploads (ideal con proxy)
     user.photoPath = "/api/uploads/" + req.file.filename;
@@ -1025,7 +1059,10 @@ router.post("/:id/photo", validateObjectIdParam, avatarUploadSingle, async (req,
     return res.json({ ok: true, photoPath: user.photoPath });
   } catch (err) {
     console.error("Error en POST /users/:id/photo:", err);
-    return res.status(500).json({ error: "Error al subir foto del paciente." });
+    return res.status(500).json({
+      error: "Error al subir foto del paciente.",
+      detail: err?.message || String(err),
+    });
   }
 });
 
