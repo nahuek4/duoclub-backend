@@ -69,7 +69,6 @@ app.use(
 );
 
 app.use(express.json({ limit: "2mb" }));
-app.use(express.urlencoded({ extended: true })); // ✅ útil para algunos forms
 
 /* =========================
    ✅ CORS
@@ -113,10 +112,7 @@ const apiLimiter = rateLimit({
 });
 
 // limit en ambas rutas (con /api y sin /api)
-app.use(
-  ["/auth", "/appointments", "/waitlist", "/api/auth", "/api/appointments", "/api/waitlist"],
-  apiLimiter
-);
+app.use(["/auth", "/appointments", "/waitlist", "/api/auth", "/api/appointments", "/api/waitlist"], apiLimiter);
 
 /* =========================
    STATIC (UPLOADS)
@@ -125,7 +121,7 @@ app.use(
 const uploadsDir = path.join(__dirname, "..", "uploads");
 fs.mkdirSync(uploadsDir, { recursive: true });
 
-// ✅ Servimos ambos paths para compatibilidad con front/baseURL "/api"
+// ✅ Servimos ambos paths para compatibilidad
 app.use("/uploads", express.static(uploadsDir));
 app.use("/api/uploads", express.static(uploadsDir));
 
@@ -144,31 +140,22 @@ app.get("/health", (req, res) => {
 /* =========================
    RUTAS
    ✅ Montamos 2 veces: con / y con /api
+   Así tu front puede usar baseURL "/api" sin rewrite.
 ========================= */
 function mountRoutes(prefix = "") {
-  // auth
   app.use(`${prefix}/auth`, authRoutes);
   app.use(`${prefix}/auth`, adminApprovalLinksRoutes);
 
-  // core
   app.use(`${prefix}/users`, userRoutes);
   app.use(`${prefix}/appointments`, appointmentRoutes);
   app.use(`${prefix}/services`, servicesRoutes);
   app.use(`${prefix}/pricing`, pricingRoutes);
   app.use(`${prefix}/orders`, ordersRoutes);
-
-  // payments/webhooks
   app.use(`${prefix}/payments`, mpWebhookRoutes);
-
-  // admission / evals
   app.use(`${prefix}/admission`, admissionRoutes);
   app.use(`${prefix}/admin/evaluations`, adminEvaluationsRoutes);
   app.use(`${prefix}/evaluations`, evaluationsRoutes);
-
-  // ✅ FIX: NO meter "/api" acá adentro, el prefix ya hace eso
-  app.use(`${prefix}/test-mail`, testMailRouter);
-
-  // waitlist
+  app.use(`${prefix}/api/test-mail`, testMailRouter);
   app.use(`${prefix}/waitlist`, waitlistRouter);
 }
 
@@ -197,14 +184,6 @@ app.use((err, req, res, next) => {
 ========================= */
 app.use((req, res) => {
   res.status(404).json({ error: "Ruta no encontrada" });
-});
-
-/* =========================
-   ERROR FINAL (evita 500 sin JSON)
-========================= */
-app.use((err, req, res, next) => {
-  console.error("Unhandled error:", err);
-  res.status(500).json({ error: "Error interno." });
 });
 
 /* =========================
