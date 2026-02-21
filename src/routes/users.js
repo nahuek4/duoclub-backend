@@ -925,7 +925,7 @@ router.patch("/:id/suspend", adminOnly, validateObjectIdParam, async (req, res) 
 });
 
 /* ============================================
-   ✅ APTO: SUBIR / VER / BORRAR
+   ✅ APTO: SUBIR / VER / BORRAR  (FIX SIN save())
 ============================================ */
 router.post("/:id/apto", validateObjectIdParam, uploadAptoSingle, async (req, res) => {
   try {
@@ -944,22 +944,27 @@ router.post("/:id/apto", validateObjectIdParam, uploadAptoSingle, async (req, re
       return res.status(400).json({ error: "No se recibió ningún archivo." });
     }
 
-    const user = await User.findById(id);
-    if (!user) return res.status(404).json({ error: "Usuario no encontrado." });
+    // 1) busco usuario (solo para saber si había un apto previo y borrarlo)
+    const prevUser = await User.findById(id).lean();
+    if (!prevUser) return res.status(404).json({ error: "Usuario no encontrado." });
 
-    if (user.aptoPath) {
-      safeUnlink(absFromPublicUploadsPath(user.aptoPath));
+    if (prevUser.aptoPath) {
+      safeUnlink(absFromPublicUploadsPath(prevUser.aptoPath));
     }
 
-    // ✅ guardamos bajo /api/uploads/aptos
-    user.aptoPath = "/api/uploads/aptos/" + req.file.filename;
-    user.aptoStatus = "uploaded";
-    await user.save();
+    // 2) update atómico (NO dispara validation required de otros campos)
+    const newPath = "/api/uploads/" + req.file.filename;
+
+    await User.updateOne(
+      { _id: id },
+      { $set: { aptoPath: newPath, aptoStatus: "uploaded" } }
+      // runValidators: false (por defecto) => NO valida lastName/phone faltantes
+    );
 
     return res.json({
       ok: true,
       message: "Apto subido correctamente.",
-      aptoPath: user.aptoPath,
+      aptoPath: newPath,
     });
   } catch (err) {
     console.error("Error en POST /users/:id/apto:", err);
@@ -976,18 +981,14 @@ router.get("/:id/apto", validateObjectIdParam, async (req, res) => {
 
     const isAdmin = req.user.role === "admin";
     const isSelf = req.user._id.toString() === id;
-    if (!isAdmin && !isSelf)
-      return res.status(403).json({ error: "No autorizado." });
+    if (!isAdmin && !isSelf) return res.status(403).json({ error: "No autorizado." });
 
-    const user = await User.findById(id);
-    if (!user || !user.aptoPath)
-      return res.status(404).json({ error: "Apto no encontrado." });
+    const user = await User.findById(id).lean();
+    if (!user || !user.aptoPath) return res.status(404).json({ error: "Apto no encontrado." });
 
     const abs = absFromPublicUploadsPath(user.aptoPath);
     if (!abs || !fs.existsSync(abs)) {
-      return res
-        .status(404)
-        .json({ error: "El archivo no existe en el servidor." });
+      return res.status(404).json({ error: "El archivo no existe en el servidor." });
     }
 
     res.setHeader("Content-Type", "application/pdf");
@@ -999,33 +1000,23 @@ router.get("/:id/apto", validateObjectIdParam, async (req, res) => {
   }
 });
 
-// ✅ FIX: BORRAR SIN user.save() (evita required validation lastName/phone)
 router.delete("/:id/apto", validateObjectIdParam, async (req, res) => {
   try {
     const { id } = req.params;
 
     const isAdmin = req.user.role === "admin";
     const isSelf = req.user._id.toString() === id;
-    if (!isAdmin && !isSelf)
-      return res.status(403).json({ error: "No autorizado." });
+    if (!isAdmin && !isSelf) return res.status(403).json({ error: "No autorizado." });
 
-    // Traigo solo aptoPath/aptoStatus para evitar tocar user completo
-    const user = await User.findById(id).select("aptoPath aptoStatus");
-    if (!user) return res.status(404).json({ error: "Usuario no encontrado." });
+    // 1) leo usuario para saber qué archivo borrar
+    const prevUser = await User.findById(id).lean();
+    if (!prevUser) return res.status(404).json({ error: "Usuario no encontrado." });
 
-    if (user.aptoPath) {
-      safeUnlink(absFromPublicUploadsPath(user.aptoPath));
-
-      // compat extra por si quedó guardado como /api/uploads/<file> pero vive en /uploads/aptos/<file>
-      try {
-        const filename = path.basename(
-          String(user.aptoPath).split("?")[0].split("#")[0]
-        );
-        if (filename) safeUnlink(path.join(aptosDir, filename));
-      } catch {}
+    if (prevUser.aptoPath) {
+      safeUnlink(absFromPublicUploadsPath(prevUser.aptoPath));
     }
 
-    // ✅ updateOne NO revalida todos los required del doc como save()
+    // 2) update atómico (NO save)
     await User.updateOne(
       { _id: id },
       { $set: { aptoPath: "", aptoStatus: "" } }
@@ -1042,7 +1033,7 @@ router.delete("/:id/apto", validateObjectIdParam, async (req, res) => {
 });
 
 /* ============================================
-   ✅ FOTO (AVATAR) - SUBIR
+   ✅ FOTO (AVATAR) - SUBIR  (FIX SIN save())
 ============================================ */
 router.post("/:id/photo", validateObjectIdParam, avatarUploadSingle, async (req, res) => {
   try {
@@ -1060,17 +1051,20 @@ router.post("/:id/photo", validateObjectIdParam, avatarUploadSingle, async (req,
       return res.status(400).json({ error: "No se recibió ninguna imagen." });
     }
 
-    const user = await User.findById(id);
-    if (!user) return res.status(404).json({ error: "Usuario no encontrado." });
+    // 1) leo usuario para borrar foto previa
+    const prevUser = await User.findById(id).lean();
+    if (!prevUser) return res.status(404).json({ error: "Usuario no encontrado." });
 
-    if (user.photoPath) {
-      safeUnlink(absFromPublicUploadsPath(user.photoPath));
+    if (prevUser.photoPath) {
+      safeUnlink(absFromPublicUploadsPath(prevUser.photoPath));
     }
 
-    user.photoPath = "/api/uploads/" + req.file.filename;
-    await user.save();
+    // 2) update atómico
+    const newPath = "/api/uploads/" + req.file.filename;
 
-    return res.json({ ok: true, photoPath: user.photoPath });
+    await User.updateOne({ _id: id }, { $set: { photoPath: newPath } });
+
+    return res.json({ ok: true, photoPath: newPath });
   } catch (err) {
     console.error("Error en POST /users/:id/photo:", err);
     return res.status(500).json({
