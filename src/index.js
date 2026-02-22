@@ -32,10 +32,7 @@ dotenv.config();
 
 const app = express();
 
-const PORT =
-  process.env.PORT ||
-  (process.env.NODE_ENV === "production" ? 3000 : 4000);
-
+const PORT = process.env.PORT || (process.env.NODE_ENV === "production" ? 3000 : 4000);
 app.set("trust proxy", 1);
 
 const __filename = fileURLToPath(import.meta.url);
@@ -111,8 +108,10 @@ const apiLimiter = rateLimit({
   legacyHeaders: false,
 });
 
-// limit en ambas rutas (con /api y sin /api)
-app.use(["/auth", "/appointments", "/waitlist", "/api/auth", "/api/appointments", "/api/waitlist"], apiLimiter);
+app.use(
+  ["/auth", "/appointments", "/waitlist", "/api/auth", "/api/appointments", "/api/waitlist"],
+  apiLimiter
+);
 
 /* =========================
    STATIC (UPLOADS)
@@ -124,7 +123,6 @@ fs.mkdirSync(uploadsDir, { recursive: true });
 // ✅ Servimos ambos paths para compatibilidad
 app.use("/uploads", express.static(uploadsDir));
 app.use("/api/uploads", express.static(uploadsDir));
-app.use("/api/uploads", express.static(path.join(process.cwd(), "uploads")));
 
 /* =========================
    HEALTH
@@ -141,7 +139,6 @@ app.get("/health", (req, res) => {
 /* =========================
    RUTAS
    ✅ Montamos 2 veces: con / y con /api
-   Así tu front puede usar baseURL "/api" sin rewrite.
 ========================= */
 function mountRoutes(prefix = "") {
   app.use(`${prefix}/auth`, authRoutes);
@@ -156,12 +153,16 @@ function mountRoutes(prefix = "") {
   app.use(`${prefix}/admission`, admissionRoutes);
   app.use(`${prefix}/admin/evaluations`, adminEvaluationsRoutes);
   app.use(`${prefix}/evaluations`, evaluationsRoutes);
+
+  // (ojo: este router ya trae su propio path; si tu archivo es /routes/testMail.js
+  // y adentro define /test-mail, podés dejarlo como estaba. Lo mantengo igual a tu base.)
   app.use(`${prefix}/api/test-mail`, testMailRouter);
+
   app.use(`${prefix}/waitlist`, waitlistRouter);
 }
 
-mountRoutes("");     // /users, /appointments, etc.
-mountRoutes("/api"); // /api/users, /api/appointments, etc.
+mountRoutes("");
+mountRoutes("/api");
 
 /* =========================
    RUTA BASE

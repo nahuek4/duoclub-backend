@@ -119,6 +119,7 @@ function clamp(n, min, max) {
 
 /* ============================================
    serializeUser
+   ✅ IMPORTANTE: ahora incluye aptoPath
 ============================================ */
 
 function serializeUser(u) {
@@ -128,7 +129,7 @@ function serializeUser(u) {
   const svc = computeServiceAccessFromLots(u);
 
   const plus = isPlusActive(u);
-  const creditsExpireDaysDefault = 30; // ✅ fijo
+  const creditsExpireDaysDefault = 30;
 
   const tierNorm = String(m.tier || (plus ? "plus" : "basic"))
     .toLowerCase()
@@ -148,7 +149,9 @@ function serializeUser(u) {
     suspended: !!u.suspended,
     mustChangePassword: !!u.mustChangePassword,
 
+    // ✅ CLAVE: devolver aptoPath para que el front construya la URL real
     aptoStatus: u.aptoStatus || "",
+    aptoPath: u.aptoPath || "",
     photoPath: u.photoPath || "",
 
     emailVerified: !!u.emailVerified,
@@ -161,11 +164,7 @@ function serializeUser(u) {
     membership: {
       tier: tierNorm || "basic",
       activeUntil: m.activeUntil || null,
-      creditsExpireDays: clamp(
-        m.creditsExpireDays ?? creditsExpireDaysDefault,
-        1,
-        999
-      ),
+      creditsExpireDays: clamp(m.creditsExpireDays ?? creditsExpireDaysDefault, 1, 999),
     },
   };
 }
@@ -177,52 +176,36 @@ router.post("/login", async (req, res) => {
   try {
     const { email, password } = req.body || {};
     if (!email || !password) {
-      return res
-        .status(400)
-        .json({ error: "Email y password son obligatorios." });
+      return res.status(400).json({ error: "Email y password son obligatorios." });
     }
 
     const user = await User.findOne({ email: String(email).toLowerCase() });
-    if (!user)
-      return res.status(401).json({ error: "Email o contraseña incorrectos." });
+    if (!user) return res.status(401).json({ error: "Email o contraseña incorrectos." });
 
     if (String(user.role || "").toLowerCase() === "guest") {
-      return res
-        .status(403)
-        .json({ error: "Usuario invitado. Acceso no permitido." });
+      return res.status(403).json({ error: "Usuario invitado. Acceso no permitido." });
     }
 
     const match = await bcrypt.compare(password, user.password);
-    if (!match)
-      return res.status(401).json({ error: "Email o contraseña incorrectos." });
+    if (!match) return res.status(401).json({ error: "Email o contraseña incorrectos." });
 
     if (!user.emailVerified) {
-      return res.status(403).json({
-        error: "Tenés que verificar tu email antes de iniciar sesión.",
-      });
+      return res.status(403).json({ error: "Tenés que verificar tu email antes de iniciar sesión." });
     }
 
     if (user.approvalStatus === "pending") {
-      return res.status(403).json({
-        error: "Tu cuenta está pendiente de aprobación por el administrador.",
-      });
+      return res.status(403).json({ error: "Tu cuenta está pendiente de aprobación por el administrador." });
     }
 
     if (user.approvalStatus === "rejected") {
-      return res
-        .status(403)
-        .json({ error: "Tu cuenta fue rechazada. Contactá al administrador." });
+      return res.status(403).json({ error: "Tu cuenta fue rechazada. Contactá al administrador." });
     }
 
     if (user.suspended) {
-      return res
-        .status(403)
-        .json({ error: "Cuenta suspendida. Contactá al administrador." });
+      return res.status(403).json({ error: "Cuenta suspendida. Contactá al administrador." });
     }
 
     const token = signToken(user);
-
-    // ✅ devuelve mustChangePassword dentro del user (ya lo hace serializeUser)
     return res.json({ token, user: serializeUser(user) });
   } catch (err) {
     console.error("Error en POST /auth/login:", err);
@@ -249,16 +232,11 @@ router.post("/register", async (req, res) => {
     }
 
     if (String(password).length < 8) {
-      return res.status(400).json({
-        error: "La contraseña debe tener al menos 8 caracteres.",
-      });
+      return res.status(400).json({ error: "La contraseña debe tener al menos 8 caracteres." });
     }
 
     const exists = await User.findOne({ email: em });
-    if (exists)
-      return res
-        .status(409)
-        .json({ error: "Ya existe una cuenta con ese email." });
+    if (exists) return res.status(409).json({ error: "Ya existe una cuenta con ese email." });
 
     const hashedPass = await bcrypt.hash(password, 10);
 
@@ -281,7 +259,6 @@ router.post("/register", async (req, res) => {
       credits: 0,
       creditLots: [],
 
-      // ✅ no forzamos cambio en registro normal
       mustChangePassword: false,
 
       emailVerificationToken: tokenHash,
@@ -293,10 +270,7 @@ router.post("/register", async (req, res) => {
 
     await sendVerifyEmail(user, verifyUrl);
 
-    fireAndForget(
-      () => sendUserRegistrationReceivedEmail(user),
-      "MAIL_REGISTER_RECEIVED"
-    );
+    fireAndForget(() => sendUserRegistrationReceivedEmail(user), "MAIL_REGISTER_RECEIVED");
 
     const backendBase = getBackendBase(req);
 
@@ -312,12 +286,8 @@ router.post("/register", async (req, res) => {
       { expiresIn: "14d" }
     );
 
-    const approveUrl = `${backendBase}/auth/admin-approval?t=${encodeURIComponent(
-      approveToken
-    )}`;
-    const rejectUrl = `${backendBase}/auth/admin-approval?t=${encodeURIComponent(
-      rejectToken
-    )}`;
+    const approveUrl = `${backendBase}/auth/admin-approval?t=${encodeURIComponent(approveToken)}`;
+    const rejectUrl = `${backendBase}/auth/admin-approval?t=${encodeURIComponent(rejectToken)}`;
 
     fireAndForget(
       () => sendAdminNewRegistrationEmail({ user, approveUrl, rejectUrl }),
@@ -339,35 +309,27 @@ router.post("/register", async (req, res) => {
 
 /* ============================================
    POST /auth/force-change-password
-   ✅ para password temporal
 ============================================ */
 router.post("/force-change-password", protect, async (req, res) => {
   try {
     const { newPassword } = req.body || {};
     const np = String(newPassword || "").trim();
 
-    if (!np)
-      return res.status(400).json({ error: "Ingresá una contraseña nueva." });
-    if (np.length < 8)
-      return res.status(400).json({
-        error: "La contraseña debe tener al menos 8 caracteres.",
-      });
+    if (!np) return res.status(400).json({ error: "Ingresá una contraseña nueva." });
+    if (np.length < 8) {
+      return res.status(400).json({ error: "La contraseña debe tener al menos 8 caracteres." });
+    }
 
     const user = await User.findById(req.user._id);
     if (!user) return res.status(404).json({ error: "Usuario no encontrado." });
 
     if (String(user.role || "").toLowerCase() === "guest") {
-      return res
-        .status(403)
-        .json({ error: "Acción no permitida para invitados." });
+      return res.status(403).json({ error: "Acción no permitida para invitados." });
     }
 
-    // ✅ recomendación: no permitir repetir la misma password actual
     const same = await bcrypt.compare(np, user.password || "");
     if (same) {
-      return res.status(400).json({
-        error: "La nueva contraseña no puede ser igual a la actual.",
-      });
+      return res.status(400).json({ error: "La nueva contraseña no puede ser igual a la actual." });
     }
 
     user.password = await bcrypt.hash(np, 10);
@@ -403,9 +365,7 @@ router.get("/verify-email", async (req, res) => {
     }
 
     if (String(user.role || "").toLowerCase() === "guest") {
-      return res
-        .status(400)
-        .json({ error: "Usuario invitado inválido para verificación." });
+      return res.status(400).json({ error: "Usuario invitado inválido para verificación." });
     }
 
     user.emailVerified = true;
@@ -416,8 +376,7 @@ router.get("/verify-email", async (req, res) => {
 
     return res.json({
       ok: true,
-      message:
-        "Email verificado correctamente. Tu cuenta será revisada por un administrador.",
+      message: "Email verificado correctamente. Tu cuenta será revisada por un administrador.",
     });
   } catch (err) {
     console.error("Error verify-email:", err);
@@ -436,15 +395,13 @@ router.post("/resend-verification", async (req, res) => {
 
     const user = await User.findOne({ email: emailLower });
 
-    if (!user)
-      return res.json({ ok: true, message: "Si el email existe, te enviamos un correo." });
+    if (!user) return res.json({ ok: true, message: "Si el email existe, te enviamos un correo." });
 
     if (String(user.role || "").toLowerCase() === "guest") {
       return res.json({ ok: true, message: "Si el email existe, te enviamos un correo." });
     }
 
-    if (user.emailVerified)
-      return res.json({ ok: true, message: "Tu email ya está verificado." });
+    if (user.emailVerified) return res.json({ ok: true, message: "Tu email ya está verificado." });
 
     const rawToken = crypto.randomBytes(32).toString("hex");
     const tokenHash = sha256(rawToken);
@@ -494,24 +451,18 @@ router.get("/admin-approval", async (req, res) => {
       return res.status(400).send("Token inválido o expirado.");
     }
 
-    if (payload?.kind !== "admin_approval") {
-      return res.status(400).send("Token inválido.");
-    }
+    if (payload?.kind !== "admin_approval") return res.status(400).send("Token inválido.");
 
     const uid = String(payload?.uid || "").trim();
     const action = String(payload?.action || "").toLowerCase().trim();
 
-    if (!uid || !["approved", "rejected"].includes(action)) {
-      return res.status(400).send("Token inválido.");
-    }
+    if (!uid || !["approved", "rejected"].includes(action)) return res.status(400).send("Token inválido.");
 
     const user = await User.findById(uid);
     if (!user) return res.status(404).send("Usuario no encontrado.");
 
     if (action === "approved" && !user.emailVerified) {
-      return res
-        .status(400)
-        .send("No se puede aprobar: el email no está verificado.");
+      return res.status(400).send("No se puede aprobar: el email no está verificado.");
     }
 
     const prev = String(user.approvalStatus || "pending");
@@ -521,10 +472,7 @@ router.get("/admin-approval", async (req, res) => {
       const shouldSend = !!to && prev !== "rejected";
 
       if (shouldSend) {
-        fireAndForget(
-          () => sendUserApprovalResultEmail(user, "rejected"),
-          "MAIL_REJECT_FROM_LINK"
-        );
+        fireAndForget(() => sendUserApprovalResultEmail(user, "rejected"), "MAIL_REJECT_FROM_LINK");
       }
 
       await Appointment.deleteMany({ user: user._id });
@@ -545,10 +493,7 @@ router.get("/admin-approval", async (req, res) => {
     await user.save();
 
     if (shouldSendApprovalMail) {
-      fireAndForget(
-        () => sendUserApprovalResultEmail(user, "approved"),
-        "MAIL_APPROVE_FROM_LINK"
-      );
+      fireAndForget(() => sendUserApprovalResultEmail(user, "approved"), "MAIL_APPROVE_FROM_LINK");
     }
 
     return res.send("✅ Usuario aprobado correctamente.");

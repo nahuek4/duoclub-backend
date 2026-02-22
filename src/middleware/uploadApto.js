@@ -1,9 +1,14 @@
-// src/middleware/uploadApto.js
+// backend/src/middleware/uploadApto.js
 import multer from "multer";
 import path from "path";
 import fs from "fs";
+import { fileURLToPath } from "url";
 
-const uploadDir = path.join(process.cwd(), "uploads", "aptos");
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+
+// ✅ backend/uploads/aptos (al lado de /src)
+const uploadDir = path.join(__dirname, "..", "..", "uploads", "aptos");
 fs.mkdirSync(uploadDir, { recursive: true });
 
 const storage = multer.diskStorage({
@@ -11,18 +16,20 @@ const storage = multer.diskStorage({
     cb(null, uploadDir);
   },
   filename(req, file, cb) {
-    const ext = path.extname(file.originalname); // .pdf
+    const ext = path.extname(file.originalname || "").toLowerCase(); // .pdf
     const base = path
-      .basename(file.originalname, ext)
+      .basename(file.originalname || "apto", ext)
       .replace(/\s+/g, "_")
+      .replace(/[^a-z0-9_-]/gi, "")
       .toLowerCase();
+
     const unique = Date.now();
-    cb(null, `${base}_${unique}${ext}`);
+    cb(null, `${base || "apto"}_${unique}${ext || ".pdf"}`);
   },
 });
 
 function fileFilter(req, file, cb) {
-  if (file.mimetype !== "application/pdf") {
+  if (file?.mimetype !== "application/pdf") {
     return cb(new Error("Solo se permiten archivos PDF"), false);
   }
   cb(null, true);
@@ -31,4 +38,7 @@ function fileFilter(req, file, cb) {
 export const uploadApto = multer({
   storage,
   fileFilter,
+  limits: {
+    fileSize: 10 * 1024 * 1024, // ✅ 10MB
+  },
 });
