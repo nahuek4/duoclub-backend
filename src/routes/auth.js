@@ -1,3 +1,4 @@
+// backend/src/routes/auth.js
 import express from "express";
 import bcrypt from "bcryptjs";
 import jwt from "jsonwebtoken";
@@ -60,7 +61,6 @@ function getBackendBase(req) {
 
 /* ============================================
    ✅ Servicios disponibles (UI) desde creditLots
-   - EP / RF / RA / NUT
 ============================================ */
 
 const SERVICE_KEY_TO_NAME = {
@@ -101,7 +101,6 @@ function computeServiceAccessFromLots(u) {
 
 /* ============================================
    ✅ Membership helpers
-   - Importante: vencimiento SIEMPRE 30 (como tu users.js)
 ============================================ */
 
 function isPlusActive(u) {
@@ -222,6 +221,8 @@ router.post("/login", async (req, res) => {
     }
 
     const token = signToken(user);
+
+    // ✅ devuelve mustChangePassword dentro del user (ya lo hace serializeUser)
     return res.json({ token, user: serializeUser(user) });
   } catch (err) {
     console.error("Error en POST /auth/login:", err);
@@ -280,6 +281,9 @@ router.post("/register", async (req, res) => {
       credits: 0,
       creditLots: [],
 
+      // ✅ no forzamos cambio en registro normal
+      mustChangePassword: false,
+
       emailVerificationToken: tokenHash,
       emailVerificationExpires: new Date(Date.now() + 24 * 60 * 60 * 1000),
     });
@@ -289,13 +293,11 @@ router.post("/register", async (req, res) => {
 
     await sendVerifyEmail(user, verifyUrl);
 
-    // ✅ mail usuario: registro recibido
     fireAndForget(
       () => sendUserRegistrationReceivedEmail(user),
       "MAIL_REGISTER_RECEIVED"
     );
 
-    // ✅ mail admin con botones approve/reject
     const backendBase = getBackendBase(req);
 
     const approveToken = jwt.sign(
@@ -337,6 +339,7 @@ router.post("/register", async (req, res) => {
 
 /* ============================================
    POST /auth/force-change-password
+   ✅ para password temporal
 ============================================ */
 router.post("/force-change-password", protect, async (req, res) => {
   try {
@@ -357,6 +360,14 @@ router.post("/force-change-password", protect, async (req, res) => {
       return res
         .status(403)
         .json({ error: "Acción no permitida para invitados." });
+    }
+
+    // ✅ recomendación: no permitir repetir la misma password actual
+    const same = await bcrypt.compare(np, user.password || "");
+    if (same) {
+      return res.status(400).json({
+        error: "La nueva contraseña no puede ser igual a la actual.",
+      });
     }
 
     user.password = await bcrypt.hash(np, 10);
@@ -470,7 +481,6 @@ router.get("/me", protect, async (req, res) => {
 
 /* ============================================
    ✅ GET /auth/admin-approval?t=TOKEN
-   - Para botones del mail (aprobación/rechazo) sin login
 ============================================ */
 router.get("/admin-approval", async (req, res) => {
   try {
@@ -498,7 +508,6 @@ router.get("/admin-approval", async (req, res) => {
     const user = await User.findById(uid);
     if (!user) return res.status(404).send("Usuario no encontrado.");
 
-    // ✅ regla: no aprobar si no verificó email
     if (action === "approved" && !user.emailVerified) {
       return res
         .status(400)
@@ -524,7 +533,6 @@ router.get("/admin-approval", async (req, res) => {
       return res.send("✅ Usuario rechazado y eliminado. Puede registrarse nuevamente.");
     }
 
-    // approved
     user.approvalStatus = "approved";
     user.suspended = false;
 
