@@ -274,9 +274,49 @@ function calcEpCap({ hoursToStart, hasRF, hasRA, otherReservedCount }) {
 
 /* =========================
    CANCELACIÓN (REINTEGRO)
+   Reglas:
+   - EP: reintegra SOLO si se cancela con MÁS de 2 horas de anticipación.
+   - RA/RF: reintegra si se cancela con AL MENOS 12 horas de anticipación.
+   - Otros: por defecto, AL MENOS 12 horas.
 ========================= */
-const REFUND_CUTOFF_HOURS_EP = 2;
-const REFUND_CUTOFF_HOURS_OTHERS = 12;
+const REFUND_POLICY = {
+  EP: { cutoffHours: 2, inclusive: false },
+  RA: { cutoffHours: 12, inclusive: true },
+  RF: { cutoffHours: 12, inclusive: true },
+  OTHER: { cutoffHours: 12, inclusive: true },
+};
+
+function refundHoursEligible(hoursToStart, policy) {
+  const h = Number(hoursToStart);
+  if (!Number.isFinite(h)) return false;
+  if (h <= 0) return false;
+  const cutoff = Number(policy?.cutoffHours || 0);
+  const inclusive = Boolean(policy?.inclusive);
+  return inclusive ? h >= cutoff : h > cutoff;
+}
+
+function serviceRefundKey(serviceName) {
+  const s = normSvcName(serviceName);
+  if (s === normSvcName(EP_NAME)) return "EP";
+  if (s === normSvcName(RA_NAME)) return "RA";
+  if (s === normSvcName(RF_NAME)) return "RF";
+  return "OTHER";
+}
+
+function getRefundPolicy(serviceName) {
+  const k = serviceRefundKey(serviceName);
+  const p = REFUND_POLICY[k] || REFUND_POLICY.OTHER;
+  return {
+    key: k,
+    cutoffHours: p.cutoffHours,
+    inclusive: p.inclusive,
+    isEligible(hoursToStart) {
+      return refundHoursEligible(hoursToStart, p);
+    },
+  };
+}
+
+
 
 /* =========================
    Helpers: validación de item
@@ -1271,10 +1311,11 @@ router.patch("/:id/cancel", async (req, res) => {
       ap.status = "cancelled";
       await ap.save({ session });
 
-      const isEP = String(ap.service || "") === EP_NAME;
-      const cutoff = isEP ? REFUND_CUTOFF_HOURS_EP : REFUND_CUTOFF_HOURS_OTHERS;
+      const policy = getRefundPolicy(ap.service);
+      const cutoff = policy.cutoffHours;
 
-      const shouldRefund = user.role !== "admin" && hours >= cutoff;
+      // ✅ elegibilidad según reglas por servicio
+      const shouldRefund = user.role !== "admin" && policy.isEligible(hours);
 
       if (user.role !== "admin") {
         user.history = user.history || [];
