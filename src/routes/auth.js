@@ -70,6 +70,8 @@ const SERVICE_KEY_TO_NAME = {
   NUT: "Nutricion",
 };
 
+const SERVICE_KEYS = ["EP", "RF", "RA", "NUT"];
+
 function computeServiceAccessFromLots(u) {
   const now = new Date();
   const lots = Array.isArray(u?.creditLots) ? u.creditLots : [];
@@ -89,14 +91,31 @@ function computeServiceAccessFromLots(u) {
 
   const allowedServices = Object.entries(byKey)
     .filter(([, v]) => v > 0)
-    .map(([k]) => SERVICE_KEY_TO_NAME[k]);
+    .map(([k]) => SERVICE_KEY_TO_NAME[k])
+    .filter(Boolean);
 
   const serviceCredits = {};
   for (const [k, v] of Object.entries(byKey)) {
     if (v > 0) serviceCredits[SERVICE_KEY_TO_NAME[k]] = v;
   }
 
-  return { allowedServices, serviceCredits };
+  // ✅ útil para UI / debug (por serviceKey)
+  const creditsByServiceKey = { EP: 0, RF: 0, RA: 0, NUT: 0 };
+  for (const k of SERVICE_KEYS) creditsByServiceKey[k] = Number(byKey[k] || 0);
+
+  return { allowedServices, serviceCredits, creditsByServiceKey };
+}
+
+// ✅ recalcular cache credits desde lots (evita desync)
+function recalcCreditsCache(u) {
+  const now = new Date();
+  const lots = Array.isArray(u?.creditLots) ? u.creditLots : [];
+  const sum = lots.reduce((acc, lot) => {
+    const exp = lot?.expiresAt ? new Date(lot.expiresAt) : null;
+    if (exp && exp <= now) return acc;
+    return acc + Number(lot?.remaining || 0);
+  }, 0);
+  u.credits = sum;
 }
 
 /* ============================================
@@ -119,11 +138,14 @@ function clamp(n, min, max) {
 
 /* ============================================
    serializeUser
-   ✅ IMPORTANTE: ahora incluye aptoPath
+   ✅ IMPORTANTE: ahora incluye creditLots
 ============================================ */
 
 function serializeUser(u) {
   if (!u) return null;
+
+  // ✅ mantener credits coherente
+  recalcCreditsCache(u);
 
   const m = u.membership || {};
   const svc = computeServiceAccessFromLots(u);
@@ -135,6 +157,18 @@ function serializeUser(u) {
     .toLowerCase()
     .trim();
 
+  // ✅ sanitizar creditLots para UI (solo campos útiles)
+  const creditLotsSafe = (Array.isArray(u.creditLots) ? u.creditLots : []).map((lot) => ({
+    _id: lot?._id?.toString?.() || String(lot?._id || ""),
+    serviceKey: String(lot?.serviceKey || "EP").toUpperCase().trim(),
+    amount: Number(lot?.amount || 0),
+    remaining: Number(lot?.remaining || 0),
+    expiresAt: lot?.expiresAt || null,
+    source: String(lot?.source || ""),
+    orderId: lot?.orderId || null,
+    createdAt: lot?.createdAt || null,
+  }));
+
   return {
     id: u._id.toString(),
     name: u.name || "",
@@ -144,12 +178,12 @@ function serializeUser(u) {
     dni: u.dni ?? "",
 
     role: u.role,
-    credits: u.credits,
+    credits: Number(u.credits || 0),
 
     suspended: !!u.suspended,
     mustChangePassword: !!u.mustChangePassword,
 
-    // ✅ CLAVE: devolver aptoPath para que el front construya la URL real
+    // ✅ apto / foto
     aptoStatus: u.aptoStatus || "",
     aptoPath: u.aptoPath || "",
     photoPath: u.photoPath || "",
@@ -158,8 +192,13 @@ function serializeUser(u) {
     approvalStatus: u.approvalStatus || "pending",
     createdAt: u.createdAt || null,
 
+    // ✅ LO QUE USA EL FRONT PARA HABILITAR SERVICIOS
+    creditLots: creditLotsSafe,
+
+    // ✅ conveniencia para UI
     allowedServices: svc.allowedServices,
     serviceCredits: svc.serviceCredits,
+    creditsByServiceKey: svc.creditsByServiceKey,
 
     membership: {
       tier: tierNorm || "basic",
@@ -424,11 +463,13 @@ router.post("/resend-verification", async (req, res) => {
 
 /* ============================================
    GET /auth/me
+   ✅ ahora devuelve creditLots + creditsByServiceKey
 ============================================ */
 router.get("/me", protect, async (req, res) => {
   try {
     const user = await User.findById(req.user._id);
     if (!user) return res.status(401).json({ error: "Usuario no encontrado." });
+
     return res.json(serializeUser(user));
   } catch (err) {
     console.error("Error en GET /auth/me:", err);
@@ -456,7 +497,8 @@ router.get("/admin-approval", async (req, res) => {
     const uid = String(payload?.uid || "").trim();
     const action = String(payload?.action || "").toLowerCase().trim();
 
-    if (!uid || !["approved", "rejected"].includes(action)) return res.status(400).send("Token inválido.");
+    if (!uid || !["approved", "rejected"].includes(action))
+      return res.status(400).send("Token inválido.");
 
     const user = await User.findById(uid);
     if (!user) return res.status(404).send("Usuario no encontrado.");

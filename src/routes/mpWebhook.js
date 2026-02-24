@@ -33,6 +33,8 @@ async function fetchMpPayment(paymentId) {
 /* =======================
    Helpers membresía / créditos
 ======================= */
+const CREDITS_EXPIRE_DAYS = 30; // ✅ SI O SI
+
 function isPlusActive(user) {
   const m = user?.membership || {};
   if (String(m.tier || "").toLowerCase() !== "plus") return false;
@@ -54,7 +56,9 @@ function ensureBasicIfExpired(user) {
     user.membership.activeUntil = null;
     user.membership.cancelHours = 24;
     user.membership.cancelsLeft = 1;
-    user.membership.creditsExpireDays = 30;
+
+    // ✅ SI O SI 30
+    user.membership.creditsExpireDays = CREDITS_EXPIRE_DAYS;
   }
 
   if (!user.membership.tier) {
@@ -62,7 +66,9 @@ function ensureBasicIfExpired(user) {
     user.membership.activeUntil = null;
     user.membership.cancelHours = 24;
     user.membership.cancelsLeft = 1;
-    user.membership.creditsExpireDays = 30;
+
+    // ✅ SI O SI 30
+    user.membership.creditsExpireDays = CREDITS_EXPIRE_DAYS;
   }
 }
 
@@ -74,9 +80,13 @@ function activatePlus(user) {
   user.membership = user.membership || {};
   user.membership.tier = "plus";
   user.membership.activeUntil = until;
+
+  // reglas plus
   user.membership.cancelHours = 12;
   user.membership.cancelsLeft = 2;
-  user.membership.creditsExpireDays = 40;
+
+  // ✅ FIX: 30 SI O SI (NO 40)
+  user.membership.creditsExpireDays = CREDITS_EXPIRE_DAYS;
 }
 
 function recalcCreditsCache(user) {
@@ -93,9 +103,8 @@ function addCreditLot(user, { amount, source, orderId, serviceKey }) {
   const now = new Date();
   ensureBasicIfExpired(user);
 
-  const expireDays = 30; // ✅ siempre 30 dias
   const exp = new Date(now);
-  exp.setDate(exp.getDate() + expireDays);
+  exp.setDate(exp.getDate() + CREDITS_EXPIRE_DAYS);
 
   user.creditLots = user.creditLots || [];
   user.creditLots.push({
@@ -123,45 +132,47 @@ async function applyOrderIfNeeded(order) {
 
   const hasItems = Array.isArray(order.items) && order.items.length > 0;
 
-  // 1) membership primero (independiente del vencimiento de creditos)
+  // 1) membership primero
   if (hasItems) {
     const hasPlus = order.items.some((it) => String(it.kind).toUpperCase() === "MEMBERSHIP");
     if (hasPlus) activatePlus(user);
     else ensureBasicIfExpired(user);
   } else {
-    // legacy
     if (order.plusIncluded) activatePlus(user);
     else ensureBasicIfExpired(user);
   }
 
-  // 2) créditos
-  if (hasItems) {
-    for (const it of order.items) {
-      if (String(it.kind).toUpperCase() !== "CREDITS") continue;
-      const qty = Math.max(1, Number(it.qty) || 1);
-      const creditsPer = Math.max(0, Number(it.credits) || 0);
-      const amount = creditsPer * qty;
+  // 2) créditos (si todavía no están aplicados)
+  if (!order.creditsApplied) {
+    if (hasItems) {
+      for (const it of order.items) {
+        if (String(it.kind).toUpperCase() !== "CREDITS") continue;
 
+        const qty = Math.max(1, Number(it.qty) || 1);
+        const creditsPer = Math.max(0, Number(it.credits) || 0);
+        const amount = creditsPer * qty;
+
+        if (amount > 0) {
+          addCreditLot(user, {
+            amount,
+            source: "mp",
+            orderId: order._id,
+            serviceKey: it.serviceKey || "EP",
+          });
+        }
+      }
+    } else {
+      const amount = Math.max(0, Number(order.credits) || 0);
       if (amount > 0) {
         addCreditLot(user, {
           amount,
-          source: "mp",
+          source: "mp-legacy",
           orderId: order._id,
-          serviceKey: it.serviceKey || "EP",
+          serviceKey: order.serviceKey || "EP",
         });
+      } else {
+        recalcCreditsCache(user);
       }
-    }
-  } else {
-    const amount = Math.max(0, Number(order.credits) || 0);
-    if (amount > 0) {
-      addCreditLot(user, {
-        amount,
-        source: "mp-legacy",
-        orderId: order._id,
-        serviceKey: order.serviceKey || "EP",
-      });
-    } else {
-      recalcCreditsCache(user);
     }
   }
 
@@ -184,7 +195,7 @@ async function applyOrderIfNeeded(order) {
 }
 
 /* =======================
-   ✅ Notificar admin (idempotente)
+   ✅ Notificar admin/user (idempotente)
 ======================= */
 async function notifyAdminNewIfNeeded(order) {
   if (!order) return;
@@ -257,7 +268,7 @@ router.post("/mercadopago/webhook", async (req, res) => {
     const expected = Number(order.totalFinal ?? order.total ?? order.price ?? 0);
     const paidAmount = Number(payment.transaction_amount || 0);
 
-    // Si querés tolerancia por redondeo, poné 1 o 2 pesos
+    // tolerancia (si querés 1-2 ARS por redondeo)
     const EPS = 0;
 
     if (Math.abs(paidAmount - expected) > EPS) {
@@ -266,20 +277,20 @@ router.post("/mercadopago/webhook", async (req, res) => {
       return res.status(200).json({ ok: true });
     }
 
-    // Aceptamos solo approved
+    // Solo approved
     if (status !== "approved") {
       order.notes = `MP status: ${status}`;
       await order.save();
       return res.status(200).json({ ok: true });
     }
 
-    // ✅ Pago aprobado
+    // Pago aprobado
     if (String(order.status || "").toLowerCase() !== "paid") {
       order.status = "paid";
       order.paidAt = new Date();
     }
 
-    // ✅ aplicar orden (idempotente)
+    // aplicar orden (idempotente)
     const applied = await applyOrderIfNeeded(order);
     if (!applied.ok) {
       order.notes = applied.error || "No se pudo aplicar orden";
@@ -287,7 +298,7 @@ router.post("/mercadopago/webhook", async (req, res) => {
       return res.status(200).json({ ok: true });
     }
 
-    // ✅ Mails ASYNC (no bloquean el webhook)
+    // mails async
     fireAndForget(() => notifyAdminNewIfNeeded(order), "MAIL_ADMIN_NEW_ORDER_MP");
     fireAndForget(() => notifyAdminPaidIfNeeded(order), "MAIL_ADMIN_PAID_ORDER_MP");
     fireAndForget(() => notifyUserPaidIfNeeded(order), "MAIL_USER_PAID_ORDER_MP");
