@@ -69,7 +69,7 @@ const userSchema = new mongoose.Schema(
     // cache (se recalcula desde lots)
     credits: { type: Number, default: 0 },
 
-    role: { type: String, default: "client", enum: ["admin", "client", "guest"] },
+    role: { type: String, default: "client", enum: ["admin", "profesor", "client", "guest"] },
 
     password: { type: String, required: requiredIfNotGuest, default: "" },
 

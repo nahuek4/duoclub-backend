@@ -597,7 +597,8 @@ router.get("/", async (req, res) => {
     const hasTo = isValidYMD(to);
 
     const tokenUserId = req.user?._id || req.user?.id;
-    const isAdmin = req.user?.role === "admin";
+    const role = String(req.user?.role || "").toLowerCase();
+    const isStaff = role === "admin" || role === "profesor";
 
     if (scope === "calendar") {
       const q = { status: "reserved" };
@@ -622,7 +623,7 @@ router.get("/", async (req, res) => {
     }
 
     if (scope === "all") {
-      if (!isAdmin) return res.status(403).json({ error: "No autorizado." });
+      if (!isStaff) return res.status(403).json({ error: "No autorizado." });
 
       const q = {};
       if (hasFrom && hasTo) q.date = { $gte: from, $lt: to };

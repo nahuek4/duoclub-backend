@@ -9,7 +9,7 @@ import mongoose from "mongoose";
 
 import User from "../models/User.js";
 import Appointment from "../models/Appointment.js";
-import { protect, adminOnly } from "../middleware/auth.js";
+import { protect, adminOnly, adminOrProfessor } from "../middleware/auth.js";
 
 import multer from "multer";
 
@@ -496,7 +496,7 @@ router.post("/", adminOnly, async (req, res) => {
   }
 });
 
-router.get("/", adminOnly, async (req, res) => {
+router.get("/", adminOrProfessor, async (req, res) => {
   try {
     const list = await User.find().lean();
     return res.json(list.map(stripSensitive));
@@ -595,10 +595,13 @@ router.put("/:id", validateObjectIdParam, async (req, res) => {
   try {
     const { id } = req.params;
 
-    const isAdmin = req.user.role === "admin";
+    const role = String(req.user?.role || "").toLowerCase();
+    const isAdmin = role === "admin";
+    const isProfessor = role === "profesor";
+    const isStaff = isAdmin || isProfessor;
     const isSelf = req.user._id.toString() === id;
 
-    if (!isAdmin && !isSelf) {
+    if (!isStaff && !isSelf) {
       return res
         .status(403)
         .json({ error: "No tenés permiso para editar este usuario." });
@@ -656,10 +659,13 @@ router.get("/:id", validateObjectIdParam, async (req, res) => {
   try {
     const { id } = req.params;
 
-    const isAdmin = req.user.role === "admin";
+    const role = String(req.user?.role || "").toLowerCase();
+    const isAdmin = role === "admin";
+    const isProfessor = role === "profesor";
+    const isStaff = isAdmin || isProfessor;
     const isSelf = req.user._id.toString() === id;
 
-    if (!isAdmin && !isSelf) {
+    if (!isStaff && !isSelf) {
       return res
         .status(403)
         .json({ error: "No tenés permiso para ver este usuario." });
@@ -682,6 +688,41 @@ router.get("/:id", validateObjectIdParam, async (req, res) => {
   } catch (err) {
     console.error("Error en GET /users/:id:", err);
     return res.status(500).json({ error: "Error interno." });
+  }
+});
+
+router.patch("/:id/role", adminOnly, validateObjectIdParam, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const rawRole = String(req.body?.role || "").toLowerCase().trim();
+
+    const nextRole =
+      rawRole === "usuario"
+        ? "client"
+        : rawRole;
+
+    if (!["admin", "profesor", "client"].includes(nextRole)) {
+      return res.status(400).json({ error: "Rol inválido." });
+    }
+
+    const user = await User.findById(id);
+    if (!user) return res.status(404).json({ error: "Usuario no encontrado." });
+
+    user.role = nextRole;
+    await user.save();
+
+    const saved = user.toObject();
+    const svc = computeServiceAccessFromLots(saved);
+    const membership = normalizeMembershipForUI(saved);
+    const creditsByService = buildCreditsByService(saved);
+
+    return res.json({
+      ok: true,
+      user: { ...stripSensitive(saved), ...svc, membership, creditsByService },
+    });
+  } catch (err) {
+    console.error("Error en PATCH /users/:id/role:", err);
+    return res.status(500).json({ error: "Error al actualizar rol." });
   }
 });
 
@@ -758,7 +799,7 @@ router.get("/:id/history", validateObjectIdParam, async (req, res) => {
   }
 });
 
-router.get("/:id/clinical-notes", adminOnly, validateObjectIdParam, async (req, res) => {
+router.get("/:id/clinical-notes", adminOrProfessor, validateObjectIdParam, async (req, res) => {
   try {
     const { id } = req.params;
     const user = await User.findById(id).lean();
@@ -772,7 +813,7 @@ router.get("/:id/clinical-notes", adminOnly, validateObjectIdParam, async (req, 
   }
 });
 
-router.post("/:id/clinical-notes", adminOnly, validateObjectIdParam, async (req, res) => {
+router.post("/:id/clinical-notes", adminOrProfessor, validateObjectIdParam, async (req, res) => {
   try {
     const { id } = req.params;
     const { text } = req.body || {};
@@ -979,9 +1020,10 @@ router.get("/:id/apto", validateObjectIdParam, async (req, res) => {
   try {
     const { id } = req.params;
 
-    const isAdmin = req.user.role === "admin";
+    const role = String(req.user?.role || "").toLowerCase();
+    const isStaff = role === "admin" || role === "profesor";
     const isSelf = req.user._id.toString() === id;
-    if (!isAdmin && !isSelf) return res.status(403).json({ error: "No autorizado." });
+    if (!isStaff && !isSelf) return res.status(403).json({ error: "No autorizado." });
 
     const user = await User.findById(id).lean();
     if (!user || !user.aptoPath) return res.status(404).json({ error: "Apto no encontrado." });

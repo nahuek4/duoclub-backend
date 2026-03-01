@@ -63,8 +63,17 @@ export async function protect(req, res, next) {
 }
 
 export function adminOnly(req, res, next) {
-  if (!req.user || req.user.role !== "admin") {
+  const role = String(req.user?.role || "").toLowerCase();
+  if (role !== "admin") {
     return res.status(403).json({ error: "No autorizado. Solo administradores." });
+  }
+  next();
+}
+
+export function adminOrProfessor(req, res, next) {
+  const role = String(req.user?.role || "").toLowerCase();
+  if (role !== "admin" && role !== "profesor") {
+    return res.status(403).json({ error: "No autorizado." });
   }
   next();
 }
