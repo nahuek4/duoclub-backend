@@ -1,4 +1,3 @@
-// backend/src/index.js
 import express from "express";
 import dotenv from "dotenv";
 import path from "path";
@@ -22,17 +21,20 @@ import evaluationsRoutes from "./routes/evaluations.js";
 import testMailRouter from "./routes/testMail.js";
 import waitlistRouter from "./routes/waitlist.js";
 
-import { startAppointmentReminderScheduler } from "./jobs/startReminders.js";
-import { startWaitlistScheduler } from "./jobs/startWaitlist.js";
-
 // ✅ NUEVO
 import adminApprovalLinksRoutes from "./routes/adminApprovalLinks.js";
+import adminDashboardRoutes from "./routes/adminDashboard.js";
+
+import { startAppointmentReminderScheduler } from "./jobs/startReminders.js";
+import { startWaitlistScheduler } from "./jobs/startWaitlist.js";
 
 dotenv.config();
 
 const app = express();
 
-const PORT = process.env.PORT || (process.env.NODE_ENV === "production" ? 3000 : 4000);
+const PORT =
+  process.env.PORT || (process.env.NODE_ENV === "production" ? 3000 : 4000);
+
 app.set("trust proxy", 1);
 
 const __filename = fileURLToPath(import.meta.url);
@@ -153,6 +155,9 @@ function mountRoutes(prefix = "") {
   app.use(`${prefix}/admission`, admissionRoutes);
   app.use(`${prefix}/admin/evaluations`, adminEvaluationsRoutes);
   app.use(`${prefix}/evaluations`, evaluationsRoutes);
+
+  // ✅ NUEVO: Admin Dashboard
+  app.use(`${prefix}/admin/dashboard`, adminDashboardRoutes);
 
   // (ojo: este router ya trae su propio path; si tu archivo es /routes/testMail.js
   // y adentro define /test-mail, podés dejarlo como estaba. Lo mantengo igual a tu base.)
