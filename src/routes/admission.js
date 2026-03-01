@@ -12,6 +12,7 @@ import {
   sendAdminAdmissionCompletedEmail,
   sendUserAdmissionReceivedEmail,
 } from "../mail.js";
+import { logActivity, buildUserSubject } from "../lib/activityLogger.js";
 
 const router = express.Router();
 
@@ -470,6 +471,18 @@ router.post("/admin/:id/create-user", protect, adminOnly, async (req, res) => {
     adm.syncedAt = new Date();
     await adm.save();
 
+    await logActivity({
+      req,
+      category: "admissions",
+      action: created ? "admission_user_created" : "admission_user_synced",
+      entity: "admission",
+      entityId: adm._id,
+      title: created ? "Usuario creado desde admisión" : "Admisión sincronizada",
+      description: created ? "Se creó un usuario desde una admisión." : "Se vinculó/sincronizó la admisión con un usuario existente.",
+      subject: buildUserSubject(updatedUser),
+      meta: { admissionId: adm._id, userId: updatedUser?._id || user._id },
+    });
+
     return res.json({
       ok: true,
       created,
@@ -510,6 +523,18 @@ router.post("/admin/:id/link-user", protect, adminOnly, async (req, res) => {
     adm.syncedAt = new Date();
     await adm.save();
 
+    await logActivity({
+      req,
+      category: "admissions",
+      action: "admission_user_linked",
+      entity: "admission",
+      entityId: adm._id,
+      title: "Admisión vinculada",
+      description: "Se vinculó una admisión a un usuario existente.",
+      subject: buildUserSubject(updatedUser),
+      meta: { admissionId: adm._id, userId: updatedUser?._id || user._id },
+    });
+
     return res.json({ ok: true, user: updatedUser, admissionId: adm._id });
   } catch (err) {
     console.error("POST /admission/admin/:id/link-user error:", err);
@@ -524,6 +549,18 @@ router.delete("/admin/:id", protect, adminOnly, async (req, res) => {
   try {
     const doc = await Admission.findById(req.params.id);
     if (!doc) return res.status(404).json({ ok: false, error: "No encontrado." });
+
+    await logActivity({
+      req,
+      category: "admissions",
+      action: "admission_deleted",
+      entity: "admission",
+      entityId: doc._id,
+      title: "Admisión eliminada",
+      description: "Se eliminó una admisión desde admin.",
+      meta: { admissionId: doc._id, linkedUserId: doc.user || "" },
+      deletedSnapshot: doc.toObject(),
+    });
 
     await doc.deleteOne();
     return res.json({ ok: true });

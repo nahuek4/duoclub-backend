@@ -14,6 +14,7 @@ import {
   sendAppointmentBookedBatchEmail,
   sendAppointmentCancelledEmail,
 } from "../mail.js";
+import { logActivity, buildUserSubject } from "../lib/activityLogger.js";
 
 const router = express.Router();
 
@@ -824,6 +825,32 @@ router.post("/", async (req, res) => {
       mailServiceName = service;
     });
 
+    if (out?.kind === "waitlist") {
+      await logActivity({
+        req,
+        category: "appointments",
+        action: "waitlist_joined",
+        entity: "waitlist",
+        entityId: String(out?.date || "") + "-" + String(out?.time || "") + "-" + String(req.user?._id || ""),
+        title: "Lista de espera",
+        description: "Se agregó a lista de espera de turnos.",
+        subject: buildUserSubject(req.user),
+        meta: { date: out?.date, time: out?.time, service: out?.service },
+      });
+    } else if (out?.id) {
+      await logActivity({
+        req,
+        category: "appointments",
+        action: "appointment_created",
+        entity: "appointment",
+        entityId: out.id,
+        title: "Turno reservado",
+        description: "Se registró una nueva reserva.",
+        subject: buildUserSubject(req.user),
+        meta: { date: out?.date, time: out?.time, service: out?.service },
+      });
+    }
+
     const httpCode = out?.kind === "waitlist" ? 202 : 201;
     res.status(httpCode).json(out);
 
@@ -1146,6 +1173,18 @@ router.post("/batch", async (req, res) => {
 
       mailUser = { ...user.toObject(), _id: user._id };
       mailItems = createdItems.map((x) => ({ date: x.date, time: x.time, service: x.service }));
+    });
+
+    await logActivity({
+      req,
+      category: "appointments",
+      action: "appointment_batch_created",
+      entity: "appointment_batch",
+      entityId: String(req.user?._id || "") + "-" + String(Date.now()),
+      title: "Reserva múltiple",
+      description: "Se registró una reserva múltiple de turnos.",
+      subject: buildUserSubject(req.user),
+      meta: { createdCount: createdItems.length, waitlistedCount: waitlistedItems.length },
     });
 
     res.status(201).json({ items: createdItems, waitlisted: waitlistedItems });
@@ -1508,6 +1547,18 @@ router.patch("/:id/cancel", async (req, res) => {
       mailAp = { date: ap.date, time: ap.time, service: ap.service };
       mailServiceName = ap.service;
       mailMeta = { refund: shouldRefund, refundCutoffHours: cutoff };
+    });
+
+    await logActivity({
+      req,
+      category: "appointments",
+      action: "appointment_cancelled",
+      entity: "appointment",
+      entityId: id,
+      title: "Turno cancelado",
+      description: "Se canceló un turno existente.",
+      subject: buildUserSubject(mailUser || req.user),
+      meta: { date: payload?.date, time: payload?.time, service: payload?.service, refund: payload?.refund },
     });
 
     res.json(payload);

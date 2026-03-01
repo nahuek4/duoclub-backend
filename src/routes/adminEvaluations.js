@@ -7,6 +7,7 @@ import bcrypt from "bcryptjs";
 import User from "../models/User.js";
 import Evaluation from "../models/Evaluation.js";
 import { protect, adminOnly } from "../middleware/auth.js";
+import { logActivity, buildUserSubject, buildDiff } from "../lib/activityLogger.js";
 
 const router = express.Router();
 
@@ -264,6 +265,17 @@ router.post("/guest", protect, adminOnly, async (req, res) => {
       lastEvalId: "",
     };
 
+    await logActivity({
+      req,
+      category: "users",
+      action: "guest_created",
+      entity: "user",
+      entityId: guest._id,
+      title: "Invitado creado",
+      description: "Se creó un usuario guest para evaluaciones.",
+      subject: buildUserSubject(guest),
+    });
+
     return res.status(201).json({ item });
   } catch (err) {
     console.error("POST /admin/evaluations/guest error:", err);
@@ -291,7 +303,20 @@ router.delete("/guest/:id", protect, adminOnly, async (req, res) => {
       });
     }
 
+    await logActivity({
+      req,
+      category: "users",
+      action: "guest_deleted",
+      entity: "user",
+      entityId: id,
+      title: "Invitado eliminado",
+      description: "Se eliminó un usuario guest y sus evaluaciones.",
+      subject: buildUserSubject(guest),
+      deletedSnapshot: guest,
+    });
+
     await Promise.all([Evaluation.deleteMany({ user: id }), User.findByIdAndDelete(id)]);
+
     return res.json({ ok: true });
   } catch (err) {
     console.error("DELETE /admin/evaluations/guest/:id error:", err);
@@ -358,6 +383,18 @@ router.post("/user/:userId", protect, adminOnly, async (req, res) => {
       createdBy: req.user._id,
     });
 
+    await logActivity({
+      req,
+      category: "evaluations",
+      action: "evaluation_created",
+      entity: "evaluation",
+      entityId: ev._id,
+      title: "Evaluación creada",
+      description: "Se creó una nueva evaluación.",
+      subject: buildUserSubject({ _id: userId, role: target.role }),
+      meta: { type: ev.type, title: ev.title },
+    });
+
     return res.status(201).json({ item: serializeEvalLite(ev.toObject()) });
   } catch (err) {
     console.error("POST /admin/evaluations/user/:userId error:", err);
@@ -421,8 +458,21 @@ router.patch("/:id", protect, adminOnly, async (req, res) => {
       patch.scoring = scoring || {};
     }
 
+    const before = await Evaluation.findById(id).lean();
     const ev = await Evaluation.findByIdAndUpdate(id, patch, { new: true }).lean();
     if (!ev) return res.status(404).json({ error: "Evaluación no encontrada." });
+
+    await logActivity({
+      req,
+      category: "evaluations",
+      action: "evaluation_updated",
+      entity: "evaluation",
+      entityId: ev._id,
+      title: "Evaluación actualizada",
+      description: "Se editaron datos de una evaluación.",
+      meta: { type: ev.type, title: ev.title },
+      diff: buildDiff(before || {}, ev || {}),
+    });
 
     return res.json({ item: serializeEvalLite(ev) });
   } catch (err) {
@@ -444,6 +494,18 @@ router.delete("/:id", protect, adminOnly, async (req, res) => {
 
     const ev = await Evaluation.findByIdAndDelete(id).lean();
     if (!ev) return res.status(404).json({ error: "Evaluación no encontrada." });
+
+    await logActivity({
+      req,
+      category: "evaluations",
+      action: "evaluation_deleted",
+      entity: "evaluation",
+      entityId: ev?._id || id,
+      title: "Evaluación eliminada",
+      description: "Se eliminó una evaluación.",
+      meta: { type: ev?.type || "", title: ev?.title || "" },
+      deletedSnapshot: ev || null,
+    });
 
     return res.json({ ok: true });
   } catch (err) {

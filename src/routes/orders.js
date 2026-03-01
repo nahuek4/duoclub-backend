@@ -14,6 +14,7 @@ import {
   sendAdminOrderPaidEmail,
   sendUserOrderPaidEmail,
 } from "../mail.js";
+import { logActivity, buildUserSubject } from "../lib/activityLogger.js";
 
 const router = express.Router();
 
@@ -526,6 +527,18 @@ router.post("/checkout", protect, async (req, res) => {
       creditsApplied: false,
     });
 
+    await logActivity({
+      req,
+      category: "orders",
+      action: "order_checkout_created",
+      entity: "order",
+      entityId: order._id,
+      title: "Orden generada",
+      description: "Se generó una nueva orden desde checkout.",
+      subject: buildUserSubject(req.user),
+      meta: { total: Number(order.totalFinal || order.total || 0), payMethod: order.payMethod, status: order.status },
+    });
+
     if (pm === "CASH") {
       res.status(201).json({
         ok: true,
@@ -614,6 +627,18 @@ router.post("/", protect, async (req, res) => {
       applied: false,
     });
 
+    await logActivity({
+      req,
+      category: "orders",
+      action: "order_created",
+      entity: "order",
+      entityId: order._id,
+      title: "Orden generada",
+      description: "Se creó una orden manual/tradicional.",
+      subject: buildUserSubject(req.user),
+      meta: { total: Number(order.totalFinal || order.total || order.price || 0), payMethod: order.payMethod, status: order.status },
+    });
+
     if (pm === "CASH") {
       res.status(201).json({ ok: true, status: "pending" });
 
@@ -695,6 +720,18 @@ router.patch("/:id/enable-credits", protect, adminOnly, async (req, res) => {
     if (!r.ok)
       return res.status(500).json({ error: r.error || "No se pudo habilitar créditos." });
 
+    await logActivity({
+      req,
+      category: "orders",
+      action: "order_credits_enabled",
+      entity: "order",
+      entityId: order._id,
+      title: "Créditos habilitados",
+      description: "Se habilitaron créditos manualmente en una orden CASH pendiente.",
+      subject: buildUserSubject(req.user),
+      meta: { total: Number(order.totalFinal || order.total || 0) },
+    });
+
     return res.json({ ok: true });
   } catch (err) {
     console.error("PATCH /orders/:id/enable-credits error:", err);
@@ -740,6 +777,18 @@ router.patch("/:id/mark-paid", protect, adminOnly, async (req, res) => {
       fireAndForget(() => notifyOrderPaidIfNeeded(order), "MAIL_ORDER_PAID");
     }
 
+    await logActivity({
+      req,
+      category: "orders",
+      action: "order_marked_paid",
+      entity: "order",
+      entityId: order._id,
+      title: "Orden marcada como pagada",
+      description: "Un admin marcó manualmente una orden como pagada.",
+      subject: buildUserSubject(req.user),
+      meta: { total: Number(order.totalFinal || order.total || 0), wasAlreadyPaid: wasPaid },
+    });
+
     return res.json({ ok: true });
   } catch (err) {
     console.error("PATCH /orders/:id/mark-paid error:", err);
@@ -782,6 +831,19 @@ router.delete("/:id", protect, adminOnly, async (req, res) => {
     } catch (e) {
       console.warn("ORDER DELETE: no se pudo guardar history:", e?.message || e);
     }
+
+    await logActivity({
+      req,
+      category: "orders",
+      action: "order_deleted",
+      entity: "order",
+      entityId: order._id,
+      title: "Orden eliminada",
+      description: impacted ? "Se eliminó una orden que ya había impactado créditos/sesiones." : "Se eliminó una orden.",
+      subject: buildUserSubject(req.user),
+      meta: { impacted, total: Number(order.totalFinal || order.total || 0) },
+      deletedSnapshot: order.toObject(),
+    });
 
     await Order.deleteOne({ _id: order._id });
 

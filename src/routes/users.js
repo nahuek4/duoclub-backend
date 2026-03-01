@@ -19,6 +19,7 @@ import {
   sendUserApprovedEmail,
   sendUserApprovalResultEmail,
 } from "../mail.js";
+import { logActivity, buildUserSubject, buildDiff } from "../lib/activityLogger.js";
 
 const router = express.Router();
 
@@ -480,6 +481,18 @@ router.post("/", adminOnly, async (req, res) => {
     const svc = computeServiceAccessFromLots(uLean);
     const membership = normalizeMembershipForUI(uLean);
 
+    await logActivity({
+      req,
+      category: "users",
+      action: "user_created",
+      entity: "user",
+      entityId: user._id,
+      title: "Usuario creado",
+      description: (`Se creó el usuario ${n} ${ln}`).trim(),
+      subject: buildUserSubject(user),
+      meta: { initialCredits, createdBy: "admin" },
+    });
+
     return res.status(201).json({
       ok: true,
       user: { ...stripSensitive(uLean), ...svc, membership },
@@ -550,6 +563,19 @@ router.patch("/:id/approval", adminOnly, validateObjectIdParam, async (req, res)
       }
 
       await Appointment.deleteMany({ user: user._id });
+
+      await logActivity({
+        req,
+        category: "users",
+        action: "user_rejected_deleted",
+        entity: "user",
+        entityId: user._id,
+        title: "Usuario rechazado y eliminado",
+        description: "Un admin rechazó el alta y eliminó al usuario.",
+        subject: buildUserSubject(user),
+        deletedSnapshot: user.toObject(),
+      });
+
       await user.deleteOne();
 
       return res.json({
@@ -571,6 +597,18 @@ router.patch("/:id/approval", adminOnly, validateObjectIdParam, async (req, res)
     if (shouldSendApprovalMail) user.welcomeApprovedEmailSentAt = new Date();
 
     await user.save();
+
+    await logActivity({
+      req,
+      category: "users",
+      action: "user_approval_updated",
+      entity: "user",
+      entityId: user._id,
+      title: "Aprobación actualizada",
+      description: `Estado de aprobación cambiado de ${prevStatus} a ${user.approvalStatus}.`,
+      subject: buildUserSubject(user),
+      diff: buildDiff({ approvalStatus: prevStatus }, { approvalStatus: user.approvalStatus }),
+    });
 
     if (shouldSendApprovalMail) {
       fireAndForget(
@@ -751,6 +789,19 @@ router.delete("/:id", adminOnly, validateObjectIdParam, async (req, res) => {
     if (!user) return res.status(404).json({ error: "Usuario no encontrado." });
 
     await Appointment.deleteMany({ user: id });
+
+    await logActivity({
+      req,
+      category: "users",
+      action: "user_deleted",
+      entity: "user",
+      entityId: user._id,
+      title: "Usuario eliminado",
+      description: "Un admin eliminó un usuario.",
+      subject: buildUserSubject(user),
+      deletedSnapshot: user.toObject(),
+    });
+
     await user.deleteOne();
 
     return res.json({
@@ -901,10 +952,29 @@ async function updateCredits(req, res) {
       applyOne({ credits, delta, serviceKey, source: source || "admin-single" });
     }
 
+    const beforeCredits = buildCreditsByService(user);
+
     recalcUserCredits(user);
     await user.save();
 
     const creditsByService = buildCreditsByService(user);
+
+    await logActivity({
+      req,
+      category: "users",
+      action: "credits_updated",
+      entity: "user",
+      entityId: user._id,
+      title: "Créditos modificados",
+      description: "Se modificaron los créditos/sesiones del usuario.",
+      subject: buildUserSubject(user),
+      diff: buildDiff(
+        { total: Object.values(beforeCredits || {}).reduce((a, b) => a + Number(b || 0), 0), byService: beforeCredits },
+        { total: Number(user.credits || 0), byService: creditsByService }
+      ),
+      meta: { source: source || (Array.isArray(items) ? "admin-batch" : "admin-single") },
+    });
+
     const svc = computeServiceAccessFromLots(user);
     const membership = normalizeMembershipForUI(user);
 
@@ -938,6 +1008,17 @@ router.post("/:id/reset-password", adminOnly, validateObjectIdParam, async (req,
     user.mustChangePassword = true;
     await user.save();
 
+    await logActivity({
+      req,
+      category: "users",
+      action: "user_password_reset",
+      entity: "user",
+      entityId: user._id,
+      title: "Password reseteada",
+      description: "Un admin reseteó la contraseña del usuario.",
+      subject: buildUserSubject(user),
+    });
+
     return res.json({ ok: true, tempPassword });
   } catch (err) {
     console.error("Error en reset password:", err);
@@ -953,8 +1034,21 @@ router.patch("/:id/suspend", adminOnly, validateObjectIdParam, async (req, res) 
     const user = await User.findById(id);
     if (!user) return res.status(404).json({ error: "Usuario no encontrado." });
 
+    const prevSuspended = !!user.suspended;
     user.suspended = !!suspended;
     await user.save();
+
+    await logActivity({
+      req,
+      category: "users",
+      action: "user_suspend_updated",
+      entity: "user",
+      entityId: user._id,
+      title: "Estado de suspensión actualizado",
+      description: user.suspended ? "Usuario suspendido." : "Usuario reactivado.",
+      subject: buildUserSubject(user),
+      diff: buildDiff({ suspended: prevSuspended }, { suspended: !!user.suspended }),
+    });
 
     return res.json({ ok: true, suspended: user.suspended });
   } catch (err) {

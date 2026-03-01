@@ -2,6 +2,7 @@
 import express from "express";
 import PricingPlan from "../models/PricingPlan.js";
 import { protect, adminOnly } from "../middleware/auth.js";
+import { logActivity } from "../lib/activityLogger.js";
 
 const router = express.Router();
 
@@ -46,6 +47,12 @@ router.post("/upsert", adminOnly, async (req, res) => {
       return res.status(400).json({ error: "Faltan campos obligatorios." });
     }
 
+    const existing = await PricingPlan.findOne({
+      serviceKey: String(serviceKey).toUpperCase().trim(),
+      payMethod: String(payMethod).toUpperCase().trim(),
+      credits,
+    }).lean();
+
     const doc = await PricingPlan.findOneAndUpdate(
       { serviceKey: String(serviceKey).toUpperCase().trim(), payMethod: String(payMethod).toUpperCase().trim(), credits },
       {
@@ -57,6 +64,18 @@ router.post("/upsert", adminOnly, async (req, res) => {
       },
       { upsert: true, new: true }
     );
+
+    await logActivity({
+      req,
+      category: "pricing",
+      action: existing ? "pricing_updated" : "pricing_created",
+      entity: "pricing_plan",
+      entityId: doc._id,
+      title: existing ? "Plan actualizado" : "Plan creado",
+      description: "Se guardó un plan de precios.",
+      meta: { serviceKey: doc.serviceKey, payMethod: doc.payMethod, credits: doc.credits, price: doc.price, active: doc.active },
+      diff: existing ? { before: existing, after: doc.toObject ? doc.toObject() : doc } : {},
+    });
 
     res.json({ ok: true, plan: doc });
   } catch (err) {
