@@ -1,4 +1,3 @@
-// backend/src/routes/appointments.js
 import express from "express";
 import mongoose from "mongoose";
 
@@ -224,6 +223,11 @@ function pickLotToConsume(user, wantedServiceKey) {
   return sorted[0] || null;
 }
 
+function hasValidCreditsForService(user, serviceNameOrKey) {
+  const sk = serviceToKey(serviceNameOrKey);
+  return !!pickLotToConsume(user, sk);
+}
+
 function findLotById(user, lotId) {
   const lots = Array.isArray(user.creditLots) ? user.creditLots : [];
   return lots.find((l) => String(l._id) === String(lotId)) || null;
@@ -273,8 +277,7 @@ function requiresApto(user) {
 ========================= */
 const TOTAL_CAP = 6;
 
-// ⚠️ Nombres “humanos” (pueden venir con acentos desde el front)
-// Lo importante: se comparan con sameService()
+// ⚠️ Nombres “humanos”
 const EP_NAME = "Entrenamiento Personal";
 const RA_NAME = "Rehabilitación activa";
 const RF_NAME = "Reeducación funcional";
@@ -282,24 +285,22 @@ const RF_NAME = "Reeducación funcional";
 /**
  * TU REGLA:
  * - TOTAL 6 por horario
- * - Antes de 12hs: EP máximo 4 (dejando 1 RA + 1 RF “reservables”)
+ * - Antes de 12hs: EP máximo 4
  * - Dentro de 12hs:
  *    - si NO hay RA NI RF -> EP puede 6
  *    - si hay 1 de (RA/RF) -> EP puede 5
  *    - si hay ambos -> EP queda en 4
- * - Además: si RA o RF ya ocupan, reducen el máximo total disponible para EP
  */
 function calcEpCap({ hoursToStart, hasRF, hasRA, otherReservedCount }) {
   let cap = 4;
 
-  // ✅ 12 horas (no 2)
+  // ✅ 12 horas
   if (Number(hoursToStart) <= 12) {
     if (!hasRF && !hasRA) cap = 6;
-    else if (!!hasRF !== !!hasRA) cap = 5; // XOR (solo uno tomado)
-    else cap = 4; // ambos tomados
+    else if (!!hasRF !== !!hasRA) cap = 5;
+    else cap = 4;
   }
 
-  // nunca superar el total restante según RA/RF ocupando
   const totalLimit = Math.max(0, TOTAL_CAP - Number(otherReservedCount || 0));
   cap = Math.min(cap, totalLimit);
 
@@ -418,33 +419,6 @@ router.get("/availability", async (req, res) => {
     const date = String(req.query?.date || "").slice(0, 10);
     const service = String(req.query?.service || "").trim();
 
-    if (!date || !service) {
-      return res.status(400).json({ error: "Faltan params: date y service." });
-    }
-
-    // sábado => closed
-    if (isSaturday(date)) {
-      const timesForced =
-        Array.isArray(req.query?.times) && req.query.times.length
-          ? req.query.times.map((x) => String(x).slice(0, 5))
-          : [
-              "07:00","08:00","09:00","10:00",
-              "11:00","12:00","13:30",
-              "14:00","15:00","16:00","17:00",
-              "18:00","19:00","20:00",
-            ];
-
-      return res.json({
-        date,
-        service,
-        slots: timesForced.map((t) => ({
-          time: t,
-          state: "closed",
-          reason: "Sábados no disponibles",
-        })),
-      });
-    }
-
     const times =
       Array.isArray(req.query?.times) && req.query.times.length
         ? req.query.times.map((x) => String(x).slice(0, 5))
@@ -454,6 +428,73 @@ router.get("/availability", async (req, res) => {
             "14:00","15:00","16:00","17:00",
             "18:00","19:00","20:00",
           ];
+
+    if (!date || !service) {
+      return res.status(400).json({ error: "Faltan params: date y service." });
+    }
+
+    // ✅ validación de acceso por créditos vigentes del usuario
+    const requesterId = req.user?._id || req.user?.id;
+    const requesterRole = String(req.user?.role || "");
+
+    if (requesterId && requesterRole !== "admin") {
+      const me = await User.findById(requesterId)
+        .select("role suspended aptoPath createdAt credits creditLots")
+        .lean();
+
+      if (!me) {
+        return res.status(403).json({ error: "Usuario no encontrado." });
+      }
+
+      if (me.suspended) {
+        return res.json({
+          date,
+          service,
+          slots: times.map((t) => ({
+            time: t,
+            state: "closed",
+            reason: "Cuenta suspendida",
+          })),
+        });
+      }
+
+      if (requiresApto(me)) {
+        return res.json({
+          date,
+          service,
+          slots: times.map((t) => ({
+            time: t,
+            state: "closed",
+            reason: "Falta apto médico",
+          })),
+        });
+      }
+
+      if (!hasValidCreditsForService(me, service)) {
+        return res.json({
+          date,
+          service,
+          slots: times.map((t) => ({
+            time: t,
+            state: "closed",
+            reason: "Sin sesiones válidas para este servicio",
+          })),
+        });
+      }
+    }
+
+    // sábado => closed
+    if (isSaturday(date)) {
+      return res.json({
+        date,
+        service,
+        slots: times.map((t) => ({
+          time: t,
+          state: "closed",
+          reason: "Sábados no disponibles",
+        })),
+      });
+    }
 
     const out = [];
 
@@ -655,6 +696,11 @@ router.post("/", async (req, res) => {
 
         recalcUserCredits(user);
         if ((user.credits || 0) <= 0) throw new Error("NO_CREDITS");
+
+        const requestedSk = serviceToKey(service);
+        if (!hasValidCreditsForService(user, requestedSk)) {
+          throw new Error(`NO_CREDITS_FOR_${requestedSk}`);
+        }
       }
 
       const t = String(time).slice(0, 5);
@@ -687,7 +733,7 @@ router.post("/", async (req, res) => {
       const raTaken = existingAtSlot.some((a) => sameService(a.service, RA_NAME)) ? 1 : 0;
       const otherReservedCount = rfTaken + raTaken;
 
-      // RF/RA solo 1 por hora (acá también, por seguridad)
+      // RF/RA solo 1 por hora
       if (sameService(service, RF_NAME) && rfTaken) throw new Error("SERVICE_CAP_REACHED");
       if (sameService(service, RA_NAME) && raTaken) throw new Error("SERVICE_CAP_REACHED");
 
@@ -982,6 +1028,35 @@ router.post("/batch", async (req, res) => {
           e.http = 403;
           throw e;
         }
+
+        const needByService = { EP: 0, RF: 0, RA: 0, NUT: 0 };
+
+        for (const it of toReserve) {
+          const sk = serviceToKey(it.service);
+          if (needByService[sk] !== undefined) needByService[sk] += 1;
+        }
+
+        for (const [sk, need] of Object.entries(needByService)) {
+          if (!need) continue;
+
+          let available = 0;
+          for (const lot of Array.isArray(user.creditLots) ? user.creditLots : []) {
+            const rem = Number(lot?.remaining || 0);
+            if (rem <= 0) continue;
+
+            const exp = lot?.expiresAt ? new Date(lot.expiresAt) : null;
+            if (exp && exp <= new Date()) continue;
+
+            const lk = String(lot?.serviceKey || "").toUpperCase().trim();
+            if (lk === sk) available += rem;
+          }
+
+          if (available < need) {
+            const e = new Error(`NO_CREDITS_FOR_${sk}`);
+            e.http = 403;
+            throw e;
+          }
+        }
       }
 
       for (const it of normalized) {
@@ -1099,6 +1174,16 @@ router.post("/batch", async (req, res) => {
       }
       if (msg === "SERVICE_CAP_REACHED") {
         return res.status(409).json({ error: "Ese servicio ya alcanzó su cupo en uno de los horarios." });
+      }
+      if (msg === "TOTAL_CAP_REACHED") {
+        return res.status(409).json({ error: "Se alcanzó el cupo total disponible para alguno de los horarios." });
+      }
+      if (msg === "NO_CREDITS") {
+        return res.status(403).json({ error: "Sin créditos disponibles." });
+      }
+      if (msg.startsWith("NO_CREDITS_FOR_")) {
+        const sk = msg.replace("NO_CREDITS_FOR_", "");
+        return res.status(403).json({ error: `No tenés créditos válidos para este servicio (${sk}).` });
       }
       return res.status(http).json({ error: "No se pudo reservar el batch." });
     }
