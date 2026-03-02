@@ -113,13 +113,79 @@ function isPendingOrderStatus(status) {
   return normalizeOrderStatus(status) === "pending";
 }
 
-/**
- * Intenta detectar el servicio comprado desde distintas estructuras posibles.
- * Ajustado para sobrevivir aunque tu modelo de Order no sea siempre igual.
- */
+function translateServiceKey(serviceKey) {
+  const key = String(serviceKey || "").toUpperCase().trim();
+
+  const map = {
+    EP: "Entrenamiento Personal",
+    RA: "Rehabilitación activa",
+    RF: "Reeducación funcional",
+    AR: "Rehabilitación activa",
+    NUT: "Nutrición",
+  };
+
+  return map[key] || key || "";
+}
+
+function translateMembershipTier(tier) {
+  const v = String(tier || "").toLowerCase().trim();
+  if (!v) return "";
+  if (v === "plus") return "Membresía Plus";
+  return `Membresía ${v.charAt(0).toUpperCase()}${v.slice(1)}`;
+}
+
 function extractServiceNameFromOrder(order) {
   if (!order) return "";
 
+  // 1) Checkout moderno: items[]
+  if (Array.isArray(order.items) && order.items.length > 0) {
+    const first = order.items[0] || {};
+
+    const label = String(first.label || "").trim();
+    if (label) return label;
+
+    const kind = String(first.kind || "").toUpperCase().trim();
+
+    if (kind === "CREDITS") {
+      const byKey = translateServiceKey(first.serviceKey);
+      if (byKey) {
+        const credits = Number(first.credits || 0);
+        return credits > 0 ? `${byKey} (${credits} créditos)` : byKey;
+      }
+    }
+
+    if (kind === "MEMBERSHIP") {
+      const tier = translateMembershipTier(first.membershipTier);
+      if (tier) return tier;
+    }
+
+    const fallbackCandidates = [
+      first.serviceName,
+      first.service,
+      first.planName,
+      first.name,
+      first.title,
+      first.productName,
+      first.description,
+    ];
+
+    for (const candidate of fallbackCandidates) {
+      const text = String(candidate || "").trim();
+      if (text) return text;
+    }
+  }
+
+  // 2) Legacy
+  const legacyLabel = String(order.label || "").trim();
+  if (legacyLabel) return legacyLabel;
+
+  const legacyService = translateServiceKey(order.serviceKey);
+  if (legacyService) {
+    const credits = Number(order.credits || 0);
+    return credits > 0 ? `${legacyService} (${credits} créditos)` : legacyService;
+  }
+
+  // 3) Fallbacks varios
   const directCandidates = [
     order.serviceName,
     order.service,
@@ -132,34 +198,6 @@ function extractServiceNameFromOrder(order) {
   for (const candidate of directCandidates) {
     const text = String(candidate || "").trim();
     if (text) return text;
-  }
-
-  const arrCandidates = [
-    order.items,
-    order.lines,
-    order.products,
-    order.details,
-  ];
-
-  for (const arr of arrCandidates) {
-    if (!Array.isArray(arr) || !arr.length) continue;
-
-    const first = arr[0] || {};
-    const innerCandidates = [
-      first.serviceName,
-      first.service,
-      first.planName,
-      first.name,
-      first.title,
-      first.productName,
-      first.label,
-      first.description,
-    ];
-
-    for (const candidate of innerCandidates) {
-      const text = String(candidate || "").trim();
-      if (text) return text;
-    }
   }
 
   return "";
@@ -177,18 +215,9 @@ async function buildLastPaidOrder(from, to) {
 
   let subjectName = "";
 
-  const possibleUserId =
-    order.user ||
-    order.userId ||
-    order.client ||
-    order.clientId ||
-    order.customer ||
-    order.customerId ||
-    null;
-
-  if (possibleUserId) {
+  if (order.user) {
     try {
-      const targetUser = await User.findById(possibleUserId)
+      const targetUser = await User.findById(order.user)
         .select("name lastName fullName")
         .lean();
 
@@ -210,44 +239,21 @@ async function buildLastPaidOrder(from, to) {
 
   let actorName = "";
 
-  // Si la orden tiene creador explícito
-  const possibleActorId =
-    order.createdBy ||
-    order.actor ||
-    order.actorId ||
-    order.admin ||
-    order.adminId ||
-    null;
+  // Intento desde activity log
+  try {
+    const log = await ActivityLog.findOne({
+      entity: { $in: ["order", "orders"] },
+      entityId: String(order._id),
+      action: { $in: ["order_created", "order_paid"] },
+    })
+      .sort({ createdAt: -1 })
+      .lean();
 
-  if (possibleActorId) {
-    try {
-      const actorUser = await User.findById(possibleActorId)
-        .select("name lastName fullName")
-        .lean();
-
-      actorName = fullNameOf(actorUser);
-    } catch {
-      // noop
-    }
-  }
-
-  // Fallback: buscar en ActivityLog un evento de order_created para esta orden
-  if (!actorName) {
-    try {
-      const log = await ActivityLog.findOne({
-        entity: { $in: ["order", "orders"] },
-        entityId: String(order._id),
-        action: { $in: ["order_created", "order_paid"] },
-      })
-        .sort({ createdAt: -1 })
-        .lean();
-
-      actorName =
-        String(log?.actor?.fullName || "").trim() ||
-        String(log?.actor?.name || "").trim();
-    } catch {
-      // noop
-    }
+    actorName =
+      String(log?.actor?.fullName || "").trim() ||
+      String(log?.actor?.name || "").trim();
+  } catch {
+    // noop
   }
 
   const serviceName = extractServiceNameFromOrder(order);
@@ -280,14 +286,17 @@ router.get("/summary", async (req, res) => {
       lastPaidOrder,
     ] = await Promise.all([
       Order.find(buildDateMatch("createdAt", from, to)).lean(),
+
       Appointment.countDocuments({
         ...buildDateMatch("createdAt", from, to),
         status: "reserved",
       }),
+
       Appointment.countDocuments({
         ...buildDateMatch("createdAt", from, to),
         status: "cancelled",
       }),
+
       Appointment.countDocuments({
         status: "reserved",
         $expr: {
@@ -331,23 +340,29 @@ router.get("/summary", async (req, res) => {
           ],
         },
       }),
+
       User.countDocuments(buildDateMatch("createdAt", from, to)),
+
       Evaluation.countDocuments(buildDateMatch("createdAt", from, to)),
+
       ActivityLog.aggregate([
         { $match: buildDateMatch("createdAt", from, to) },
         { $group: { _id: "$category", count: { $sum: 1 } } },
         { $sort: { count: -1, _id: 1 } },
       ]),
+
       ActivityLog.countDocuments({
         ...buildDateMatch("createdAt", from, to),
         category: "evaluations",
         action: "evaluation_deleted",
       }),
+
       ActivityLog.countDocuments({
         ...buildDateMatch("createdAt", from, to),
         category: "users",
         action: { $in: ["credits_updated", "credit_updated"] },
       }),
+
       buildLastPaidOrder(from, to),
     ]);
 
@@ -358,10 +373,13 @@ router.get("/summary", async (req, res) => {
       ordersCancelledCount: orders.filter(
         (o) => normalizeOrderStatus(o.status) === "cancelled"
       ).length,
+
       ordersTotalAll: orders.reduce((acc, o) => acc + pickOrderTotal(o), 0),
+
       ordersTotalPaid: orders
         .filter((o) => isPaidOrderStatus(o.status))
         .reduce((acc, o) => acc + pickOrderTotal(o), 0),
+
       ordersTotalPending: orders
         .filter((o) => isPendingOrderStatus(o.status))
         .reduce((acc, o) => acc + pickOrderTotal(o), 0),
@@ -402,7 +420,11 @@ router.get("/activity", async (req, res) => {
     const match = buildActivityFilters(req.query || {}, from, to);
 
     const [items, total] = await Promise.all([
-      ActivityLog.find(match).sort({ createdAt: -1 }).skip(skip).limit(limit).lean(),
+      ActivityLog.find(match)
+        .sort({ createdAt: -1 })
+        .skip(skip)
+        .limit(limit)
+        .lean(),
       ActivityLog.countDocuments(match),
     ]);
 
