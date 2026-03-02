@@ -1,5 +1,4 @@
 import express from "express";
-import mongoose from "mongoose";
 
 import { protect, adminOnly } from "../middleware/auth.js";
 import ActivityLog from "../models/ActivityLog.js";
@@ -30,7 +29,9 @@ function resolveRange(query = {}) {
   const now = new Date();
 
   if (query.from || query.to) {
-    const from = parseDateStart(query.from) || new Date(now.getFullYear(), now.getMonth(), 1);
+    const from =
+      parseDateStart(query.from) ||
+      new Date(now.getFullYear(), now.getMonth(), 1, 0, 0, 0, 0);
     const to = parseDateEnd(query.to) || now;
     return { from, to, preset: "custom" };
   }
@@ -86,58 +87,207 @@ function buildActivityFilters(query, from, to) {
   return match;
 }
 
+function fullNameOf(doc) {
+  if (!doc) return "";
+  const direct = String(doc.fullName || "").trim();
+  if (direct) return direct;
+  const name = String(doc.name || "").trim();
+  const lastName = String(doc.lastName || "").trim();
+  return [name, lastName].filter(Boolean).join(" ").trim();
+}
+
+function pickOrderTotal(order) {
+  return Number(order?.totalFinal ?? order?.total ?? 0);
+}
+
+function normalizeOrderStatus(status) {
+  return String(status || "").toLowerCase().trim();
+}
+
+function isPaidOrderStatus(status) {
+  const s = normalizeOrderStatus(status);
+  return s === "paid" || s === "approved";
+}
+
+function isPendingOrderStatus(status) {
+  return normalizeOrderStatus(status) === "pending";
+}
+
+/**
+ * Intenta detectar el servicio comprado desde distintas estructuras posibles.
+ * Ajustado para sobrevivir aunque tu modelo de Order no sea siempre igual.
+ */
+function extractServiceNameFromOrder(order) {
+  if (!order) return "";
+
+  const directCandidates = [
+    order.serviceName,
+    order.service,
+    order.planName,
+    order.title,
+    order.itemName,
+    order.productName,
+  ];
+
+  for (const candidate of directCandidates) {
+    const text = String(candidate || "").trim();
+    if (text) return text;
+  }
+
+  const arrCandidates = [
+    order.items,
+    order.lines,
+    order.products,
+    order.details,
+  ];
+
+  for (const arr of arrCandidates) {
+    if (!Array.isArray(arr) || !arr.length) continue;
+
+    const first = arr[0] || {};
+    const innerCandidates = [
+      first.serviceName,
+      first.service,
+      first.planName,
+      first.name,
+      first.title,
+      first.productName,
+      first.label,
+      first.description,
+    ];
+
+    for (const candidate of innerCandidates) {
+      const text = String(candidate || "").trim();
+      if (text) return text;
+    }
+  }
+
+  return "";
+}
+
+async function buildLastPaidOrder(from, to) {
+  const order = await Order.findOne({
+    ...buildDateMatch("createdAt", from, to),
+    status: { $in: ["paid", "approved"] },
+  })
+    .sort({ createdAt: -1 })
+    .lean();
+
+  if (!order) return null;
+
+  let subjectName = "";
+
+  const possibleUserId =
+    order.user ||
+    order.userId ||
+    order.client ||
+    order.clientId ||
+    order.customer ||
+    order.customerId ||
+    null;
+
+  if (possibleUserId) {
+    try {
+      const targetUser = await User.findById(possibleUserId)
+        .select("name lastName fullName")
+        .lean();
+
+      subjectName = fullNameOf(targetUser);
+    } catch {
+      // noop
+    }
+  }
+
+  if (!subjectName) {
+    const directName =
+      String(order.userFullName || "").trim() ||
+      String(order.customerName || "").trim() ||
+      String(order.clientName || "").trim() ||
+      String(order.fullName || "").trim();
+
+    if (directName) subjectName = directName;
+  }
+
+  let actorName = "";
+
+  // Si la orden tiene creador explícito
+  const possibleActorId =
+    order.createdBy ||
+    order.actor ||
+    order.actorId ||
+    order.admin ||
+    order.adminId ||
+    null;
+
+  if (possibleActorId) {
+    try {
+      const actorUser = await User.findById(possibleActorId)
+        .select("name lastName fullName")
+        .lean();
+
+      actorName = fullNameOf(actorUser);
+    } catch {
+      // noop
+    }
+  }
+
+  // Fallback: buscar en ActivityLog un evento de order_created para esta orden
+  if (!actorName) {
+    try {
+      const log = await ActivityLog.findOne({
+        entity: { $in: ["order", "orders"] },
+        entityId: String(order._id),
+        action: { $in: ["order_created", "order_paid"] },
+      })
+        .sort({ createdAt: -1 })
+        .lean();
+
+      actorName =
+        String(log?.actor?.fullName || "").trim() ||
+        String(log?.actor?.name || "").trim();
+    } catch {
+      // noop
+    }
+  }
+
+  const serviceName = extractServiceNameFromOrder(order);
+
+  return {
+    id: String(order._id),
+    actorName: actorName || "",
+    subjectName: subjectName || "",
+    serviceName: serviceName || "",
+    total: pickOrderTotal(order),
+    createdAt: order.createdAt || null,
+    status: order.status || "",
+  };
+}
+
 router.get("/summary", async (req, res) => {
   try {
     const { from, to, preset } = resolveRange(req.query || {});
 
     const [
-      orderAgg,
+      orders,
       reservedCount,
       cancelledCount,
       completedCount,
       usersCreatedCount,
       evaluationsCreatedCount,
       activityBreakdown,
+      deletedEvaluations,
+      creditMutations,
+      lastPaidOrder,
     ] = await Promise.all([
-      Order.aggregate([
-        { $match: buildDateMatch("createdAt", from, to) },
-        {
-          $group: {
-            _id: null,
-            ordersCount: { $sum: 1 },
-            ordersPaidCount: {
-              $sum: { $cond: [{ $in: ["$status", ["paid", "approved"]] }, 1, 0] },
-            },
-            ordersPendingCount: {
-              $sum: { $cond: [{ $eq: ["$status", "pending"] }, 1, 0] },
-            },
-            ordersCancelledCount: {
-              $sum: { $cond: [{ $eq: ["$status", "cancelled"] }, 1, 0] },
-            },
-            totalAll: { $sum: { $ifNull: ["$totalFinal", "$total"] } },
-            totalPaid: {
-              $sum: {
-                $cond: [
-                  { $in: ["$status", ["paid", "approved"]] },
-                  { $ifNull: ["$totalFinal", "$total"] },
-                  0,
-                ],
-              },
-            },
-            totalPending: {
-              $sum: {
-                $cond: [
-                  { $eq: ["$status", "pending"] },
-                  { $ifNull: ["$totalFinal", "$total"] },
-                  0,
-                ],
-              },
-            },
-          },
-        },
-      ]),
-      Appointment.countDocuments({ ...buildDateMatch("createdAt", from, to), status: "reserved" }),
-      Appointment.countDocuments({ ...buildDateMatch("createdAt", from, to), status: "cancelled" }),
+      Order.find(buildDateMatch("createdAt", from, to)).lean(),
+      Appointment.countDocuments({
+        ...buildDateMatch("createdAt", from, to),
+        status: "reserved",
+      }),
+      Appointment.countDocuments({
+        ...buildDateMatch("createdAt", from, to),
+        status: "cancelled",
+      }),
       Appointment.countDocuments({
         status: "reserved",
         $expr: {
@@ -188,11 +338,6 @@ router.get("/summary", async (req, res) => {
         { $group: { _id: "$category", count: { $sum: 1 } } },
         { $sort: { count: -1, _id: 1 } },
       ]),
-    ]);
-
-    const o = orderAgg?.[0] || {};
-
-    const [deletedEvaluations, creditMutations] = await Promise.all([
       ActivityLog.countDocuments({
         ...buildDateMatch("createdAt", from, to),
         category: "evaluations",
@@ -201,34 +346,49 @@ router.get("/summary", async (req, res) => {
       ActivityLog.countDocuments({
         ...buildDateMatch("createdAt", from, to),
         category: "users",
-        action: "credits_updated",
+        action: { $in: ["credits_updated", "credit_updated"] },
       }),
+      buildLastPaidOrder(from, to),
     ]);
+
+    const cards = {
+      ordersCount: orders.length,
+      ordersPaidCount: orders.filter((o) => isPaidOrderStatus(o.status)).length,
+      ordersPendingCount: orders.filter((o) => isPendingOrderStatus(o.status)).length,
+      ordersCancelledCount: orders.filter(
+        (o) => normalizeOrderStatus(o.status) === "cancelled"
+      ).length,
+      ordersTotalAll: orders.reduce((acc, o) => acc + pickOrderTotal(o), 0),
+      ordersTotalPaid: orders
+        .filter((o) => isPaidOrderStatus(o.status))
+        .reduce((acc, o) => acc + pickOrderTotal(o), 0),
+      ordersTotalPending: orders
+        .filter((o) => isPendingOrderStatus(o.status))
+        .reduce((acc, o) => acc + pickOrderTotal(o), 0),
+
+      appointmentsReservedCount: Number(reservedCount || 0),
+      appointmentsCancelledCount: Number(cancelledCount || 0),
+      appointmentsCompletedCount: Number(completedCount || 0),
+
+      usersCreatedCount: Number(usersCreatedCount || 0),
+      evaluationsCreatedCount: Number(evaluationsCreatedCount || 0),
+      evaluationsDeletedCount: Number(deletedEvaluations || 0),
+      creditMutationsCount: Number(creditMutations || 0),
+    };
 
     return res.json({
       ok: true,
       range: { preset, from, to },
-      cards: {
-        ordersCount: Number(o.ordersCount || 0),
-        ordersPaidCount: Number(o.ordersPaidCount || 0),
-        ordersPendingCount: Number(o.ordersPendingCount || 0),
-        ordersCancelledCount: Number(o.ordersCancelledCount || 0),
-        ordersTotalAll: Number(o.totalAll || 0),
-        ordersTotalPaid: Number(o.totalPaid || 0),
-        ordersTotalPending: Number(o.totalPending || 0),
-        appointmentsReservedCount: Number(reservedCount || 0),
-        appointmentsCancelledCount: Number(cancelledCount || 0),
-        appointmentsCompletedCount: Number(completedCount || 0),
-        usersCreatedCount: Number(usersCreatedCount || 0),
-        evaluationsCreatedCount: Number(evaluationsCreatedCount || 0),
-        evaluationsDeletedCount: Number(deletedEvaluations || 0),
-        creditMutationsCount: Number(creditMutations || 0),
-      },
+      cards,
       activityBreakdown: activityBreakdown || [],
+      lastPaidOrder: lastPaidOrder || null,
     });
   } catch (err) {
     console.error("GET /admin/dashboard/summary error:", err);
-    return res.status(500).json({ ok: false, error: "No se pudo cargar el resumen." });
+    return res.status(500).json({
+      ok: false,
+      error: "No se pudo cargar el resumen.",
+    });
   }
 });
 
@@ -257,7 +417,10 @@ router.get("/activity", async (req, res) => {
     });
   } catch (err) {
     console.error("GET /admin/dashboard/activity error:", err);
-    return res.status(500).json({ ok: false, error: "No se pudo cargar la actividad." });
+    return res.status(500).json({
+      ok: false,
+      error: "No se pudo cargar la actividad.",
+    });
   }
 });
 
