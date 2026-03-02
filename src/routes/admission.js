@@ -179,9 +179,9 @@ function normEmail(v) {
 }
 
 /* =========================================================
-   PUBLIC: guardar step1 (ANTI DUPLICADOS por email)
-   - Si existe el email con step2Completed=true -> 409
-   - Si existe el email con step2Completed=false -> REUSA ese registro (no crea otro)
+   PUBLIC: guardar step1
+   ✅ Siempre crea una nueva admisión
+   ✅ Permite múltiples envíos con el mismo email
 ========================================================= */
 router.post("/step1", async (req, res) => {
   try {
@@ -195,35 +195,6 @@ router.post("/step1", async (req, res) => {
     // Guardar email normalizado en step1
     payload.email = email;
 
-    // Buscar la última admisión por email
-    const existing = await Admission.findOne({ "step1.email": email }).sort({ createdAt: -1 });
-
-    // Ya enviada -> bloquear (esto evita que te llenen la tabla)
-    if (existing?.step2Completed) {
-      return res.status(409).json({
-        ok: false,
-        error: "Este formulario ya fue enviado anteriormente.",
-        code: "ADMISSION_ALREADY_SUBMITTED",
-      });
-    }
-
-    // En progreso -> reusar
-    if (existing && !existing.step2Completed) {
-      existing.step1Completed = true;
-      existing.step1 = { ...(existing.step1 || {}), ...payload };
-      existing.ip = getClientIp(req);
-      existing.userAgent = req.headers["user-agent"] || "";
-      await existing.save();
-
-      return res.status(200).json({
-        ok: true,
-        admissionId: existing._id,
-        publicId: existing.publicId,
-        reused: true,
-      });
-    }
-
-    // No existe -> crear nueva
     const publicId = crypto.randomBytes(10).toString("hex");
 
     const doc = await Admission.create({
@@ -248,8 +219,8 @@ router.post("/step1", async (req, res) => {
 
 /* =========================================================
    PUBLIC: guardar step2 + mails (admin + user) UNA SOLA VEZ
-   ✅ FIX: Step2 idempotente (si ya estaba completo -> 409)
-   ✅ FIX: step2EmailSent solo se marca si el envío salió OK
+   ✅ Step2 idempotente por admisión
+   ✅ step2EmailSent solo se marca si el envío salió OK
 ========================================================= */
 router.patch("/:id/step2", async (req, res) => {
   try {
@@ -260,7 +231,7 @@ router.patch("/:id/step2", async (req, res) => {
       return res.status(400).json({ ok: false, error: "ID inválido." });
     }
 
-    // ✅ Idempotencia real: SOLO completar si aún NO estaba completo
+    // SOLO completar si aún NO estaba completo
     const doc = await Admission.findOneAndUpdate(
       { _id: id, step2Completed: { $ne: true } },
       { $set: { step2Completed: true, step2: payload } },
@@ -269,7 +240,6 @@ router.patch("/:id/step2", async (req, res) => {
 
     // Si no actualizó es porque ya estaba completado (o no existe)
     if (!doc) {
-      // ver si existe para diferenciar 404 vs 409
       const exists = await Admission.findById(id).select("_id").lean();
       if (!exists) return res.status(404).json({ ok: false, error: "No encontrado." });
 
@@ -339,7 +309,7 @@ router.patch("/:id/step2", async (req, res) => {
       ok: true,
       admissionId: doc._id,
       publicId: doc.publicId,
-      mailsSent: true, // “se intentó”
+      mailsSent: true,
     });
   } catch (err) {
     console.error("PATCH /admission/:id/step2 error:", err);
