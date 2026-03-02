@@ -835,19 +835,27 @@ router.post("/", async (req, res) => {
         title: "Lista de espera",
         description: "Se agregó a lista de espera de turnos.",
         subject: buildUserSubject(req.user),
-        meta: { date: out?.date, time: out?.time, service: out?.service },
+        meta: {
+          date: out?.date,
+          time: out?.time,
+          serviceName: out?.service,
+        },
       });
     } else if (out?.id) {
       await logActivity({
         req,
         category: "appointments",
-        action: "appointment_created",
+        action: "appointment_reserved",
         entity: "appointment",
         entityId: out.id,
         title: "Turno reservado",
         description: "Se registró una nueva reserva.",
         subject: buildUserSubject(req.user),
-        meta: { date: out?.date, time: out?.time, service: out?.service },
+        meta: {
+          date: out?.date,
+          time: out?.time,
+          serviceName: out?.service,
+        },
       });
     }
 
@@ -1184,7 +1192,18 @@ router.post("/batch", async (req, res) => {
       title: "Reserva múltiple",
       description: "Se registró una reserva múltiple de turnos.",
       subject: buildUserSubject(req.user),
-      meta: { createdCount: createdItems.length, waitlistedCount: waitlistedItems.length },
+      meta: {
+        createdCount: createdItems.length,
+        waitlistedCount: waitlistedItems.length,
+        steps: [
+          ...createdItems.map(
+            (x) => `Reservó ${x.service} el ${x.date} a las ${x.time}`
+          ),
+          ...waitlistedItems.map(
+            (x) => `Entró en lista de espera para ${x.service} el ${x.date} a las ${x.time}`
+          ),
+        ],
+      },
     });
 
     res.status(201).json({ items: createdItems, waitlisted: waitlistedItems });
@@ -1271,6 +1290,9 @@ router.post("/waitlist/claim", async (req, res) => {
     if (!token) return res.status(400).json({ error: "Falta token." });
 
     let payload = null;
+    let logMeta = null;
+    let logEntityId = null;
+    let logSubject = null;
 
     await session.withTransaction(async () => {
       const wl = await WaitlistEntry.findOne({
@@ -1396,7 +1418,29 @@ router.post("/waitlist/claim", async (req, res) => {
       await wl.save({ session });
 
       payload = { ok: true, appointmentId: String(created[0]._id) };
+      logEntityId = String(created[0]._id);
+      logSubject = buildUserSubject(user);
+      logMeta = {
+        date: wl.date,
+        time: wl.time,
+        serviceName: EP_NAME,
+        fromWaitlist: true,
+      };
     });
+
+    if (payload?.appointmentId) {
+      await logActivity({
+        req,
+        category: "appointments",
+        action: "appointment_reserved",
+        entity: "appointment",
+        entityId: logEntityId,
+        title: "Turno confirmado desde lista de espera",
+        description: "Se confirmó una reserva desde la lista de espera.",
+        subject: logSubject || buildUserSubject(req.user),
+        meta: logMeta || {},
+      });
+    }
 
     res.json(payload);
   } catch (err) {
@@ -1558,7 +1602,12 @@ router.patch("/:id/cancel", async (req, res) => {
       title: "Turno cancelado",
       description: "Se canceló un turno existente.",
       subject: buildUserSubject(mailUser || req.user),
-      meta: { date: payload?.date, time: payload?.time, service: payload?.service, refund: payload?.refund },
+      meta: {
+        date: payload?.date,
+        time: payload?.time,
+        serviceName: payload?.service,
+        refund: payload?.refund,
+      },
     });
 
     res.json(payload);

@@ -75,7 +75,9 @@ function buildActivityFilters(query, from, to) {
       { title: { $regex: search, $options: "i" } },
       { description: { $regex: search, $options: "i" } },
       { "actor.name": { $regex: search, $options: "i" } },
+      { "actor.fullName": { $regex: search, $options: "i" } },
       { "subject.name": { $regex: search, $options: "i" } },
+      { "subject.fullName": { $regex: search, $options: "i" } },
       { entity: { $regex: search, $options: "i" } },
       { action: { $regex: search, $options: "i" } },
     ];
@@ -190,7 +192,7 @@ router.get("/summary", async (req, res) => {
 
     const o = orderAgg?.[0] || {};
 
-    const [deletedEvaluations, creditMutations, totalActivities] = await Promise.all([
+    const [deletedEvaluations, creditMutations] = await Promise.all([
       ActivityLog.countDocuments({
         ...buildDateMatch("createdAt", from, to),
         category: "evaluations",
@@ -201,7 +203,6 @@ router.get("/summary", async (req, res) => {
         category: "users",
         action: "credits_updated",
       }),
-      ActivityLog.countDocuments(buildDateMatch("createdAt", from, to)),
     ]);
 
     return res.json({
@@ -222,7 +223,6 @@ router.get("/summary", async (req, res) => {
         evaluationsCreatedCount: Number(evaluationsCreatedCount || 0),
         evaluationsDeletedCount: Number(deletedEvaluations || 0),
         creditMutationsCount: Number(creditMutations || 0),
-        totalActivities: Number(totalActivities || 0),
       },
       activityBreakdown: activityBreakdown || [],
     });

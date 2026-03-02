@@ -52,6 +52,7 @@ function serializeUserLite(u) {
     _id: u._id,
     name: u.name || "",
     lastName: u.lastName || "",
+    fullName: [u.name, u.lastName].filter(Boolean).join(" ").trim(),
     email: u.email || "",
     phone: u.phone || "",
     suspended: !!u.suspended,
@@ -256,6 +257,21 @@ router.post("/guest", protect, adminOnly, async (req, res) => {
       approvalStatus: "approved",
     });
 
+    await logActivity({
+      req,
+      category: "users",
+      action: "user_created",
+      entity: "user",
+      entityId: guest._id,
+      title: "Invitado creado",
+      description: "Se creó un usuario invitado.",
+      subject: buildUserSubject(guest),
+      meta: {
+        userFullName: [guest.name, guest.lastName].filter(Boolean).join(" ").trim(),
+        role: "guest",
+      },
+    });
+
     const item = {
       ...serializeUserLite(guest.toObject()),
       evalCount: 0,
@@ -264,17 +280,6 @@ router.post("/guest", protect, adminOnly, async (req, res) => {
       lastEvalTitle: "",
       lastEvalId: "",
     };
-
-    await logActivity({
-      req,
-      category: "users",
-      action: "guest_created",
-      entity: "user",
-      entityId: guest._id,
-      title: "Invitado creado",
-      description: "Se creó un usuario guest para evaluaciones.",
-      subject: buildUserSubject(guest),
-    });
 
     return res.status(201).json({ item });
   } catch (err) {
@@ -294,7 +299,10 @@ router.delete("/guest/:id", protect, adminOnly, async (req, res) => {
       return res.status(400).json({ error: "id inválido." });
     }
 
-    const guest = await User.findById(id).select("_id role").lean();
+    const guest = await User.findById(id)
+      .select("_id name lastName email role")
+      .lean();
+
     if (!guest) return res.status(404).json({ error: "Invitado no encontrado." });
 
     if (guest.role !== "guest") {
@@ -303,19 +311,28 @@ router.delete("/guest/:id", protect, adminOnly, async (req, res) => {
       });
     }
 
+    await Promise.all([Evaluation.deleteMany({ user: id }), User.findByIdAndDelete(id)]);
+
     await logActivity({
       req,
       category: "users",
-      action: "guest_deleted",
+      action: "user_deleted",
       entity: "user",
-      entityId: id,
+      entityId: guest._id,
       title: "Invitado eliminado",
-      description: "Se eliminó un usuario guest y sus evaluaciones.",
+      description: "Se eliminó un usuario invitado.",
       subject: buildUserSubject(guest),
-      deletedSnapshot: guest,
+      deletedSnapshot: {
+        name: guest.name || "",
+        lastName: guest.lastName || "",
+        email: guest.email || "",
+        role: guest.role || "",
+      },
+      meta: {
+        userFullName: [guest.name, guest.lastName].filter(Boolean).join(" ").trim(),
+        role: "guest",
+      },
     });
-
-    await Promise.all([Evaluation.deleteMany({ user: id }), User.findByIdAndDelete(id)]);
 
     return res.json({ ok: true });
   } catch (err) {
@@ -371,7 +388,10 @@ router.post("/user/:userId", protect, adminOnly, async (req, res) => {
       return res.status(400).json({ error: "scoring inválido." });
     }
 
-    const target = await User.findById(userId).select("_id role").lean();
+    const target = await User.findById(userId)
+      .select("_id name lastName fullName email role")
+      .lean();
+
     if (!target) return res.status(404).json({ error: "Usuario no encontrado." });
 
     const ev = await Evaluation.create({
@@ -390,9 +410,15 @@ router.post("/user/:userId", protect, adminOnly, async (req, res) => {
       entity: "evaluation",
       entityId: ev._id,
       title: "Evaluación creada",
-      description: "Se creó una nueva evaluación.",
-      subject: buildUserSubject({ _id: userId, role: target.role }),
-      meta: { type: ev.type, title: ev.title },
+      description: "Se creó una evaluación.",
+      subject: buildUserSubject(target),
+      meta: {
+        userFullName:
+          target.fullName ||
+          [target.name, target.lastName].filter(Boolean).join(" ").trim(),
+        evaluationType: String(type).toUpperCase().trim(),
+        evaluationTitle: String(title || "").trim(),
+      },
     });
 
     return res.status(201).json({ item: serializeEvalLite(ev.toObject()) });
@@ -404,7 +430,6 @@ router.post("/user/:userId", protect, adminOnly, async (req, res) => {
 
 /* =========================================================
    GET /admin/evaluations/:id
-   ✅ SOLO evaluationId (SIN FALLBACK)
 ========================================================= */
 router.get("/:id", protect, adminOnly, async (req, res) => {
   try {
@@ -447,6 +472,9 @@ router.patch("/:id", protect, adminOnly, async (req, res) => {
       return res.status(400).json({ error: "id inválido." });
     }
 
+    const before = await Evaluation.findById(id).lean();
+    if (!before) return res.status(404).json({ error: "Evaluación no encontrada." });
+
     const patch = {};
     if (title !== undefined) patch.title = String(title || "").trim();
     if (notes !== undefined) patch.notes = String(notes || "");
@@ -458,9 +486,12 @@ router.patch("/:id", protect, adminOnly, async (req, res) => {
       patch.scoring = scoring || {};
     }
 
-    const before = await Evaluation.findById(id).lean();
     const ev = await Evaluation.findByIdAndUpdate(id, patch, { new: true }).lean();
     if (!ev) return res.status(404).json({ error: "Evaluación no encontrada." });
+
+    const target = await User.findById(ev.user)
+      .select("_id name lastName fullName email role")
+      .lean();
 
     await logActivity({
       req,
@@ -469,9 +500,29 @@ router.patch("/:id", protect, adminOnly, async (req, res) => {
       entity: "evaluation",
       entityId: ev._id,
       title: "Evaluación actualizada",
-      description: "Se editaron datos de una evaluación.",
-      meta: { type: ev.type, title: ev.title },
-      diff: buildDiff(before || {}, ev || {}),
+      description: "Se actualizó una evaluación.",
+      subject: buildUserSubject(target),
+      diff: buildDiff(
+        {
+          type: before.type || "",
+          title: before.title || "",
+          notes: before.notes || "",
+          scoring: before.scoring || {},
+        },
+        {
+          type: ev.type || "",
+          title: ev.title || "",
+          notes: ev.notes || "",
+          scoring: ev.scoring || {},
+        }
+      ),
+      meta: {
+        userFullName:
+          target?.fullName ||
+          [target?.name, target?.lastName].filter(Boolean).join(" ").trim(),
+        evaluationType: ev.type || "",
+        evaluationTitle: ev.title || "",
+      },
     });
 
     return res.json({ item: serializeEvalLite(ev) });
@@ -492,19 +543,37 @@ router.delete("/:id", protect, adminOnly, async (req, res) => {
       return res.status(400).json({ error: "id inválido." });
     }
 
-    const ev = await Evaluation.findByIdAndDelete(id).lean();
+    const ev = await Evaluation.findById(id).lean();
     if (!ev) return res.status(404).json({ error: "Evaluación no encontrada." });
+
+    const target = await User.findById(ev.user)
+      .select("_id name lastName fullName email role")
+      .lean();
+
+    await Evaluation.findByIdAndDelete(id);
 
     await logActivity({
       req,
       category: "evaluations",
       action: "evaluation_deleted",
       entity: "evaluation",
-      entityId: ev?._id || id,
+      entityId: ev._id,
       title: "Evaluación eliminada",
       description: "Se eliminó una evaluación.",
-      meta: { type: ev?.type || "", title: ev?.title || "" },
-      deletedSnapshot: ev || null,
+      subject: buildUserSubject(target),
+      deletedSnapshot: {
+        type: ev.type || "",
+        title: ev.title || "",
+        notes: ev.notes || "",
+        scoring: ev.scoring || {},
+      },
+      meta: {
+        userFullName:
+          target?.fullName ||
+          [target?.name, target?.lastName].filter(Boolean).join(" ").trim(),
+        evaluationType: ev.type || "",
+        evaluationTitle: ev.title || "",
+      },
     });
 
     return res.json({ ok: true });

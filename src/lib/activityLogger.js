@@ -23,10 +23,22 @@ export function fullNameOf(doc) {
 }
 
 export function buildPersonSnapshot(doc) {
-  if (!doc) return { id: "", name: "", email: "", role: "" };
+  if (!doc) {
+    return {
+      id: "",
+      name: "",
+      fullName: "",
+      email: "",
+      role: "",
+    };
+  }
+
+  const fullName = fullNameOf(doc);
+
   return {
     id: toId(doc._id || doc.id),
-    name: fullNameOf(doc),
+    name: fullName || clean(doc.name) || "Usuario",
+    fullName: fullName || clean(doc.name) || "Usuario",
     email: clean(doc.email),
     role: clean(doc.role),
   };
