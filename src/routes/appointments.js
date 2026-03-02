@@ -113,7 +113,7 @@ function isSaturday(dateStr) {
  * - mañana: 07..12
  * - bloqueado: 12:01..13:29
  * - 13:30 permitido
- * - tarde:  14..17 (solo EP)
+ * - tarde:  14..17
  * - noche: 18..20
  */
 function getTurnoFromTime(time) {
@@ -122,7 +122,6 @@ function getTurnoFromTime(time) {
   const h = Number(hStr);
   const m = Number(mStr);
 
-  // 13:30 permitido
   if (h === 13 && m === 30) return "maniana";
 
   if (h >= 7 && h <= 12) return "maniana";
@@ -274,7 +273,7 @@ function requiresApto(user) {
 }
 
 /* =========================
-   Cupos (TU REGLA EXACTA)
+   Cupos + horarios por servicio
 ========================= */
 const TOTAL_CAP = 6;
 
@@ -282,6 +281,39 @@ const TOTAL_CAP = 6;
 const EP_NAME = "Entrenamiento Personal";
 const RA_NAME = "Rehabilitación activa";
 const RF_NAME = "Reeducación funcional";
+
+const TIMES_EP = [
+  "07:00","08:00","09:00","10:00",
+  "11:00","12:00","13:30",
+  "14:00","15:00","16:00","17:00",
+  "18:00","19:00","20:00",
+];
+
+// RA y RF: 07:00 a 18:00 inclusive
+const TIMES_REHAB = [
+  "07:00","08:00","09:00","10:00",
+  "11:00","12:00","13:30",
+  "14:00","15:00","16:00","17:00",
+  "18:00",
+];
+
+const TIMES_DEFAULT = [
+  "07:00","08:00","09:00","10:00",
+  "11:00","12:00","13:30",
+  "18:00","19:00","20:00",
+];
+
+function getAllowedTimesForService(serviceName) {
+  if (sameService(serviceName, EP_NAME)) return TIMES_EP;
+  if (sameService(serviceName, RA_NAME)) return TIMES_REHAB;
+  if (sameService(serviceName, RF_NAME)) return TIMES_REHAB;
+  return TIMES_DEFAULT;
+}
+
+function isAllowedTimeForService(serviceName, time) {
+  const t = String(time || "").slice(0, 5);
+  return getAllowedTimesForService(serviceName).includes(t);
+}
 
 /**
  * TU REGLA:
@@ -295,7 +327,6 @@ const RF_NAME = "Reeducación funcional";
 function calcEpCap({ hoursToStart, hasRF, hasRA, otherReservedCount }) {
   let cap = 4;
 
-  // ✅ 12 horas
   if (Number(hoursToStart) <= 12) {
     if (!hasRF && !hasRA) cap = 6;
     else if (!!hasRF !== !!hasRA) cap = 5;
@@ -356,15 +387,23 @@ function validateBasicSlotRules({ date, time, service }) {
     return { ok: false, error: "Faltan campos: date, time y service." };
   }
 
-  // ✅ sábado OFF
   if (isSaturday(date)) {
     return { ok: false, error: "Los sábados no hay turnos disponibles." };
   }
 
-  // ✅ 13:xx inválido salvo 13:30
   const timeNorm = String(time).slice(0, 5);
+
+  // ✅ 13:xx inválido salvo 13:30
   if (timeNorm.startsWith("13:") && timeNorm !== "13:30") {
     return { ok: false, error: "Horario inválido." };
+  }
+
+  // ✅ validación real por servicio
+  if (!isAllowedTimeForService(service, timeNorm)) {
+    return {
+      ok: false,
+      error: "Ese horario no está disponible para el servicio seleccionado.",
+    };
   }
 
   const turno = getTurnoFromTime(timeNorm);
@@ -382,11 +421,6 @@ function validateBasicSlotRules({ date, time, service }) {
   if (!adv.ok) return adv;
 
   const isEpService = sameService(service, EP_NAME);
-
-  // tarde solo EP
-  if (turno === "tarde" && !isEpService) {
-    return { ok: false, error: "En el turno tarde solo está disponible Entrenamiento Personal." };
-  }
 
   return { ok: true, turno, slotDate, isEpService };
 }
@@ -420,19 +454,18 @@ router.get("/availability", async (req, res) => {
     const date = String(req.query?.date || "").slice(0, 10);
     const service = String(req.query?.service || "").trim();
 
-    const times =
-      Array.isArray(req.query?.times) && req.query.times.length
-        ? req.query.times.map((x) => String(x).slice(0, 5))
-        : [
-            "07:00","08:00","09:00","10:00",
-            "11:00","12:00","13:30",
-            "14:00","15:00","16:00","17:00",
-            "18:00","19:00","20:00",
-          ];
-
     if (!date || !service) {
       return res.status(400).json({ error: "Faltan params: date y service." });
     }
+
+    const allowedTimes = getAllowedTimesForService(service);
+
+    const times =
+      Array.isArray(req.query?.times) && req.query.times.length
+        ? req.query.times
+            .map((x) => String(x).slice(0, 5))
+            .filter((t) => allowedTimes.includes(t))
+        : allowedTimes;
 
     // ✅ validación de acceso por créditos vigentes del usuario
     const requesterId = req.user?._id || req.user?.id;
@@ -484,7 +517,6 @@ router.get("/availability", async (req, res) => {
       }
     }
 
-    // sábado => closed
     if (isSaturday(date)) {
       return res.json({
         date,
@@ -514,7 +546,6 @@ router.get("/availability", async (req, res) => {
 
       const total = existing.length;
 
-      // total full
       if (total >= TOTAL_CAP) {
         if (basic.isEpService) {
           out.push({
@@ -529,7 +560,6 @@ router.get("/availability", async (req, res) => {
         continue;
       }
 
-      // RF 1 por hora
       if (sameService(service, RF_NAME)) {
         const hasRF = existing.some((a) => sameService(a.service, RF_NAME));
         if (hasRF) {
@@ -538,7 +568,6 @@ router.get("/availability", async (req, res) => {
         }
       }
 
-      // RA 1 por hora
       if (sameService(service, RA_NAME)) {
         const hasRA = existing.some((a) => sameService(a.service, RA_NAME));
         if (hasRA) {
@@ -547,7 +576,6 @@ router.get("/availability", async (req, res) => {
         }
       }
 
-      // EP cap dinámico
       if (basic.isEpService) {
         const epCount = existing.filter((a) => sameService(a.service, EP_NAME)).length;
         const rfTaken = existing.some((a) => sameService(a.service, RF_NAME)) ? 1 : 0;
@@ -637,7 +665,6 @@ router.get("/", async (req, res) => {
       return res.json((list || []).map(serializeAppointment));
     }
 
-    // mine default
     {
       const q = { user: tokenUserId, status: { $ne: "cancelled" } };
 
@@ -724,7 +751,6 @@ router.post("/", async (req, res) => {
 
       let willWaitlist = false;
 
-      // total cap
       if (existingAtSlot.length >= TOTAL_CAP) {
         if (basic.isEpService) willWaitlist = true;
         else throw new Error("TOTAL_CAP_REACHED");
@@ -735,7 +761,6 @@ router.post("/", async (req, res) => {
       const raTaken = existingAtSlot.some((a) => sameService(a.service, RA_NAME)) ? 1 : 0;
       const otherReservedCount = rfTaken + raTaken;
 
-      // RF/RA solo 1 por hora
       if (sameService(service, RF_NAME) && rfTaken) throw new Error("SERVICE_CAP_REACHED");
       if (sameService(service, RA_NAME) && raTaken) throw new Error("SERVICE_CAP_REACHED");
 
@@ -752,7 +777,6 @@ router.post("/", async (req, res) => {
         if (epCount >= epCap) willWaitlist = true;
       }
 
-      // ✅ WAITLIST EP (sin consumir crédito)
       if (willWaitlist && basic.isEpService) {
         const wlExists = await WaitlistEntry.findOne({
           user: user._id,
@@ -773,7 +797,6 @@ router.post("/", async (req, res) => {
         return;
       }
 
-      // consumir crédito
       let usedLotId = null;
       let usedLotExp = null;
 
@@ -996,7 +1019,6 @@ router.post("/batch", async (req, res) => {
         bySlot.get(k).push(ap);
       }
 
-      // marcar waitlist / validar cupos
       for (const it of normalized) {
         const k = slotKey(it.date, it.time);
         const cur = bySlot.get(k) || [];
@@ -1011,7 +1033,6 @@ router.post("/batch", async (req, res) => {
           throw e;
         }
 
-        // RF/RA 1 por hora
         if (sameService(it.service, RF_NAME)) {
           if (cur.some((a) => sameService(a.service, RF_NAME))) {
             const e = new Error("SERVICE_CAP_REACHED");
