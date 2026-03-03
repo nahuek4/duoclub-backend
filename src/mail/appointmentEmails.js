@@ -1,7 +1,7 @@
 // backend/src/mail/appointmentEmails.js
 import { ADMIN_EMAIL, BRAND_NAME, sendMail } from "./core.js";
 import { escapeHtml, kvRow, prettyDateAR } from "./helpers.js";
-import { buildEmailLayout } from "./layout_adapted.js";
+import { buildEmailLayout } from "./layout.js";
 
 /* =========================================================
    Turnos (USER + ADMIN)

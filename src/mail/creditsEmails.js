@@ -1,6 +1,6 @@
 import { ADMIN_EMAIL, BRAND_NAME, sendMail } from "./core.js";
 import { escapeHtml, kvRow } from "./helpers.js";
-import { buildEmailLayout } from "./layout_adapted.js";
+import { buildEmailLayout } from "./layout.js";
 
 /* =========================================================
    HELPERS
