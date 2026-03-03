@@ -1,4 +1,3 @@
-// backend/src/routes/admission.js
 import express from "express";
 import crypto from "crypto";
 import bcrypt from "bcryptjs";
@@ -95,7 +94,9 @@ function buildNotesFromAdmission(step1 = {}, step2 = {}) {
     );
   }
 
-  if (step1.bloodPressure) lines.push(`Presión arterial: ${step1.bloodPressure}`);
+  if (step1.bloodPressure) {
+    lines.push(`Presión arterial: ${step1.bloodPressure}`);
+  }
 
   if (step1.smokes) {
     lines.push(
@@ -162,7 +163,10 @@ function mapAdmissionToUserUpdate(adm) {
     notes: buildNotesFromAdmission(s1, s2) || "",
   };
 
-  Object.keys(update).forEach((k) => update[k] === undefined && delete update[k]);
+  Object.keys(update).forEach((k) => {
+    if (update[k] === undefined) delete update[k];
+  });
+
   return update;
 }
 
@@ -192,7 +196,6 @@ router.post("/step1", async (req, res) => {
       return res.status(400).json({ ok: false, error: "Email requerido." });
     }
 
-    // Guardar email normalizado en step1
     payload.email = email;
 
     const publicId = crypto.randomBytes(10).toString("hex");
@@ -213,7 +216,9 @@ router.post("/step1", async (req, res) => {
     });
   } catch (err) {
     console.error("POST /admission/step1 error:", err);
-    return res.status(500).json({ ok: false, error: "No se pudo guardar el formulario." });
+    return res
+      .status(500)
+      .json({ ok: false, error: "No se pudo guardar el formulario." });
   }
 });
 
@@ -231,17 +236,18 @@ router.patch("/:id/step2", async (req, res) => {
       return res.status(400).json({ ok: false, error: "ID inválido." });
     }
 
-    // SOLO completar si aún NO estaba completo
     const doc = await Admission.findOneAndUpdate(
       { _id: id, step2Completed: { $ne: true } },
       { $set: { step2Completed: true, step2: payload } },
       { new: true }
     );
 
-    // Si no actualizó es porque ya estaba completado (o no existe)
     if (!doc) {
       const exists = await Admission.findById(id).select("_id").lean();
-      if (!exists) return res.status(404).json({ ok: false, error: "No encontrado." });
+
+      if (!exists) {
+        return res.status(404).json({ ok: false, error: "No encontrado." });
+      }
 
       return res.status(409).json({
         ok: false,
@@ -250,7 +256,6 @@ router.patch("/:id/step2", async (req, res) => {
       });
     }
 
-    // Si por algún motivo ya estaba marcado mails enviados, no reintentar
     if (doc.step2EmailSent) {
       return res.json({
         ok: true,
@@ -261,7 +266,6 @@ router.patch("/:id/step2", async (req, res) => {
       });
     }
 
-    // Intento async: si falla, NO dejamos el flag trabado
     fireAndForget(async () => {
       const s1 = doc.step1 || {};
       const fullName = String(s1.fullName || "").trim();
@@ -301,7 +305,11 @@ router.patch("/:id/step2", async (req, res) => {
           { $set: { step2EmailSent: false, step2EmailSentAt: null } }
         );
 
-        console.log("[MAIL][ADM] step2 mails FAILED", e?.message || e);
+        console.log("[MAIL][ADM] step2 mails FAILED", {
+          admissionId: String(doc._id),
+          publicId: doc.publicId,
+          error: e?.message || e,
+        });
       }
     }, "ADMISSION_STEP2_MAIL");
 
@@ -309,11 +317,13 @@ router.patch("/:id/step2", async (req, res) => {
       ok: true,
       admissionId: doc._id,
       publicId: doc.publicId,
-      mailsSent: true,
+      mailsQueued: true,
     });
   } catch (err) {
     console.error("PATCH /admission/:id/step2 error:", err);
-    return res.status(500).json({ ok: false, error: "No se pudo guardar el paso 2." });
+    return res
+      .status(500)
+      .json({ ok: false, error: "No se pudo guardar el paso 2." });
   }
 });
 
@@ -374,18 +384,33 @@ router.post("/admin/:id/create-user", protect, adminOnly, async (req, res) => {
     const { id } = req.params;
 
     const adm = await Admission.findById(id);
-    if (!adm) return res.status(404).json({ ok: false, error: "Admisión no encontrada." });
+    if (!adm) {
+      return res.status(404).json({ ok: false, error: "Admisión no encontrada." });
+    }
 
     const s1 = adm.step1 || {};
     const fullName = String(s1.fullName || "").trim();
     const email = String(s1.email || "").trim().toLowerCase();
     const phone = String(s1.phone || "").trim();
 
-    if (!fullName) return res.status(400).json({ ok: false, error: "La admisión no tiene nombre completo." });
-    if (!email) return res.status(400).json({ ok: false, error: "La admisión no tiene email." });
-    if (!phone) return res.status(400).json({ ok: false, error: "La admisión no tiene teléfono." });
+    if (!fullName) {
+      return res
+        .status(400)
+        .json({ ok: false, error: "La admisión no tiene nombre completo." });
+    }
 
-    // 1) buscar user existente (primero por adm.user, si no por email)
+    if (!email) {
+      return res
+        .status(400)
+        .json({ ok: false, error: "La admisión no tiene email." });
+    }
+
+    if (!phone) {
+      return res
+        .status(400)
+        .json({ ok: false, error: "La admisión no tiene teléfono." });
+    }
+
     let user = null;
     if (adm.user) user = await User.findById(adm.user);
     if (!user) user = await User.findOne({ email });
@@ -393,7 +418,6 @@ router.post("/admin/:id/create-user", protect, adminOnly, async (req, res) => {
     let created = false;
     let tempPassword = "";
 
-    // 2) si no existe user => crearlo
     if (!user) {
       const { name, lastName } = splitFullName(fullName);
 
@@ -427,7 +451,6 @@ router.post("/admin/:id/create-user", protect, adminOnly, async (req, res) => {
       created = true;
     }
 
-    // 3) sync perfil con datos del formulario (NO toca email)
     const update = mapAdmissionToUserUpdate(adm);
 
     const updatedUser = await User.findByIdAndUpdate(user._id, update, {
@@ -435,7 +458,6 @@ router.post("/admin/:id/create-user", protect, adminOnly, async (req, res) => {
       runValidators: true,
     }).lean();
 
-    // 4) vincular admisión a user + marcar sync
     adm.user = user._id;
     adm.syncedToUser = true;
     adm.syncedAt = new Date();
@@ -448,7 +470,9 @@ router.post("/admin/:id/create-user", protect, adminOnly, async (req, res) => {
       entity: "admission",
       entityId: adm._id,
       title: created ? "Usuario creado desde admisión" : "Admisión sincronizada",
-      description: created ? "Se creó un usuario desde una admisión." : "Se vinculó/sincronizó la admisión con un usuario existente.",
+      description: created
+        ? "Se creó un usuario desde una admisión."
+        : "Se vinculó/sincronizó la admisión con un usuario existente.",
       subject: buildUserSubject(updatedUser),
       meta: { admissionId: adm._id, userId: updatedUser?._id || user._id },
     });
@@ -474,13 +498,21 @@ router.post("/admin/:id/link-user", protect, adminOnly, async (req, res) => {
     const { id } = req.params;
     const email = String(req.body?.email || "").trim().toLowerCase();
 
-    if (!email) return res.status(400).json({ ok: false, error: "Email es requerido." });
+    if (!email) {
+      return res.status(400).json({ ok: false, error: "Email es requerido." });
+    }
 
     const adm = await Admission.findById(id);
-    if (!adm) return res.status(404).json({ ok: false, error: "Admisión no encontrada." });
+    if (!adm) {
+      return res.status(404).json({ ok: false, error: "Admisión no encontrada." });
+    }
 
     const user = await User.findOne({ email }).lean();
-    if (!user) return res.status(404).json({ ok: false, error: "No existe usuario con ese email." });
+    if (!user) {
+      return res
+        .status(404)
+        .json({ ok: false, error: "No existe usuario con ese email." });
+    }
 
     const update = mapAdmissionToUserUpdate(adm);
     const updatedUser = await User.findByIdAndUpdate(user._id, update, {
@@ -536,7 +568,9 @@ router.delete("/admin/:id", protect, adminOnly, async (req, res) => {
     return res.json({ ok: true });
   } catch (err) {
     console.error("DELETE /admission/admin/:id error:", err);
-    return res.status(500).json({ ok: false, error: "No se pudo eliminar la admisión." });
+    return res
+      .status(500)
+      .json({ ok: false, error: "No se pudo eliminar la admisión." });
   }
 });
 
