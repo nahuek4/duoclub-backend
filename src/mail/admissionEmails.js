@@ -1,6 +1,6 @@
 import { ADMIN_EMAIL, BRAND_NAME, sendMail, BRAND_URL } from "./core.js";
 import { escapeHtml, kvRow, kvRowRaw } from "./helpers.js";
-import { buildEmailLayout } from "./layout_adapted.js";
+import { buildEmailLayout } from "./layout.js";
 
 /* =========================================================
    ✅ ADMISSION (Formulario completo Step2) — ADMIN + USER
