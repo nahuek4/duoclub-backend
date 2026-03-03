@@ -6,3 +6,4 @@ export * from "./mail/appointmentEmails.js";
 export * from "./mail/admissionEmails.js";
 export * from "./mail/orderEmails.js";
 export * from "./mail/layout.js";
+export * from "./mail/creditsEmails.js";

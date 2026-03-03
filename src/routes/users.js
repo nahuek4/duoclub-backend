@@ -1,4 +1,3 @@
-// backend/src/routes/users.js
 import express from "express";
 import path from "path";
 import fs from "fs";
@@ -18,8 +17,14 @@ import {
   fireAndForget,
   sendUserApprovedEmail,
   sendUserApprovalResultEmail,
+  sendAdminCreditsAssignedEmail,
+  sendUserCreditsAssignedEmail,
 } from "../mail.js";
-import { logActivity, buildUserSubject, buildDiff } from "../lib/activityLogger.js";
+import {
+  logActivity,
+  buildUserSubject,
+  buildDiff,
+} from "../lib/activityLogger.js";
 
 const router = express.Router();
 
@@ -372,6 +377,77 @@ function stripSensitive(u) {
 }
 
 /* ============================================
+   HELPERS: MAIL CRÉDITOS
+============================================ */
+function adminActorNameFromReq(req) {
+  const me = req?.user || {};
+  const full =
+    `${String(me?.name || "").trim()} ${String(me?.lastName || "").trim()}`.trim() ||
+    String(me?.email || "").trim() ||
+    "Admin";
+  return full;
+}
+
+function normalizeCreditMailItems(items) {
+  const list = Array.isArray(items) ? items : [];
+
+  return list
+    .map((it) => {
+      const serviceKey = String(it?.serviceKey || "")
+        .trim()
+        .toUpperCase();
+
+      const hasDelta = it?.delta !== undefined && it?.delta !== null;
+      const raw = hasDelta ? Number(it.delta) : Number(it.credits);
+
+      if (!serviceKey || !Number.isFinite(raw) || raw === 0) return null;
+
+      return {
+        serviceKey,
+        ...(hasDelta
+          ? { delta: Math.trunc(raw) }
+          : { credits: Math.trunc(raw) }),
+      };
+    })
+    .filter(Boolean);
+}
+
+function queueCreditsEmails({ req, updatedUser, items }) {
+  const safeItems = normalizeCreditMailItems(items);
+  if (!updatedUser || !safeItems.length) return;
+
+  const actorName = adminActorNameFromReq(req);
+
+  fireAndForget(async () => {
+    try {
+      await sendAdminCreditsAssignedEmail({
+        user: updatedUser,
+        items: safeItems,
+        actorName,
+      });
+
+      await sendUserCreditsAssignedEmail({
+        user: updatedUser,
+        items: safeItems,
+        actorName,
+      });
+
+      console.log("[MAIL][CREDITS] mails SENT ok", {
+        userId: String(updatedUser?._id || updatedUser?.id || ""),
+        email: updatedUser?.email,
+        items: safeItems,
+      });
+    } catch (e) {
+      console.log("[MAIL][CREDITS] mails FAILED", {
+        userId: String(updatedUser?._id || updatedUser?.id || ""),
+        email: updatedUser?.email,
+        error: e?.message || e,
+      });
+    }
+  }, "USER_CREDITS_MAIL");
+}
+
+/* ============================================
    ✅ TODAS LAS RUTAS REQUIEREN LOGIN
 ============================================ */
 router.use(protect);
@@ -607,7 +683,10 @@ router.patch("/:id/approval", adminOnly, validateObjectIdParam, async (req, res)
       title: "Aprobación actualizada",
       description: `Estado de aprobación cambiado de ${prevStatus} a ${user.approvalStatus}.`,
       subject: buildUserSubject(user),
-      diff: buildDiff({ approvalStatus: prevStatus }, { approvalStatus: user.approvalStatus }),
+      diff: buildDiff(
+        { approvalStatus: prevStatus },
+        { approvalStatus: user.approvalStatus }
+      ),
     });
 
     if (shouldSendApprovalMail) {
@@ -686,7 +765,12 @@ router.put("/:id", validateObjectIdParam, async (req, res) => {
     }
 
     const creditsByService = buildCreditsByService(u);
-    return res.json({ ...stripSensitive(u), ...svc, membership, creditsByService });
+    return res.json({
+      ...stripSensitive(u),
+      ...svc,
+      membership,
+      creditsByService,
+    });
   } catch (err) {
     console.error("Error en PUT /users/:id:", err);
     return res.status(500).json({ error: "Error interno." });
@@ -722,7 +806,12 @@ router.get("/:id", validateObjectIdParam, async (req, res) => {
     }
 
     const creditsByService = buildCreditsByService(u);
-    return res.json({ ...stripSensitive(u), ...svc, membership, creditsByService });
+    return res.json({
+      ...stripSensitive(u),
+      ...svc,
+      membership,
+      creditsByService,
+    });
   } catch (err) {
     console.error("Error en GET /users/:id:", err);
     return res.status(500).json({ error: "Error interno." });
@@ -734,10 +823,7 @@ router.patch("/:id/role", adminOnly, validateObjectIdParam, async (req, res) => 
     const { id } = req.params;
     const rawRole = String(req.body?.role || "").toLowerCase().trim();
 
-    const nextRole =
-      rawRole === "usuario"
-        ? "client"
-        : rawRole;
+    const nextRole = rawRole === "usuario" ? "client" : rawRole;
 
     if (!["admin", "profesor", "client"].includes(nextRole)) {
       return res.status(400).json({ error: "Rol inválido." });
@@ -850,53 +936,63 @@ router.get("/:id/history", validateObjectIdParam, async (req, res) => {
   }
 });
 
-router.get("/:id/clinical-notes", adminOrProfessor, validateObjectIdParam, async (req, res) => {
-  try {
-    const { id } = req.params;
-    const user = await User.findById(id).lean();
-    if (!user) return res.status(404).json({ error: "Paciente no encontrado." });
-    return res.json(user.clinicalNotes || []);
-  } catch (err) {
-    console.error("Error en GET /users/:id/clinical-notes:", err);
-    return res
-      .status(500)
-      .json({ error: "Error al obtener historia clínica." });
-  }
-});
-
-router.post("/:id/clinical-notes", adminOrProfessor, validateObjectIdParam, async (req, res) => {
-  try {
-    const { id } = req.params;
-    const { text } = req.body || {};
-
-    if (!text || !String(text).trim()) {
-      return res.status(400).json({
-        error: "El texto de la nota clínica es obligatorio.",
-      });
+router.get(
+  "/:id/clinical-notes",
+  adminOrProfessor,
+  validateObjectIdParam,
+  async (req, res) => {
+    try {
+      const { id } = req.params;
+      const user = await User.findById(id).lean();
+      if (!user) return res.status(404).json({ error: "Paciente no encontrado." });
+      return res.json(user.clinicalNotes || []);
+    } catch (err) {
+      console.error("Error en GET /users/:id/clinical-notes:", err);
+      return res
+        .status(500)
+        .json({ error: "Error al obtener historia clínica." });
     }
-
-    const user = await User.findById(id);
-    if (!user) return res.status(404).json({ error: "Paciente no encontrado." });
-
-    user.clinicalNotes = user.clinicalNotes || [];
-    user.clinicalNotes.push({
-      date: new Date(),
-      author: req.user.name || req.user.email || "Admin",
-      text: String(text).trim(),
-    });
-
-    await user.save();
-    return res.json({ ok: true, clinicalNotes: user.clinicalNotes });
-  } catch (err) {
-    console.error("Error en POST /users/:id/clinical-notes:", err);
-    return res
-      .status(500)
-      .json({ error: "Error al guardar historia clínica." });
   }
-});
+);
+
+router.post(
+  "/:id/clinical-notes",
+  adminOrProfessor,
+  validateObjectIdParam,
+  async (req, res) => {
+    try {
+      const { id } = req.params;
+      const { text } = req.body || {};
+
+      if (!text || !String(text).trim()) {
+        return res.status(400).json({
+          error: "El texto de la nota clínica es obligatorio.",
+        });
+      }
+
+      const user = await User.findById(id);
+      if (!user) return res.status(404).json({ error: "Paciente no encontrado." });
+
+      user.clinicalNotes = user.clinicalNotes || [];
+      user.clinicalNotes.push({
+        date: new Date(),
+        author: req.user.name || req.user.email || "Admin",
+        text: String(text).trim(),
+      });
+
+      await user.save();
+      return res.json({ ok: true, clinicalNotes: user.clinicalNotes });
+    } catch (err) {
+      console.error("Error en POST /users/:id/clinical-notes:", err);
+      return res
+        .status(500)
+        .json({ error: "Error al guardar historia clínica." });
+    }
+  }
+);
 
 /* ============================================
-   ✅ CRÉDITOS (tu código original)
+   ✅ CRÉDITOS (tu código original + mails)
 ============================================ */
 async function updateCredits(req, res) {
   try {
@@ -906,7 +1002,20 @@ async function updateCredits(req, res) {
     const user = await User.findById(id);
     if (!user) return res.status(404).json({ error: "Usuario no encontrado." });
 
-    const applyOne = ({ credits: c, delta: d, serviceKey: skRaw, source: src }) => {
+    // ✅ snapshot ANTES de modificar
+    recalcUserCredits(user);
+    const beforeCredits = buildCreditsByService(user);
+    const beforeTotal = Object.values(beforeCredits || {}).reduce(
+      (a, b) => a + Number(b || 0),
+      0
+    );
+
+    const applyOne = ({
+      credits: c,
+      delta: d,
+      serviceKey: skRaw,
+      source: src,
+    }) => {
       const sk = String(skRaw || "EP").toUpperCase().trim() || "EP";
       if (!ALLOWED_SERVICE_KEYS.has(sk)) {
         const err = new Error("serviceKey inválido.");
@@ -920,17 +1029,29 @@ async function updateCredits(req, res) {
       if (typeof c === "number") {
         const target = Math.max(0, Math.round(c));
         const diff = target - currentForService;
-        if (diff > 0)
-          addCreditLot(user, { amount: diff, serviceKey: sk, source: src || "admin-set" });
-        else if (diff < 0) consumeCreditsForService(user, Math.abs(diff), sk);
+        if (diff > 0) {
+          addCreditLot(user, {
+            amount: diff,
+            serviceKey: sk,
+            source: src || "admin-set",
+          });
+        } else if (diff < 0) {
+          consumeCreditsForService(user, Math.abs(diff), sk);
+        }
         return;
       }
 
       if (typeof d === "number") {
         const dd = Math.round(d);
-        if (dd > 0)
-          addCreditLot(user, { amount: dd, serviceKey: sk, source: src || "admin-delta" });
-        else if (dd < 0) consumeCreditsForService(user, Math.abs(dd), sk);
+        if (dd > 0) {
+          addCreditLot(user, {
+            amount: dd,
+            serviceKey: sk,
+            source: src || "admin-delta",
+          });
+        } else if (dd < 0) {
+          consumeCreditsForService(user, Math.abs(dd), sk);
+        }
         return;
       }
 
@@ -949,10 +1070,13 @@ async function updateCredits(req, res) {
         });
       }
     } else {
-      applyOne({ credits, delta, serviceKey, source: source || "admin-single" });
+      applyOne({
+        credits,
+        delta,
+        serviceKey,
+        source: source || "admin-single",
+      });
     }
-
-    const beforeCredits = buildCreditsByService(user);
 
     recalcUserCredits(user);
     await user.save();
@@ -969,10 +1093,21 @@ async function updateCredits(req, res) {
       description: "Se modificaron los créditos/sesiones del usuario.",
       subject: buildUserSubject(user),
       diff: buildDiff(
-        { total: Object.values(beforeCredits || {}).reduce((a, b) => a + Number(b || 0), 0), byService: beforeCredits },
+        { total: beforeTotal, byService: beforeCredits },
         { total: Number(user.credits || 0), byService: creditsByService }
       ),
-      meta: { source: source || (Array.isArray(items) ? "admin-batch" : "admin-single") },
+      meta: {
+        source: source || (Array.isArray(items) ? "admin-batch" : "admin-single"),
+      },
+    });
+
+    // ✅ mails async al admin + usuario
+    queueCreditsEmails({
+      req,
+      updatedUser: user.toObject ? user.toObject() : user,
+      items: Array.isArray(items) && items.length > 0
+        ? items
+        : [{ credits, delta, serviceKey }],
     });
 
     const svc = computeServiceAccessFromLots(user);
@@ -995,36 +1130,41 @@ async function updateCredits(req, res) {
 router.patch("/:id/credits", adminOnly, validateObjectIdParam, updateCredits);
 router.post("/:id/credits", adminOnly, validateObjectIdParam, updateCredits);
 
-router.post("/:id/reset-password", adminOnly, validateObjectIdParam, async (req, res) => {
-  try {
-    const { id } = req.params;
-    const user = await User.findById(id);
-    if (!user) return res.status(404).json({ error: "Usuario no encontrado." });
+router.post(
+  "/:id/reset-password",
+  adminOnly,
+  validateObjectIdParam,
+  async (req, res) => {
+    try {
+      const { id } = req.params;
+      const user = await User.findById(id);
+      if (!user) return res.status(404).json({ error: "Usuario no encontrado." });
 
-    const tempPassword = Math.random().toString(36).slice(2, 10);
-    const hash = await bcrypt.hash(tempPassword, 10);
+      const tempPassword = Math.random().toString(36).slice(2, 10);
+      const hash = await bcrypt.hash(tempPassword, 10);
 
-    user.password = hash;
-    user.mustChangePassword = true;
-    await user.save();
+      user.password = hash;
+      user.mustChangePassword = true;
+      await user.save();
 
-    await logActivity({
-      req,
-      category: "users",
-      action: "user_password_reset",
-      entity: "user",
-      entityId: user._id,
-      title: "Password reseteada",
-      description: "Un admin reseteó la contraseña del usuario.",
-      subject: buildUserSubject(user),
-    });
+      await logActivity({
+        req,
+        category: "users",
+        action: "user_password_reset",
+        entity: "user",
+        entityId: user._id,
+        title: "Password reseteada",
+        description: "Un admin reseteó la contraseña del usuario.",
+        subject: buildUserSubject(user),
+      });
 
-    return res.json({ ok: true, tempPassword });
-  } catch (err) {
-    console.error("Error en reset password:", err);
-    return res.status(500).json({ error: "Error interno." });
+      return res.json({ ok: true, tempPassword });
+    } catch (err) {
+      console.error("Error en reset password:", err);
+      return res.status(500).json({ error: "Error interno." });
+    }
   }
-});
+);
 
 router.patch("/:id/suspend", adminOnly, validateObjectIdParam, async (req, res) => {
   try {
@@ -1047,7 +1187,10 @@ router.patch("/:id/suspend", adminOnly, validateObjectIdParam, async (req, res) 
       title: "Estado de suspensión actualizado",
       description: user.suspended ? "Usuario suspendido." : "Usuario reactivado.",
       subject: buildUserSubject(user),
-      diff: buildDiff({ suspended: prevSuspended }, { suspended: !!user.suspended }),
+      diff: buildDiff(
+        { suspended: prevSuspended },
+        { suspended: !!user.suspended }
+      ),
     });
 
     return res.json({ ok: true, suspended: user.suspended });
@@ -1153,10 +1296,7 @@ router.delete("/:id/apto", validateObjectIdParam, async (req, res) => {
     }
 
     // 2) update atómico (NO save)
-    await User.updateOne(
-      { _id: id },
-      { $set: { aptoPath: "", aptoStatus: "" } }
-    );
+    await User.updateOne({ _id: id }, { $set: { aptoPath: "", aptoStatus: "" } });
 
     return res.json({ ok: true, message: "Apto eliminado correctamente." });
   } catch (err) {
