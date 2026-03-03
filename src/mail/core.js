@@ -1,4 +1,3 @@
-// backend/src/mail/core.js
 import nodemailer from "nodemailer";
 import dotenv from "dotenv";
 
@@ -9,9 +8,13 @@ let transporter = null;
 /* =========================================================
    Config
 ========================================================= */
-export const ADMIN_EMAIL = String(process.env.ADMIN_EMAIL || "duoclub.ar@gmail.com").trim();
+export const ADMIN_EMAIL = String(
+  process.env.ADMIN_EMAIL || "duoclub.ar@gmail.com"
+).trim();
 export const BRAND_NAME = String(process.env.BRAND_NAME || "DUO").trim();
-export const BRAND_URL = String(process.env.BRAND_URL || "https://duoclub.ar").trim();
+export const BRAND_URL = String(
+  process.env.BRAND_URL || "https://duoclub.ar"
+).trim();
 
 /* =========================================================
    Boot log (SIEMPRE)
@@ -21,7 +24,9 @@ console.log("[MAIL] core loaded", {
   SMTP_HOST: process.env.SMTP_HOST,
   SMTP_PORT: process.env.SMTP_PORT,
   SMTP_SECURE: process.env.SMTP_SECURE,
-  SMTP_USER: process.env.SMTP_USER ? JSON.stringify(process.env.SMTP_USER) : null,
+  SMTP_USER: process.env.SMTP_USER
+    ? JSON.stringify(process.env.SMTP_USER)
+    : null,
   hasSMTP_PASS: !!process.env.SMTP_PASS,
   MAIL_FROM: process.env.MAIL_FROM,
   ADMIN_EMAIL,
@@ -123,12 +128,12 @@ export async function sendMail(to, subject, text, html) {
 
   if (!cleanTo || !cleanSubject) {
     console.log("[MAIL] invalid args", { to, subject });
-    return;
+    throw new Error("Argumentos inválidos para sendMail");
   }
 
   if (!tx) {
     console.log("[MAIL MOCK] not sent", { to: cleanTo, subject: cleanSubject });
-    return;
+    throw new Error("SMTP no configurado");
   }
 
   const from = envTrim("MAIL_FROM") || envTrim("SMTP_USER");

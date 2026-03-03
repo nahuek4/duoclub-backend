@@ -1,4 +1,3 @@
-// backend/src/mail/admissionEmails.js
 import { ADMIN_EMAIL, BRAND_NAME, sendMail, BRAND_URL } from "./core.js";
 import { escapeHtml, kvRow, kvRowRaw } from "./helpers.js";
 import { buildEmailLayout } from "./layout.js";
@@ -19,7 +18,9 @@ function cleanStr(v, fallback = "-") {
 function formatARDateTime(dateLike) {
   try {
     const d = dateLike ? new Date(dateLike) : null;
-    if (!d || Number.isNaN(d.getTime())) return { createdDate: "-", createdTime: "-" };
+    if (!d || Number.isNaN(d.getTime())) {
+      return { createdDate: "-", createdTime: "-" };
+    }
 
     const createdDate = d.toLocaleDateString("es-AR", {
       timeZone: "America/Argentina/Buenos_Aires",
@@ -81,7 +82,9 @@ function admissionSummary(adm = {}, user = null) {
   // -------------------------
   const birth =
     s1.birthDay && s1.birthMonth && s1.birthYear
-      ? `${cleanStr(s1.birthDay)} / ${cleanStr(s1.birthMonth)} / ${cleanStr(s1.birthYear)}`
+      ? `${cleanStr(s1.birthDay)} / ${cleanStr(s1.birthMonth)} / ${cleanStr(
+          s1.birthYear
+        )}`
       : "-";
 
   const hasContraindication =
@@ -100,7 +103,9 @@ function admissionSummary(adm = {}, user = null) {
       : cleanStr(s1.hadInjuryLastYear);
 
   const diabetes =
-    s1.diabetes === "SI" ? `SI (${cleanStr(s1.diabetesType)})` : cleanStr(s1.diabetes);
+    s1.diabetes === "SI"
+      ? `SI (${cleanStr(s1.diabetesType)})`
+      : cleanStr(s1.diabetes);
 
   const smokes =
     s1.smokes === "SI"
@@ -125,7 +130,7 @@ function admissionSummary(adm = {}, user = null) {
       : cleanStr(s1.pregnant);
 
   // -------------------------
-  // STEP 2 (según tu Step2)
+  // STEP 2 (según tu Step2 REAL)
   // -------------------------
   const needsRehab = cleanStr(s2.needsRehab);
 
@@ -133,60 +138,72 @@ function admissionSummary(adm = {}, user = null) {
     needsRehab !== "SI"
       ? "N/A"
       : s2.hasDiagnosisOrder === "SI"
-        ? `SI (${cleanStr(s2.diagnosisDetail)})`
-        : cleanStr(s2.hasDiagnosisOrder);
+      ? `SI (${cleanStr(s2.diagnosisOrderDetail)})`
+      : cleanStr(s2.hasDiagnosisOrder);
 
   const rehab_symptoms = needsRehab !== "SI" ? "N/A" : cleanStr(s2.symptoms);
-  const rehab_symptomDate = needsRehab !== "SI" ? "N/A" : cleanStr(s2.symptomDate);
+
+  const rehab_symptomDate =
+    needsRehab !== "SI" ? "N/A" : cleanStr(s2.symptomStartDate);
 
   const rehab_medicalConsult =
     needsRehab !== "SI"
       ? "N/A"
       : s2.medicalConsult === "SI"
-        ? `SI (${cleanStr(s2.medicalConsultWhen)})`
-        : cleanStr(s2.medicalConsult);
+      ? `SI (${cleanStr(s2.medicalConsultWhen)})`
+      : cleanStr(s2.medicalConsult);
 
   const rehab_diagnosticStudy =
     needsRehab !== "SI"
       ? "N/A"
       : s2.diagnosticStudy === "OTRO"
-        ? `OTRO (${cleanStr(s2.diagnosticStudyOther)})`
-        : cleanStr(s2.diagnosticStudy);
+      ? `OTRO (${cleanStr(s2.diagnosticStudyOther)})`
+      : cleanStr(s2.diagnosticStudy);
 
-  const rehab_howHappened = needsRehab !== "SI" ? "N/A" : cleanStr(s2.howHappened);
-  const rehab_dailyDiscomfort = needsRehab !== "SI" ? "N/A" : cleanStr(s2.dailyDiscomfort);
-  const rehab_mobilityIssue = needsRehab !== "SI" ? "N/A" : cleanStr(s2.mobilityIssue);
+  const rehab_howHappened =
+    needsRehab !== "SI" ? "N/A" : cleanStr(s2.incidentHow);
+
+  const rehab_dailyDiscomfort =
+    needsRehab !== "SI" ? "N/A" : cleanStr(s2.dailyDiscomfort);
+
+  const rehab_mobilityIssue =
+    needsRehab !== "SI" ? "N/A" : cleanStr(s2.mobilityIssue);
 
   const rehab_takesMedication =
     needsRehab !== "SI"
       ? "N/A"
       : s2.takesMedication === "SI"
-        ? `SI (${cleanStr(s2.medicationDetail)})`
-        : cleanStr(s2.takesMedication);
+      ? `SI (${cleanStr(s2.medicationDetail)})`
+      : cleanStr(s2.takesMedication);
 
   // deporte
   const practicesCompetitiveSport = cleanStr(s2.practicesCompetitiveSport);
 
-  const competitionLevel = practicesCompetitiveSport !== "SI" ? "N/A" : cleanStr(s2.competitionLevel);
-  const sportName = practicesCompetitiveSport !== "SI" ? "N/A" : cleanStr(s2.sportName);
-  const sportPosition = practicesCompetitiveSport !== "SI" ? "N/A" : cleanStr(s2.sportPosition);
+  // Estos campos no existen en tu Step2 actual
+  const competitionLevel = "N/A";
+  const sportName = "N/A";
+  const sportPosition = "N/A";
 
   // plan
   const immediateGoal = cleanStr(s2.immediateGoal);
 
   const trainAlone =
     s2.trainAlone === "SOMOS"
-      ? `SOMOS (${cleanStr(s2.groupCount)})`
+      ? `SOMOS (${cleanStr(s2.trainWithCount)})`
       : cleanStr(s2.trainAlone);
 
-  const idealSchedule = cleanStr(s2.idealSchedule);
+  const idealSchedule = cleanStr(s2.idealTimeRange);
   const preferredDays = cleanStr(s2.preferredDays);
   const weeklySessions = cleanStr(s2.weeklySessions);
   const modality = cleanStr(s2.modality);
 
   // consentimiento
   const acceptsConsent =
-    s2.acceptsConsent === true ? "SI" : s2.acceptsConsent === false ? "NO" : cleanStr(s2.acceptsConsent);
+    s2.acceptedTerms === true
+      ? "SI"
+      : s2.acceptedTerms === false
+      ? "NO"
+      : cleanStr(s2.acceptedTerms);
 
   return {
     admissionId,
@@ -252,7 +269,10 @@ function admissionSummary(adm = {}, user = null) {
 /* =========================================================
    ADMIN email (FULL Q/A)
 ========================================================= */
-export async function sendAdminAdmissionCompletedEmail(admissionDoc = {}, pseudoUser = null) {
+export async function sendAdminAdmissionCompletedEmail(
+  admissionDoc = {},
+  pseudoUser = null
+) {
   const to = ADMIN_EMAIL;
   if (!to) return;
 
@@ -268,7 +288,6 @@ export async function sendAdminAdmissionCompletedEmail(admissionDoc = {}, pseudo
 
   const subject = `🧾 Formulario completo (Admisión) — ${s.fullName} · #${s.publicId}`;
 
-  // ✅ Texto (fallback) con preguntas/resp completas
   const text = [
     "Formulario de admisión completado (Step1 + Step2)",
     "",
@@ -333,7 +352,6 @@ export async function sendAdminAdmissionCompletedEmail(admissionDoc = {}, pseudo
     `Aceptó términos: ${s.acceptsConsent}`,
   ].join("\n");
 
-  // ✅ HTML FULL con secciones y preguntas
   const bodyHtml = `
     <div style="display:flex; align-items:center; gap:10px; margin-bottom:12px;">
       <div style="font-size:18px; font-weight:800;">Formulario completado</div>
@@ -447,10 +465,16 @@ export async function sendAdminAdmissionCompletedEmail(admissionDoc = {}, pseudo
 }
 
 /* =========================================================
-   USER email (sin cambios)
+   USER email
 ========================================================= */
-export async function sendUserAdmissionReceivedEmail(admissionDoc = {}, pseudoUser = null) {
-  const email = cleanStr(pseudoUser?.email || admissionDoc?.step1?.email, "").trim();
+export async function sendUserAdmissionReceivedEmail(
+  admissionDoc = {},
+  pseudoUser = null
+) {
+  const email = cleanStr(
+    pseudoUser?.email || admissionDoc?.step1?.email,
+    ""
+  ).trim();
   if (!email) return;
 
   const s = admissionSummary(admissionDoc, pseudoUser);
@@ -462,7 +486,8 @@ export async function sendUserAdmissionReceivedEmail(admissionDoc = {}, pseudoUs
     fullName: s.fullName,
   });
 
-  const helloName = cleanStr(pseudoUser?.name, "") || cleanStr(s.fullName, "Hola");
+  const helloName =
+    cleanStr(pseudoUser?.name, "") || cleanStr(s.fullName, "Hola");
 
   const subject = `✅ Recibimos tu formulario - ${BRAND_NAME}`;
 
@@ -480,7 +505,9 @@ export async function sendUserAdmissionReceivedEmail(admissionDoc = {}, pseudoUs
     <div style="font-size:18px; font-weight:800; margin-bottom:10px;">Formulario recibido</div>
 
     <div style="color:#333; margin-bottom:12px;">
-      Hola <b>${escapeHtml(helloName)}</b>, recibimos tu formulario correctamente.
+      Hola <b>${escapeHtml(
+        helloName
+      )}</b>, recibimos tu formulario correctamente.
     </div>
 
     <div style="border:1px solid #eee; border-radius:14px; overflow:hidden;">
@@ -507,7 +534,7 @@ export async function sendUserAdmissionReceivedEmail(admissionDoc = {}, pseudoUs
 }
 
 /* =========================================================
-   ✅ USER email: Alta aprobada (sin cambios)
+   ✅ USER email: Alta aprobada
 ========================================================= */
 export async function sendUserApprovedEmail({
   to,
@@ -565,7 +592,9 @@ export async function sendUserApprovedEmail({
     </div>
 
     <div style="color:#333; margin-bottom:12px;">
-      Hola <b>${escapeHtml(fullName)}</b>, tu alta fue <b>aprobada</b>. Ya podés ingresar a la plataforma.
+      Hola <b>${escapeHtml(
+        fullName
+      )}</b>, tu alta fue <b>aprobada</b>. Ya podés ingresar a la plataforma.
     </div>
 
     <div style="border:1px solid #eee; border-radius:14px; overflow:hidden;">
@@ -573,7 +602,9 @@ export async function sendUserApprovedEmail({
         ${kvRow("Email", email)}
         ${kvRowRaw(
           "Ingreso",
-          `<a href="${escapeHtml(url)}" style="color:#111; font-weight:800; text-decoration:none;">${escapeHtml(
+          `<a href="${escapeHtml(
+            url
+          )}" style="color:#111; font-weight:800; text-decoration:none;">${escapeHtml(
             url
           )}</a>`
         )}
@@ -592,7 +623,10 @@ export async function sendUserApprovedEmail({
               String(password).trim()
             )}</span>`
           )}
-          ${kvRow("Importante", "En tu primer ingreso te vamos a pedir que la cambies.")}
+          ${kvRow(
+            "Importante",
+            "En tu primer ingreso te vamos a pedir que la cambies."
+          )}
         </table>
       </div>
     `
