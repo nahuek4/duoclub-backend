@@ -2,6 +2,9 @@ import { ADMIN_EMAIL, BRAND_NAME, sendMail, BRAND_URL } from "./core.js";
 import { escapeHtml, kvRow, kvRowRaw } from "./helpers.js";
 import { buildEmailLayout } from "./layout.js";
 
+const EMAIL_FONT =
+  "'Helvetica Now Display', 'Helvetica Neue', Helvetica, Arial, sans-serif";
+
 /* =========================================================
    ✅ ADMISSION (Formulario completo Step2) — ADMIN + USER
 ========================================================= */
@@ -334,15 +337,15 @@ export async function sendAdminAdmissionCompletedEmail(
   ].join("\n");
 
   const bodyHtml = `
-    <div style="display:flex; align-items:center; gap:10px; margin-bottom:12px;">
-      <div style="font-size:18px; font-weight:800;">Formulario completado</div>
-      <div style="margin-left:auto; background:#e9f7ef; color:#0b6b2a; padding:6px 10px; border-radius:999px; font-size:12px; font-weight:800;">
+    <div style="font-family:${EMAIL_FONT}; display:flex; align-items:center; gap:10px; margin-bottom:12px;">
+      <div style="font-family:${EMAIL_FONT}; font-size:18px; font-weight:800;">Formulario completado</div>
+      <div style="font-family:${EMAIL_FONT}; margin-left:auto; background:#e9f7ef; color:#0b6b2a; padding:6px 10px; border-radius:999px; font-size:12px; font-weight:800;">
         COMPLETO
       </div>
     </div>
 
     <div style="border:1px solid #eee; border-radius:14px; overflow:hidden;">
-      <table role="presentation" cellpadding="0" cellspacing="0" width="100%" style="border-collapse:collapse;">
+      <table role="presentation" cellpadding="0" cellspacing="0" width="100%" style="border-collapse:collapse; font-family:${EMAIL_FONT};">
         ${qaRow("Código", `#${s.publicId}`)}
         ${qaRow("AdmissionId", s.admissionId)}
         ${qaRow("Creado", `${s.createdDate} ${s.createdTime}`)}
@@ -353,18 +356,18 @@ export async function sendAdminAdmissionCompletedEmail(
       </table>
     </div>
 
-    <div style="margin-top:14px; font-size:13px; font-weight:900;">STEP 1 · Datos personales</div>
+    <div style="font-family:${EMAIL_FONT}; margin-top:14px; font-size:13px; font-weight:900;">STEP 1 · Datos personales</div>
     <div style="border:1px solid #eee; border-radius:14px; overflow:hidden; margin-top:8px;">
-      <table role="presentation" cellpadding="0" cellspacing="0" width="100%" style="border-collapse:collapse;">
+      <table role="presentation" cellpadding="0" cellspacing="0" width="100%" style="border-collapse:collapse; font-family:${EMAIL_FONT};">
         ${qaRow("Fecha de nacimiento", s.birth)}
         ${qaRow("Altura", s.height)}
         ${qaRow("Peso aproximado", s.weight)}
       </table>
     </div>
 
-    <div style="margin-top:14px; font-size:13px; font-weight:900;">STEP 1 · Tu actualidad física</div>
+    <div style="font-family:${EMAIL_FONT}; margin-top:14px; font-size:13px; font-weight:900;">STEP 1 · Tu actualidad física</div>
     <div style="border:1px solid #eee; border-radius:14px; overflow:hidden; margin-top:8px;">
-      <table role="presentation" cellpadding="0" cellspacing="0" width="100%" style="border-collapse:collapse;">
+      <table role="presentation" cellpadding="0" cellspacing="0" width="100%" style="border-collapse:collapse; font-family:${EMAIL_FONT};">
         ${qaRow("Cómo considerás tu condición física actual", s.fitnessLevel)}
         ${qaRow("Tenés alguna contraindicación médica?", s.hasContraindication)}
         ${qaRow("Cuándo fue la última vez que entrenaste supervisado/a?", s.lastSupervisedTraining)}
@@ -375,9 +378,9 @@ export async function sendAdminAdmissionCompletedEmail(
       </table>
     </div>
 
-    <div style="margin-top:14px; font-size:13px; font-weight:900;">STEP 1 · Acerca de tu salud general</div>
+    <div style="font-family:${EMAIL_FONT}; margin-top:14px; font-size:13px; font-weight:900;">STEP 1 · Acerca de tu salud general</div>
     <div style="border:1px solid #eee; border-radius:14px; overflow:hidden; margin-top:8px;">
-      <table role="presentation" cellpadding="0" cellspacing="0" width="100%" style="border-collapse:collapse;">
+      <table role="presentation" cellpadding="0" cellspacing="0" width="100%" style="border-collapse:collapse; font-family:${EMAIL_FONT};">
         ${qaRow("Diabetes", s.diabetes)}
         ${qaRow("Presión arterial", s.bloodPressure)}
         ${qaRow("Fumás?", s.smokes)}
@@ -390,9 +393,9 @@ export async function sendAdminAdmissionCompletedEmail(
       </table>
     </div>
 
-    <div style="margin-top:14px; font-size:13px; font-weight:900;">STEP 2 · Rehabilitación</div>
+    <div style="font-family:${EMAIL_FONT}; margin-top:14px; font-size:13px; font-weight:900;">STEP 2 · Rehabilitación</div>
     <div style="border:1px solid #eee; border-radius:14px; overflow:hidden; margin-top:8px;">
-      <table role="presentation" cellpadding="0" cellspacing="0" width="100%" style="border-collapse:collapse;">
+      <table role="presentation" cellpadding="0" cellspacing="0" width="100%" style="border-collapse:collapse; font-family:${EMAIL_FONT};">
         ${qaRow("Necesita rehabilitación", s.needsRehab)}
         ${qaRow("Tenés diagnóstico y órden médica para iniciar tu rehabilitación?", s.rehab_hasDiagnosisOrder)}
         ${qaRow("Cuáles son tus síntomas", s.rehab_symptoms)}
@@ -406,9 +409,9 @@ export async function sendAdminAdmissionCompletedEmail(
       </table>
     </div>
 
-    <div style="margin-top:14px; font-size:13px; font-weight:900;">STEP 2 · Tu actualidad deportiva</div>
+    <div style="font-family:${EMAIL_FONT}; margin-top:14px; font-size:13px; font-weight:900;">STEP 2 · Tu actualidad deportiva</div>
     <div style="border:1px solid #eee; border-radius:14px; overflow:hidden; margin-top:8px;">
-      <table role="presentation" cellpadding="0" cellspacing="0" width="100%" style="border-collapse:collapse;">
+      <table role="presentation" cellpadding="0" cellspacing="0" width="100%" style="border-collapse:collapse; font-family:${EMAIL_FONT};">
         ${qaRow("Practicás un deporte de forma competitiva?", s.practicesCompetitiveSport)}
         ${qaRow("Competís a nivel", s.competitionLevel)}
         ${qaRow("Cuál es tu deporte", s.sportName)}
@@ -416,9 +419,9 @@ export async function sendAdminAdmissionCompletedEmail(
       </table>
     </div>
 
-    <div style="margin-top:14px; font-size:13px; font-weight:900;">STEP 2 · Tu nuevo plan</div>
+    <div style="font-family:${EMAIL_FONT}; margin-top:14px; font-size:13px; font-weight:900;">STEP 2 · Tu nuevo plan</div>
     <div style="border:1px solid #eee; border-radius:14px; overflow:hidden; margin-top:8px;">
-      <table role="presentation" cellpadding="0" cellspacing="0" width="100%" style="border-collapse:collapse;">
+      <table role="presentation" cellpadding="0" cellspacing="0" width="100%" style="border-collapse:collapse; font-family:${EMAIL_FONT};">
         ${qaRow("Cuál es tu objetivo inmediato?", s.immediateGoal)}
         ${qaRow("Entrenarías solo/a?", s.trainAlone)}
         ${qaRow("Cuál es tu rango horario ideal?", s.idealSchedule)}
@@ -428,9 +431,9 @@ export async function sendAdminAdmissionCompletedEmail(
       </table>
     </div>
 
-    <div style="margin-top:14px; font-size:13px; font-weight:900;">Consentimiento</div>
+    <div style="font-family:${EMAIL_FONT}; margin-top:14px; font-size:13px; font-weight:900;">Consentimiento</div>
     <div style="border:1px solid #eee; border-radius:14px; overflow:hidden; margin-top:8px;">
-      <table role="presentation" cellpadding="0" cellspacing="0" width="100%" style="border-collapse:collapse;">
+      <table role="presentation" cellpadding="0" cellspacing="0" width="100%" style="border-collapse:collapse; font-family:${EMAIL_FONT};">
         ${qaRow("Aceptó términos", s.acceptsConsent)}
       </table>
     </div>
@@ -489,7 +492,7 @@ export async function sendUserAdmissionReceivedEmail(
   ].join("\n");
 
   const bodyHtml = `
-    <div style="padding:18px 10px 8px; text-align:center; font-family:Arial,Helvetica,sans-serif; color:#111;">
+    <div style="padding:18px 10px 8px; text-align:center; font-family:${EMAIL_FONT}; color:#111;">
       <div style="
         width:58px;
         height:58px;
@@ -500,6 +503,7 @@ export async function sendUserAdmissionReceivedEmail(
         font-size:38px;
         line-height:58px;
         font-weight:900;
+        font-family:${EMAIL_FONT};
       ">✓</div>
 
       <div style="
@@ -508,6 +512,7 @@ export async function sendUserAdmissionReceivedEmail(
         font-weight:900;
         margin:0 auto 26px;
         max-width:280px;
+        font-family:${EMAIL_FONT};
       ">
         Tu formulario fue<br/>enviado con éxito
       </div>
@@ -518,24 +523,25 @@ export async function sendUserAdmissionReceivedEmail(
         font-weight:400;
         max-width:380px;
         margin:0 auto;
+        font-family:${EMAIL_FONT};
       ">
-        <div style="margin-bottom:10px;">
+        <div style="margin-bottom:10px; font-family:${EMAIL_FONT};">
           Hola (${escapeHtml(helloName)}),
         </div>
 
-        <div style="margin-bottom:14px;">
+        <div style="margin-bottom:14px; font-family:${EMAIL_FONT};">
           Gracias por completar el formulario.<br/>
-          <span style="font-weight:900;">
+          <span style="font-weight:900; font-family:${EMAIL_FONT};">
             Tu solicitud fue enviada con éxito y se encuentra pendiente de admisión.
           </span><br/>
           Nuestro equipo la revisará y te avisaremos por este medio cuando tu acceso haya sido aprobado.
         </div>
 
-        <div style="margin-bottom:10px; font-weight:900;">
+        <div style="margin-bottom:10px; font-weight:900; font-family:${EMAIL_FONT};">
           ▶ ¿Qué sigue ahora?
         </div>
 
-        <div>
+        <div style="font-family:${EMAIL_FONT};">
           Revisaremos tu información<br/>
           Si falta algún dato, te lo solicitaremos<br/>
           Si está todo OK, recibirás el mail de alta<br/>
@@ -606,27 +612,27 @@ export async function sendUserApprovedEmail({
   const text = textLines.join("\n");
 
   const bodyHtml = `
-    <div style="display:flex; align-items:center; gap:10px; margin-bottom:12px;">
-      <div style="font-size:18px; font-weight:800;">Alta aprobada</div>
-      <div style="margin-left:auto; background:#e9f7ef; color:#0b6b2a; padding:6px 10px; border-radius:999px; font-size:12px; font-weight:800;">
+    <div style="font-family:${EMAIL_FONT}; display:flex; align-items:center; gap:10px; margin-bottom:12px;">
+      <div style="font-family:${EMAIL_FONT}; font-size:18px; font-weight:800;">Alta aprobada</div>
+      <div style="font-family:${EMAIL_FONT}; margin-left:auto; background:#e9f7ef; color:#0b6b2a; padding:6px 10px; border-radius:999px; font-size:12px; font-weight:800;">
         APROBADA
       </div>
     </div>
 
-    <div style="color:#333; margin-bottom:12px;">
+    <div style="font-family:${EMAIL_FONT}; color:#333; margin-bottom:12px;">
       Hola <b>${escapeHtml(
         fullName
       )}</b>, tu alta fue <b>aprobada</b>. Ya podés ingresar a la plataforma.
     </div>
 
     <div style="border:1px solid #eee; border-radius:14px; overflow:hidden;">
-      <table role="presentation" cellpadding="0" cellspacing="0" width="100%" style="border-collapse:collapse;">
+      <table role="presentation" cellpadding="0" cellspacing="0" width="100%" style="border-collapse:collapse; font-family:${EMAIL_FONT};">
         ${kvRow("Email", email)}
         ${kvRowRaw(
           "Ingreso",
           `<a href="${escapeHtml(
             url
-          )}" style="color:#111; font-weight:800; text-decoration:none;">${escapeHtml(
+          )}" style="color:#111; font-weight:800; text-decoration:none; font-family:${EMAIL_FONT};">${escapeHtml(
             url
           )}</a>`
         )}
@@ -636,12 +642,12 @@ export async function sendUserApprovedEmail({
     ${
       hasPass
         ? `
-      <div style="margin-top:14px; font-size:13px; font-weight:800;">Tu contraseña temporal</div>
+      <div style="font-family:${EMAIL_FONT}; margin-top:14px; font-size:13px; font-weight:800;">Tu contraseña temporal</div>
       <div style="margin-top:8px; border:1px solid #eee; border-radius:14px; overflow:hidden;">
-        <table role="presentation" cellpadding="0" cellspacing="0" width="100%" style="border-collapse:collapse;">
+        <table role="presentation" cellpadding="0" cellspacing="0" width="100%" style="border-collapse:collapse; font-family:${EMAIL_FONT};">
           ${kvRowRaw(
             "Password",
-            `<span style="font-family:ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono', 'Courier New', monospace; font-size:16px; letter-spacing:0.6px; font-weight:900;">${escapeHtml(
+            `<span style="font-family:${EMAIL_FONT}; font-size:16px; letter-spacing:0.6px; font-weight:900;">${escapeHtml(
               String(password).trim()
             )}</span>`
           )}
@@ -655,7 +661,7 @@ export async function sendUserApprovedEmail({
         : ""
     }
 
-    <div style="margin-top:14px; font-size:12px; color:#666;">
+    <div style="font-family:${EMAIL_FONT}; margin-top:14px; font-size:12px; color:#666;">
       Si no fuiste vos, escribinos a ${escapeHtml(ADMIN_EMAIL)}.
     </div>
   `;

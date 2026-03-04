@@ -1,6 +1,9 @@
 import { BRAND_NAME, BRAND_URL } from "./core.js";
 import { escapeHtml } from "./helpers.js";
 
+const EMAIL_FONT =
+  "'Helvetica Now Display', 'Helvetica Neue', Helvetica, Arial, sans-serif";
+
 /**
  * Layout visual unificado inspirado en los mockups:
  * - fondo gris claro
@@ -35,7 +38,7 @@ export function buildEmailLayout({ title, preheader, bodyHtml, footerNote }) {
             <table role="presentation" cellpadding="0" cellspacing="0" width="100%" style="max-width:560px; border-collapse:collapse;">
               <tr>
                 <td align="center" style="padding:0 0 8px;">
-                  <div style="font-family:Arial,Helvetica,sans-serif; font-size:13px; line-height:18px; color:#111111; font-weight:800; letter-spacing:.2px;">
+                  <div style="font-family:${EMAIL_FONT}; font-size:13px; line-height:18px; color:#111111; font-weight:800; letter-spacing:.2px;">
                     ${
                       BRAND_URL
                         ? `<a href="${BRAND_URL}" style="color:#111111; text-decoration:none;">${escapeHtml(
@@ -49,7 +52,7 @@ export function buildEmailLayout({ title, preheader, bodyHtml, footerNote }) {
 
               <tr>
                 <td style="background:#e9e9e9; padding:0 0 12px;">
-                  <div style="font-family:Arial,Helvetica,sans-serif; color:#111111; text-align:center;">
+                  <div style="font-family:${EMAIL_FONT}; color:#111111; text-align:center;">
                     ${String(bodyHtml || "")}
                   </div>
                 </td>
@@ -57,7 +60,7 @@ export function buildEmailLayout({ title, preheader, bodyHtml, footerNote }) {
 
               <tr>
                 <td align="center" style="padding:8px 14px 0;">
-                  <div style="font-family:Arial,Helvetica,sans-serif; font-size:12px; line-height:18px; color:#5f5f5f;">
+                  <div style="font-family:${EMAIL_FONT}; font-size:12px; line-height:18px; color:#5f5f5f;">
                     ${_footer}
                   </div>
                 </td>
@@ -74,7 +77,7 @@ export function buildEmailLayout({ title, preheader, bodyHtml, footerNote }) {
 export function renderStatusIconCircle(symbol = "✓") {
   const safe = escapeHtml(symbol);
   return `
-    <div style="width:58px; height:58px; border-radius:999px; background:#000; color:#fff; margin:0 auto 14px; text-align:center; line-height:58px; font-size:38px; font-weight:900; font-family:Arial,Helvetica,sans-serif;">
+    <div style="width:58px; height:58px; border-radius:999px; background:#000; color:#fff; margin:0 auto 14px; text-align:center; line-height:58px; font-size:38px; font-weight:900; font-family:${EMAIL_FONT};">
       ${safe}
     </div>
   `;
@@ -82,7 +85,7 @@ export function renderStatusIconCircle(symbol = "✓") {
 
 export function renderHeroTitle(text = "") {
   return `
-    <div style="font-family:Arial,Helvetica,sans-serif; font-size:22px; line-height:26px; color:#111; font-weight:900; text-align:center; margin:0 auto 18px; max-width:420px;">
+    <div style="font-family:${EMAIL_FONT}; font-size:22px; line-height:26px; color:#111; font-weight:900; text-align:center; margin:0 auto 18px; max-width:420px;">
       ${escapeHtml(text)}
     </div>
   `;
@@ -90,7 +93,7 @@ export function renderHeroTitle(text = "") {
 
 export function renderBodyCopy(html = "") {
   return `
-    <div style="font-family:Arial,Helvetica,sans-serif; font-size:15px; line-height:21px; color:#111; text-align:center; max-width:430px; margin:0 auto;">
+    <div style="font-family:${EMAIL_FONT}; font-size:15px; line-height:21px; color:#111; text-align:center; max-width:430px; margin:0 auto;">
       ${String(html || "")}
     </div>
   `;
@@ -103,15 +106,15 @@ export function renderTurnCards(items = []) {
       <div style="border:1px solid #dfff00; border-radius:8px; padding:10px 12px; margin:0 0 10px; text-align:left;">
         <table role="presentation" cellpadding="0" cellspacing="0" width="100%" style="border-collapse:collapse;">
           <tr>
-            <td style="font-family:Arial,Helvetica,sans-serif; font-size:16px; line-height:18px; font-weight:900; color:#e9ff00;">
+            <td style="font-family:${EMAIL_FONT}; font-size:16px; line-height:18px; font-weight:900; color:#e9ff00;">
               ${escapeHtml(it?.date || "-")}
             </td>
-            <td align="right" style="font-family:Arial,Helvetica,sans-serif; font-size:16px; line-height:18px; font-weight:900; color:#e9ff00;">
+            <td align="right" style="font-family:${EMAIL_FONT}; font-size:16px; line-height:18px; font-weight:900; color:#e9ff00;">
               ${escapeHtml(it?.time || "-")}
             </td>
           </tr>
           <tr>
-            <td colspan="2" style="padding-top:4px; font-family:Arial,Helvetica,sans-serif; font-size:15px; line-height:18px; font-weight:700; color:#ffffff;">
+            <td colspan="2" style="padding-top:4px; font-family:${EMAIL_FONT}; font-size:15px; line-height:18px; font-weight:700; color:#ffffff;">
               ${escapeHtml(it?.service || "-")}
             </td>
           </tr>
@@ -125,7 +128,7 @@ export function renderTurnCards(items = []) {
     <div style="background:#060606; border-radius:8px; padding:18px; margin:0 auto 18px; max-width:480px;">
       ${
         rows ||
-        `<div style="font-family:Arial,Helvetica,sans-serif; font-size:14px; line-height:18px; color:#ffffff;">Sin turnos para mostrar.</div>`
+        `<div style="font-family:${EMAIL_FONT}; font-size:14px; line-height:18px; color:#ffffff;">Sin turnos para mostrar.</div>`
       }
     </div>
   `;
