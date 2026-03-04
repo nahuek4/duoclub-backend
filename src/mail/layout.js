@@ -15,11 +15,11 @@ export function buildEmailLayout({ title, preheader, bodyHtml, footerNote }) {
   const _pre = escapeHtml(preheader || "");
   const _footer = escapeHtml(
     footerNote ||
-      "Si no reconocés esta acción, respondé a este correo y lo revisamos."
+      ""
   );
 
   const preheaderHtml = _pre
-    ? `<div style="display:none; font-size:1px; color:#ffffff; line-height:1px; max-height:0; max-width:0; opacity:0; overflow:hidden;">${_pre}</div>`
+    ? `<div style="display:none; font-size:1px; color:#ffffff; line-height:1px; max-height:0; max-width:0; opacity:0; overflow:hidden;"></div>`
     : "";
 
   return `<!doctype html>
