@@ -518,9 +518,9 @@ export async function sendUserAdmissionReceivedEmail(
       </div>
 
       <div style="
-        font-size:14px;
+        font-size:16px;
         line-height:19px;
-        font-weight:400;
+        font-weight:600;
         max-width:380px;
         margin:0 auto;
         font-family:${EMAIL_FONT};
@@ -531,13 +531,13 @@ export async function sendUserAdmissionReceivedEmail(
 
         <div style="margin-bottom:14px; font-family:${EMAIL_FONT};">
           Gracias por completar el formulario.<br/>
-          <span style="font-weight:900; font-family:${EMAIL_FONT};">
+          <span style="font-weight:800; font-family:${EMAIL_FONT};">
             Tu solicitud fue enviada con éxito y se encuentra pendiente de admisión.
           </span><br/>
           Nuestro equipo la revisará y te avisaremos por este medio cuando tu acceso haya sido aprobado.
         </div>
 
-        <div style="margin-bottom:10px; font-weight:900; font-family:${EMAIL_FONT};">
+        <div style="margin-bottom:10px; font-weight:800; font-family:${EMAIL_FONT};">
           ▶ ¿Qué sigue ahora?
         </div>
 
@@ -660,10 +660,6 @@ export async function sendUserApprovedEmail({
     `
         : ""
     }
-
-    <div style="font-family:${EMAIL_FONT}; margin-top:14px; font-size:12px; color:#666;">
-      Si no fuiste vos, escribinos a ${escapeHtml(ADMIN_EMAIL)}.
-    </div>
   `;
 
   const html = buildEmailLayout({
