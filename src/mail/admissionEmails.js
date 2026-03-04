@@ -492,13 +492,13 @@ export async function sendUserAdmissionReceivedEmail(
   ].join("\n");
 
   const bodyHtml = `
-    <div style="padding:18px 10px 8px; text-align:center; font-family:${EMAIL_FONT}; color:#111;">
+    <div style="padding:18px 10px 8px; text-align:center; font-family:${EMAIL_FONT}; color:#111; background:#fff; border-radius:14px;t">
       <div style="
         width:58px;
         height:58px;
         margin:0 auto 16px;
         border-radius:999px;
-        background:white;
+        background:#000;
         color:#fff;
         font-size:38px;
         line-height:58px;
