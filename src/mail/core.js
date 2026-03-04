@@ -24,7 +24,6 @@ export const BRAND_URL = String(
 function stripOuterQuotes(s) {
   return String(s ?? "")
     .trim()
-    // elimina comillas accidentales al inicio/fin: "..." o '...'
     .replace(/^['"]+|['"]+$/g, "");
 }
 
@@ -46,12 +45,12 @@ console.log("[MAIL] core loaded", {
   SMTP_HOST: process.env.SMTP_HOST,
   SMTP_PORT: process.env.SMTP_PORT,
   SMTP_SECURE: process.env.SMTP_SECURE,
-  // mostramos el raw para detectar comillas "adentro"
   SMTP_USER_RAW: process.env.SMTP_USER
     ? JSON.stringify(process.env.SMTP_USER)
     : null,
-  // mostramos el sanitized para confirmar que se limpia
-  SMTP_USER_CLEAN: envTrim("SMTP_USER") ? JSON.stringify(envTrim("SMTP_USER")) : null,
+  SMTP_USER_CLEAN: envTrim("SMTP_USER")
+    ? JSON.stringify(envTrim("SMTP_USER"))
+    : null,
   hasSMTP_PASS: !!process.env.SMTP_PASS,
   MAIL_FROM: process.env.MAIL_FROM,
   ADMIN_EMAIL,
@@ -95,7 +94,6 @@ function getTransporter() {
     MAIL_FROM: envTrim("MAIL_FROM") || null,
   });
 
-  // Modo mock
   if (!SMTP_HOST || !SMTP_USER || !SMTP_PASS) {
     console.log("[MAIL] SMTP missing -> MOCK", {
       hasHost: !!SMTP_HOST,
@@ -109,15 +107,11 @@ function getTransporter() {
     host: SMTP_HOST,
     port: SMTP_PORT,
     secure: SMTP_SECURE,
-
-    // ✅ importante: forzar LOGIN como swaks
     authMethod: "LOGIN",
     auth: { user: SMTP_USER, pass: SMTP_PASS },
-
     connectionTimeout: 15_000,
     greetingTimeout: 15_000,
     socketTimeout: 30_000,
-
     pool: true,
     maxConnections: 2,
     maxMessages: 50,
@@ -151,7 +145,6 @@ export async function sendMail(to, subject, text, html) {
     throw new Error("SMTP no configurado");
   }
 
-  // también limpiamos comillas por las dudas
   const from = envTrim("MAIL_FROM") || envTrim("SMTP_USER");
 
   const payload = { from, to: cleanTo, subject: cleanSubject };

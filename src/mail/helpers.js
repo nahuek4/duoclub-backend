@@ -1,5 +1,3 @@
-// backend/src/mail/helpers.js
-
 export function escapeHtml(v) {
   return String(v ?? "")
     .replace(/&/g, "&amp;")
@@ -35,10 +33,6 @@ export function moneyARS(v) {
   }
 }
 
-/**
- * ✅ kvRow: Escapa label y value (por defecto).
- * - Si necesitás renderizar HTML en value, usá kvRowRaw().
- */
 export function kvRow(label, value) {
   return `
     <tr>
@@ -52,10 +46,6 @@ export function kvRow(label, value) {
   `;
 }
 
-/**
- * ✅ kvRowRaw: Escapa solo label y deja value tal cual (para links o HTML controlado).
- * OJO: Usalo solo con HTML generado por vos.
- */
 export function kvRowRaw(label, htmlValue) {
   return `
     <tr>
@@ -71,14 +61,18 @@ export function kvRowRaw(label, htmlValue) {
 
 export function pill(status) {
   const s = String(status || "").toLowerCase();
+
   if (s === "approved" || s === "paid") {
     return { bg: "#e9f7ef", tx: "#0b6b2a", label: "PAGADO" };
   }
+
   if (s === "pending") {
     return { bg: "#fff6db", tx: "#7a5200", label: "PENDIENTE" };
   }
+
   if (s === "cancelled" || s === "rejected" || s === "failed") {
     return { bg: "#ffe9ea", tx: "#a00010", label: "RECHAZADO" };
   }
+
   return { bg: "#eef1f5", tx: "#334155", label: String(status || "ESTADO") };
 }

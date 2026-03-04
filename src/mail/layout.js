@@ -1,4 +1,3 @@
-// backend/src/mail/layout_adapted.js
 import { BRAND_NAME, BRAND_URL } from "./core.js";
 import { escapeHtml } from "./helpers.js";
 
@@ -6,15 +5,14 @@ import { escapeHtml } from "./helpers.js";
  * Layout visual unificado inspirado en los mockups:
  * - fondo gris claro
  * - contenido centrado
- * - título fuerte
  * - cuerpo en bloque limpio
- * Mantiene la misma firma que buildEmailLayout actual para no romper imports.
  */
 export function buildEmailLayout({ title, preheader, bodyHtml, footerNote }) {
   const _title = escapeHtml(title || BRAND_NAME);
   const _pre = escapeHtml(preheader || "");
   const _footer = escapeHtml(
-    footerNote || "Si no reconocés esta acción, respondé a este correo y lo revisamos."
+    footerNote ||
+      "Si no reconocés esta acción, respondé a este correo y lo revisamos."
   );
 
   const preheaderHtml = _pre
@@ -40,12 +38,15 @@ export function buildEmailLayout({ title, preheader, bodyHtml, footerNote }) {
                   <div style="font-family:Arial,Helvetica,sans-serif; font-size:13px; line-height:18px; color:#111111; font-weight:800; letter-spacing:.2px;">
                     ${
                       BRAND_URL
-                        ? `<a href="${BRAND_URL}" style="color:#111111; text-decoration:none;">${escapeHtml(BRAND_NAME)}</a>`
+                        ? `<a href="${BRAND_URL}" style="color:#111111; text-decoration:none;">${escapeHtml(
+                            BRAND_NAME
+                          )}</a>`
                         : escapeHtml(BRAND_NAME)
                     }
                   </div>
                 </td>
               </tr>
+
               <tr>
                 <td style="background:#e9e9e9; padding:0 0 12px;">
                   <div style="font-family:Arial,Helvetica,sans-serif; color:#111111; text-align:center;">
@@ -53,6 +54,7 @@ export function buildEmailLayout({ title, preheader, bodyHtml, footerNote }) {
                   </div>
                 </td>
               </tr>
+
               <tr>
                 <td align="center" style="padding:8px 14px 0;">
                   <div style="font-family:Arial,Helvetica,sans-serif; font-size:12px; line-height:18px; color:#5f5f5f;">
@@ -69,10 +71,6 @@ export function buildEmailLayout({ title, preheader, bodyHtml, footerNote }) {
 </html>`;
 }
 
-/**
- * Helpers opcionales para los mails nuevos.
- * No rompen compatibilidad con el resto del código.
- */
 export function renderStatusIconCircle(symbol = "✓") {
   const safe = escapeHtml(symbol);
   return `
@@ -100,7 +98,8 @@ export function renderBodyCopy(html = "") {
 
 export function renderTurnCards(items = []) {
   const rows = (Array.isArray(items) ? items : [])
-    .map((it) => `
+    .map(
+      (it) => `
       <div style="border:1px solid #dfff00; border-radius:8px; padding:10px 12px; margin:0 0 10px; text-align:left;">
         <table role="presentation" cellpadding="0" cellspacing="0" width="100%" style="border-collapse:collapse;">
           <tr>
@@ -118,12 +117,16 @@ export function renderTurnCards(items = []) {
           </tr>
         </table>
       </div>
-    `)
+    `
+    )
     .join("");
 
   return `
     <div style="background:#060606; border-radius:8px; padding:18px; margin:0 auto 18px; max-width:480px;">
-      ${rows || `<div style="font-family:Arial,Helvetica,sans-serif; font-size:14px; line-height:18px; color:#ffffff;">Sin turnos para mostrar.</div>`}
+      ${
+        rows ||
+        `<div style="font-family:Arial,Helvetica,sans-serif; font-size:14px; line-height:18px; color:#ffffff;">Sin turnos para mostrar.</div>`
+      }
     </div>
   `;
 }
