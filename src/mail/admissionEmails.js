@@ -487,47 +487,88 @@ export async function sendUserAdmissionReceivedEmail(
   });
 
   const helloName =
-    cleanStr(pseudoUser?.name, "") || cleanStr(s.fullName, "Hola");
+    cleanStr(pseudoUser?.name, "") ||
+    cleanStr(s.fullName, "") ||
+    "NOMBRE";
 
   const subject = `✅ Recibimos tu formulario - ${BRAND_NAME}`;
 
   const text = [
     `Hola ${helloName},`,
     "",
-    "Recibimos tu formulario correctamente.",
+    "Gracias por completar el formulario.",
+    "Tu solicitud fue enviada con éxito y se encuentra pendiente de admisión.",
     "",
-    `Código: #${s.publicId}`,
+    "¿Qué sigue ahora?",
+    "Revisaremos tu información.",
+    "Si falta algún dato, te lo solicitaremos.",
+    "Si está todo OK, recibirás el mail de alta.",
     "",
-    "En breve el staff lo revisa y te contacta si hace falta.",
+    "Gracias por confiar en DUO.",
   ].join("\n");
 
   const bodyHtml = `
-    <div style="font-size:18px; font-weight:800; margin-bottom:10px;">Formulario recibido</div>
+    <div style="padding:18px 10px 8px; text-align:center; font-family:Arial,Helvetica,sans-serif; color:#111;">
+      <div style="
+        width:58px;
+        height:58px;
+        margin:0 auto 16px;
+        border-radius:999px;
+        background:#000;
+        color:#fff;
+        font-size:38px;
+        line-height:58px;
+        font-weight:900;
+      ">✓</div>
 
-    <div style="color:#333; margin-bottom:12px;">
-      Hola <b>${escapeHtml(
-        helloName
-      )}</b>, recibimos tu formulario correctamente.
-    </div>
+      <div style="
+        font-size:20px;
+        line-height:24px;
+        font-weight:900;
+        margin:0 auto 26px;
+        max-width:280px;
+      ">
+        Tu formulario fue<br/>enviado con éxito
+      </div>
 
-    <div style="border:1px solid #eee; border-radius:14px; overflow:hidden;">
-      <table role="presentation" cellpadding="0" cellspacing="0" width="100%" style="border-collapse:collapse;">
-        ${kvRow("Código", `#${s.publicId}`)}
-        ${kvRow("Nombre", s.fullName)}
-        ${kvRow("Email", s.email)}
-        ${kvRow("Teléfono", s.phone)}
-      </table>
-    </div>
+      <div style="
+        font-size:14px;
+        line-height:19px;
+        font-weight:400;
+        max-width:380px;
+        margin:0 auto;
+      ">
+        <div style="margin-bottom:10px;">
+          Hola (${escapeHtml(helloName)}),
+        </div>
 
-    <div style="margin-top:14px; font-size:12px; color:#666;">
-      En breve el staff lo revisa. Si hace falta, te contactamos por WhatsApp o email.
+        <div style="margin-bottom:14px;">
+          Gracias por completar el formulario.<br/>
+          <span style="font-weight:900;">
+            Tu solicitud fue enviada con éxito y se encuentra pendiente de admisión.
+          </span><br/>
+          Nuestro equipo la revisará y te avisaremos por este medio cuando tu acceso haya sido aprobado.
+        </div>
+
+        <div style="margin-bottom:10px; font-weight:900;">
+          ▶ ¿Qué sigue ahora?
+        </div>
+
+        <div>
+          Revisaremos tu información<br/>
+          Si falta algún dato, te lo solicitaremos<br/>
+          Si está todo OK, recibirás el mail de alta<br/>
+          Gracias por confiar en DUO.
+        </div>
+      </div>
     </div>
   `;
 
   const html = buildEmailLayout({
     title: `${BRAND_NAME} · Formulario recibido`,
-    preheader: `Recibimos tu formulario · Código #${s.publicId}`,
+    preheader: `Tu formulario fue enviado con éxito`,
     bodyHtml,
+    footerNote: "",
   });
 
   await sendMail(email, subject, text, html);
