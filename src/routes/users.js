@@ -20,6 +20,7 @@ import {
   sendAdminCreditsAssignedEmail,
   sendUserCreditsAssignedEmail,
 } from "../mail.js";
+import { sendMail } from "../mail/core.js";
 import {
   logActivity,
   buildUserSubject,
@@ -451,6 +452,74 @@ function queueCreditsEmails({ req, updatedUser, items }) {
    ✅ TODAS LAS RUTAS REQUIEREN LOGIN
 ============================================ */
 router.use(protect);
+
+/* ============================================
+   ✅ TEST SMTP (solo admin)
+============================================ */
+router.post("/test-mail", adminOnly, async (req, res) => {
+  try {
+    const to =
+      String(req.body?.to || "").trim() ||
+      String(req.user?.email || "").trim() ||
+      String(process.env.ADMIN_EMAIL || "").trim();
+
+    if (!to) {
+      return res.status(400).json({
+        error: "Falta destinatario. Enviá { to } o configurá ADMIN_EMAIL.",
+      });
+    }
+
+    const now = new Date();
+    const subject = `🧪 Test SMTP - DUO - ${now.toLocaleString("es-AR")}`;
+
+    const text = [
+      "Este es un mail de prueba del sistema DUO.",
+      "",
+      `Fecha: ${now.toLocaleString("es-AR")}`,
+      `Destino: ${to}`,
+      `Ejecutado por: ${String(req.user?.email || "admin")}`,
+      "",
+      "Si recibiste este correo, el SMTP está funcionando correctamente.",
+    ].join("\n");
+
+    const html = `
+      <div style="font-family:Arial,sans-serif; color:#111; line-height:1.5;">
+        <h2 style="margin:0 0 12px;">Test SMTP - DUO</h2>
+        <p>Este es un mail de prueba del sistema.</p>
+        <p><b>Fecha:</b> ${now.toLocaleString("es-AR")}</p>
+        <p><b>Destino:</b> ${to}</p>
+        <p><b>Ejecutado por:</b> ${String(req.user?.email || "admin")}</p>
+        <p style="margin-top:16px;">
+          Si recibiste este correo, el SMTP está funcionando correctamente.
+        </p>
+      </div>
+    `;
+
+    const info = await sendMail(to, subject, text, html);
+
+    return res.json({
+      ok: true,
+      message: "Mail de prueba enviado.",
+      to,
+      messageId: info?.messageId || null,
+      accepted: info?.accepted || [],
+      rejected: info?.rejected || [],
+      response: info?.response || null,
+    });
+  } catch (err) {
+    console.error("Error en POST /users/test-mail:", err);
+
+    return res.status(500).json({
+      ok: false,
+      error: "No se pudo enviar el mail de prueba.",
+      detail: err?.message || String(err),
+      code: err?.code || null,
+      command: err?.command || null,
+      response: err?.response || null,
+      responseCode: err?.responseCode || null,
+    });
+  }
+});
 
 /* ============================================
    ✅ ADMIN - REGISTRACIONES
