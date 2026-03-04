@@ -77,9 +77,6 @@ function admissionSummary(adm = {}, user = null) {
     ? cleanStr(`${s1.city || ""} (${s1.cityOther})`.trim())
     : cleanStr(s1.city);
 
-  // -------------------------
-  // STEP 1 (según tu form)
-  // -------------------------
   const birth =
     s1.birthDay && s1.birthMonth && s1.birthYear
       ? `${cleanStr(s1.birthDay)} / ${cleanStr(s1.birthMonth)} / ${cleanStr(
@@ -129,9 +126,6 @@ function admissionSummary(adm = {}, user = null) {
       ? `SI (${cleanStr(s1.pregnantWeeks)} semanas)`
       : cleanStr(s1.pregnant);
 
-  // -------------------------
-  // STEP 2 (según tu Step2 REAL)
-  // -------------------------
   const needsRehab = cleanStr(s2.needsRehab);
 
   const rehab_hasDiagnosisOrder =
@@ -176,15 +170,12 @@ function admissionSummary(adm = {}, user = null) {
       ? `SI (${cleanStr(s2.medicationDetail)})`
       : cleanStr(s2.takesMedication);
 
-  // deporte
   const practicesCompetitiveSport = cleanStr(s2.practicesCompetitiveSport);
 
-  // Estos campos no existen en tu Step2 actual
   const competitionLevel = "N/A";
   const sportName = "N/A";
   const sportPosition = "N/A";
 
-  // plan
   const immediateGoal = cleanStr(s2.immediateGoal);
 
   const trainAlone =
@@ -197,7 +188,6 @@ function admissionSummary(adm = {}, user = null) {
   const weeklySessions = cleanStr(s2.weeklySessions);
   const modality = cleanStr(s2.modality);
 
-  // consentimiento
   const acceptsConsent =
     s2.acceptedTerms === true
       ? "SI"
@@ -210,14 +200,10 @@ function admissionSummary(adm = {}, user = null) {
     publicId,
     createdDate,
     createdTime,
-
-    // identidad
     fullName,
     email,
     phone,
     city,
-
-    // STEP1
     birth,
     height: cleanStr(s1.height),
     weight: cleanStr(s1.weight),
@@ -237,8 +223,6 @@ function admissionSummary(adm = {}, user = null) {
     pregnant,
     lastBloodTest: cleanStr(s1.lastBloodTest),
     relevantInfo: cleanStr(s1.relevantInfo),
-
-    // STEP2
     needsRehab,
     rehab_hasDiagnosisOrder,
     rehab_symptoms,
@@ -249,19 +233,16 @@ function admissionSummary(adm = {}, user = null) {
     rehab_dailyDiscomfort,
     rehab_mobilityIssue,
     rehab_takesMedication,
-
     practicesCompetitiveSport,
     competitionLevel,
     sportName,
     sportPosition,
-
     immediateGoal,
     trainAlone,
     idealSchedule,
     preferredDays,
     weeklySessions,
     modality,
-
     acceptsConsent,
   };
 }
