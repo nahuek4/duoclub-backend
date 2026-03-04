@@ -492,63 +492,83 @@ export async function sendUserAdmissionReceivedEmail(
   ].join("\n");
 
   const bodyHtml = `
-    <div style="padding:18px 10px 8px; text-align:center; font-family:${EMAIL_FONT}; color:#111; background:#fff; border-radius:14px;t">
-      <div style="
-        width:58px;
-        height:58px;
-        margin:0 auto 16px;
-        border-radius:999px;
-        background:#000;
-        color:#fff;
-        font-size:38px;
-        line-height:58px;
-        font-weight:900;
-        font-family:${EMAIL_FONT};
-      ">✓</div>
+    <table role="presentation" cellpadding="0" cellspacing="0" width="100%" style="border-collapse:collapse; font-family:${EMAIL_FONT};">
+      <tr>
+        <td align="center" style="padding:0 0 8px;">
+          <table role="presentation" cellpadding="0" cellspacing="0" width="100%" style="max-width:430px; border-collapse:separate;">
+            <tr>
+              <td
+                bgcolor="#ffffff"
+                style="
+                  background:#ffffff;
+                  border-radius:18px;
+                  padding:22px 18px 20px;
+                  text-align:center;
+                  font-family:${EMAIL_FONT};
+                  color:#111111;
+                "
+              >
+                <div style="
+                  width:58px;
+                  height:58px;
+                  margin:0 auto 16px;
+                  border-radius:999px;
+                  background:#000;
+                  color:#fff;
+                  font-size:38px;
+                  line-height:58px;
+                  font-weight:900;
+                  font-family:${EMAIL_FONT};
+                ">✓</div>
 
-      <div style="
-        font-size:20px;
-        line-height:24px;
-        font-weight:900;
-        margin:0 auto 26px;
-        max-width:280px;
-        font-family:${EMAIL_FONT};
-      ">
-        Tu formulario fue<br/>enviado con éxito
-      </div>
+                <div style="
+                  font-size:20px;
+                  line-height:24px;
+                  font-weight:900;
+                  margin:0 auto 26px;
+                  max-width:280px;
+                  font-family:${EMAIL_FONT};
+                ">
+                  Tu formulario fue<br/>enviado con éxito
+                </div>
 
-      <div style="
-        font-size:16px;
-        line-height:19px;
-        font-weight:600;
-        max-width:380px;
-        margin:0 auto;
-        font-family:${EMAIL_FONT};
-      ">
-        <div style="margin-bottom:10px; font-family:${EMAIL_FONT};">
-          Hola (${escapeHtml(helloName)}),
-        </div>
+                <div style="
+                  font-size:16px;
+                  line-height:22px;
+                  font-weight:600;
+                  max-width:380px;
+                  margin:0 auto;
+                  font-family:${EMAIL_FONT};
+                ">
+                  <div style="margin-bottom:12px; font-family:${EMAIL_FONT};">
+                    Hola (${escapeHtml(helloName)}),
+                  </div>
 
-        <div style="margin-bottom:14px; font-family:${EMAIL_FONT};">
-          Gracias por completar el formulario.<br/>
-          <span style="font-weight:800; font-family:${EMAIL_FONT};">
-            Tu solicitud fue enviada con éxito y se encuentra pendiente de admisión.
-          </span><br/>
-          Nuestro equipo la revisará y te avisaremos por este medio cuando tu acceso haya sido aprobado.
-        </div>
+                  <div style="margin-bottom:14px; font-family:${EMAIL_FONT};">
+                    Gracias por completar el formulario.<br/>
+                    <span style="font-weight:800; font-family:${EMAIL_FONT};">
+                      Tu solicitud fue enviada con éxito y se encuentra pendiente de admisión.
+                    </span><br/>
+                    Nuestro equipo la revisará y te avisaremos por este medio cuando tu acceso haya sido aprobado.
+                  </div>
 
-        <div style="margin-bottom:10px; font-weight:800; font-family:${EMAIL_FONT};">
-          ▶ ¿Qué sigue ahora?
-        </div>
+                  <div style="margin-bottom:10px; font-weight:800; font-family:${EMAIL_FONT};">
+                    ▶ ¿Qué sigue ahora?
+                  </div>
 
-        <div style="font-family:${EMAIL_FONT};">
-          Revisaremos tu información<br/>
-          Si falta algún dato, te lo solicitaremos<br/>
-          Si está todo OK, recibirás el mail de alta<br/>
-          Gracias por confiar en DUO.
-        </div>
-      </div>
-    </div>
+                  <div style="font-family:${EMAIL_FONT};">
+                    Revisaremos tu información<br/>
+                    Si falta algún dato, te lo solicitaremos<br/>
+                    Si está todo OK, recibirás el mail de alta<br/>
+                    Gracias por confiar en DUO.
+                  </div>
+                </div>
+              </td>
+            </tr>
+          </table>
+        </td>
+      </tr>
+    </table>
   `;
 
   const html = buildEmailLayout({
