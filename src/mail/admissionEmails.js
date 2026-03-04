@@ -498,7 +498,7 @@ export async function sendUserAdmissionReceivedEmail(
         height:58px;
         margin:0 auto 16px;
         border-radius:999px;
-        background:#000;
+        background:white;
         color:#fff;
         font-size:38px;
         line-height:58px;
