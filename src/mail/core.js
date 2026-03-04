@@ -11,10 +11,32 @@ let transporter = null;
 export const ADMIN_EMAIL = String(
   process.env.ADMIN_EMAIL || "duoclub.ar@gmail.com"
 ).trim();
+
 export const BRAND_NAME = String(process.env.BRAND_NAME || "DUO").trim();
+
 export const BRAND_URL = String(
   process.env.BRAND_URL || "https://duoclub.ar"
 ).trim();
+
+/* =========================================================
+   Helpers
+========================================================= */
+function stripOuterQuotes(s) {
+  return String(s ?? "")
+    .trim()
+    // elimina comillas accidentales al inicio/fin: "..." o '...'
+    .replace(/^['"]+|['"]+$/g, "");
+}
+
+function envTrim(key, fallback = "") {
+  const v = process.env?.[key];
+  return stripOuterQuotes(v ?? fallback);
+}
+
+function envBool(key, fallback = "false") {
+  const v = envTrim(key, fallback).toLowerCase();
+  return v === "true" || v === "1" || v === "yes";
+}
 
 /* =========================================================
    Boot log (SIEMPRE)
@@ -24,9 +46,12 @@ console.log("[MAIL] core loaded", {
   SMTP_HOST: process.env.SMTP_HOST,
   SMTP_PORT: process.env.SMTP_PORT,
   SMTP_SECURE: process.env.SMTP_SECURE,
-  SMTP_USER: process.env.SMTP_USER
+  // mostramos el raw para detectar comillas "adentro"
+  SMTP_USER_RAW: process.env.SMTP_USER
     ? JSON.stringify(process.env.SMTP_USER)
     : null,
+  // mostramos el sanitized para confirmar que se limpia
+  SMTP_USER_CLEAN: envTrim("SMTP_USER") ? JSON.stringify(envTrim("SMTP_USER")) : null,
   hasSMTP_PASS: !!process.env.SMTP_PASS,
   MAIL_FROM: process.env.MAIL_FROM,
   ADMIN_EMAIL,
@@ -45,19 +70,6 @@ export function fireAndForget(fn, label = "MAIL") {
   } catch (e) {
     console.log(`[${label}] schedule error:`, e);
   }
-}
-
-/* =========================================================
-   Helpers
-========================================================= */
-function envTrim(key, fallback = "") {
-  const v = process.env?.[key];
-  return String(v ?? fallback).trim();
-}
-
-function envBool(key, fallback = "false") {
-  const v = envTrim(key, fallback).toLowerCase();
-  return v === "true" || v === "1" || v === "yes";
 }
 
 /* =========================================================
@@ -97,6 +109,9 @@ function getTransporter() {
     host: SMTP_HOST,
     port: SMTP_PORT,
     secure: SMTP_SECURE,
+
+    // ✅ importante: forzar LOGIN como swaks
+    authMethod: "LOGIN",
     auth: { user: SMTP_USER, pass: SMTP_PASS },
 
     connectionTimeout: 15_000,
@@ -136,6 +151,7 @@ export async function sendMail(to, subject, text, html) {
     throw new Error("SMTP no configurado");
   }
 
+  // también limpiamos comillas por las dudas
   const from = envTrim("MAIL_FROM") || envTrim("SMTP_USER");
 
   const payload = { from, to: cleanTo, subject: cleanSubject };
