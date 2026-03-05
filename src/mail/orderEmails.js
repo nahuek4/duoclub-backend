@@ -1,14 +1,16 @@
 // backend/src/mail/orderEmails.js
 import { ADMIN_EMAIL, BRAND_NAME, sendMail } from "./core.js";
-import { escapeHtml, kvRow, moneyARS, pill } from "./helpers.js";
+import { EMAIL_FONT, escapeHtml, moneyARS } from "./helpers.js";
 import { buildEmailLayout } from "./layout.js";
 
 /* =========================================================
    Helpers ORDER
 ========================================================= */
+
 function orderSummary(order = {}, user = null) {
   const orderId = order?._id?.toString?.() || order?.id || "-";
   const createdAt = order?.createdAt ? new Date(order.createdAt) : null;
+
   const createdDate = createdAt
     ? createdAt.toLocaleDateString("es-AR", {
         year: "numeric",
@@ -16,6 +18,7 @@ function orderSummary(order = {}, user = null) {
         day: "2-digit",
       })
     : "-";
+
   const createdTime = createdAt
     ? createdAt.toLocaleTimeString("es-AR", {
         hour: "2-digit",
@@ -31,7 +34,7 @@ function orderSummary(order = {}, user = null) {
   const uEmail = user?.email || "-";
 
   const pm = String(order?.payMethod || "").toUpperCase() || "-";
-  const status = String(order?.status || "Pendiente").toLowerCase();
+  const statusRaw = String(order?.status || "pending").toLowerCase();
 
   const totalFinal =
     order?.totalFinal != null
@@ -51,47 +54,348 @@ function orderSummary(order = {}, user = null) {
     uName,
     uEmail,
     pm,
-    status,
+    statusRaw,
     totalFinal,
     items,
     itemsCount,
   };
 }
 
-function renderItemsList(items = []) {
-  if (!items.length) return "<li>(sin items)</li>";
+function statusLabel(statusRaw = "") {
+  const s = String(statusRaw || "").toLowerCase();
+  if (s === "paid") return "Pagado";
+  if (s === "pending") return "Pendiente";
+  if (s === "cancelled" || s === "canceled") return "Cancelado";
+  if (s === "refunded") return "Reintegrado";
+  return s ? s.charAt(0).toUpperCase() + s.slice(1) : "-";
+}
 
-  return items
-    .map((it) => {
-      const kind = String(it?.kind || "").toUpperCase();
-      const qty = Math.max(1, Number(it?.qty) || 1);
+function itemLine(it = {}) {
+  const kind = String(it?.kind || "").toUpperCase();
+  const qty = Math.max(1, Number(it?.qty) || 1);
 
-      if (kind === "CREDITS") {
-        const svc = String(it?.serviceKey || "EP").toUpperCase();
-        const cr = Number(it?.credits) || 0;
-        return `<li style="margin:6px 0;">Créditos <b>${escapeHtml(
-          String(cr)
-        )}</b> (${escapeHtml(svc)}) x${escapeHtml(String(qty))}</li>`;
+  if (kind === "CREDITS") {
+    const svc = String(it?.serviceKey || "EP").toUpperCase();
+    const cr = Number(it?.credits) || 0;
+    return `Créditos ${cr} (${svc}) x${qty}`;
+  }
+
+  if (kind === "MEMBERSHIP") {
+    const months = qty;
+    return `Membresía DUO+ (${months} mes/es)`;
+  }
+
+  const name = it?.label || it?.name || it?.title || "Item";
+  return `${name} x${qty}`;
+}
+
+/* =========================================================
+   UI (MISMO LOOK QUE TURNOS)
+========================================================= */
+
+function renderExactUserShell(innerHtml) {
+  return `
+    <style>
+      @media only screen and (max-width: 560px) {
+        .mail-shell { padding:16px 8px 22px !important; }
+        .mail-title { font-size:18px !important; line-height:19px !important; margin:0 auto 16px !important; }
+        .panel { padding:12px !important; }
+        .row-card { padding:9px 10px !important; }
+        .row-k { font-size:14px !important; line-height:16px !important; }
+        .row-v { font-size:13px !important; line-height:15px !important; }
+        .status-icon { width:54px !important; height:54px !important; line-height:54px !important; font-size:34px !important; }
       }
+    </style>
 
-      if (kind === "MEMBERSHIP") {
-        const months = qty;
-        return `<li style="margin:6px 0;">Membresía <b>DUO+</b> (${escapeHtml(
-          String(months)
-        )} mes/es)</li>`;
-      }
+    <table role="presentation" cellpadding="0" cellspacing="0" width="100%" style="border-collapse:collapse; font-family:${EMAIL_FONT};">
+      <tr>
+        <td align="center" style="padding:0;">
+          <table role="presentation" cellpadding="0" cellspacing="0" width="100%" style="max-width:430px; border-collapse:separate;">
+            <tr>
+              <td
+                class="mail-shell"
+                bgcolor="#ffffff"
+                style="
+                  background:#ffffff;
+                  border-radius:14px;
+                  padding:18px 10px 26px;
+                  text-align:center;
+                  font-family:${EMAIL_FONT};
+                  color:#111111;
+                "
+              >
+                ${innerHtml}
+              </td>
+            </tr>
+          </table>
+        </td>
+      </tr>
+    </table>
+  `;
+}
 
-      const name = it?.label || it?.name || it?.title || "Item";
-      return `<li style="margin:6px 0;">${escapeHtml(
-        String(name)
-      )} x${escapeHtml(String(qty))}</li>`;
-    })
-    .join("");
+function renderExactStatusIcon(symbol = "✓") {
+  return `
+    <div
+      class="status-icon"
+      style="
+        width:58px;
+        height:58px;
+        margin:0 auto 0;
+        border-radius:999px;
+        background:#0a0a0a;
+        color:#ffffff;
+        font-size:38px;
+        line-height:58px;
+        font-weight:900;
+        font-family:${EMAIL_FONT};
+        text-align:center;
+      "
+    >${escapeHtml(symbol)}</div>
+  `;
+}
+
+function renderExactTitle(text, maxWidth = 300) {
+  return `
+    <div
+      class="mail-title"
+      style="
+        font-size:19px;
+        line-height:20px;
+        font-weight:900;
+        margin:0 auto 18px;
+        max-width:${maxWidth}px;
+        font-family:${EMAIL_FONT};
+        color:#111111;
+        white-space:pre-line;
+        letter-spacing:-0.2px;
+      "
+    >
+      ${escapeHtml(text)}
+    </div>
+  `;
+}
+
+function renderExactBodyText(html, opts = {}) {
+  const fontSize = opts?.fontSize || 14;
+  const lineHeight = opts?.lineHeight || 19;
+  const weight = opts?.weight || 700;
+  const maxWidth = opts?.maxWidth || 320;
+  const marginTop = opts?.marginTop ?? 0;
+  const marginBottom = opts?.marginBottom ?? 0;
+
+  return `
+    <div style="
+      font-size:${fontSize}px;
+      line-height:${lineHeight}px;
+      font-weight:${weight};
+      max-width:${maxWidth}px;
+      margin:${marginTop}px auto ${marginBottom}px;
+      font-family:${EMAIL_FONT};
+      color:#111111;
+      white-space:pre-line;
+    ">
+      ${html}
+    </div>
+  `;
+}
+
+function panelOpen() {
+  return `
+    <div
+      class="panel"
+      style="
+        background:#0a0a0a;
+        border-radius:6px;
+        padding:14px;
+        margin:0 auto 22px;
+        max-width:100%;
+        text-align:left;
+      "
+    >
+  `;
+}
+function panelClose() {
+  return `</div>`;
+}
+
+/** row admin/user meta inside black panel */
+function panelRow(label, valueHtml) {
+  return `
+    <div style="margin:0 0 10px; text-align:left;">
+      <div style="
+        font-family:${EMAIL_FONT};
+        font-size:12px;
+        line-height:14px;
+        font-weight:900;
+        color:#e4ff00;
+        text-transform:uppercase;
+        letter-spacing:0.2px;
+        margin-bottom:4px;
+      ">${escapeHtml(label)}</div>
+      <div style="
+        font-family:${EMAIL_FONT};
+        font-size:14px;
+        line-height:18px;
+        font-weight:700;
+        color:#ffffff;
+        word-break:break-word;
+      ">${valueHtml}</div>
+    </div>
+  `;
+}
+
+/** card style like appointments card but adapted */
+function renderRowCard({ titleLeft, titleRight = "", subtitle = "" }) {
+  return `
+    <div
+      class="row-card"
+      style="
+        border:1px solid #e4ff00;
+        border-radius:8px;
+        padding:10px 12px;
+        margin:0 0 11px;
+        text-align:left;
+        background:#0b0b0b;
+      "
+    >
+      <table role="presentation" cellpadding="0" cellspacing="0" width="100%" style="border-collapse:collapse;">
+        <tr>
+          <td
+            class="row-k"
+            style="
+              font-family:${EMAIL_FONT};
+              font-size:15px;
+              line-height:17px;
+              font-weight:900;
+              color:#e4ff00;
+              padding:0;
+            "
+          >
+            ${escapeHtml(titleLeft)}
+          </td>
+          <td
+            align="right"
+            class="row-k"
+            style="
+              font-family:${EMAIL_FONT};
+              font-size:15px;
+              line-height:17px;
+              font-weight:900;
+              color:#e4ff00;
+              padding:0;
+              white-space:nowrap;
+            "
+          >
+            ${escapeHtml(titleRight)}
+          </td>
+        </tr>
+        ${
+          subtitle
+            ? `
+          <tr>
+            <td
+              colspan="2"
+              class="row-v"
+              style="
+                padding-top:4px;
+                font-family:${EMAIL_FONT};
+                font-size:14px;
+                line-height:16px;
+                font-weight:700;
+                color:#ffffff;
+              "
+            >
+              ${subtitle}
+            </td>
+          </tr>`
+            : ""
+        }
+      </table>
+    </div>
+  `;
+}
+
+function renderItemsPanel(items = []) {
+  const list = Array.isArray(items) ? items : [];
+
+  const cards = list.length
+    ? list
+        .map((it, idx) => {
+          const kind = String(it?.kind || "").toUpperCase();
+          const qty = Math.max(1, Number(it?.qty) || 1);
+
+          if (kind === "CREDITS") {
+            const svc = String(it?.serviceKey || "EP").toUpperCase();
+            const cr = Number(it?.credits) || 0;
+            return renderRowCard({
+              titleLeft: `Créditos · ${svc}`,
+              titleRight: `x${String(qty)}`,
+              subtitle: `<span style="color:#ffffff;">${escapeHtml(
+                String(cr)
+              )} crédito/s</span>`,
+            });
+          }
+
+          if (kind === "MEMBERSHIP") {
+            return renderRowCard({
+              titleLeft: "Membresía · DUO+",
+              titleRight: `${String(qty)} mes/es`,
+              subtitle: `<span style="color:#ffffff;">Extensión / compra</span>`,
+            });
+          }
+
+          const name = it?.label || it?.name || it?.title || "Item";
+          return renderRowCard({
+            titleLeft: escapeHtml(String(name)),
+            titleRight: `x${String(qty)}`,
+            subtitle: `<span style="color:#ffffff;">${escapeHtml(
+              String(it?.kind || "ITEM")
+            )}</span>`,
+          });
+        })
+        .join("")
+    : renderExactBodyText("Sin items para mostrar.", {
+        fontSize: 14,
+        lineHeight: 18,
+        weight: 700,
+        maxWidth: 320,
+        marginBottom: 0,
+      });
+
+  return `${panelOpen()}${cards}${panelClose()}`;
+}
+
+function buildExactOrderHtml({
+  title,
+  icon = "✓",
+  preheader,
+  introHtml = "",
+  metaRowsHtml = "",
+  items = [],
+  footerHintHtml = "",
+}) {
+  const innerHtml = `
+    ${renderExactStatusIcon(icon)}
+    ${renderExactTitle(title, 285)}
+    ${introHtml ? renderExactBodyText(introHtml, { fontSize: 14, lineHeight: 19, weight: 700, maxWidth: 330, marginBottom: 16 }) : ""}
+    ${metaRowsHtml ? `${panelOpen()}${metaRowsHtml}${panelClose()}` : ""}
+    ${renderItemsPanel(items)}
+    ${footerHintHtml ? renderExactBodyText(footerHintHtml, { fontSize: 12, lineHeight: 17, weight: 700, maxWidth: 330, marginBottom: 0 }) : ""}
+  `;
+
+  return buildEmailLayout({
+    title: `${BRAND_NAME} · ${title}`,
+    preheader: preheader || title,
+    bodyHtml: renderExactUserShell(innerHtml),
+    footerNote: "",
+  });
 }
 
 /* =========================================================
    Pedidos (ORDER) — ADMIN + USER
 ========================================================= */
+
 export async function sendAdminNewOrderEmail(order = {}, user = null) {
   const to = ADMIN_EMAIL;
   if (!to) return;
@@ -108,52 +412,34 @@ export async function sendAdminNewOrderEmail(order = {}, user = null) {
     `Email: ${s.uEmail}`,
     "",
     `Pago: ${s.pm}`,
-    `Estado: ${s.status}`,
+    `Estado: ${statusLabel(s.statusRaw)}`,
     `Total: ${s.totalFinal}`,
     "",
     "Items:",
     ...(s.items.length
-      ? s.items.map(
-          (it, i) =>
-            `${i + 1}. ${
-              it?.label || it?.name || it?.title || it?.kind || "Item"
-            } x${it?.qty || 1}`
-        )
+      ? s.items.map((it, i) => `${i + 1}. ${itemLine(it)}`)
       : ["(sin items)"]),
   ].join("\n");
 
-  const st = pill(s.status);
-  const bodyHtml = `
-    <div style="display:flex; align-items:center; gap:10px; margin-bottom:12px;">
-      <div style="font-size:18px; font-weight:800;">Nuevo pedido</div>
-      <div style="margin-left:auto; background:${st.bg}; color:${st.tx}; padding:6px 10px; border-radius:999px; font-size:12px; font-weight:800;">
-        ${escapeHtml(st.label)}
-      </div>
-    </div>
+  const metaRows = [
+    panelRow("Pedido", `<span style="color:#ffffff;">#${escapeHtml(s.orderId)}</span>`),
+    panelRow("Usuario", `<span style="color:#ffffff;">${escapeHtml(s.uName)}</span>`),
+    panelRow("Email", `<span style="color:#ffffff;">${escapeHtml(s.uEmail)}</span>`),
+    panelRow("Pago", `<span style="color:#ffffff;">${escapeHtml(s.pm)}</span>`),
+    panelRow("Estado", `<span style="color:#ffffff;">${escapeHtml(statusLabel(s.statusRaw))}</span>`),
+    panelRow("Total", `<span style="color:#ffffff;">${escapeHtml(s.totalFinal)}</span>`),
+    panelRow("Creado", `<span style="color:#ffffff;">${escapeHtml(`${s.createdDate} ${s.createdTime}`)}</span>`),
+    panelRow("Items", `<span style="color:#ffffff;">${escapeHtml(String(s.itemsCount))}</span>`),
+  ].join("");
 
-    <div style="border:1px solid #eee; border-radius:14px; overflow:hidden;">
-      <table role="presentation" cellpadding="0" cellspacing="0" width="100%" style="border-collapse:collapse;">
-        ${kvRow("Pedido", `#${s.orderId}`)}
-        ${kvRow("Usuario", s.uName)}
-        ${kvRow("Email", s.uEmail)}
-        ${kvRow("Pago", s.pm)}
-        ${kvRow("Estado", s.status)}
-        ${kvRow("Total", s.totalFinal)}
-        ${kvRow("Creado", `${s.createdDate} ${s.createdTime}`)}
-        ${kvRow("Items", String(s.itemsCount))}
-      </table>
-    </div>
-
-    <div style="margin-top:14px; font-size:13px; font-weight:800;">Detalle</div>
-    <ul style="margin:10px 0 0; padding-left:18px; color:#111;">
-      ${renderItemsList(s.items)}
-    </ul>
-  `;
-
-  const html = buildEmailLayout({
-    title: `${BRAND_NAME} · Nuevo pedido`,
+  const html = buildExactOrderHtml({
+    title: "Nuevo pedido",
+    icon: "✓",
     preheader: `Nuevo pedido #${s.orderId} · ${s.uName} · ${s.totalFinal}`,
-    bodyHtml,
+    introHtml: `Se generó un nuevo pedido.`,
+    metaRowsHtml: metaRows,
+    items: s.items,
+    footerHintHtml: "",
   });
 
   await sendMail(to, subject, text, html);
@@ -175,34 +461,26 @@ export async function sendAdminOrderPaidEmail(order = {}, user = null) {
     `Email: ${s.uEmail}`,
     "",
     `Pago: ${s.pm}`,
-    `Estado: ${s.status}`,
+    `Estado: ${statusLabel("paid")}`,
     `Total: ${s.totalFinal}`,
   ].join("\n");
 
-  const st = pill("paid");
-  const bodyHtml = `
-    <div style="display:flex; align-items:center; gap:10px; margin-bottom:12px;">
-      <div style="font-size:18px; font-weight:800;">Pedido pagado</div>
-      <div style="margin-left:auto; background:${st.bg}; color:${st.tx}; padding:6px 10px; border-radius:999px; font-size:12px; font-weight:800;">
-        ${escapeHtml(st.label)}
-      </div>
-    </div>
+  const metaRows = [
+    panelRow("Pedido", `<span style="color:#ffffff;">#${escapeHtml(s.orderId)}</span>`),
+    panelRow("Usuario", `<span style="color:#ffffff;">${escapeHtml(s.uName)}</span>`),
+    panelRow("Email", `<span style="color:#ffffff;">${escapeHtml(s.uEmail)}</span>`),
+    panelRow("Pago", `<span style="color:#ffffff;">${escapeHtml(s.pm)}</span>`),
+    panelRow("Total", `<span style="color:#ffffff;">${escapeHtml(s.totalFinal)}</span>`),
+  ].join("");
 
-    <div style="border:1px solid #eee; border-radius:14px; overflow:hidden;">
-      <table role="presentation" cellpadding="0" cellspacing="0" width="100%" style="border-collapse:collapse;">
-        ${kvRow("Pedido", `#${s.orderId}`)}
-        ${kvRow("Usuario", s.uName)}
-        ${kvRow("Email", s.uEmail)}
-        ${kvRow("Pago", s.pm)}
-        ${kvRow("Total", s.totalFinal)}
-      </table>
-    </div>
-  `;
-
-  const html = buildEmailLayout({
-    title: `${BRAND_NAME} · Pedido pagado`,
+  const html = buildExactOrderHtml({
+    title: "Pedido pagado",
+    icon: "✓",
     preheader: `Pedido #${s.orderId} pagado · ${s.uName} · ${s.totalFinal}`,
-    bodyHtml,
+    introHtml: `El pedido fue marcado como <b>pagado</b>.`,
+    metaRowsHtml: metaRows,
+    items: s.items,
+    footerHintHtml: "",
   });
 
   await sendMail(to, subject, text, html);
@@ -212,7 +490,6 @@ export async function sendUserOrderCreatedEmail(order = {}, user = null) {
   if (!user?.email) return;
 
   const s = orderSummary(order, user);
-  const st = pill("pending");
 
   const subject = `🧾 Recibimos tu pedido - ${BRAND_NAME}`;
   const text = [
@@ -228,41 +505,22 @@ export async function sendUserOrderCreatedEmail(order = {}, user = null) {
     "Cuando el staff confirme el pago (efectivo), vas a ver reflejado el impacto en tu cuenta.",
   ].join("\n");
 
-  const bodyHtml = `
-    <div style="display:flex; align-items:center; gap:10px; margin-bottom:12px;">
-      <div style="font-size:18px; font-weight:800;">Pedido recibido</div>
-      <div style="margin-left:auto; background:${st.bg}; color:${st.tx}; padding:6px 10px; border-radius:999px; font-size:12px; font-weight:800;">
-        ${escapeHtml(st.label)}
-      </div>
-    </div>
+  const metaRows = [
+    panelRow("Pedido", `<span style="color:#ffffff;">#${escapeHtml(s.orderId)}</span>`),
+    panelRow("Pago", `<span style="color:#ffffff;">${escapeHtml(s.pm)}</span>`),
+    panelRow("Total", `<span style="color:#ffffff;">${escapeHtml(s.totalFinal)}</span>`),
+    panelRow("Estado", `<span style="color:#ffffff;">Pendiente</span>`),
+  ].join("");
 
-    <div style="color:#333; margin-bottom:12px;">
-      Hola <b>${escapeHtml(user?.name || "")}</b>, recibimos tu pedido correctamente.
-    </div>
-
-    <div style="border:1px solid #eee; border-radius:14px; overflow:hidden;">
-      <table role="presentation" cellpadding="0" cellspacing="0" width="100%" style="border-collapse:collapse;">
-        ${kvRow("Pedido", `#${s.orderId}`)}
-        ${kvRow("Pago", s.pm)}
-        ${kvRow("Total", s.totalFinal)}
-        ${kvRow("Estado", "Pendiente")}
-      </table>
-    </div>
-
-    <div style="margin-top:14px; font-size:13px; font-weight:800;">Detalle</div>
-    <ul style="margin:10px 0 0; padding-left:18px; color:#111;">
-      ${renderItemsList(s.items)}
-    </ul>
-
-    <div style="margin-top:14px; font-size:12px; color:#666;">
-      Cuando el staff confirme el pago (efectivo), tu compra se acreditará automáticamente.
-    </div>
-  `;
-
-  const html = buildEmailLayout({
-    title: `${BRAND_NAME} · Pedido recibido`,
+  const html = buildExactOrderHtml({
+    title: "Pedido recibido",
+    icon: "✓",
     preheader: `Pedido #${s.orderId} recibido · ${s.totalFinal}`,
-    bodyHtml,
+    introHtml: `Hola <b>${escapeHtml(user?.name || "")}</b>, recibimos tu pedido correctamente.`,
+    metaRowsHtml: metaRows,
+    items: s.items,
+    footerHintHtml:
+      "Cuando el staff confirme el pago (efectivo), tu compra se acreditará automáticamente.",
   });
 
   await sendMail(user.email, subject, text, html);
@@ -272,7 +530,6 @@ export async function sendUserOrderPaidEmail(order = {}, user = null) {
   if (!user?.email) return;
 
   const s = orderSummary(order, user);
-  const st = pill("paid");
 
   const subject = `✅ Pago aprobado - ${BRAND_NAME}`;
   const text = [
@@ -287,41 +544,21 @@ export async function sendUserOrderPaidEmail(order = {}, user = null) {
     "Ya podés ver el impacto (créditos/membresía) en tu cuenta.",
   ].join("\n");
 
-  const bodyHtml = `
-    <div style="display:flex; align-items:center; gap:10px; margin-bottom:12px;">
-      <div style="font-size:18px; font-weight:800;">Pago aprobado</div>
-      <div style="margin-left:auto; background:${st.bg}; color:${st.tx}; padding:6px 10px; border-radius:999px; font-size:12px; font-weight:800;">
-        ${escapeHtml(st.label)}
-      </div>
-    </div>
+  const metaRows = [
+    panelRow("Pedido", `<span style="color:#ffffff;">#${escapeHtml(s.orderId)}</span>`),
+    panelRow("Pago", `<span style="color:#ffffff;">${escapeHtml(s.pm)}</span>`),
+    panelRow("Total", `<span style="color:#ffffff;">${escapeHtml(s.totalFinal)}</span>`),
+    panelRow("Estado", `<span style="color:#ffffff;">Pagado</span>`),
+  ].join("");
 
-    <div style="color:#333; margin-bottom:12px;">
-      Hola <b>${escapeHtml(user?.name || "")}</b>, tu pago fue aprobado y tu compra se acreditó.
-    </div>
-
-    <div style="border:1px solid #eee; border-radius:14px; overflow:hidden;">
-      <table role="presentation" cellpadding="0" cellspacing="0" width="100%" style="border-collapse:collapse;">
-        ${kvRow("Pedido", `#${s.orderId}`)}
-        ${kvRow("Pago", s.pm)}
-        ${kvRow("Total", s.totalFinal)}
-        ${kvRow("Estado", "Pagado")}
-      </table>
-    </div>
-
-    <div style="margin-top:14px; font-size:13px; font-weight:800;">Detalle</div>
-    <ul style="margin:10px 0 0; padding-left:18px; color:#111;">
-      ${renderItemsList(s.items)}
-    </ul>
-
-    <div style="margin-top:14px; font-size:12px; color:#666;">
-      Ya podés ver el impacto (créditos/membresía) en tu cuenta.
-    </div>
-  `;
-
-  const html = buildEmailLayout({
-    title: `${BRAND_NAME} · Pago aprobado`,
+  const html = buildExactOrderHtml({
+    title: "Pago aprobado",
+    icon: "✓",
     preheader: `Pago aprobado · Pedido #${s.orderId} · ${s.totalFinal}`,
-    bodyHtml,
+    introHtml: `Hola <b>${escapeHtml(user?.name || "")}</b>, tu pago fue aprobado y tu compra se acreditó.`,
+    metaRowsHtml: metaRows,
+    items: s.items,
+    footerHintHtml: "Ya podés ver el impacto (créditos/membresía) en tu cuenta.",
   });
 
   await sendMail(user.email, subject, text, html);
@@ -330,11 +567,11 @@ export async function sendUserOrderPaidEmail(order = {}, user = null) {
 /* =========================================================
    CASH creado (pendiente) — USER
 ========================================================= */
+
 export async function sendUserOrderCashCreatedEmail(order = {}, user = null) {
   if (!user?.email) return;
 
   const s = orderSummary(order, user);
-  const st = pill("pending");
 
   const subject = `🧾 Pedido generado (Efectivo) - ${BRAND_NAME}`;
   const text = [
@@ -350,41 +587,22 @@ export async function sendUserOrderCashCreatedEmail(order = {}, user = null) {
     "Cuando el staff marque el pago como realizado, se acreditarán los créditos/membresía.",
   ].join("\n");
 
-  const bodyHtml = `
-    <div style="display:flex; align-items:center; gap:10px; margin-bottom:12px;">
-      <div style="font-size:18px; font-weight:800;">Pedido generado (Efectivo)</div>
-      <div style="margin-left:auto; background:${st.bg}; color:${st.tx}; padding:6px 10px; border-radius:999px; font-size:12px; font-weight:800;">
-        ${escapeHtml(st.label)}
-      </div>
-    </div>
+  const metaRows = [
+    panelRow("Pedido", `<span style="color:#ffffff;">#${escapeHtml(s.orderId)}</span>`),
+    panelRow("Pago", `<span style="color:#ffffff;">Efectivo</span>`),
+    panelRow("Total", `<span style="color:#ffffff;">${escapeHtml(s.totalFinal)}</span>`),
+    panelRow("Estado", `<span style="color:#ffffff;">Pendiente</span>`),
+  ].join("");
 
-    <div style="color:#333; margin-bottom:12px;">
-      Hola <b>${escapeHtml(user?.name || "")}</b>, generamos tu pedido correctamente.
-    </div>
-
-    <div style="border:1px solid #eee; border-radius:14px; overflow:hidden;">
-      <table role="presentation" cellpadding="0" cellspacing="0" width="100%" style="border-collapse:collapse;">
-        ${kvRow("Pedido", `#${s.orderId}`)}
-        ${kvRow("Pago", "Efectivo")}
-        ${kvRow("Total", s.totalFinal)}
-        ${kvRow("Estado", "Pendiente")}
-      </table>
-    </div>
-
-    <div style="margin-top:14px; font-size:13px; font-weight:800;">Detalle</div>
-    <ul style="margin:10px 0 0; padding-left:18px; color:#111;">
-      ${renderItemsList(s.items)}
-    </ul>
-
-    <div style="margin-top:14px; font-size:12px; color:#666;">
-      Coordiná el pago con el staff. Cuando se confirme, se acreditará automáticamente.
-    </div>
-  `;
-
-  const html = buildEmailLayout({
-    title: `${BRAND_NAME} · Pedido generado (Efectivo)`,
+  const html = buildExactOrderHtml({
+    title: "Pedido generado (Efectivo)",
+    icon: "✓",
     preheader: `Pedido #${s.orderId} generado · ${s.totalFinal}`,
-    bodyHtml,
+    introHtml: `Hola <b>${escapeHtml(user?.name || "")}</b>, generamos tu pedido correctamente.`,
+    metaRowsHtml: metaRows,
+    items: s.items,
+    footerHintHtml:
+      "Coordiná el pago con el staff. Cuando se confirme, se acreditará automáticamente.",
   });
 
   await sendMail(user.email, subject, text, html);
