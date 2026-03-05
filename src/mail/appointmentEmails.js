@@ -1,5 +1,5 @@
 import { ADMIN_EMAIL, BRAND_NAME, BRAND_URL, sendMail } from "./core.js";
-import { EMAIL_FONT, escapeHtml, kvRow, prettyDateAR } from "./helpers.js";
+import { EMAIL_FONT, escapeHtml, prettyDateAR } from "./helpers.js";
 import { buildEmailLayout } from "./layout.js";
 
 /* =========================================================
@@ -36,7 +36,7 @@ function renderExactUserShell(innerHtml) {
           <table role="presentation" cellpadding="0" cellspacing="0" width="100%" style="max-width:430px; border-collapse:separate;">
             <tr>
               <td
-                bgcolor="#fffff"
+                bgcolor="#ffffff"
                 style="
                   background:#ffffff;
                   border-radius:14px;
@@ -204,6 +204,65 @@ function renderExactTurnsPanel(items = []) {
 }
 
 /* =========================================================
+   Panel admin (misma estética)
+========================================================= */
+
+function renderAdminMetaPanel(rows = []) {
+  const validRows = (Array.isArray(rows) ? rows : []).filter(
+    (r) => r && r.label && r.value
+  );
+
+  if (!validRows.length) return "";
+
+  const items = validRows
+    .map(
+      (row, idx) => `
+        <div style="
+          margin:0 0 ${idx === validRows.length - 1 ? 0 : 9}px;
+          text-align:left;
+        ">
+          <div style="
+            font-family:${EMAIL_FONT};
+            font-size:12px;
+            line-height:14px;
+            font-weight:900;
+            color:#e4ff00;
+            text-transform:uppercase;
+            letter-spacing:0.2px;
+            margin-bottom:2px;
+          ">
+            ${escapeHtml(row.label)}
+          </div>
+          <div style="
+            font-family:${EMAIL_FONT};
+            font-size:14px;
+            line-height:17px;
+            font-weight:700;
+            color:#ffffff;
+            white-space:pre-line;
+          ">
+            ${escapeHtml(row.value)}
+          </div>
+        </div>
+      `
+    )
+    .join("");
+
+  return `
+    <div style="
+      background:#0a0a0a;
+      border-radius:6px;
+      padding:14px;
+      margin:0 auto 22px;
+      max-width:100%;
+      text-align:left;
+    ">
+      ${items}
+    </div>
+  `;
+}
+
+/* =========================================================
    Card principal EXACTA para booked/cancelled
    (single y batch usan la MISMA estructura)
 ========================================================= */
@@ -265,6 +324,74 @@ function buildExactAppointmentVisualHtml({
       : items.length > 1
       ? "Tus turnos fueron confirmados"
       : "Tu turno fue confirmado",
+    bodyHtml: renderExactUserShell(innerHtml),
+    footerNote: "",
+  });
+}
+
+/* =========================================================
+   Card admin con misma estética
+========================================================= */
+
+function buildExactAdminAppointmentVisualHtml({
+  user,
+  items = [],
+  kind = "booked",
+  meta = {},
+}) {
+  const isCancelled = kind === "cancelled";
+  const icon = isCancelled ? "✕" : "✓";
+  const uName = getUserName(user);
+  const uEmail = user?.email || "-";
+
+  const title = isCancelled
+    ? items.length > 1
+      ? "Se cancelaron\nturnos"
+      : "Se canceló\nun turno"
+    : items.length > 1
+    ? "Se reservaron\nturnos"
+    : "Se reservó\nun turno";
+
+  const refundFlag = typeof meta?.refund === "boolean" ? meta.refund : null;
+  const cutoff =
+    typeof meta?.refundCutoffHours === "number" ? meta.refundCutoffHours : null;
+
+  const refundDetail =
+    refundFlag === null
+      ? ""
+      : refundFlag
+      ? "Sí (1 sesión)"
+      : "No";
+
+  const detailText =
+    refundFlag === null
+      ? ""
+      : refundFlag
+      ? "Se reintegró 1 sesión."
+      : cutoff
+      ? `Fuera del límite (${cutoff} hs).`
+      : "Fuera del límite.";
+
+  const metaRows = [
+    { label: "Usuario", value: uName },
+    { label: "Email", value: uEmail },
+  ];
+
+  if (refundDetail) metaRows.push({ label: "Reintegro", value: refundDetail });
+  if (detailText) metaRows.push({ label: "Detalle", value: detailText });
+
+  const innerHtml = `
+    ${renderExactStatusIcon(icon)}
+    ${renderExactTitle(title, 285)}
+    ${renderAdminMetaPanel(metaRows)}
+    ${renderExactTurnsPanel(items)}
+  `;
+
+  return buildEmailLayout({
+    title: `${BRAND_NAME} · ${
+      isCancelled ? "Admin turno cancelado" : "Admin turno reservado"
+    }`,
+    preheader: `${uName} · ${isCancelled ? "cancelación" : "reserva"} de turno`,
     bodyHtml: renderExactUserShell(innerHtml),
     footerNote: "",
   });
@@ -450,7 +577,7 @@ export async function sendAppointmentReminderEmail(user, ap, serviceName) {
 }
 
 /* =========================================================
-   ADMIN emails
+   ADMIN emails (misma estética)
 ========================================================= */
 
 export async function sendAdminAppointmentBookedEmail(user, ap, serviceName) {
@@ -472,35 +599,17 @@ export async function sendAdminAppointmentBookedEmail(user, ap, serviceName) {
     `Email: ${uEmail}`,
     "",
     `Día: ${ap?.date || "-"}`,
-    `Horario: ${ap?.time || "-"}`,
+    `Horario: ${ap?.time || "-"} hs`,
     `Servicio: ${svc}`,
     ap?.notes ? `Notas: ${String(ap.notes)}` : "",
   ]
     .filter(Boolean)
     .join("\n");
 
-  const bodyHtml = `
-    <div style="font-family:${EMAIL_FONT}; font-size:18px; font-weight:800; margin-bottom:12px;">
-      Nuevo turno reservado
-    </div>
-
-    <div style="border:1px solid #eeeeee; border-radius:14px; overflow:hidden;">
-      <table role="presentation" cellpadding="0" cellspacing="0" width="100%" style="border-collapse:collapse; font-family:${EMAIL_FONT};">
-        ${kvRow("Usuario", uName)}
-        ${kvRow("Email", uEmail)}
-        ${kvRow("Día", prettyDateAR(ap?.date))}
-        ${kvRow("Horario", `${ap?.time || "-"} hs`)}
-        ${kvRow("Servicio", svc)}
-        ${ap?.notes ? kvRow("Notas", String(ap.notes)) : ""}
-      </table>
-    </div>
-  `;
-
-  const html = buildEmailLayout({
-    title: `${BRAND_NAME} · Nuevo turno reservado`,
-    preheader: `${uName} · ${ap?.date || ""} ${ap?.time || ""} · ${svc}`,
-    bodyHtml,
-    footerNote: "",
+  const html = buildExactAdminAppointmentVisualHtml({
+    user,
+    items: [{ ...ap, serviceName: svc }],
+    kind: "booked",
   });
 
   await sendMail(to, subject, text, html);
@@ -550,7 +659,7 @@ export async function sendAdminAppointmentCancelledEmail(
     `Email: ${uEmail}`,
     "",
     `Día: ${ap?.date || "-"}`,
-    `Horario: ${ap?.time || "-"}`,
+    `Horario: ${ap?.time || "-"} hs`,
     `Servicio: ${svc}`,
     refundLine,
     extraExplain,
@@ -558,33 +667,11 @@ export async function sendAdminAppointmentCancelledEmail(
     .filter(Boolean)
     .join("\n");
 
-  const bodyHtml = `
-    <div style="font-family:${EMAIL_FONT}; font-size:18px; font-weight:800; margin-bottom:12px;">
-      Turno cancelado
-    </div>
-
-    <div style="border:1px solid #eeeeee; border-radius:14px; overflow:hidden;">
-      <table role="presentation" cellpadding="0" cellspacing="0" width="100%" style="border-collapse:collapse; font-family:${EMAIL_FONT};">
-        ${kvRow("Usuario", uName)}
-        ${kvRow("Email", uEmail)}
-        ${kvRow("Día", prettyDateAR(ap?.date))}
-        ${kvRow("Horario", `${ap?.time || "-"} hs`)}
-        ${kvRow("Servicio", svc)}
-        ${
-          refundFlag === null
-            ? ""
-            : kvRow("Reintegro", refundFlag ? "Sí (1 sesión)" : "No")
-        }
-        ${refundFlag === null ? "" : kvRow("Detalle", extraExplain || "-")}
-      </table>
-    </div>
-  `;
-
-  const html = buildEmailLayout({
-    title: `${BRAND_NAME} · Turno cancelado`,
-    preheader: `${uName} canceló ${ap?.date || ""} ${ap?.time || ""} · ${svc}`,
-    bodyHtml,
-    footerNote: "",
+  const html = buildExactAdminAppointmentVisualHtml({
+    user,
+    items: [{ ...ap, serviceName: svc }],
+    kind: "cancelled",
+    meta,
   });
 
   await sendMail(to, subject, text, html);
