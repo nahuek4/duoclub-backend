@@ -3,7 +3,7 @@ import { EMAIL_FONT, escapeHtml, kvRow, prettyDateAR } from "./helpers.js";
 import { buildEmailLayout } from "./layout.js";
 
 /* =========================================================
-   Helpers visuales
+   Helpers base
 ========================================================= */
 
 function getUserName(user = {}) {
@@ -19,32 +19,16 @@ function getServiceName(ap = {}, serviceName = "") {
   return serviceName || ap?.service || ap?.serviceName || "Entrenamiento Personal";
 }
 
-function renderStatusIconCircle(symbol = "✓") {
-  return `
-    <div style="
-      width:58px;
-      height:58px;
-      margin:0 auto 16px;
-      border-radius:999px;
-      background:#000000;
-      color:#ffffff;
-      text-align:center;
-      font-family:${EMAIL_FONT};
-      font-size:38px;
-      line-height:58px;
-      font-weight:900;
-    ">
-      ${escapeHtml(symbol)}
-    </div>
-  `;
-}
+/* =========================================================
+   Helpers visuales EXACTOS (mismo estilo que admisión user)
+========================================================= */
 
-function renderWhiteCard(innerHtml, maxWidth = 430) {
+function renderExactUserShell(innerHtml) {
   return `
     <table role="presentation" cellpadding="0" cellspacing="0" width="100%" style="border-collapse:collapse; font-family:${EMAIL_FONT};">
       <tr>
         <td align="center" style="padding:0 0 8px;">
-          <table role="presentation" cellpadding="0" cellspacing="0" width="100%" style="max-width:${maxWidth}px; border-collapse:separate;">
+          <table role="presentation" cellpadding="0" cellspacing="0" width="100%" style="max-width:430px; border-collapse:separate;">
             <tr>
               <td
                 bgcolor="#ffffff"
@@ -67,54 +51,99 @@ function renderWhiteCard(innerHtml, maxWidth = 430) {
   `;
 }
 
-function renderSimpleAdminCard(title, innerHtml, icon = "✓") {
-  return renderWhiteCard(
-    `
-      ${renderStatusIconCircle(icon)}
-
-      <div style="
-        font-family:${EMAIL_FONT};
-        font-size:20px;
-        line-height:24px;
-        font-weight:900;
-        margin:0 auto 18px;
-        max-width:320px;
-      ">
-        ${escapeHtml(title)}
-      </div>
-
-      <div style="
-        font-family:${EMAIL_FONT};
-        font-size:14px;
-        line-height:20px;
-        font-weight:600;
-        margin:0 auto;
-        max-width:420px;
-        text-align:left;
-      ">
-        ${innerHtml}
-      </div>
-    `,
-    460
-  );
+function renderExactStatusIcon(symbol = "✓") {
+  return `
+    <div style="
+      width:58px;
+      height:58px;
+      margin:0 auto 16px;
+      border-radius:999px;
+      background:#000;
+      color:#fff;
+      font-size:38px;
+      line-height:58px;
+      font-weight:900;
+      font-family:${EMAIL_FONT};
+      text-align:center;
+    ">${escapeHtml(symbol)}</div>
+  `;
 }
 
-function renderBlackTurnsPanel(items = []) {
+function renderExactTitle(text, maxWidth = 300) {
+  return `
+    <div style="
+      font-size:20px;
+      line-height:24px;
+      font-weight:900;
+      margin:0 auto 26px;
+      max-width:${maxWidth}px;
+      font-family:${EMAIL_FONT};
+      color:#111111;
+      white-space:pre-line;
+    ">
+      ${escapeHtml(text)}
+    </div>
+  `;
+}
+
+function renderExactBodyText(html, opts = {}) {
+  const fontSize = opts?.fontSize || 16;
+  const lineHeight = opts?.lineHeight || 22;
+  const weight = opts?.weight || 600;
+  const maxWidth = opts?.maxWidth || 380;
+  const marginBottom = opts?.marginBottom ?? 14;
+
+  return `
+    <div style="
+      font-size:${fontSize}px;
+      line-height:${lineHeight}px;
+      font-weight:${weight};
+      max-width:${maxWidth}px;
+      margin:0 auto ${marginBottom}px;
+      font-family:${EMAIL_FONT};
+      color:#111111;
+    ">
+      ${html}
+    </div>
+  `;
+}
+
+function renderExactSingleTurnTable({ ap, serviceName, extraRows = "" }) {
+  return `
+    <div style="
+      border:1px solid #eeeeee;
+      border-radius:14px;
+      overflow:hidden;
+      margin:0 auto 14px;
+      max-width:100%;
+      text-align:left;
+    ">
+      <table role="presentation" cellpadding="0" cellspacing="0" width="100%" style="border-collapse:collapse; font-family:${EMAIL_FONT};">
+        ${kvRow("Día", prettyDateAR(ap?.date))}
+        ${kvRow("Horario", `${ap?.time || "-"} hs`)}
+        ${kvRow("Servicio", getServiceName(ap, serviceName))}
+        ${extraRows}
+      </table>
+    </div>
+  `;
+}
+
+function renderExactBlackTurnsPanel(items = []) {
   const list = Array.isArray(items) ? items : [];
 
   const cards = list.length
     ? list
-        .map((it) => {
+        .map((it, idx) => {
           const date = prettyDateAR(it?.date || "");
           const time = `${it?.time || "-"} hs`;
           const service = getServiceName(it, it?.serviceName);
 
           return `
             <div style="
-              border:1px solid #d7f000;
+              border:1px solid #dfff00;
               border-radius:8px;
               padding:10px 12px;
-              margin:0 0 10px;
+              margin:0 0 ${idx === list.length - 1 ? 0 : 10}px;
               text-align:left;
             ">
               <table role="presentation" cellpadding="0" cellspacing="0" width="100%" style="border-collapse:collapse;">
@@ -124,7 +153,7 @@ function renderBlackTurnsPanel(items = []) {
                     font-size:16px;
                     line-height:18px;
                     font-weight:900;
-                    color:#e6ff00;
+                    color:#e9ff00;
                   ">
                     ${escapeHtml(date)}
                   </td>
@@ -133,7 +162,7 @@ function renderBlackTurnsPanel(items = []) {
                     font-size:16px;
                     line-height:18px;
                     font-weight:900;
-                    color:#e6ff00;
+                    color:#e9ff00;
                   ">
                     ${escapeHtml(time)}
                   </td>
@@ -160,6 +189,7 @@ function renderBlackTurnsPanel(items = []) {
         font-family:${EMAIL_FONT};
         font-size:14px;
         line-height:18px;
+        font-weight:700;
         color:#ffffff;
         text-align:left;
       ">
@@ -180,35 +210,19 @@ function renderBlackTurnsPanel(items = []) {
   `;
 }
 
-function renderSingleTurnTable({ ap, serviceName, extraRows = "" }) {
-  return `
-    <div style="
-      border:1px solid #eeeeee;
-      border-radius:14px;
-      overflow:hidden;
-      margin:0 auto 14px;
-      max-width:100%;
-      text-align:left;
-    ">
-      <table role="presentation" cellpadding="0" cellspacing="0" width="100%" style="border-collapse:collapse; font-family:${EMAIL_FONT};">
-        ${kvRow("Día", prettyDateAR(ap?.date))}
-        ${kvRow("Horario", `${ap?.time || "-"} hs`)}
-        ${kvRow("Servicio", getServiceName(ap, serviceName))}
-        ${extraRows}
-      </table>
-    </div>
-  `;
-}
+/* =========================================================
+   USER cards
+========================================================= */
 
-function renderUserAppointmentCard({ user, ap, serviceName, kind, meta = {} }) {
+function buildAppointmentCardHtml({ user, ap, serviceName, kind, meta = {} }) {
   const uName = getUserName(user);
   const svc = getServiceName(ap, serviceName);
 
   const isCancelled = kind === "cancelled";
-  const title = isCancelled
-    ? "Tu turno fue cancelado"
-    : "Tu turno fue confirmado";
   const icon = isCancelled ? "✕" : "✓";
+  const title = isCancelled
+    ? "Tu turno fue\ncancelado con éxito"
+    : "Tu turno fue\nconfirmado con éxito";
 
   const refundFlag =
     isCancelled && typeof meta?.refund === "boolean" ? meta.refund : null;
@@ -231,134 +245,97 @@ function renderUserAppointmentCard({ user, ap, serviceName, kind, meta = {} }) {
       : kvRow("Reintegro", refundFlag ? "Sí (1 sesión)" : "No");
 
   const innerHtml = `
-    ${renderStatusIconCircle(icon)}
+    ${renderExactStatusIcon(icon)}
+    ${renderExactTitle(title, 285)}
 
-    <div style="
-      font-family:${EMAIL_FONT};
-      font-size:20px;
-      line-height:24px;
-      font-weight:900;
-      margin:0 auto 22px;
-      max-width:300px;
-    ">
-      ${escapeHtml(title)}
-    </div>
+    ${renderExactBodyText(`Hola (${escapeHtml(uName)}),`, {
+      marginBottom: 12,
+    })}
 
-    <div style="
-      font-family:${EMAIL_FONT};
-      font-size:16px;
-      line-height:22px;
-      font-weight:600;
-      margin:0 auto 14px;
-      max-width:380px;
-    ">
-      Hola (${escapeHtml(uName)}),
-    </div>
+    ${renderExactBodyText(
+      isCancelled
+        ? "Tu turno fue cancelado correctamente."
+        : "Tu turno fue reservado con éxito.",
+      { marginBottom: 16 }
+    )}
 
-    <div style="
-      font-family:${EMAIL_FONT};
-      font-size:16px;
-      line-height:22px;
-      font-weight:600;
-      margin:0 auto 16px;
-      max-width:380px;
-    ">
-      ${
-        isCancelled
-          ? "Tu turno fue cancelado correctamente."
-          : "Tu turno fue reservado con éxito."
-      }
-    </div>
-
-    ${renderSingleTurnTable({ ap, serviceName: svc, extraRows })}
+    ${renderExactSingleTurnTable({ ap, serviceName: svc, extraRows })}
 
     ${
       refundText
-        ? `
-      <div style="
-        font-family:${EMAIL_FONT};
-        font-size:14px;
-        line-height:20px;
-        font-weight:600;
-        margin:0 auto 12px;
-        max-width:380px;
-      ">
-        ${escapeHtml(refundText)}
-      </div>
-    `
+        ? renderExactBodyText(escapeHtml(refundText), {
+            fontSize: 14,
+            lineHeight: 20,
+            weight: 600,
+            marginBottom: 12,
+          })
         : ""
     }
 
-    <div style="
-      font-family:${EMAIL_FONT};
-      font-size:14px;
-      line-height:20px;
-      font-weight:700;
-      margin:0 auto;
-      max-width:380px;
-    ">
-      ${
-        isCancelled
-          ? "Si fue un error, podés volver a reservar desde la agenda."
-          : "Si no podés asistir, recordá cancelarlo con anticipación desde tu perfil."
+    ${renderExactBodyText(
+      isCancelled
+        ? "Si fue un error, podés volver a reservar desde la agenda."
+        : "Si no podés asistir, recordá cancelarlo con anticipación desde tu perfil.",
+      {
+        fontSize: 14,
+        lineHeight: 20,
+        weight: 700,
+        maxWidth: 360,
+        marginBottom: 0,
       }
-    </div>
+    )}
   `;
 
   return buildEmailLayout({
-    title: `${BRAND_NAME} · ${title}`,
-    preheader: `${title}: ${ap?.date || ""} ${ap?.time || ""} · ${svc}`,
-    bodyHtml: renderWhiteCard(innerHtml),
+    title: `${BRAND_NAME} · ${isCancelled ? "Turno cancelado" : "Turno confirmado"}`,
+    preheader: `${isCancelled ? "Turno cancelado" : "Turno confirmado"}: ${
+      ap?.date || ""
+    } ${ap?.time || ""} · ${svc}`,
+    bodyHtml: renderExactUserShell(innerHtml),
     footerNote: "",
   });
 }
 
-function renderUserBatchCard({ items = [], kind = "booked" }) {
+function buildBatchAppointmentCardHtml({ items = [], kind = "booked" }) {
   const isCancelled = kind === "cancelled";
   const icon = isCancelled ? "✕" : "✓";
+
   const title = isCancelled
     ? "Tus turnos fueron\ncancelados con éxito"
     : "Tus turnos fueron\nconfirmados con éxito";
 
+  const bottomText = isCancelled
+    ? "" // en la imagen de cancelados no aparece texto abajo
+    : "Si no podés asistir, recordá\ncancelarlo con anticipación desde tu perfil.";
+
   const innerHtml = `
-    ${renderStatusIconCircle(icon)}
-
-    <div style="
-      font-family:${EMAIL_FONT};
-      font-size:20px;
-      line-height:24px;
-      font-weight:900;
-      margin:0 auto 22px;
-      max-width:300px;
-      white-space:pre-line;
-    ">
-      ${escapeHtml(title)}
-    </div>
-
-    ${renderBlackTurnsPanel(items)}
-
-    <div style="
-      font-family:${EMAIL_FONT};
-      font-size:14px;
-      line-height:20px;
-      font-weight:700;
-      margin:0 auto;
-      max-width:360px;
-    ">
-      ${
-        isCancelled
-          ? "Si fue un error, podés volver a reservar desde la agenda."
-          : "Si no podés asistir, recordá cancelarlo con anticipación desde tu perfil."
-      }
-    </div>
+    ${renderExactStatusIcon(icon)}
+    ${renderExactTitle(title, 280)}
+    ${renderExactBlackTurnsPanel(items)}
+    ${
+      bottomText
+        ? renderExactBodyText(
+            escapeHtml(bottomText).replace(/\n/g, "<br/>"),
+            {
+              fontSize: 14,
+              lineHeight: 20,
+              weight: 700,
+              maxWidth: 310,
+              marginBottom: 0,
+            }
+          )
+        : ""
+    }
   `;
 
   return buildEmailLayout({
-    title: `${BRAND_NAME} · ${isCancelled ? "Turnos cancelados" : "Turnos reservados"}`,
+    title: `${BRAND_NAME} · ${
+      isCancelled ? "Turnos cancelados" : "Turnos confirmados"
+    }`,
     preheader: isCancelled
       ? "Tus turnos fueron cancelados"
-      : "Tus turnos fueron reservados",
-    bodyHtml: renderWhiteCard(innerHtml),
+      : "Tus turnos fueron confirmados",
+    bodyHtml: renderExactUserShell(innerHtml),
     footerNote: "",
   });
 }
@@ -396,7 +373,7 @@ export async function sendAppointmentBookedEmail(user, ap, serviceName) {
     .filter(Boolean)
     .join("\n");
 
-  const html = renderUserAppointmentCard({
+  const html = buildAppointmentCardHtml({
     user,
     ap,
     serviceName,
@@ -466,7 +443,7 @@ export async function sendAppointmentCancelledEmail(
     .filter(Boolean)
     .join("\n");
 
-  const html = renderUserAppointmentCard({
+  const html = buildAppointmentCardHtml({
     user,
     ap,
     serviceName,
@@ -504,59 +481,32 @@ export async function sendAppointmentReminderEmail(user, ap, serviceName) {
   ].join("\n");
 
   const innerHtml = `
-    ${renderStatusIconCircle("⏰")}
-
-    <div style="
-      font-family:${EMAIL_FONT};
-      font-size:20px;
-      line-height:24px;
-      font-weight:900;
-      margin:0 auto 22px;
-      max-width:300px;
-    ">
-      Recordatorio de turno
-    </div>
-
-    <div style="
-      font-family:${EMAIL_FONT};
-      font-size:16px;
-      line-height:22px;
-      font-weight:600;
-      margin:0 auto 16px;
-      max-width:380px;
-    ">
-      Hola (${escapeHtml(uName)}),
-    </div>
-
-    <div style="
-      font-family:${EMAIL_FONT};
-      font-size:16px;
-      line-height:22px;
-      font-weight:600;
-      margin:0 auto 16px;
-      max-width:380px;
-    ">
-      Te recordamos que tenés un turno en las próximas 24 horas.
-    </div>
-
-    ${renderSingleTurnTable({ ap, serviceName: svc })}
-
-    <div style="
-      font-family:${EMAIL_FONT};
-      font-size:14px;
-      line-height:20px;
-      font-weight:700;
-      margin:0 auto;
-      max-width:380px;
-    ">
-      Si no podés asistir, cancelá el turno para liberar el espacio.
-    </div>
+    ${renderExactStatusIcon("⏰")}
+    ${renderExactTitle("Recordatorio de turno", 280)}
+    ${renderExactBodyText(`Hola (${escapeHtml(uName)}),`, {
+      marginBottom: 12,
+    })}
+    ${renderExactBodyText(
+      "Te recordamos que tenés un turno en las próximas 24 horas.",
+      { marginBottom: 16 }
+    )}
+    ${renderExactSingleTurnTable({ ap, serviceName: svc })}
+    ${renderExactBodyText(
+      "Si no podés asistir, cancelá el turno para liberar el espacio.",
+      {
+        fontSize: 14,
+        lineHeight: 20,
+        weight: 700,
+        maxWidth: 360,
+        marginBottom: 0,
+      }
+    )}
   `;
 
   const html = buildEmailLayout({
     title: `${BRAND_NAME} · Recordatorio de turno`,
     preheader: `Recordatorio: ${ap?.date || ""} ${ap?.time || ""} · ${svc}`,
-    bodyHtml: renderWhiteCard(innerHtml),
+    bodyHtml: renderExactUserShell(innerHtml),
     footerNote: "",
   });
 
@@ -580,7 +530,9 @@ export async function sendAdminAppointmentBookedEmail(user, ap, serviceName) {
   const uEmail = user?.email || "-";
   const svc = getServiceName(ap, serviceName);
 
-  const subject = `🗓️ Nuevo turno reservado — ${uName} · ${ap?.date || "-"} ${ap?.time || ""}`;
+  const subject = `🗓️ Nuevo turno reservado — ${uName} · ${ap?.date || "-"} ${
+    ap?.time || ""
+  }`;
 
   const text = [
     "Nuevo turno reservado",
@@ -596,9 +548,9 @@ export async function sendAdminAppointmentBookedEmail(user, ap, serviceName) {
     .filter(Boolean)
     .join("\n");
 
-  const details = `
-    <div style="margin-bottom:14px; text-align:center;">
-      Se registró un nuevo turno reservado.
+  const bodyHtml = `
+    <div style="font-family:${EMAIL_FONT}; font-size:18px; font-weight:800; margin-bottom:12px;">
+      Nuevo turno reservado
     </div>
 
     <div style="border:1px solid #eeeeee; border-radius:14px; overflow:hidden;">
@@ -616,7 +568,7 @@ export async function sendAdminAppointmentBookedEmail(user, ap, serviceName) {
   const html = buildEmailLayout({
     title: `${BRAND_NAME} · Nuevo turno reservado`,
     preheader: `${uName} · ${ap?.date || ""} ${ap?.time || ""} · ${svc}`,
-    bodyHtml: renderSimpleAdminCard("Nuevo turno reservado", details, "✓"),
+    bodyHtml,
     footerNote: "",
   });
 
@@ -640,7 +592,9 @@ export async function sendAdminAppointmentCancelledEmail(
   const cutoff =
     typeof meta?.refundCutoffHours === "number" ? meta.refundCutoffHours : null;
 
-  const subject = `🧾 Turno cancelado — ${uName} · ${ap?.date || "-"} ${ap?.time || ""}`;
+  const subject = `🧾 Turno cancelado — ${uName} · ${ap?.date || "-"} ${
+    ap?.time || ""
+  }`;
 
   const refundLine =
     refundFlag === null
@@ -673,9 +627,9 @@ export async function sendAdminAppointmentCancelledEmail(
     .filter(Boolean)
     .join("\n");
 
-  const details = `
-    <div style="margin-bottom:14px; text-align:center;">
-      Se registró una cancelación de turno.
+  const bodyHtml = `
+    <div style="font-family:${EMAIL_FONT}; font-size:18px; font-weight:800; margin-bottom:12px;">
+      Turno cancelado
     </div>
 
     <div style="border:1px solid #eeeeee; border-radius:14px; overflow:hidden;">
@@ -698,7 +652,7 @@ export async function sendAdminAppointmentCancelledEmail(
   const html = buildEmailLayout({
     title: `${BRAND_NAME} · Turno cancelado`,
     preheader: `${uName} canceló ${ap?.date || ""} ${ap?.time || ""} · ${svc}`,
-    bodyHtml: renderSimpleAdminCard("Turno cancelado", details, "✕"),
+    bodyHtml,
     footerNote: "",
   });
 
@@ -728,19 +682,19 @@ export async function sendAppointmentBookedBatchEmail(user, items = []) {
   const text = [
     `Hola ${user?.name || ""}`.trim() + ",",
     "",
-    "Tus turnos fueron reservados con éxito.",
+    "Tus turnos fueron confirmados con éxito.",
     "",
     "Detalle:",
     ...(linesItems.length ? linesItems : ["(sin items)"]),
     "",
-    "Si no podés asistir, recordá cancelarlos con anticipación desde tu perfil.",
+    "Si no podés asistir, recordá cancelarlo con anticipación desde tu perfil.",
   ].join("\n");
 
-  const html = renderUserBatchCard({ items: list, kind: "booked" });
+  const html = buildBatchAppointmentCardHtml({ items: list, kind: "booked" });
 
   await sendMail(
     user.email,
-    `Tus turnos fueron reservados - ${BRAND_NAME}`,
+    `Tus turnos fueron confirmados - ${BRAND_NAME}`,
     text,
     html
   );
@@ -769,11 +723,12 @@ export async function sendAppointmentCancelledBatchEmail(user, items = []) {
     "",
     "Detalle:",
     ...(linesItems.length ? linesItems : ["(sin items)"]),
-    "",
-    "Si fue un error, podés volver a reservar desde la agenda.",
   ].join("\n");
 
-  const html = renderUserBatchCard({ items: list, kind: "cancelled" });
+  const html = buildBatchAppointmentCardHtml({
+    items: list,
+    kind: "cancelled",
+  });
 
   await sendMail(
     user.email,
@@ -810,57 +765,28 @@ export async function sendWaitlistSlotAvailableEmail(user, ap, meta = {}) {
   ].join("\n");
 
   const innerHtml = `
-    ${renderStatusIconCircle("✓")}
-
-    <div style="
-      font-family:${EMAIL_FONT};
-      font-size:20px;
-      line-height:24px;
-      font-weight:900;
-      margin:0 auto 22px;
-      max-width:300px;
-    ">
-      Se liberó un cupo
-    </div>
-
-    <div style="
-      font-family:${EMAIL_FONT};
-      font-size:16px;
-      line-height:22px;
-      font-weight:600;
-      margin:0 auto 14px;
-      max-width:380px;
-    ">
-      Hola (${escapeHtml(uName)}),
-    </div>
-
-    <div style="
-      font-family:${EMAIL_FONT};
-      font-size:16px;
-      line-height:22px;
-      font-weight:600;
-      margin:0 auto 16px;
-      max-width:380px;
-    ">
-      Se liberó un cupo para el turno que tenías en lista de espera.
-    </div>
-
-    ${renderSingleTurnTable({ ap, serviceName: svc })}
-
-    <div style="
-      font-family:${EMAIL_FONT};
-      font-size:14px;
-      line-height:20px;
-      font-weight:700;
-      margin:0 auto 16px;
-      max-width:380px;
-    ">
-      ${
-        totalNotified > 1
-          ? `Avisamos a vos y a otras ${totalNotified - 1} personas. El turno se asigna al primero que lo confirme.`
-          : "El turno se asigna al primero que lo confirme."
+    ${renderExactStatusIcon("✓")}
+    ${renderExactTitle("Se liberó un cupo", 280)}
+    ${renderExactBodyText(`Hola (${escapeHtml(uName)}),`, {
+      marginBottom: 12,
+    })}
+    ${renderExactBodyText(
+      "Se liberó un cupo para el turno que tenías en lista de espera.",
+      { marginBottom: 16 }
+    )}
+    ${renderExactSingleTurnTable({ ap, serviceName: svc })}
+    ${renderExactBodyText(
+      totalNotified > 1
+        ? `Avisamos a vos y a otras ${totalNotified - 1} personas. El turno se asigna al primero que lo confirme.`
+        : "El turno se asigna al primero que lo confirme.",
+      {
+        fontSize: 14,
+        lineHeight: 20,
+        weight: 700,
+        maxWidth: 360,
+        marginBottom: 16,
       }
-    </div>
+    )}
 
     <div style="margin:16px 0;">
       <a href="${escapeHtml(link)}"
@@ -878,23 +804,22 @@ export async function sendWaitlistSlotAvailableEmail(user, ap, meta = {}) {
       </a>
     </div>
 
-    <div style="
-      font-family:${EMAIL_FONT};
-      font-size:12px;
-      line-height:18px;
-      font-weight:600;
-      color:#666666;
-      max-width:380px;
-      margin:0 auto;
-    ">
-      Si al entrar ya no aparece disponible, significa que otra persona lo confirmó primero.
-    </div>
+    ${renderExactBodyText(
+      "Si al entrar ya no aparece disponible, significa que otra persona lo confirmó primero.",
+      {
+        fontSize: 12,
+        lineHeight: 18,
+        weight: 600,
+        maxWidth: 360,
+        marginBottom: 0,
+      }
+    )}
   `;
 
   const html = buildEmailLayout({
     title: `${BRAND_NAME} · Cupo disponible`,
     preheader: "Se liberó un cupo para tu turno en lista de espera",
-    bodyHtml: renderWhiteCard(innerHtml),
+    bodyHtml: renderExactUserShell(innerHtml),
     footerNote: "",
   });
 
