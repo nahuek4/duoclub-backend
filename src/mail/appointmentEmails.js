@@ -16,26 +16,31 @@ function getUserName(user = {}) {
 }
 
 function getServiceName(ap = {}, serviceName = "") {
-  return serviceName || ap?.service || ap?.serviceName || "Entrenamiento Personal";
+  return (
+    serviceName ||
+    ap?.serviceName ||
+    ap?.service ||
+    "Entrenamiento Personal"
+  );
 }
 
 /* =========================================================
-   Helpers visuales EXACTOS (mismo estilo que admisión user)
+   Helpers visuales EXACTOS (look 1:1 referencia)
 ========================================================= */
 
 function renderExactUserShell(innerHtml) {
   return `
     <table role="presentation" cellpadding="0" cellspacing="0" width="100%" style="border-collapse:collapse; font-family:${EMAIL_FONT};">
       <tr>
-        <td align="center" style="padding:0 0 8px;">
+        <td align="center" style="padding:0;">
           <table role="presentation" cellpadding="0" cellspacing="0" width="100%" style="max-width:430px; border-collapse:separate;">
             <tr>
               <td
-                bgcolor="#ffffff"
+                bgcolor="#f3f3f3"
                 style="
-                  background:#ffffff;
-                  border-radius:18px;
-                  padding:22px 18px 20px;
+                  background:#f3f3f3;
+                  border-radius:0;
+                  padding:18px 10px 26px;
                   text-align:center;
                   font-family:${EMAIL_FONT};
                   color:#111111;
@@ -56,10 +61,10 @@ function renderExactStatusIcon(symbol = "✓") {
     <div style="
       width:58px;
       height:58px;
-      margin:0 auto 16px;
+      margin:0 auto 14px;
       border-radius:999px;
-      background:#000;
-      color:#fff;
+      background:#0a0a0a;
+      color:#ffffff;
       font-size:38px;
       line-height:58px;
       font-weight:900;
@@ -72,14 +77,15 @@ function renderExactStatusIcon(symbol = "✓") {
 function renderExactTitle(text, maxWidth = 300) {
   return `
     <div style="
-      font-size:20px;
-      line-height:24px;
+      font-size:19px;
+      line-height:20px;
       font-weight:900;
-      margin:0 auto 26px;
+      margin:0 auto 18px;
       max-width:${maxWidth}px;
       font-family:${EMAIL_FONT};
       color:#111111;
       white-space:pre-line;
+      letter-spacing:-0.2px;
     ">
       ${escapeHtml(text)}
     </div>
@@ -87,11 +93,12 @@ function renderExactTitle(text, maxWidth = 300) {
 }
 
 function renderExactBodyText(html, opts = {}) {
-  const fontSize = opts?.fontSize || 16;
-  const lineHeight = opts?.lineHeight || 22;
-  const weight = opts?.weight || 600;
-  const maxWidth = opts?.maxWidth || 380;
-  const marginBottom = opts?.marginBottom ?? 14;
+  const fontSize = opts?.fontSize || 14;
+  const lineHeight = opts?.lineHeight || 19;
+  const weight = opts?.weight || 700;
+  const maxWidth = opts?.maxWidth || 320;
+  const marginTop = opts?.marginTop ?? 0;
+  const marginBottom = opts?.marginBottom ?? 0;
 
   return `
     <div style="
@@ -99,36 +106,17 @@ function renderExactBodyText(html, opts = {}) {
       line-height:${lineHeight}px;
       font-weight:${weight};
       max-width:${maxWidth}px;
-      margin:0 auto ${marginBottom}px;
+      margin:${marginTop}px auto ${marginBottom}px;
       font-family:${EMAIL_FONT};
       color:#111111;
+      white-space:pre-line;
     ">
       ${html}
     </div>
   `;
 }
 
-function renderExactSingleTurnTable({ ap, serviceName, extraRows = "" }) {
-  return `
-    <div style="
-      border:1px solid #eeeeee;
-      border-radius:14px;
-      overflow:hidden;
-      margin:0 auto 14px;
-      max-width:100%;
-      text-align:left;
-    ">
-      <table role="presentation" cellpadding="0" cellspacing="0" width="100%" style="border-collapse:collapse; font-family:${EMAIL_FONT};">
-        ${kvRow("Día", prettyDateAR(ap?.date))}
-        ${kvRow("Horario", `${ap?.time || "-"} hs`)}
-        ${kvRow("Servicio", getServiceName(ap, serviceName))}
-        ${extraRows}
-      </table>
-    </div>
-  `;
-}
-
-function renderExactBlackTurnsPanel(items = []) {
+function renderExactTurnsPanel(items = []) {
   const list = Array.isArray(items) ? items : [];
 
   const cards = list.length
@@ -140,29 +128,33 @@ function renderExactBlackTurnsPanel(items = []) {
 
           return `
             <div style="
-              border:1px solid #dfff00;
+              border:1px solid #e4ff00;
               border-radius:8px;
               padding:10px 12px;
-              margin:0 0 ${idx === list.length - 1 ? 0 : 10}px;
+              margin:0 0 ${idx === list.length - 1 ? 0 : 11}px;
               text-align:left;
+              background:#0b0b0b;
             ">
               <table role="presentation" cellpadding="0" cellspacing="0" width="100%" style="border-collapse:collapse;">
                 <tr>
                   <td style="
                     font-family:${EMAIL_FONT};
-                    font-size:16px;
-                    line-height:18px;
+                    font-size:15px;
+                    line-height:17px;
                     font-weight:900;
-                    color:#e9ff00;
+                    color:#e4ff00;
+                    padding:0;
                   ">
                     ${escapeHtml(date)}
                   </td>
                   <td align="right" style="
                     font-family:${EMAIL_FONT};
-                    font-size:16px;
-                    line-height:18px;
+                    font-size:15px;
+                    line-height:17px;
                     font-weight:900;
-                    color:#e9ff00;
+                    color:#e4ff00;
+                    padding:0;
+                    white-space:nowrap;
                   ">
                     ${escapeHtml(time)}
                   </td>
@@ -171,8 +163,8 @@ function renderExactBlackTurnsPanel(items = []) {
                   <td colspan="2" style="
                     padding-top:4px;
                     font-family:${EMAIL_FONT};
-                    font-size:15px;
-                    line-height:18px;
+                    font-size:14px;
+                    line-height:16px;
                     font-weight:700;
                     color:#ffffff;
                   ">
@@ -199,11 +191,12 @@ function renderExactBlackTurnsPanel(items = []) {
 
   return `
     <div style="
-      background:#060606;
-      border-radius:8px;
+      background:#0a0a0a;
+      border-radius:6px;
       padding:14px;
-      margin:0 auto 18px;
+      margin:0 auto 22px;
       max-width:100%;
+      text-align:left;
     ">
       ${cards}
     </div>
@@ -211,116 +204,43 @@ function renderExactBlackTurnsPanel(items = []) {
 }
 
 /* =========================================================
-   USER cards
+   Card principal EXACTA para booked/cancelled
+   (single y batch usan la MISMA estructura)
 ========================================================= */
 
-function buildAppointmentCardHtml({ user, ap, serviceName, kind, meta = {} }) {
-  const uName = getUserName(user);
-  const svc = getServiceName(ap, serviceName);
-
+function buildExactAppointmentVisualHtml({
+  items = [],
+  kind = "booked",
+  showBottomText = true,
+}) {
   const isCancelled = kind === "cancelled";
   const icon = isCancelled ? "✕" : "✓";
+
   const title = isCancelled
-    ? "Tu turno fue\ncancelado con éxito"
+    ? items.length > 1
+      ? "Tus turnos fueron\ncancelados con éxito"
+      : "Tu turno fue\ncancelado con éxito"
+    : items.length > 1
+    ? "Tus turnos fueron\nconfirmados con éxito"
     : "Tu turno fue\nconfirmado con éxito";
 
-  const refundFlag =
-    isCancelled && typeof meta?.refund === "boolean" ? meta.refund : null;
-
-  const cutoff =
-    typeof meta?.refundCutoffHours === "number" ? meta.refundCutoffHours : null;
-
-  const refundText =
-    refundFlag === null
-      ? ""
-      : refundFlag
-      ? "Se reintegró 1 sesión a tu cuenta."
-      : cutoff
-      ? `No hubo reintegro porque la cancelación fue fuera del límite (${cutoff}hs).`
-      : "No hubo reintegro porque la cancelación fue fuera del límite.";
-
-  const extraRows =
-    refundFlag === null
-      ? ""
-      : kvRow("Reintegro", refundFlag ? "Sí (1 sesión)" : "No");
-
-  const innerHtml = `
-    ${renderExactStatusIcon(icon)}
-    ${renderExactTitle(title, 285)}
-
-    ${renderExactBodyText(`Hola (${escapeHtml(uName)}),`, {
-      marginBottom: 12,
-    })}
-
-    ${renderExactBodyText(
-      isCancelled
-        ? "Tu turno fue cancelado correctamente."
-        : "Tu turno fue reservado con éxito.",
-      { marginBottom: 16 }
-    )}
-
-    ${renderExactSingleTurnTable({ ap, serviceName: svc, extraRows })}
-
-    ${
-      refundText
-        ? renderExactBodyText(escapeHtml(refundText), {
-            fontSize: 14,
-            lineHeight: 20,
-            weight: 600,
-            marginBottom: 12,
-          })
-        : ""
-    }
-
-    ${renderExactBodyText(
-      isCancelled
-        ? "Si fue un error, podés volver a reservar desde la agenda."
-        : "Si no podés asistir, recordá cancelarlo con anticipación desde tu perfil.",
-      {
-        fontSize: 14,
-        lineHeight: 20,
-        weight: 700,
-        maxWidth: 360,
-        marginBottom: 0,
-      }
-    )}
-  `;
-
-  return buildEmailLayout({
-    title: `${BRAND_NAME} · ${isCancelled ? "Turno cancelado" : "Turno confirmado"}`,
-    preheader: `${isCancelled ? "Turno cancelado" : "Turno confirmado"}: ${
-      ap?.date || ""
-    } ${ap?.time || ""} · ${svc}`,
-    bodyHtml: renderExactUserShell(innerHtml),
-    footerNote: "",
-  });
-}
-
-function buildBatchAppointmentCardHtml({ items = [], kind = "booked" }) {
-  const isCancelled = kind === "cancelled";
-  const icon = isCancelled ? "✕" : "✓";
-
-  const title = isCancelled
-    ? "Tus turnos fueron\ncancelados con éxito"
-    : "Tus turnos fueron\nconfirmados con éxito";
-
   const bottomText = isCancelled
-    ? "" // en la imagen de cancelados no aparece texto abajo
+    ? "Si querés, podés volver a reservar\ndesde tu perfil."
     : "Si no podés asistir, recordá\ncancelarlo con anticipación desde tu perfil.";
 
   const innerHtml = `
     ${renderExactStatusIcon(icon)}
-    ${renderExactTitle(title, 280)}
-    ${renderExactBlackTurnsPanel(items)}
+    ${renderExactTitle(title, 285)}
+    ${renderExactTurnsPanel(items)}
     ${
-      bottomText
+      showBottomText
         ? renderExactBodyText(
             escapeHtml(bottomText).replace(/\n/g, "<br/>"),
             {
               fontSize: 14,
-              lineHeight: 20,
+              lineHeight: 19,
               weight: 700,
-              maxWidth: 310,
+              maxWidth: 305,
               marginBottom: 0,
             }
           )
@@ -330,11 +250,21 @@ function buildBatchAppointmentCardHtml({ items = [], kind = "booked" }) {
 
   return buildEmailLayout({
     title: `${BRAND_NAME} · ${
-      isCancelled ? "Turnos cancelados" : "Turnos confirmados"
+      isCancelled
+        ? items.length > 1
+          ? "Turnos cancelados"
+          : "Turno cancelado"
+        : items.length > 1
+        ? "Turnos confirmados"
+        : "Turno confirmado"
     }`,
     preheader: isCancelled
-      ? "Tus turnos fueron cancelados"
-      : "Tus turnos fueron confirmados",
+      ? items.length > 1
+        ? "Tus turnos fueron cancelados"
+        : "Tu turno fue cancelado"
+      : items.length > 1
+      ? "Tus turnos fueron confirmados"
+      : "Tu turno fue confirmado",
     bodyHtml: renderExactUserShell(innerHtml),
     footerNote: "",
   });
@@ -354,6 +284,8 @@ export async function sendAppointmentBookedEmail(user, ap, serviceName) {
 
   if (!user?.email) return;
 
+  const svc = getServiceName(ap, serviceName);
+
   const subject = `✅ Tu turno fue reservado - ${BRAND_NAME}`;
   const text = [
     `Hola ${user?.name || ""}`.trim() + ",",
@@ -361,23 +293,16 @@ export async function sendAppointmentBookedEmail(user, ap, serviceName) {
     "Tu turno fue reservado con éxito.",
     "",
     `Día: ${ap?.date || "-"}`,
-    `Horario: ${ap?.time || "-"}`,
-    serviceName
-      ? `Servicio: ${serviceName}`
-      : ap?.service
-      ? `Servicio: ${ap.service}`
-      : "",
+    `Horario: ${ap?.time || "-"} hs`,
+    `Servicio: ${svc}`,
     "",
     "Si no podés asistir, recordá cancelarlo con anticipación desde tu perfil.",
-  ]
-    .filter(Boolean)
-    .join("\n");
+  ].join("\n");
 
-  const html = buildAppointmentCardHtml({
-    user,
-    ap,
-    serviceName,
+  const html = buildExactAppointmentVisualHtml({
+    items: [{ ...ap, serviceName: svc }],
     kind: "booked",
+    showBottomText: true,
   });
 
   await sendMail(user.email, subject, text, html);
@@ -400,6 +325,8 @@ export async function sendAppointmentCancelledEmail(
   });
 
   if (!user?.email) return;
+
+  const svc = getServiceName(ap, serviceName);
 
   const refundFlag = typeof meta?.refund === "boolean" ? meta.refund : null;
   const cutoff =
@@ -429,26 +356,20 @@ export async function sendAppointmentCancelledEmail(
     "Tu turno fue cancelado.",
     "",
     `Día: ${ap?.date || "-"}`,
-    `Horario: ${ap?.time || "-"}`,
-    serviceName
-      ? `Servicio: ${serviceName}`
-      : ap?.service
-      ? `Servicio: ${ap.service}`
-      : "",
+    `Horario: ${ap?.time || "-"} hs`,
+    `Servicio: ${svc}`,
     refundLine,
     extraExplain,
     "",
-    "Si fue un error, podés volver a reservar desde la agenda.",
+    "Si querés, podés volver a reservar desde tu perfil.",
   ]
     .filter(Boolean)
     .join("\n");
 
-  const html = buildAppointmentCardHtml({
-    user,
-    ap,
-    serviceName,
+  const html = buildExactAppointmentVisualHtml({
+    items: [{ ...ap, serviceName: svc }],
     kind: "cancelled",
-    meta,
+    showBottomText: true,
   });
 
   await sendMail(user.email, subject, text, html);
@@ -484,20 +405,30 @@ export async function sendAppointmentReminderEmail(user, ap, serviceName) {
     ${renderExactStatusIcon("⏰")}
     ${renderExactTitle("Recordatorio de turno", 280)}
     ${renderExactBodyText(`Hola (${escapeHtml(uName)}),`, {
-      marginBottom: 12,
+      fontSize: 15,
+      lineHeight: 20,
+      weight: 700,
+      maxWidth: 320,
+      marginBottom: 10,
     })}
     ${renderExactBodyText(
       "Te recordamos que tenés un turno en las próximas 24 horas.",
-      { marginBottom: 16 }
+      {
+        fontSize: 14,
+        lineHeight: 19,
+        weight: 700,
+        maxWidth: 320,
+        marginBottom: 16,
+      }
     )}
-    ${renderExactSingleTurnTable({ ap, serviceName: svc })}
+    ${renderExactTurnsPanel([{ ...ap, serviceName: svc }])}
     ${renderExactBodyText(
       "Si no podés asistir, cancelá el turno para liberar el espacio.",
       {
         fontSize: 14,
-        lineHeight: 20,
+        lineHeight: 19,
         weight: 700,
-        maxWidth: 360,
+        maxWidth: 320,
         marginBottom: 0,
       }
     )}
@@ -672,6 +603,7 @@ export async function sendAppointmentBookedBatchEmail(user, items = []) {
   if (!user?.email) return;
 
   const list = Array.isArray(items) ? items : [];
+
   const linesItems = list.map((it, i) => {
     const date = it?.date || "-";
     const time = it?.time || "-";
@@ -690,7 +622,11 @@ export async function sendAppointmentBookedBatchEmail(user, items = []) {
     "Si no podés asistir, recordá cancelarlo con anticipación desde tu perfil.",
   ].join("\n");
 
-  const html = buildBatchAppointmentCardHtml({ items: list, kind: "booked" });
+  const html = buildExactAppointmentVisualHtml({
+    items: list,
+    kind: "booked",
+    showBottomText: true,
+  });
 
   await sendMail(
     user.email,
@@ -709,6 +645,7 @@ export async function sendAppointmentCancelledBatchEmail(user, items = []) {
   if (!user?.email) return;
 
   const list = Array.isArray(items) ? items : [];
+
   const linesItems = list.map((it, i) => {
     const date = it?.date || "-";
     const time = it?.time || "-";
@@ -723,11 +660,14 @@ export async function sendAppointmentCancelledBatchEmail(user, items = []) {
     "",
     "Detalle:",
     ...(linesItems.length ? linesItems : ["(sin items)"]),
+    "",
+    "Si querés, podés volver a reservar desde tu perfil.",
   ].join("\n");
 
-  const html = buildBatchAppointmentCardHtml({
+  const html = buildExactAppointmentVisualHtml({
     items: list,
     kind: "cancelled",
+    showBottomText: true,
   });
 
   await sendMail(
@@ -768,22 +708,32 @@ export async function sendWaitlistSlotAvailableEmail(user, ap, meta = {}) {
     ${renderExactStatusIcon("✓")}
     ${renderExactTitle("Se liberó un cupo", 280)}
     ${renderExactBodyText(`Hola (${escapeHtml(uName)}),`, {
-      marginBottom: 12,
+      fontSize: 15,
+      lineHeight: 20,
+      weight: 700,
+      maxWidth: 320,
+      marginBottom: 10,
     })}
     ${renderExactBodyText(
       "Se liberó un cupo para el turno que tenías en lista de espera.",
-      { marginBottom: 16 }
+      {
+        fontSize: 14,
+        lineHeight: 19,
+        weight: 700,
+        maxWidth: 320,
+        marginBottom: 16,
+      }
     )}
-    ${renderExactSingleTurnTable({ ap, serviceName: svc })}
+    ${renderExactTurnsPanel([{ ...ap, serviceName: svc }])}
     ${renderExactBodyText(
       totalNotified > 1
         ? `Avisamos a vos y a otras ${totalNotified - 1} personas. El turno se asigna al primero que lo confirme.`
         : "El turno se asigna al primero que lo confirme.",
       {
         fontSize: 14,
-        lineHeight: 20,
+        lineHeight: 19,
         weight: 700,
-        maxWidth: 360,
+        maxWidth: 320,
         marginBottom: 16,
       }
     )}
@@ -808,9 +758,9 @@ export async function sendWaitlistSlotAvailableEmail(user, ap, meta = {}) {
       "Si al entrar ya no aparece disponible, significa que otra persona lo confirmó primero.",
       {
         fontSize: 12,
-        lineHeight: 18,
+        lineHeight: 17,
         weight: 600,
-        maxWidth: 360,
+        maxWidth: 320,
         marginBottom: 0,
       }
     )}
