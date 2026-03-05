@@ -1,3 +1,5 @@
+// backend/src/mail/appointments.js (o donde tengas estos mails)
+
 import { ADMIN_EMAIL, BRAND_NAME, BRAND_URL, sendMail } from "./core.js";
 import { EMAIL_FONT, escapeHtml, prettyDateAR } from "./helpers.js";
 import { buildEmailLayout } from "./layout.js";
@@ -83,6 +85,11 @@ function renderExactUserShell(innerHtml) {
           height:54px !important;
           line-height:54px !important;
           font-size:34px !important;
+        }
+
+        .reminder-bell {
+          width:64px !important;
+          height:64px !important;
         }
       }
     </style>
@@ -285,8 +292,70 @@ function renderExactTurnsPanel(items = []) {
 }
 
 /* =========================================================
+   ÍCONO RECORDATORIO (campana + reloj) SVG INLINE
+   - evita emoji
+   - consistente en todos los clientes
+========================================================= */
+
+function renderExactReminderBellIcon() {
+  // SVG simple y "limpio" con trazo negro, similar a tu imagen
+  // (campana + líneas de vibración + badge de reloj abajo a la derecha)
+  return `
+    <div style="margin:0 auto 6px; text-align:center;">
+      <svg
+        class="reminder-bell"
+        width="70"
+        height="70"
+        viewBox="0 0 96 96"
+        xmlns="http://www.w3.org/2000/svg"
+        role="img"
+        aria-label="Recordatorio"
+        style="display:block; margin:0 auto;"
+      >
+        <!-- vibración izquierda -->
+        <path d="M18 26 C10 32,10 44,18 50" fill="none" stroke="#111" stroke-width="6" stroke-linecap="round"/>
+        <path d="M26 20 C14 30,14 46,26 56" fill="none" stroke="#111" stroke-width="6" stroke-linecap="round"/>
+        <!-- vibración derecha -->
+        <path d="M78 26 C86 32,86 44,78 50" fill="none" stroke="#111" stroke-width="6" stroke-linecap="round"/>
+        <path d="M70 20 C82 30,82 46,70 56" fill="none" stroke="#111" stroke-width="6" stroke-linecap="round"/>
+
+        <!-- campana -->
+        <path
+          d="M48 16
+             C35 16 26 26 26 40
+             V56
+             L20 62
+             V66
+             H76
+             V62
+             L70 56
+             V40
+             C70 26 61 16 48 16 Z"
+          fill="none"
+          stroke="#111"
+          stroke-width="6"
+          stroke-linejoin="round"
+        />
+
+        <!-- badajo -->
+        <path
+          d="M40 70 C40 76 44 80 48 80 C52 80 56 76 56 70"
+          fill="none"
+          stroke="#111"
+          stroke-width="6"
+          stroke-linecap="round"
+        />
+
+        <!-- badge reloj -->
+        <circle cx="70" cy="66" r="14" fill="#fff" stroke="#111" stroke-width="6"/>
+        <path d="M70 58 V66 L76 70" fill="none" stroke="#111" stroke-width="6" stroke-linecap="round" stroke-linejoin="round"/>
+      </svg>
+    </div>
+  `;
+}
+
+/* =========================================================
    Panel admin horizontal (usuario/email a lo ancho)
-   En mobile se apila automáticamente
 ========================================================= */
 
 function renderAdminMetaPanel(rows = []) {
@@ -425,7 +494,6 @@ function renderAdminDetailPanel(rows = []) {
 
 /* =========================================================
    Card principal EXACTA para booked/cancelled
-   (single y batch usan la MISMA estructura)
 ========================================================= */
 
 function buildExactAppointmentVisualHtml({
@@ -491,6 +559,35 @@ function buildExactAppointmentVisualHtml({
 }
 
 /* =========================================================
+   Card REMINDER EXACTA (como tu imagen)
+========================================================= */
+
+function buildExactReminderVisualHtml({ items = [] }) {
+  const innerHtml = `
+    ${renderExactReminderBellIcon()}
+    ${renderExactTitle("Recordatorio de turno!", 285)}
+    ${renderExactTurnsPanel(items)}
+    ${renderExactBodyText(
+      "Si no podés asistir, recordá<br/>anularlo con anticipación desde tu perfil.",
+      {
+        fontSize: 14,
+        lineHeight: 19,
+        weight: 700,
+        maxWidth: 305,
+        marginBottom: 0,
+      }
+    )}
+  `;
+
+  return buildEmailLayout({
+    title: `${BRAND_NAME} · Recordatorio de turno`,
+    preheader: "Recordatorio: tenés un turno agendado",
+    bodyHtml: renderExactUserShell(innerHtml),
+    footerNote: "",
+  });
+}
+
+/* =========================================================
    Card admin con misma estética
 ========================================================= */
 
@@ -518,11 +615,7 @@ function buildExactAdminAppointmentVisualHtml({
     typeof meta?.refundCutoffHours === "number" ? meta.refundCutoffHours : null;
 
   const refundDetail =
-    refundFlag === null
-      ? ""
-      : refundFlag
-      ? "Sí (1 sesión)"
-      : "No";
+    refundFlag === null ? "" : refundFlag ? "Sí (1 sesión)" : "No";
 
   const detailText =
     refundFlag === null
@@ -666,6 +759,7 @@ export async function sendAppointmentCancelledEmail(
   await sendAdminAppointmentCancelledEmail(user, ap, serviceName, meta);
 }
 
+/* ✅ RECORDATORIO (ESTILO EXACTO COMO TU FOTO) */
 export async function sendAppointmentReminderEmail(user, ap, serviceName) {
   console.log("[MAIL][APPT] reminder ->", {
     to: user?.email,
@@ -676,67 +770,27 @@ export async function sendAppointmentReminderEmail(user, ap, serviceName) {
 
   if (!user?.email) return;
 
-  const uName = getUserName(user);
   const svc = getServiceName(ap, serviceName);
+
+  const subject = `🔔 Recordatorio de turno - ${BRAND_NAME}`;
 
   const text = [
     `Hola ${user?.name || ""}`.trim() + ",",
     "",
-    "Te recordamos que tenés un turno agendado en las próximas 24 horas.",
+    "Te recordamos que tenés un turno agendado.",
     "",
     `Día: ${ap?.date || "-"}`,
-    `Horario: ${ap?.time || "-"}`,
+    `Horario: ${ap?.time || "-"} hs`,
     `Servicio: ${svc}`,
     "",
-    "Te esperamos. Si no podés asistir, cancelá el turno para liberar el espacio.",
+    "Si no podés asistir, recordá anularlo con anticipación desde tu perfil.",
   ].join("\n");
 
-  const innerHtml = `
-    ${renderExactStatusIcon("⏰")}
-    ${renderExactTitle("Recordatorio de turno", 280)}
-    ${renderExactBodyText(`Hola (${escapeHtml(uName)}),`, {
-      fontSize: 15,
-      lineHeight: 20,
-      weight: 700,
-      maxWidth: 320,
-      marginBottom: 10,
-    })}
-    ${renderExactBodyText(
-      "Te recordamos que tenés un turno en las próximas 24 horas.",
-      {
-        fontSize: 14,
-        lineHeight: 19,
-        weight: 700,
-        maxWidth: 320,
-        marginBottom: 16,
-      }
-    )}
-    ${renderExactTurnsPanel([{ ...ap, serviceName: svc }])}
-    ${renderExactBodyText(
-      "Si no podés asistir, cancelá el turno para liberar el espacio.",
-      {
-        fontSize: 14,
-        lineHeight: 19,
-        weight: 700,
-        maxWidth: 320,
-        marginBottom: 0,
-      }
-    )}
-  `;
-
-  const html = buildEmailLayout({
-    title: `${BRAND_NAME} · Recordatorio de turno`,
-    preheader: `Recordatorio: ${ap?.date || ""} ${ap?.time || ""} · ${svc}`,
-    bodyHtml: renderExactUserShell(innerHtml),
-    footerNote: "",
+  const html = buildExactReminderVisualHtml({
+    items: [{ ...ap, serviceName: svc }],
   });
 
-  await sendMail(
-    user.email,
-    `⏰ Recordatorio de turno - ${BRAND_NAME}`,
-    text,
-    html
-  );
+  await sendMail(user.email, subject, text, html);
 }
 
 /* =========================================================
