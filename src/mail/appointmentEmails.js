@@ -141,7 +141,7 @@ function renderExactTurnsPanel(items = []) {
                     font-family:${EMAIL_FONT};
                     font-size:15px;
                     line-height:17px;
-                    font-weight:900;
+                    font-weight:800;
                     color:#e4ff00;
                     padding:0;
                   ">
@@ -151,7 +151,7 @@ function renderExactTurnsPanel(items = []) {
                     font-family:${EMAIL_FONT};
                     font-size:15px;
                     line-height:17px;
-                    font-weight:900;
+                    font-weight:800;
                     color:#e4ff00;
                     padding:0;
                     white-space:nowrap;
@@ -256,6 +256,9 @@ function renderAdminMetaPanel(rows = []) {
       margin:0 auto 22px;
       max-width:100%;
       text-align:left;
+      display:flex;
+      justify-content:space-around;
+      flex-wrap:wrap;
     ">
       ${items}
     </div>
