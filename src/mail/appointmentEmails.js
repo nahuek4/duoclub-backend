@@ -475,10 +475,10 @@ export async function sendAppointmentCancelledEmail(
     refundFlag === null
       ? ""
       : refundFlag
-      ? "Se reintegró 1 sesión a tu cuenta."
+      ? ""
       : cutoff
-      ? `No hubo reintegro porque la cancelación fue fuera del límite (${cutoff}hs).`
-      : "No hubo reintegro porque la cancelación fue fuera del límite.";
+      ? ``
+      : "";
 
   const text = [
     `Hola ${user?.name || ""}`.trim() + ",",
