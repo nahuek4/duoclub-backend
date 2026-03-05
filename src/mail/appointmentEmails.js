@@ -36,10 +36,10 @@ function renderExactUserShell(innerHtml) {
           <table role="presentation" cellpadding="0" cellspacing="0" width="100%" style="max-width:430px; border-collapse:separate;">
             <tr>
               <td
-                bgcolor="#f3f3f3"
+                bgcolor="#fffff"
                 style="
-                  background:#f3f3f3;
-                  border-radius:0;
+                  background:#ffffff;
+                  border-radius:14px;
                   padding:18px 10px 26px;
                   text-align:center;
                   font-family:${EMAIL_FONT};
@@ -61,7 +61,7 @@ function renderExactStatusIcon(symbol = "✓") {
     <div style="
       width:58px;
       height:58px;
-      margin:0 auto 14px;
+      margin:0 auto 0px;
       border-radius:999px;
       background:#0a0a0a;
       color:#ffffff;
