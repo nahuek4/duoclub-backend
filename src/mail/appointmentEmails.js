@@ -30,12 +30,70 @@ function getServiceName(ap = {}, serviceName = "") {
 
 function renderExactUserShell(innerHtml) {
   return `
+    <style>
+      @media only screen and (max-width: 560px) {
+        .admin-meta-stack,
+        .admin-meta-stack tbody,
+        .admin-meta-stack tr,
+        .admin-meta-stack td {
+          display:block !important;
+          width:100% !important;
+        }
+
+        .admin-meta-cell {
+          padding:0 0 12px 0 !important;
+        }
+
+        .admin-meta-cell:last-child {
+          padding:0 !important;
+        }
+
+        .admin-panel,
+        .turns-panel {
+          padding:12px !important;
+        }
+
+        .turn-card {
+          padding:9px 10px !important;
+        }
+
+        .turn-date,
+        .turn-time {
+          font-size:14px !important;
+          line-height:16px !important;
+        }
+
+        .turn-service {
+          font-size:13px !important;
+          line-height:15px !important;
+        }
+
+        .mail-title {
+          font-size:18px !important;
+          line-height:19px !important;
+          margin:0 auto 16px !important;
+        }
+
+        .mail-shell {
+          padding:16px 8px 22px !important;
+        }
+
+        .status-icon {
+          width:54px !important;
+          height:54px !important;
+          line-height:54px !important;
+          font-size:34px !important;
+        }
+      }
+    </style>
+
     <table role="presentation" cellpadding="0" cellspacing="0" width="100%" style="border-collapse:collapse; font-family:${EMAIL_FONT};">
       <tr>
         <td align="center" style="padding:0;">
           <table role="presentation" cellpadding="0" cellspacing="0" width="100%" style="max-width:430px; border-collapse:separate;">
             <tr>
               <td
+                class="mail-shell"
                 bgcolor="#ffffff"
                 style="
                   background:#ffffff;
@@ -58,35 +116,41 @@ function renderExactUserShell(innerHtml) {
 
 function renderExactStatusIcon(symbol = "✓") {
   return `
-    <div style="
-      width:58px;
-      height:58px;
-      margin:0 auto 0px;
-      border-radius:999px;
-      background:#0a0a0a;
-      color:#ffffff;
-      font-size:38px;
-      line-height:58px;
-      font-weight:900;
-      font-family:${EMAIL_FONT};
-      text-align:center;
-    ">${escapeHtml(symbol)}</div>
+    <div
+      class="status-icon"
+      style="
+        width:58px;
+        height:58px;
+        margin:0 auto 0;
+        border-radius:999px;
+        background:#0a0a0a;
+        color:#ffffff;
+        font-size:38px;
+        line-height:58px;
+        font-weight:900;
+        font-family:${EMAIL_FONT};
+        text-align:center;
+      "
+    >${escapeHtml(symbol)}</div>
   `;
 }
 
 function renderExactTitle(text, maxWidth = 300) {
   return `
-    <div style="
-      font-size:19px;
-      line-height:20px;
-      font-weight:900;
-      margin:0 auto 18px;
-      max-width:${maxWidth}px;
-      font-family:${EMAIL_FONT};
-      color:#111111;
-      white-space:pre-line;
-      letter-spacing:-0.2px;
-    ">
+    <div
+      class="mail-title"
+      style="
+        font-size:19px;
+        line-height:20px;
+        font-weight:900;
+        margin:0 auto 18px;
+        max-width:${maxWidth}px;
+        font-family:${EMAIL_FONT};
+        color:#111111;
+        white-space:pre-line;
+        letter-spacing:-0.2px;
+      "
+    >
       ${escapeHtml(text)}
     </div>
   `;
@@ -127,47 +191,61 @@ function renderExactTurnsPanel(items = []) {
           const service = getServiceName(it, it?.serviceName);
 
           return `
-            <div style="
-              border:1px solid #e4ff00;
-              border-radius:8px;
-              padding:10px 12px;
-              margin:0 0 ${idx === list.length - 1 ? 0 : 11}px;
-              text-align:left;
-              background:#0b0b0b;
-            ">
+            <div
+              class="turn-card"
+              style="
+                border:1px solid #e4ff00;
+                border-radius:8px;
+                padding:10px 12px;
+                margin:0 0 ${idx === list.length - 1 ? 0 : 11}px;
+                text-align:left;
+                background:#0b0b0b;
+              "
+            >
               <table role="presentation" cellpadding="0" cellspacing="0" width="100%" style="border-collapse:collapse;">
                 <tr>
-                  <td style="
-                    font-family:${EMAIL_FONT};
-                    font-size:15px;
-                    line-height:17px;
-                    font-weight:800;
-                    color:#e4ff00;
-                    padding:0;
-                  ">
+                  <td
+                    class="turn-date"
+                    style="
+                      font-family:${EMAIL_FONT};
+                      font-size:15px;
+                      line-height:17px;
+                      font-weight:900;
+                      color:#e4ff00;
+                      padding:0;
+                    "
+                  >
                     ${escapeHtml(date)}
                   </td>
-                  <td align="right" style="
-                    font-family:${EMAIL_FONT};
-                    font-size:15px;
-                    line-height:17px;
-                    font-weight:800;
-                    color:#e4ff00;
-                    padding:0;
-                    white-space:nowrap;
-                  ">
+                  <td
+                    align="right"
+                    class="turn-time"
+                    style="
+                      font-family:${EMAIL_FONT};
+                      font-size:15px;
+                      line-height:17px;
+                      font-weight:900;
+                      color:#e4ff00;
+                      padding:0;
+                      white-space:nowrap;
+                    "
+                  >
                     ${escapeHtml(time)}
                   </td>
                 </tr>
                 <tr>
-                  <td colspan="2" style="
-                    padding-top:4px;
-                    font-family:${EMAIL_FONT};
-                    font-size:14px;
-                    line-height:16px;
-                    font-weight:700;
-                    color:#ffffff;
-                  ">
+                  <td
+                    colspan="2"
+                    class="turn-service"
+                    style="
+                      padding-top:4px;
+                      font-family:${EMAIL_FONT};
+                      font-size:14px;
+                      line-height:16px;
+                      font-weight:700;
+                      color:#ffffff;
+                    "
+                  >
                     ${escapeHtml(service)}
                   </td>
                 </tr>
@@ -190,21 +268,25 @@ function renderExactTurnsPanel(items = []) {
     `;
 
   return `
-    <div style="
-      background:#0a0a0a;
-      border-radius:6px;
-      padding:14px;
-      margin:0 auto 22px;
-      max-width:100%;
-      text-align:left;
-    ">
+    <div
+      class="turns-panel"
+      style="
+        background:#0a0a0a;
+        border-radius:6px;
+        padding:14px;
+        margin:0 auto 22px;
+        max-width:100%;
+        text-align:left;
+      "
+    >
       ${cards}
     </div>
   `;
 }
 
 /* =========================================================
-   Panel admin (misma estética)
+   Panel admin horizontal (usuario/email a lo ancho)
+   En mobile se apila automáticamente
 ========================================================= */
 
 function renderAdminMetaPanel(rows = []) {
@@ -214,13 +296,22 @@ function renderAdminMetaPanel(rows = []) {
 
   if (!validRows.length) return "";
 
-  const items = validRows
+  const widthPct = Math.max(1, Math.floor(100 / validRows.length));
+
+  const cells = validRows
     .map(
       (row, idx) => `
-        <div style="
-          margin:0 0 ${idx === validRows.length - 1 ? 0 : 9}px;
-          text-align:left;
-        ">
+        <td
+          valign="top"
+          width="${widthPct}%"
+          class="admin-meta-cell"
+          style="
+            width:${widthPct}%;
+            padding:${idx === validRows.length - 1 ? "0 0 0 8px" : "0 8px 0 0"};
+            text-align:left;
+            vertical-align:top;
+          "
+        >
           <div style="
             font-family:${EMAIL_FONT};
             font-size:12px;
@@ -229,17 +320,84 @@ function renderAdminMetaPanel(rows = []) {
             color:#e4ff00;
             text-transform:uppercase;
             letter-spacing:0.2px;
-            margin-bottom:2px;
+            margin-bottom:6px;
+          ">
+            ${escapeHtml(row.label)}
+          </div>
+
+          <div style="
+            font-family:${EMAIL_FONT};
+            font-size:14px;
+            line-height:18px;
+            font-weight:700;
+            color:#ffffff;
+            word-break:break-word;
+          ">
+            ${escapeHtml(row.value)}
+          </div>
+        </td>
+      `
+    )
+    .join("");
+
+  return `
+    <div
+      class="admin-panel"
+      style="
+        background:#0a0a0a;
+        border-radius:6px;
+        padding:14px;
+        margin:0 auto 22px;
+        max-width:100%;
+        text-align:left;
+      "
+    >
+      <table
+        role="presentation"
+        cellpadding="0"
+        cellspacing="0"
+        width="100%"
+        class="admin-meta-stack"
+        style="border-collapse:collapse;"
+      >
+        <tr>
+          ${cells}
+        </tr>
+      </table>
+    </div>
+  `;
+}
+
+function renderAdminDetailPanel(rows = []) {
+  const validRows = (Array.isArray(rows) ? rows : []).filter(
+    (r) => r && r.label && r.value
+  );
+
+  if (!validRows.length) return "";
+
+  const items = validRows
+    .map(
+      (row, idx) => `
+        <div style="margin:0 0 ${idx === validRows.length - 1 ? 0 : 10}px; text-align:left;">
+          <div style="
+            font-family:${EMAIL_FONT};
+            font-size:12px;
+            line-height:14px;
+            font-weight:900;
+            color:#e4ff00;
+            text-transform:uppercase;
+            letter-spacing:0.2px;
+            margin-bottom:4px;
           ">
             ${escapeHtml(row.label)}
           </div>
           <div style="
             font-family:${EMAIL_FONT};
             font-size:14px;
-            line-height:17px;
+            line-height:18px;
             font-weight:700;
             color:#ffffff;
-            white-space:pre-line;
+            word-break:break-word;
           ">
             ${escapeHtml(row.value)}
           </div>
@@ -249,17 +407,17 @@ function renderAdminMetaPanel(rows = []) {
     .join("");
 
   return `
-    <div style="
-      background:#0a0a0a;
-      border-radius:6px;
-      padding:14px;
-      margin:0 auto 22px;
-      max-width:100%;
-      text-align:left;
-      display:flex;
-      justify-content:space-around;
-      flex-wrap:wrap;
-    ">
+    <div
+      class="admin-panel"
+      style="
+        background:#0a0a0a;
+        border-radius:6px;
+        padding:14px;
+        margin:0 auto 22px;
+        max-width:100%;
+        text-align:left;
+      "
+    >
       ${items}
     </div>
   `;
@@ -375,18 +533,20 @@ function buildExactAdminAppointmentVisualHtml({
       ? `Fuera del límite (${cutoff} hs).`
       : "Fuera del límite.";
 
-  const metaRows = [
+  const topMetaRows = [
     { label: "Usuario", value: uName },
     { label: "Email", value: uEmail },
   ];
 
-  if (refundDetail) metaRows.push({ label: "Reintegro", value: refundDetail });
-  if (detailText) metaRows.push({ label: "Detalle", value: detailText });
+  const extraMetaRows = [];
+  if (refundDetail) extraMetaRows.push({ label: "Reintegro", value: refundDetail });
+  if (detailText) extraMetaRows.push({ label: "Detalle", value: detailText });
 
   const innerHtml = `
     ${renderExactStatusIcon(icon)}
     ${renderExactTitle(title, 285)}
-    ${renderAdminMetaPanel(metaRows)}
+    ${renderAdminMetaPanel(topMetaRows)}
+    ${renderAdminDetailPanel(extraMetaRows)}
     ${renderExactTurnsPanel(items)}
   `;
 
@@ -475,10 +635,10 @@ export async function sendAppointmentCancelledEmail(
     refundFlag === null
       ? ""
       : refundFlag
-      ? ""
+      ? "Se reintegró 1 sesión a tu cuenta."
       : cutoff
-      ? ``
-      : "";
+      ? `No hubo reintegro porque la cancelación fue fuera del límite (${cutoff}hs).`
+      : "No hubo reintegro porque la cancelación fue fuera del límite.";
 
   const text = [
     `Hola ${user?.name || ""}`.trim() + ",",
