@@ -4,6 +4,7 @@ import mongoose from "mongoose";
 import Appointment from "../models/Appointment.js";
 import User from "../models/User.js";
 import WaitlistEntry from "../models/WaitlistEntry.js";
+import FixedSchedule from "../models/FixedSchedule.js";
 
 import { notifyWaitlistForSlot } from "./waitlist.js";
 import { protect } from "../middleware/auth.js";
@@ -106,6 +107,13 @@ function isSaturday(dateStr) {
   if (!y || !m || !d) return false;
   const dt = new Date(y, m - 1, d);
   return dt.getDay() === 6;
+}
+
+function isSunday(dateStr) {
+  const [y, m, d] = String(dateStr || "").split("-").map(Number);
+  if (!y || !m || !d) return false;
+  const dt = new Date(y, m - 1, d);
+  return dt.getDay() === 0;
 }
 
 /**
@@ -294,6 +302,7 @@ const TIMES_REHAB = [
   "07:00","08:00","09:00","10:00",
   "11:00","12:00","13:30",
   "14:00","15:00","16:00","17:00",
+  "18:00",
 ];
 
 const TIMES_DEFAULT = [
@@ -424,6 +433,53 @@ function validateBasicSlotRules({ date, time, service }) {
   return { ok: true, turno, slotDate, isEpService };
 }
 
+function validateBasicSlotRulesAdmin({ date, time, service, bypassWindow = false }) {
+  if (!date || !time || !service) {
+    return { ok: false, error: "Faltan campos: date, time y service." };
+  }
+
+  if (isSaturday(date)) {
+    return { ok: false, error: "Los sábados no hay turnos disponibles." };
+  }
+
+  if (isSunday(date)) {
+    return { ok: false, error: "Los domingos no hay turnos disponibles." };
+  }
+
+  const timeNorm = String(time).slice(0, 5);
+
+  if (timeNorm.startsWith("13:") && timeNorm !== "13:30") {
+    return { ok: false, error: "Horario inválido." };
+  }
+
+  if (!isAllowedTimeForService(service, timeNorm)) {
+    return {
+      ok: false,
+      error: "Ese horario no está disponible para el servicio seleccionado.",
+    };
+  }
+
+  const turno = getTurnoFromTime(timeNorm);
+  if (!turno) {
+    return { ok: false, error: "Horario fuera del rango permitido." };
+  }
+
+  const slotDate = buildSlotDate(date, timeNorm);
+  if (!slotDate) return { ok: false, error: "Fecha/hora inválida." };
+
+  if (!bypassWindow) {
+    const w = validateBookingWindow(slotDate);
+    if (!w.ok) return w;
+
+    const adv = validateMinAdvance(slotDate);
+    if (!adv.ok) return adv;
+  }
+
+  const isEpService = sameService(service, EP_NAME);
+
+  return { ok: true, turno, slotDate, isEpService, timeNorm };
+}
+
 function slotKey(date, time) {
   return `${date}__${time}`;
 }
@@ -438,6 +494,217 @@ function ymdAR(d = new Date()) {
   const m = String(d.getMonth() + 1).padStart(2, "0");
   const day = String(d.getDate()).padStart(2, "0");
   return `${y}-${m}-${day}`;
+}
+
+function addMonthsYmd(dateStr, months) {
+  const [y, m, d] = String(dateStr).split("-").map(Number);
+  const dt = new Date(y, (m || 1) - 1, d || 1);
+  dt.setMonth(dt.getMonth() + Number(months || 0));
+  return ymdAR(dt);
+}
+
+function getWeekdayMondayFirst(dateStr) {
+  const [y, m, d] = String(dateStr).split("-").map(Number);
+  const js = new Date(y, (m || 1) - 1, d || 1).getDay();
+  return js === 0 ? 7 : js;
+}
+
+function buildOccurrencesForFixedSchedule({ startDate, months, items }) {
+  const out = [];
+  const start = buildSlotDate(startDate, "00:00");
+  const end = buildSlotDate(addMonthsYmd(startDate, months), "23:59");
+
+  if (!start || !end) return out;
+
+  const cursor = new Date(start);
+
+  while (cursor <= end) {
+    const date = ymdAR(cursor);
+    const weekday = getWeekdayMondayFirst(date);
+
+    for (const it of items || []) {
+      if (Number(it?.weekday) === weekday) {
+        out.push({
+          date,
+          time: String(it?.time || "").slice(0, 5),
+        });
+      }
+    }
+
+    cursor.setDate(cursor.getDate() + 1);
+  }
+
+  return out.sort((a, b) => {
+    const ak = `${a.date} ${a.time}`;
+    const bk = `${b.date} ${b.time}`;
+    return ak.localeCompare(bk);
+  });
+}
+
+async function createAppointmentForTargetUser({
+  userId,
+  actorReq,
+  date,
+  time,
+  service,
+  notes = "",
+  bypassWindow = false,
+}) {
+  const basic = validateBasicSlotRulesAdmin({ date, time, service, bypassWindow });
+  if (!basic.ok) {
+    const e = new Error(basic.error);
+    e.http = 400;
+    throw e;
+  }
+
+  const targetUser = await User.findById(userId);
+  if (!targetUser) {
+    const e = new Error("USER_NOT_FOUND");
+    e.http = 404;
+    throw e;
+  }
+
+  if (targetUser.suspended) {
+    const e = new Error("USER_SUSPENDED");
+    e.http = 403;
+    throw e;
+  }
+
+  if (requiresApto(targetUser)) {
+    const e = new Error("APTO_REQUIRED");
+    e.http = 403;
+    throw e;
+  }
+
+  recalcUserCredits(targetUser);
+  if ((targetUser.credits || 0) <= 0) {
+    const e = new Error("NO_CREDITS");
+    e.http = 403;
+    throw e;
+  }
+
+  const requestedSk = serviceToKey(service);
+  if (!hasValidCreditsForService(targetUser, requestedSk)) {
+    const e = new Error(`NO_CREDITS_FOR_${requestedSk}`);
+    e.http = 403;
+    throw e;
+  }
+
+  const t = String(time).slice(0, 5);
+
+  const alreadyByUser = await Appointment.findOne({
+    date,
+    time: t,
+    user: targetUser._id,
+    status: "reserved",
+  }).lean();
+
+  if (alreadyByUser) {
+    const e = new Error("ALREADY_HAVE_SLOT");
+    e.http = 409;
+    throw e;
+  }
+
+  const existingAtSlot = await Appointment.find({
+    date,
+    time: t,
+    status: "reserved",
+  }).lean();
+
+  if (existingAtSlot.length >= TOTAL_CAP) {
+    const e = new Error("TOTAL_CAP_REACHED");
+    e.http = 409;
+    throw e;
+  }
+
+  const epCount = existingAtSlot.filter((a) => sameService(a.service, EP_NAME)).length;
+  const rfTaken = existingAtSlot.some((a) => sameService(a.service, RF_NAME)) ? 1 : 0;
+  const raTaken = existingAtSlot.some((a) => sameService(a.service, RA_NAME)) ? 1 : 0;
+  const otherReservedCount = rfTaken + raTaken;
+
+  if (sameService(service, RF_NAME) && rfTaken) {
+    const e = new Error("SERVICE_CAP_REACHED");
+    e.http = 409;
+    throw e;
+  }
+
+  if (sameService(service, RA_NAME) && raTaken) {
+    const e = new Error("SERVICE_CAP_REACHED");
+    e.http = 409;
+    throw e;
+  }
+
+  if (basic.isEpService) {
+    const hoursToStart = (basic.slotDate.getTime() - Date.now()) / (1000 * 60 * 60);
+    const epCap = calcEpCap({
+      hoursToStart,
+      hasRF: !!rfTaken,
+      hasRA: !!raTaken,
+      otherReservedCount,
+    });
+
+    if (epCount >= epCap) {
+      const e = new Error("SERVICE_CAP_REACHED");
+      e.http = 409;
+      throw e;
+    }
+  }
+
+  const lot = pickLotToConsume(targetUser, requestedSk);
+  if (!lot) {
+    const e = new Error(`NO_CREDITS_FOR_${requestedSk}`);
+    e.http = 403;
+    throw e;
+  }
+
+  lot.remaining = Number(lot.remaining || 0) - 1;
+  const usedLotId = lot._id;
+  const usedLotExp = lot.expiresAt || null;
+
+  targetUser.history = targetUser.history || [];
+  targetUser.history.push({
+    action: "reservado_por_admin",
+    date,
+    time: t,
+    service,
+    notes: String(notes || "").trim(),
+    createdAt: new Date(),
+  });
+
+  recalcUserCredits(targetUser);
+  await targetUser.save();
+
+  const created = await Appointment.create({
+    date,
+    time: t,
+    service,
+    user: targetUser._id,
+    status: "reserved",
+    creditLotId: usedLotId,
+    creditExpiresAt: usedLotExp,
+  });
+
+  const populated = await Appointment.findById(created._id)
+    .populate("user", "name lastName email");
+
+  await logActivity({
+    req: actorReq,
+    category: "appointments",
+    action: "appointment_assigned_by_admin",
+    entity: "appointment",
+    entityId: String(created._id),
+    title: "Turno asignado por admin",
+    description: "Se asignó un turno a un usuario desde administración.",
+    subject: buildUserSubject(targetUser),
+    meta: {
+      date,
+      time: t,
+      serviceName: service,
+      assignedByAdmin: true,
+    },
+  });
+
+  return serializeAppointment(populated);
 }
 
 /* =========================
@@ -691,6 +958,172 @@ router.get("/", async (req, res) => {
   } catch (err) {
     console.error("Error en GET /appointments:", err);
     res.status(500).json({ error: "Error al obtener turnos." });
+  }
+});
+
+/* =========================
+   POST /appointments/admin/assign
+========================= */
+router.post("/admin/assign", async (req, res) => {
+  try {
+    const role = String(req.user?.role || "").toLowerCase();
+    if (role !== "admin") {
+      return res.status(403).json({ error: "Solo un admin puede asignar turnos." });
+    }
+
+    const userId = String(req.body?.userId || "").trim();
+    const notes = String(req.body?.notes || "").trim();
+
+    if (!userId) {
+      return res.status(400).json({ error: "Falta userId." });
+    }
+
+    const items =
+      Array.isArray(req.body?.items) && req.body.items.length
+        ? req.body.items
+        : req.body?.date && req.body?.time && req.body?.service
+          ? [{ date: req.body.date, time: req.body.time, service: req.body.service }]
+          : [];
+
+    if (!items.length) {
+      return res.status(400).json({ error: "Faltan items para asignar." });
+    }
+
+    const created = [];
+    const conflicts = [];
+
+    for (const it of items) {
+      try {
+        const ap = await createAppointmentForTargetUser({
+          userId,
+          actorReq: req,
+          date: String(it?.date || "").slice(0, 10),
+          time: String(it?.time || "").slice(0, 5),
+          service: String(it?.service || "").trim(),
+          notes,
+          bypassWindow: false,
+        });
+        created.push(ap);
+      } catch (e) {
+        conflicts.push({
+          date: String(it?.date || "").slice(0, 10),
+          time: String(it?.time || "").slice(0, 5),
+          service: String(it?.service || "").trim(),
+          error: e?.message || "No se pudo asignar.",
+        });
+      }
+    }
+
+    if (!created.length && conflicts.length) {
+      return res.status(409).json({
+        error: conflicts[0]?.error || "No se pudo asignar ningún turno.",
+        createdCount: 0,
+        conflictsCount: conflicts.length,
+        conflicts,
+      });
+    }
+
+    return res.status(201).json({
+      ok: true,
+      items: created,
+      createdCount: created.length,
+      conflictsCount: conflicts.length,
+      conflicts,
+    });
+  } catch (err) {
+    console.error("Error en POST /appointments/admin/assign:", err);
+    return res.status(500).json({ error: "Error al asignar turnos." });
+  }
+});
+
+/* =========================
+   POST /appointments/admin/fixed-schedules
+========================= */
+router.post("/admin/fixed-schedules", async (req, res) => {
+  try {
+    const role = String(req.user?.role || "").toLowerCase();
+    if (role !== "admin") {
+      return res.status(403).json({ error: "Solo un admin puede crear turnos fijos." });
+    }
+
+    const userId = String(req.body?.userId || "").trim();
+    const service = String(req.body?.service || "").trim();
+    const notes = String(req.body?.notes || "").trim();
+    const months = Math.max(1, Math.min(12, Number(req.body?.months || 1)));
+    const items = Array.isArray(req.body?.items) ? req.body.items : [];
+
+    if (!userId) return res.status(400).json({ error: "Falta userId." });
+    if (!service) return res.status(400).json({ error: "Falta service." });
+    if (!items.length) return res.status(400).json({ error: "Faltan días fijos." });
+
+    const cleanItems = items
+      .map((it) => ({
+        weekday: Number(it?.weekday || 0),
+        time: String(it?.time || "").slice(0, 5),
+      }))
+      .filter((it) => it.weekday >= 1 && it.weekday <= 5 && !!it.time);
+
+    if (!cleanItems.length) {
+      return res.status(400).json({ error: "No hay items válidos para guardar." });
+    }
+
+    const startDate = ymdAR(new Date());
+    const endDate = addMonthsYmd(startDate, months);
+
+    const fixed = await FixedSchedule.create({
+      user: userId,
+      createdBy: req.user?._id || req.user?.id,
+      service,
+      items: cleanItems,
+      months,
+      startDate,
+      endDate,
+      notes,
+      active: true,
+    });
+
+    const occurrences = buildOccurrencesForFixedSchedule({
+      startDate,
+      months,
+      items: cleanItems,
+    });
+
+    const created = [];
+    const conflicts = [];
+
+    for (const occ of occurrences) {
+      try {
+        const ap = await createAppointmentForTargetUser({
+          userId,
+          actorReq: req,
+          date: occ.date,
+          time: occ.time,
+          service,
+          notes,
+          bypassWindow: true,
+        });
+        created.push(ap);
+      } catch (e) {
+        conflicts.push({
+          date: occ.date,
+          time: occ.time,
+          service,
+          error: e?.message || "No se pudo crear.",
+        });
+      }
+    }
+
+    return res.status(201).json({
+      ok: true,
+      fixedScheduleId: String(fixed._id),
+      createdCount: created.length,
+      conflictsCount: conflicts.length,
+      items: created,
+      conflicts,
+    });
+  } catch (err) {
+    console.error("Error en POST /appointments/admin/fixed-schedules:", err);
+    return res.status(500).json({ error: "Error al guardar turnos fijos." });
   }
 });
 
