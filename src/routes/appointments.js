@@ -1144,7 +1144,7 @@ router.post("/", async (req, res) => {
   let mailServiceName = null;
 
   try {
-    const { date, time, service, notes } = req.body || {};
+    const { date, time, service } = req.body || {};
     const basic = validateBasicSlotRules({ date, time, service });
     if (!basic.ok) return res.status(400).json({ error: basic.error });
 
@@ -2007,7 +2007,9 @@ router.patch("/:id/cancel", async (req, res) => {
 
       const policy = getRefundPolicy(ap.service);
       const cutoff = policy.cutoffHours;
-      const shouldRefund = user.role !== "admin" && policy.isEligible(hours);
+
+      // ✅ SIN BLOQUEO POR ROL
+      const shouldRefund = policy.isEligible(hours);
 
       console.log("[CANCEL][POLICY]", {
         appointmentId: String(ap._id),
@@ -2020,79 +2022,77 @@ router.patch("/:id/cancel", async (req, res) => {
         shouldRefund,
       });
 
-      if (user.role !== "admin") {
-        user.history = user.history || [];
-        user.history.push({
-          action: shouldRefund ? "cancelado" : "cancelado_sin_reintegro",
-          date: ap.date,
-          time: ap.time,
-          service: ap.service,
-          serviceName: ap.service,
-          createdAt: new Date(),
+      user.history = user.history || [];
+      user.history.push({
+        action: shouldRefund ? "cancelado" : "cancelado_sin_reintegro",
+        date: ap.date,
+        time: ap.time,
+        service: ap.service,
+        serviceName: ap.service,
+        createdAt: new Date(),
+      });
+
+      if (shouldRefund) {
+        const now = nowDate();
+        const lot = ap.creditLotId ? findLotById(user, ap.creditLotId) : null;
+        const lotExp = lot?.expiresAt ? new Date(lot.expiresAt) : null;
+        const lotStillValid = !!lot && (!lotExp || lotExp > now);
+
+        console.log("[CANCEL][LOT-CHECK]", {
+          appointmentId: String(ap._id),
+          creditLotId: ap.creditLotId ? String(ap.creditLotId) : null,
+          lotFound: !!lot,
+          lotData: lot
+            ? {
+                id: String(lot._id || ""),
+                serviceKey: lot.serviceKey,
+                amount: Number(lot.amount || 0),
+                remaining: Number(lot.remaining || 0),
+                expiresAt: lot.expiresAt || null,
+                source: lot.source || "",
+              }
+            : null,
+          now,
+          lotStillValid,
         });
 
-        if (shouldRefund) {
-          const now = nowDate();
-          const lot = ap.creditLotId ? findLotById(user, ap.creditLotId) : null;
-          const lotExp = lot?.expiresAt ? new Date(lot.expiresAt) : null;
-          const lotStillValid = !!lot && (!lotExp || lotExp > now);
+        if (lotStillValid) {
+          lot.remaining = Number(lot.remaining || 0) + 1;
 
-          console.log("[CANCEL][LOT-CHECK]", {
+          console.log("[CANCEL][REFUND-TO-ORIGINAL-LOT]", {
             appointmentId: String(ap._id),
-            creditLotId: ap.creditLotId ? String(ap.creditLotId) : null,
-            lotFound: !!lot,
-            lotData: lot
-              ? {
-                  id: String(lot._id || ""),
-                  serviceKey: lot.serviceKey,
-                  amount: Number(lot.amount || 0),
-                  remaining: Number(lot.remaining || 0),
-                  expiresAt: lot.expiresAt || null,
-                  source: lot.source || "",
-                }
-              : null,
-            now,
-            lotStillValid,
+            lotId: String(lot._id || ""),
+            newRemaining: Number(lot.remaining || 0),
           });
+        } else {
+          const refundInfo = makeRefundLot(user, ap.service);
 
-          if (lotStillValid) {
-            lot.remaining = Number(lot.remaining || 0) + 1;
-
-            console.log("[CANCEL][REFUND-TO-ORIGINAL-LOT]", {
-              appointmentId: String(ap._id),
-              lotId: String(lot._id || ""),
-              newRemaining: Number(lot.remaining || 0),
-            });
-          } else {
-            const refundInfo = makeRefundLot(user, ap.service);
-
-            console.log("[CANCEL][REFUND-NEW-LOT]", {
-              appointmentId: String(ap._id),
-              service: ap.service,
-              serviceKey: refundInfo.sk,
-              expiresAt: refundInfo.expiresAt,
-            });
-          }
+          console.log("[CANCEL][REFUND-NEW-LOT]", {
+            appointmentId: String(ap._id),
+            service: ap.service,
+            serviceKey: refundInfo.sk,
+            expiresAt: refundInfo.expiresAt,
+          });
         }
-
-        recalcUserCredits(user);
-
-        console.log("[CANCEL][BEFORE-SAVE-USER]", {
-          appointmentId: String(ap._id),
-          userId: String(user._id),
-          recalculatedCredits: Number(user.credits || 0),
-          lotsAfterRefund: lotsDebug(user),
-        });
-
-        await user.save({ session });
-
-        console.log("[CANCEL][USER-SAVED]", {
-          appointmentId: String(ap._id),
-          userId: String(user._id),
-          savedCredits: Number(user.credits || 0),
-          savedLots: lotsDebug(user),
-        });
       }
+
+      recalcUserCredits(user);
+
+      console.log("[CANCEL][BEFORE-SAVE-USER]", {
+        appointmentId: String(ap._id),
+        userId: String(user._id),
+        recalculatedCredits: Number(user.credits || 0),
+        lotsAfterRefund: lotsDebug(user),
+      });
+
+      await user.save({ session });
+
+      console.log("[CANCEL][USER-SAVED]", {
+        appointmentId: String(ap._id),
+        userId: String(user._id),
+        savedCredits: Number(user.credits || 0),
+        savedLots: lotsDebug(user),
+      });
 
       const populated = await Appointment.findById(ap._id)
         .populate("user", "name lastName email")
