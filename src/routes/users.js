@@ -52,40 +52,26 @@ function safeUnlink(absPath) {
   try {
     if (absPath && fs.existsSync(absPath)) fs.unlinkSync(absPath);
   } catch {
-    // no-op (no queremos 500 por unlink)
+    // no-op
   }
 }
 
 /**
  * ✅ Convierte un publicPath a una ruta absoluta real dentro de backend/uploads
- * Acepta:
- *  - "/uploads/file.jpg"
- *  - "/api/uploads/file.jpg"
- *  - "/uploads/aptos/file.pdf"
- *  - "/api/uploads/aptos/file.pdf"
- *  - también con query/hash: "/api/uploads/x.jpg?t=123"
- *
- * Importante:
- *  - limpia ?query y #hash
- *  - preserva subcarpetas dentro de uploads/
- *  - sanitiza cada segmento con path.basename (evita traversal)
  */
 function absFromPublicUploadsPath(publicPath) {
   const raw = String(publicPath || "").trim();
   if (!raw) return "";
 
-  const clean = raw.split("?")[0].split("#")[0]; // ✅ sin cache bust
+  const clean = raw.split("?")[0].split("#")[0];
   const parts = clean.split("/").filter(Boolean);
 
-  // buscamos el segmento "uploads"
   const uploadsIdx = parts.findIndex((p) => p === "uploads");
   if (uploadsIdx === -1) {
-    // fallback: solo filename
     const filename = path.basename(clean);
     return filename ? path.join(uploadRoot, filename) : "";
   }
 
-  // todo lo que viene después de uploads/ (puede incluir subcarpetas)
   const relParts = parts.slice(uploadsIdx + 1);
   if (!relParts.length) return "";
 
@@ -96,7 +82,7 @@ function absFromPublicUploadsPath(publicPath) {
 }
 
 /* ============================================
-   ✅ VALIDACIÓN ID (evita CastError -> 500)
+   ✅ VALIDACIÓN ID
 ============================================ */
 function validateObjectIdParam(req, res, next) {
   const { id } = req.params;
@@ -105,7 +91,6 @@ function validateObjectIdParam(req, res, next) {
   }
   next();
 }
-
 
 function prettyServiceName(value) {
   const s = String(value || "")
@@ -192,13 +177,11 @@ function buildLegacyAppointmentHistoryTitle(ap) {
   return `Reservó turno para ${svc} el ${when}.`;
 }
 
-
-
 /* ============================================
-   MULTER APTOS (PDF) ✅ ROBUSTO
+   MULTER APTOS
 ============================================ */
 const aptoStorage = multer.diskStorage({
-  destination: (req, file, cb) => cb(null, aptosDir), // ✅ aptos/
+  destination: (req, file, cb) => cb(null, aptosDir),
   filename: (req, file, cb) => {
     const ext = path.extname(file.originalname) || ".pdf";
     const base = "apto-" + req.params.id + "-" + Date.now();
@@ -208,7 +191,7 @@ const aptoStorage = multer.diskStorage({
 
 const uploadApto = multer({
   storage: aptoStorage,
-  limits: { fileSize: 10 * 1024 * 1024 }, // 10MB
+  limits: { fileSize: 10 * 1024 * 1024 },
   fileFilter: (req, file, cb) => {
     const nameOk = String(file.originalname || "")
       .toLowerCase()
@@ -235,7 +218,7 @@ function uploadAptoSingle(req, res, next) {
 }
 
 /* ============================================
-   MULTER AVATAR ✅ ROBUSTO
+   MULTER AVATAR
 ============================================ */
 const avatarStorage = multer.diskStorage({
   destination: (req, file, cb) => cb(null, uploadRoot),
@@ -248,7 +231,7 @@ const avatarStorage = multer.diskStorage({
 
 const avatarUpload = multer({
   storage: avatarStorage,
-  limits: { fileSize: 5 * 1024 * 1024 }, // 5MB
+  limits: { fileSize: 5 * 1024 * 1024 },
   fileFilter: (req, file, cb) => {
     const mt = String(file.mimetype || "");
     if (!mt.startsWith("image/"))
@@ -273,7 +256,7 @@ function avatarUploadSingle(req, res, next) {
 }
 
 /* ============================================
-   HELPERS: CREDIT LOTS (tu lógica original)
+   HELPERS: CREDIT LOTS
 ============================================ */
 function nowDate() {
   return new Date();
@@ -465,6 +448,37 @@ function stripSensitive(u) {
   return rest;
 }
 
+function decorateUserForResponse(rawUser, { includeClinicalNotes = true } = {}) {
+  if (!rawUser) return rawUser;
+
+  const u = { ...rawUser };
+  recalcUserCredits(u);
+
+  const svc = computeServiceAccessFromLots(u);
+  const membership = normalizeMembershipForUI(u);
+  const creditsByService = buildCreditsByService(u);
+
+  const safe = stripSensitive(u);
+
+  if (!includeClinicalNotes) {
+    // eslint-disable-next-line no-unused-vars
+    const { clinicalNotes, ...withoutClinical } = safe;
+    return {
+      ...withoutClinical,
+      ...svc,
+      membership,
+      creditsByService,
+    };
+  }
+
+  return {
+    ...safe,
+    ...svc,
+    membership,
+    creditsByService,
+  };
+}
+
 /* ============================================
    HELPERS: MAIL CRÉDITOS
 ============================================ */
@@ -542,7 +556,7 @@ function queueCreditsEmails({ req, updatedUser, items }) {
 router.use(protect);
 
 /* ============================================
-   ✅ TEST SMTP (solo admin)
+   ✅ TEST SMTP
 ============================================ */
 router.post("/test-mail", adminOnly, async (req, res) => {
   try {
@@ -619,8 +633,10 @@ router.get("/registrations/list", adminOnly, async (req, res) => {
     if (status === "pending") query.approvalStatus = "pending";
     if (status === "approved") query.approvalStatus = "approved";
     if (status === "rejected") query.approvalStatus = "rejected";
+
     const users = await User.find(query).sort({ createdAt: -1 }).lean();
-    return res.json(users.map(stripSensitive));
+
+    return res.json(users.map((u) => decorateUserForResponse(u)));
   } catch (err) {
     console.error("Error en GET /users/registrations/list:", err);
     return res.status(500).json({ error: "Error al obtener registraciones." });
@@ -670,21 +686,16 @@ router.post("/", adminOnly, async (req, res) => {
       age: age ?? null,
       weight: weight ?? null,
       notes: notes || "",
-
       credits: 0,
       creditLots: [],
-
       role: role || "client",
       password: hashed,
       mustChangePassword: true,
-
       suspended: false,
       emailVerified: true,
       approvalStatus: "approved",
-
       aptoPath: "",
       aptoStatus: "",
-
       welcomeApprovedEmailSentAt: new Date(),
     });
 
@@ -711,8 +722,6 @@ router.post("/", adminOnly, async (req, res) => {
 
     const uLean =
       (await User.findById(user._id).lean()) || user.toObject?.() || user;
-    const svc = computeServiceAccessFromLots(uLean);
-    const membership = normalizeMembershipForUI(uLean);
 
     await logActivity({
       req,
@@ -728,7 +737,7 @@ router.post("/", adminOnly, async (req, res) => {
 
     return res.status(201).json({
       ok: true,
-      user: { ...stripSensitive(uLean), ...svc, membership },
+      user: decorateUserForResponse(uLean),
       tempPassword: password ? undefined : plainPassword,
     });
   } catch (err) {
@@ -744,8 +753,18 @@ router.post("/", adminOnly, async (req, res) => {
 
 router.get("/", adminOrProfessor, async (req, res) => {
   try {
+    const role = String(req.user?.role || "").toLowerCase();
+    const isAdmin = role === "admin";
+
     const list = await User.find().lean();
-    return res.json(list.map(stripSensitive));
+
+    return res.json(
+      list.map((u) =>
+        decorateUserForResponse(u, {
+          includeClinicalNotes: isAdmin,
+        })
+      )
+    );
   } catch (err) {
     console.error("Error en GET /users:", err);
     return res.status(500).json({ error: "Error al obtener usuarios." });
@@ -757,7 +776,8 @@ router.get("/pending", adminOnly, async (req, res) => {
     const pending = await User.find({ approvalStatus: "pending" })
       .sort({ createdAt: -1 })
       .lean();
-    return res.json(pending.map(stripSensitive));
+
+    return res.json(pending.map((u) => decorateUserForResponse(u)));
   } catch (err) {
     console.error("Error en GET /users/pending:", err);
     return res.status(500).json({ error: "Error al obtener pendientes." });
@@ -937,8 +957,6 @@ router.put("/:id", validateObjectIdParam, async (req, res) => {
     await user.save();
 
     const saved = user.toObject();
-    const svc = computeServiceAccessFromLots(saved);
-    const membership = normalizeMembershipForUI(saved);
 
     await logActivity({
       req,
@@ -952,19 +970,11 @@ router.put("/:id", validateObjectIdParam, async (req, res) => {
       meta: { changedFields },
     });
 
-    if (!isAdmin) {
-      // eslint-disable-next-line no-unused-vars
-      const { clinicalNotes, ...safeUser } = stripSensitive(saved);
-      return res.json({ ...safeUser, ...svc, membership });
-    }
-
-    const creditsByService = buildCreditsByService(saved);
-    return res.json({
-      ...stripSensitive(saved),
-      ...svc,
-      membership,
-      creditsByService,
-    });
+    return res.json(
+      decorateUserForResponse(saved, {
+        includeClinicalNotes: isAdmin,
+      })
+    );
   } catch (err) {
     console.error("Error en PUT /users/:id:", err);
     return res.status(500).json({ error: "Error interno." });
@@ -990,22 +1000,11 @@ router.get("/:id", validateObjectIdParam, async (req, res) => {
     const u = await User.findById(id).lean();
     if (!u) return res.status(404).json({ error: "Usuario no encontrado." });
 
-    const svc = computeServiceAccessFromLots(u);
-    const membership = normalizeMembershipForUI(u);
-
-    if (!isAdmin) {
-      // eslint-disable-next-line no-unused-vars
-      const { clinicalNotes, ...safeUser } = stripSensitive(u);
-      return res.json({ ...safeUser, ...svc, membership });
-    }
-
-    const creditsByService = buildCreditsByService(u);
-    return res.json({
-      ...stripSensitive(u),
-      ...svc,
-      membership,
-      creditsByService,
-    });
+    return res.json(
+      decorateUserForResponse(u, {
+        includeClinicalNotes: isAdmin,
+      })
+    );
   } catch (err) {
     console.error("Error en GET /users/:id:", err);
     return res.status(500).json({ error: "Error interno." });
@@ -1029,14 +1028,9 @@ router.patch("/:id/role", adminOnly, validateObjectIdParam, async (req, res) => 
     user.role = nextRole;
     await user.save();
 
-    const saved = user.toObject();
-    const svc = computeServiceAccessFromLots(saved);
-    const membership = normalizeMembershipForUI(saved);
-    const creditsByService = buildCreditsByService(saved);
-
     return res.json({
       ok: true,
-      user: { ...stripSensitive(saved), ...svc, membership, creditsByService },
+      user: decorateUserForResponse(user.toObject()),
     });
   } catch (err) {
     console.error("Error en PATCH /users/:id/role:", err);
@@ -1051,10 +1045,7 @@ router.patch("/:id", adminOnly, validateObjectIdParam, async (req, res) => {
     const u = await User.findByIdAndUpdate(id, updates, { new: true }).lean();
     if (!u) return res.status(404).json({ error: "Usuario no encontrado." });
 
-    const svc = computeServiceAccessFromLots(u);
-    const membership = normalizeMembershipForUI(u);
-
-    return res.json({ ...stripSensitive(u), ...svc, membership });
+    return res.json(decorateUserForResponse(u));
   } catch (err) {
     console.error("Error en PATCH /users/:id:", err);
     return res.status(500).json({ error: "Error interno." });
@@ -1201,7 +1192,7 @@ router.post(
 );
 
 /* ============================================
-   ✅ CRÉDITOS (tu código original + mails)
+   ✅ CRÉDITOS
 ============================================ */
 async function updateCredits(req, res) {
   try {
@@ -1211,7 +1202,6 @@ async function updateCredits(req, res) {
     const user = await User.findById(id);
     if (!user) return res.status(404).json({ error: "Usuario no encontrado." });
 
-    // ✅ snapshot ANTES de modificar
     recalcUserCredits(user);
     const beforeCredits = buildCreditsByService(user);
     const beforeTotal = Object.values(beforeCredits || {}).reduce(
@@ -1310,25 +1300,23 @@ async function updateCredits(req, res) {
       },
     });
 
-    // ✅ mails async al admin + usuario
     queueCreditsEmails({
       req,
       updatedUser: user.toObject ? user.toObject() : user,
-      items: Array.isArray(items) && items.length > 0
-        ? items
-        : [{ credits, delta, serviceKey }],
+      items:
+        Array.isArray(items) && items.length > 0
+          ? items
+          : [{ credits, delta, serviceKey }],
     });
 
-    const svc = computeServiceAccessFromLots(user);
-    const membership = normalizeMembershipForUI(user);
+    const decorated = decorateUserForResponse(user.toObject());
 
     return res.json({
       ok: true,
       credits: Number(user.credits || 0),
       creditsByService,
       creditLots: user.creditLots || [],
-      ...svc,
-      membership,
+      ...decorated,
     });
   } catch (err) {
     console.error("Error en créditos:", err);
@@ -1412,7 +1400,7 @@ router.patch("/:id/suspend", adminOnly, validateObjectIdParam, async (req, res) 
 });
 
 /* ============================================
-   ✅ APTO: SUBIR / VER / BORRAR  (FIX SIN save())
+   ✅ APTO
 ============================================ */
 router.post("/:id/apto", validateObjectIdParam, uploadAptoSingle, async (req, res) => {
   try {
@@ -1524,7 +1512,7 @@ router.delete("/:id/apto", validateObjectIdParam, async (req, res) => {
 });
 
 /* ============================================
-   ✅ FOTO (AVATAR) - SUBIR  (FIX SIN save())
+   ✅ FOTO (AVATAR)
 ============================================ */
 router.post("/:id/photo", validateObjectIdParam, avatarUploadSingle, async (req, res) => {
   try {
@@ -1542,7 +1530,6 @@ router.post("/:id/photo", validateObjectIdParam, avatarUploadSingle, async (req,
       return res.status(400).json({ error: "No se recibió ninguna imagen." });
     }
 
-    // 1) leo usuario para borrar foto previa
     const prevUser = await User.findById(id).lean();
     if (!prevUser) return res.status(404).json({ error: "Usuario no encontrado." });
 
@@ -1550,7 +1537,6 @@ router.post("/:id/photo", validateObjectIdParam, avatarUploadSingle, async (req,
       safeUnlink(absFromPublicUploadsPath(prevUser.photoPath));
     }
 
-    // 2) update atómico
     const newPath = "/api/uploads/" + req.file.filename;
 
     await User.updateOne({ _id: id }, { $set: { photoPath: newPath } });
