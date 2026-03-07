@@ -23,8 +23,6 @@ const router = express.Router();
    CONFIG: ventana de reserva
 ========================= */
 const MAX_ADVANCE_DAYS = 14;
-
-// ✅ mínimo de anticipación (en minutos)
 const MIN_BOOKING_MINUTES = Number(process.env.MIN_BOOKING_MINUTES || 60);
 
 /* =========================
@@ -267,9 +265,7 @@ function serializeAppointment(ap) {
 function requiresApto(user) {
   if (!user?.createdAt) return false;
   const created = new Date(user.createdAt);
-  const days = Math.floor(
-    (Date.now() - created.getTime()) / (1000 * 60 * 60 * 24)
-  );
+  const days = Math.floor((Date.now() - created.getTime()) / (1000 * 60 * 60 * 24));
   return days > 20 && !user.aptoPath;
 }
 
@@ -283,48 +279,23 @@ const RA_NAME = "Rehabilitación activa";
 const RF_NAME = "Reeducación funcional";
 
 const TIMES_EP = [
-  "07:00",
-  "08:00",
-  "09:00",
-  "10:00",
-  "11:00",
-  "12:00",
-  "13:30",
-  "14:00",
-  "15:00",
-  "16:00",
-  "17:00",
-  "18:00",
-  "19:00",
-  "20:00",
+  "07:00","08:00","09:00","10:00",
+  "11:00","12:00","13:30",
+  "14:00","15:00","16:00","17:00",
+  "18:00","19:00","20:00",
 ];
 
 const TIMES_REHAB = [
-  "07:00",
-  "08:00",
-  "09:00",
-  "10:00",
-  "11:00",
-  "12:00",
-  "13:30",
-  "14:00",
-  "15:00",
-  "16:00",
-  "17:00",
+  "07:00","08:00","09:00","10:00",
+  "11:00","12:00","13:30",
+  "14:00","15:00","16:00","17:00",
   "18:00",
 ];
 
 const TIMES_DEFAULT = [
-  "07:00",
-  "08:00",
-  "09:00",
-  "10:00",
-  "11:00",
-  "12:00",
-  "13:30",
-  "18:00",
-  "19:00",
-  "20:00",
+  "07:00","08:00","09:00","10:00",
+  "11:00","12:00","13:30",
+  "18:00","19:00","20:00",
 ];
 
 function getAllowedTimesForService(serviceName) {
@@ -394,6 +365,37 @@ function getRefundPolicy(serviceName) {
   };
 }
 
+function makeRefundLot(user, apService) {
+  const now = nowDate();
+  const sk = serviceToKey(apService);
+  const exp = new Date(now);
+  exp.setDate(exp.getDate() + Number(getCreditsExpireDays(user) || 30));
+
+  user.creditLots = Array.isArray(user.creditLots) ? user.creditLots : [];
+  user.creditLots.push({
+    serviceKey: sk,
+    amount: 1,
+    remaining: 1,
+    expiresAt: exp,
+    source: "refund",
+    orderId: null,
+    createdAt: now,
+  });
+
+  return { sk, expiresAt: exp };
+}
+
+function lotsDebug(user) {
+  return (Array.isArray(user?.creditLots) ? user.creditLots : []).map((lot) => ({
+    id: String(lot?._id || ""),
+    serviceKey: String(lot?.serviceKey || ""),
+    amount: Number(lot?.amount || 0),
+    remaining: Number(lot?.remaining || 0),
+    expiresAt: lot?.expiresAt || null,
+    source: String(lot?.source || ""),
+  }));
+}
+
 /* =========================
    Helpers: validación de item
 ========================= */
@@ -438,12 +440,7 @@ function validateBasicSlotRules({ date, time, service }) {
   return { ok: true, turno, slotDate, isEpService };
 }
 
-function validateBasicSlotRulesAdmin({
-  date,
-  time,
-  service,
-  bypassWindow = false,
-}) {
+function validateBasicSlotRulesAdmin({ date, time, service, bypassWindow = false }) {
   if (!date || !time || !service) {
     return { ok: false, error: "Faltan campos: date, time y service." };
   }
@@ -560,12 +557,7 @@ async function createAppointmentForTargetUser({
   notes = "",
   bypassWindow = false,
 }) {
-  const basic = validateBasicSlotRulesAdmin({
-    date,
-    time,
-    service,
-    bypassWindow,
-  });
+  const basic = validateBasicSlotRulesAdmin({ date, time, service, bypassWindow });
   if (!basic.ok) {
     const e = new Error(basic.error);
     e.http = 400;
@@ -632,15 +624,9 @@ async function createAppointmentForTargetUser({
     throw e;
   }
 
-  const epCount = existingAtSlot.filter((a) =>
-    sameService(a.service, EP_NAME)
-  ).length;
-  const rfTaken = existingAtSlot.some((a) => sameService(a.service, RF_NAME))
-    ? 1
-    : 0;
-  const raTaken = existingAtSlot.some((a) => sameService(a.service, RA_NAME))
-    ? 1
-    : 0;
+  const epCount = existingAtSlot.filter((a) => sameService(a.service, EP_NAME)).length;
+  const rfTaken = existingAtSlot.some((a) => sameService(a.service, RF_NAME)) ? 1 : 0;
+  const raTaken = existingAtSlot.some((a) => sameService(a.service, RA_NAME)) ? 1 : 0;
   const otherReservedCount = rfTaken + raTaken;
 
   if (sameService(service, RF_NAME) && rfTaken) {
@@ -656,8 +642,7 @@ async function createAppointmentForTargetUser({
   }
 
   if (basic.isEpService) {
-    const hoursToStart =
-      (basic.slotDate.getTime() - Date.now()) / (1000 * 60 * 60);
+    const hoursToStart = (basic.slotDate.getTime() - Date.now()) / (1000 * 60 * 60);
     const epCap = calcEpCap({
       hoursToStart,
       hasRF: !!rfTaken,
@@ -706,10 +691,8 @@ async function createAppointmentForTargetUser({
     creditExpiresAt: usedLotExp,
   });
 
-  const populated = await Appointment.findById(created._id).populate(
-    "user",
-    "name lastName email"
-  );
+  const populated = await Appointment.findById(created._id)
+    .populate("user", "name lastName email");
 
   await logActivity({
     req: actorReq,
@@ -829,11 +812,7 @@ router.get("/availability", async (req, res) => {
         continue;
       }
 
-      const existing = await Appointment.find({
-        date,
-        time: t,
-        status: "reserved",
-      })
+      const existing = await Appointment.find({ date, time: t, status: "reserved" })
         .select("service")
         .lean();
 
@@ -845,9 +824,7 @@ router.get("/availability", async (req, res) => {
             time: t,
             state: "waitlist",
             totalReserved: total,
-            epReserved: existing.filter((a) =>
-              sameService(a.service, EP_NAME)
-            ).length,
+            epReserved: existing.filter((a) => sameService(a.service, EP_NAME)).length,
           });
         } else {
           out.push({ time: t, state: "full", totalReserved: total });
@@ -872,19 +849,12 @@ router.get("/availability", async (req, res) => {
       }
 
       if (basic.isEpService) {
-        const epCount = existing.filter((a) =>
-          sameService(a.service, EP_NAME)
-        ).length;
-        const rfTaken = existing.some((a) => sameService(a.service, RF_NAME))
-          ? 1
-          : 0;
-        const raTaken = existing.some((a) => sameService(a.service, RA_NAME))
-          ? 1
-          : 0;
+        const epCount = existing.filter((a) => sameService(a.service, EP_NAME)).length;
+        const rfTaken = existing.some((a) => sameService(a.service, RF_NAME)) ? 1 : 0;
+        const raTaken = existing.some((a) => sameService(a.service, RA_NAME)) ? 1 : 0;
         const otherReservedCount = rfTaken + raTaken;
 
-        const hoursToStart =
-          (basic.slotDate.getTime() - Date.now()) / (1000 * 60 * 60);
+        const hoursToStart = (basic.slotDate.getTime() - Date.now()) / (1000 * 60 * 60);
         const epCap = calcEpCap({
           hoursToStart,
           hasRF: !!rfTaken,
@@ -974,7 +944,9 @@ router.get("/", async (req, res) => {
       else if (hasFrom) q.date = { $gte: from };
       else if (!includePast) q.date = { $gte: ymdAR() };
 
-      const list = await Appointment.find(q).sort({ date: 1, time: 1 }).lean();
+      const list = await Appointment.find(q)
+        .sort({ date: 1, time: 1 })
+        .lean();
 
       return res.json(
         (list || []).map((a) => ({
@@ -1002,9 +974,7 @@ router.post("/admin/assign", async (req, res) => {
   try {
     const role = String(req.user?.role || "").toLowerCase();
     if (role !== "admin") {
-      return res
-        .status(403)
-        .json({ error: "Solo un admin puede asignar turnos." });
+      return res.status(403).json({ error: "Solo un admin puede asignar turnos." });
     }
 
     const userId = String(req.body?.userId || "").trim();
@@ -1018,8 +988,8 @@ router.post("/admin/assign", async (req, res) => {
       Array.isArray(req.body?.items) && req.body.items.length
         ? req.body.items
         : req.body?.date && req.body?.time && req.body?.service
-        ? [{ date: req.body.date, time: req.body.time, service: req.body.service }]
-        : [];
+          ? [{ date: req.body.date, time: req.body.time, service: req.body.service }]
+          : [];
 
     if (!items.length) {
       return res.status(400).json({ error: "Faltan items para asignar." });
@@ -1079,9 +1049,7 @@ router.post("/admin/fixed-schedules", async (req, res) => {
   try {
     const role = String(req.user?.role || "").toLowerCase();
     if (role !== "admin") {
-      return res
-        .status(403)
-        .json({ error: "Solo un admin puede crear turnos fijos." });
+      return res.status(403).json({ error: "Solo un admin puede crear turnos fijos." });
     }
 
     const userId = String(req.body?.userId || "").trim();
@@ -1092,8 +1060,7 @@ router.post("/admin/fixed-schedules", async (req, res) => {
 
     if (!userId) return res.status(400).json({ error: "Falta userId." });
     if (!service) return res.status(400).json({ error: "Falta service." });
-    if (!items.length)
-      return res.status(400).json({ error: "Faltan días fijos." });
+    if (!items.length) return res.status(400).json({ error: "Faltan días fijos." });
 
     const cleanItems = items
       .map((it) => ({
@@ -1103,9 +1070,7 @@ router.post("/admin/fixed-schedules", async (req, res) => {
       .filter((it) => it.weekday >= 1 && it.weekday <= 5 && !!it.time);
 
     if (!cleanItems.length) {
-      return res
-        .status(400)
-        .json({ error: "No hay items válidos para guardar." });
+      return res.status(400).json({ error: "No hay items válidos para guardar." });
     }
 
     const startDate = ymdAR(new Date());
@@ -1212,9 +1177,7 @@ router.post("/", async (req, res) => {
         time: t,
         user: user._id,
         status: "reserved",
-      })
-        .session(session)
-        .lean();
+      }).session(session).lean();
 
       if (alreadyByUser) throw new Error("ALREADY_HAVE_SLOT");
 
@@ -1222,9 +1185,7 @@ router.post("/", async (req, res) => {
         date,
         time: t,
         status: "reserved",
-      })
-        .session(session)
-        .lean();
+      }).session(session).lean();
 
       let willWaitlist = false;
 
@@ -1233,25 +1194,16 @@ router.post("/", async (req, res) => {
         else throw new Error("TOTAL_CAP_REACHED");
       }
 
-      const epCount = existingAtSlot.filter((a) =>
-        sameService(a.service, EP_NAME)
-      ).length;
-      const rfTaken = existingAtSlot.some((a) => sameService(a.service, RF_NAME))
-        ? 1
-        : 0;
-      const raTaken = existingAtSlot.some((a) => sameService(a.service, RA_NAME))
-        ? 1
-        : 0;
+      const epCount = existingAtSlot.filter((a) => sameService(a.service, EP_NAME)).length;
+      const rfTaken = existingAtSlot.some((a) => sameService(a.service, RF_NAME)) ? 1 : 0;
+      const raTaken = existingAtSlot.some((a) => sameService(a.service, RA_NAME)) ? 1 : 0;
       const otherReservedCount = rfTaken + raTaken;
 
-      if (sameService(service, RF_NAME) && rfTaken)
-        throw new Error("SERVICE_CAP_REACHED");
-      if (sameService(service, RA_NAME) && raTaken)
-        throw new Error("SERVICE_CAP_REACHED");
+      if (sameService(service, RF_NAME) && rfTaken) throw new Error("SERVICE_CAP_REACHED");
+      if (sameService(service, RA_NAME) && raTaken) throw new Error("SERVICE_CAP_REACHED");
 
       if (basic.isEpService) {
-        const hoursToStart =
-          (basic.slotDate.getTime() - Date.now()) / (1000 * 60 * 60);
+        const hoursToStart = (basic.slotDate.getTime() - Date.now()) / (1000 * 60 * 60);
 
         const epCap = calcEpCap({
           hoursToStart,
@@ -1311,17 +1263,15 @@ router.post("/", async (req, res) => {
       }
 
       const created = await Appointment.create(
-        [
-          {
-            date,
-            time: t,
-            service,
-            user: user._id,
-            status: "reserved",
-            creditLotId: usedLotId,
-            creditExpiresAt: usedLotExp,
-          },
-        ],
+        [{
+          date,
+          time: t,
+          service,
+          user: user._id,
+          status: "reserved",
+          creditLotId: usedLotId,
+          creditExpiresAt: usedLotExp,
+        }],
         { session }
       );
 
@@ -1342,12 +1292,7 @@ router.post("/", async (req, res) => {
         category: "appointments",
         action: "waitlist_joined",
         entity: "waitlist",
-        entityId:
-          String(out?.date || "") +
-          "-" +
-          String(out?.time || "") +
-          "-" +
-          String(req.user?._id || ""),
+        entityId: String(out?.date || "") + "-" + String(out?.time || "") + "-" + String(req.user?._id || ""),
         title: "Lista de espera",
         description: "Se agregó a lista de espera de turnos.",
         subject: buildUserSubject(req.user),
@@ -1394,47 +1339,31 @@ router.post("/", async (req, res) => {
 
     if (err?.code === 11000) {
       return res.status(409).json({
-        error:
-          "Conflicto: ese turno o ese servicio ya fue reservado. Actualizá y probá de nuevo.",
+        error: "Conflicto: ese turno o ese servicio ya fue reservado. Actualizá y probá de nuevo.",
       });
     }
 
-    if (msg === "USER_NOT_FOUND")
-      return res.status(403).json({ error: "Usuario no encontrado." });
-    if (msg === "USER_SUSPENDED")
-      return res.status(403).json({ error: "Cuenta suspendida." });
+    if (msg === "USER_NOT_FOUND") return res.status(403).json({ error: "Usuario no encontrado." });
+    if (msg === "USER_SUSPENDED") return res.status(403).json({ error: "Cuenta suspendida." });
     if (msg === "APTO_REQUIRED")
-      return res
-        .status(403)
-        .json({ error: "Cuenta suspendida por falta de apto médico." });
-    if (msg === "NO_CREDITS")
-      return res.status(403).json({ error: "Sin créditos disponibles." });
+      return res.status(403).json({ error: "Cuenta suspendida por falta de apto médico." });
+    if (msg === "NO_CREDITS") return res.status(403).json({ error: "Sin créditos disponibles." });
 
     if (msg === "ALREADY_HAVE_SLOT")
-      return res
-        .status(409)
-        .json({ error: "Ya tenés un turno reservado en ese horario." });
+      return res.status(409).json({ error: "Ya tenés un turno reservado en ese horario." });
 
     if (msg === "ALREADY_IN_WAITLIST")
-      return res
-        .status(409)
-        .json({ error: "Ya estás en lista de espera para ese horario." });
+      return res.status(409).json({ error: "Ya estás en lista de espera para ese horario." });
 
     if (msg === "TOTAL_CAP_REACHED")
-      return res.status(409).json({
-        error: "Se alcanzó el cupo total disponible para este horario.",
-      });
+      return res.status(409).json({ error: "Se alcanzó el cupo total disponible para este horario." });
 
     if (msg === "SERVICE_CAP_REACHED")
-      return res.status(409).json({
-        error: "Ese servicio ya alcanzó su cupo para ese horario.",
-      });
+      return res.status(409).json({ error: "Ese servicio ya alcanzó su cupo para ese horario." });
 
     if (msg.startsWith("NO_CREDITS_FOR_")) {
       const sk = msg.replace("NO_CREDITS_FOR_", "");
-      return res
-        .status(403)
-        .json({ error: `No tenés créditos válidos para este servicio (${sk}).` });
+      return res.status(403).json({ error: `No tenés créditos válidos para este servicio (${sk}).` });
     }
 
     return res.status(500).json({ error: "Error al crear el turno." });
@@ -1454,14 +1383,8 @@ router.post("/batch", async (req, res) => {
 
   try {
     const items = Array.isArray(req.body?.items) ? req.body.items : [];
-    if (!items.length)
-      return res
-        .status(400)
-        .json({ error: "Faltan items: [{date,time,service}]." });
-    if (items.length > 12)
-      return res
-        .status(400)
-        .json({ error: "Máximo 12 turnos por operación." });
+    if (!items.length) return res.status(400).json({ error: "Faltan items: [{date,time,service}]." });
+    if (items.length > 12) return res.status(400).json({ error: "Máximo 12 turnos por operación." });
 
     const seen = new Set();
     const normalized = items.map((it, idx) => {
@@ -1518,18 +1441,14 @@ router.post("/batch", async (req, res) => {
         user: user._id,
         status: "reserved",
         $or: orSlots,
-      })
-        .session(session)
-        .lean();
+      }).session(session).lean();
 
       if (alreadyByUserAny) throw new Error("ALREADY_HAVE_SLOT");
 
       const existing = await Appointment.find({
         status: "reserved",
         $or: orSlots,
-      })
-        .session(session)
-        .lean();
+      }).session(session).lean();
 
       const bySlot = new Map();
       for (const ap of existing) {
@@ -1568,19 +1487,12 @@ router.post("/batch", async (req, res) => {
         }
 
         if (it.isEpService) {
-          const epCount = cur.filter((a) =>
-            sameService(a.service, EP_NAME)
-          ).length;
-          const rfTaken = cur.some((a) => sameService(a.service, RF_NAME))
-            ? 1
-            : 0;
-          const raTaken = cur.some((a) => sameService(a.service, RA_NAME))
-            ? 1
-            : 0;
+          const epCount = cur.filter((a) => sameService(a.service, EP_NAME)).length;
+          const rfTaken = cur.some((a) => sameService(a.service, RF_NAME)) ? 1 : 0;
+          const raTaken = cur.some((a) => sameService(a.service, RA_NAME)) ? 1 : 0;
           const otherReservedCount = rfTaken + raTaken;
 
-          const hoursToStart =
-            (it.slotDate.getTime() - Date.now()) / (1000 * 60 * 60);
+          const hoursToStart = (it.slotDate.getTime() - Date.now()) / (1000 * 60 * 60);
 
           const epCap = calcEpCap({
             hoursToStart,
@@ -1654,15 +1566,13 @@ router.post("/batch", async (req, res) => {
 
           if (!wlExists) {
             await WaitlistEntry.create(
-              [
-                {
-                  user: user._id,
-                  date: it.date,
-                  time: it.time,
-                  service: EP_NAME,
-                  status: "waiting",
-                },
-              ],
+              [{
+                user: user._id,
+                date: it.date,
+                time: it.time,
+                service: EP_NAME,
+                status: "waiting",
+              }],
               { session }
             );
           }
@@ -1705,17 +1615,15 @@ router.post("/batch", async (req, res) => {
         }
 
         const created = await Appointment.create(
-          [
-            {
-              date: it.date,
-              time: it.time,
-              service: it.service,
-              user: user._id,
-              status: "reserved",
-              creditLotId: usedLotId,
-              creditExpiresAt: usedLotExp,
-            },
-          ],
+          [{
+            date: it.date,
+            time: it.time,
+            service: it.service,
+            user: user._id,
+            status: "reserved",
+            creditLotId: usedLotId,
+            creditExpiresAt: usedLotExp,
+          }],
           { session }
         );
 
@@ -1732,11 +1640,7 @@ router.post("/batch", async (req, res) => {
       }
 
       mailUser = { ...user.toObject(), _id: user._id };
-      mailItems = createdItems.map((x) => ({
-        date: x.date,
-        time: x.time,
-        service: x.service,
-      }));
+      mailItems = createdItems.map((x) => ({ date: x.date, time: x.time, service: x.service }));
     });
 
     await logActivity({
@@ -1756,8 +1660,7 @@ router.post("/batch", async (req, res) => {
             (x) => `Reservó ${x.service} el ${x.date} a las ${x.time}`
           ),
           ...waitlistedItems.map(
-            (x) =>
-              `Entró en lista de espera para ${x.service} el ${x.date} a las ${x.time}`
+            (x) => `Entró en lista de espera para ${x.service} el ${x.date} a las ${x.time}`
           ),
         ],
       },
@@ -1771,11 +1674,7 @@ router.post("/batch", async (req, res) => {
           await sendAppointmentBookedBatchEmail(mailUser, mailItems);
         } catch (e) {
           console.log("[MAIL] batch booked error:", e?.message || e);
-          await sendAdminCopy({
-            kind: "batch_booked",
-            user: mailUser,
-            ap: { items: mailItems },
-          });
+          await sendAdminCopy({ kind: "batch_booked", user: mailUser, ap: { items: mailItems } });
         }
       }, "MAIL_BATCH_BOOKED");
     }
@@ -1790,71 +1689,48 @@ router.post("/batch", async (req, res) => {
         return res.status(400).json({ error: parts[1] || "Item inválido." });
       }
       if (msg.startsWith("ITEM_") && msg.endsWith("_DUP")) {
-        return res
-          .status(409)
-          .json({ error: "Hay items duplicados dentro del batch." });
+        return res.status(409).json({ error: "Hay items duplicados dentro del batch." });
       }
       if (msg === "SERVICE_CAP_REACHED") {
-        return res.status(409).json({
-          error: "Ese servicio ya alcanzó su cupo en uno de los horarios.",
-        });
+        return res.status(409).json({ error: "Ese servicio ya alcanzó su cupo en uno de los horarios." });
       }
       if (msg === "TOTAL_CAP_REACHED") {
-        return res.status(409).json({
-          error: "Se alcanzó el cupo total disponible para alguno de los horarios.",
-        });
+        return res.status(409).json({ error: "Se alcanzó el cupo total disponible para alguno de los horarios." });
       }
       if (msg === "NO_CREDITS") {
         return res.status(403).json({ error: "Sin créditos disponibles." });
       }
       if (msg.startsWith("NO_CREDITS_FOR_")) {
         const sk = msg.replace("NO_CREDITS_FOR_", "");
-        return res
-          .status(403)
-          .json({ error: `No tenés créditos válidos para este servicio (${sk}).` });
+        return res.status(403).json({ error: `No tenés créditos válidos para este servicio (${sk}).` });
       }
       return res.status(http).json({ error: "No se pudo reservar el batch." });
     }
 
     if (err?.code === 11000) {
       return res.status(409).json({
-        error:
-          "Conflicto: alguno de los turnos/servicios ya fue reservado. Actualizá y probá de nuevo.",
+        error: "Conflicto: alguno de los turnos/servicios ya fue reservado. Actualizá y probá de nuevo.",
       });
     }
 
-    if (msg === "USER_NOT_FOUND")
-      return res.status(403).json({ error: "Usuario no encontrado." });
-    if (msg === "USER_SUSPENDED")
-      return res.status(403).json({ error: "Cuenta suspendida." });
+    if (msg === "USER_NOT_FOUND") return res.status(403).json({ error: "Usuario no encontrado." });
+    if (msg === "USER_SUSPENDED") return res.status(403).json({ error: "Cuenta suspendida." });
     if (msg === "APTO_REQUIRED")
-      return res
-        .status(403)
-        .json({ error: "Cuenta suspendida por falta de apto médico." });
-    if (msg === "NO_CREDITS")
-      return res.status(403).json({ error: "Sin créditos disponibles." });
+      return res.status(403).json({ error: "Cuenta suspendida por falta de apto médico." });
+    if (msg === "NO_CREDITS") return res.status(403).json({ error: "Sin créditos disponibles." });
 
     if (msg === "DUP_SLOT_IN_BATCH")
-      return res.status(409).json({
-        error:
-          "No podés reservar 2 turnos en el mismo horario en un solo batch.",
-      });
+      return res.status(409).json({ error: "No podés reservar 2 turnos en el mismo horario en un solo batch." });
 
     if (msg === "ALREADY_HAVE_SLOT")
-      return res.status(409).json({
-        error: "Ya tenés un turno reservado en alguno de esos horarios.",
-      });
+      return res.status(409).json({ error: "Ya tenés un turno reservado en alguno de esos horarios." });
 
     if (msg === "TOTAL_CAP_REACHED")
-      return res.status(409).json({
-        error: "Se alcanzó el cupo total disponible para alguno de los horarios.",
-      });
+      return res.status(409).json({ error: "Se alcanzó el cupo total disponible para alguno de los horarios." });
 
     if (msg.startsWith("NO_CREDITS_FOR_")) {
       const sk = msg.replace("NO_CREDITS_FOR_", "");
-      return res
-        .status(403)
-        .json({ error: `No tenés créditos válidos para este servicio (${sk}).` });
+      return res.status(403).json({ error: `No tenés créditos válidos para este servicio (${sk}).` });
     }
 
     return res.status(500).json({ error: "Error al reservar el batch." });
@@ -1905,11 +1781,7 @@ router.post("/waitlist/claim", async (req, res) => {
         throw e;
       }
 
-      const basic = validateBasicSlotRules({
-        date: wl.date,
-        time: wl.time,
-        service: EP_NAME,
-      });
+      const basic = validateBasicSlotRules({ date: wl.date, time: wl.time, service: EP_NAME });
       if (!basic.ok) {
         const e = new Error("SLOT_NOT_VALID");
         e.http = 409;
@@ -1920,9 +1792,7 @@ router.post("/waitlist/claim", async (req, res) => {
         date: wl.date,
         time: wl.time,
         status: "reserved",
-      })
-        .session(session)
-        .lean();
+      }).session(session).lean();
 
       if (existingAtSlot.length >= TOTAL_CAP) {
         const e = new Error("NO_LONGER_AVAILABLE");
@@ -1930,19 +1800,12 @@ router.post("/waitlist/claim", async (req, res) => {
         throw e;
       }
 
-      const epCount = existingAtSlot.filter((a) =>
-        sameService(a.service, EP_NAME)
-      ).length;
-      const rfTaken = existingAtSlot.some((a) => sameService(a.service, RF_NAME))
-        ? 1
-        : 0;
-      const raTaken = existingAtSlot.some((a) => sameService(a.service, RA_NAME))
-        ? 1
-        : 0;
+      const epCount = existingAtSlot.filter((a) => sameService(a.service, EP_NAME)).length;
+      const rfTaken = existingAtSlot.some((a) => sameService(a.service, RF_NAME)) ? 1 : 0;
+      const raTaken = existingAtSlot.some((a) => sameService(a.service, RA_NAME)) ? 1 : 0;
       const otherReservedCount = rfTaken + raTaken;
 
-      const hoursToStart =
-        (basic.slotDate.getTime() - Date.now()) / (1000 * 60 * 60);
+      const hoursToStart = (basic.slotDate.getTime() - Date.now()) / (1000 * 60 * 60);
       const epCap = calcEpCap({
         hoursToStart,
         hasRF: !!rfTaken,
@@ -1961,9 +1824,7 @@ router.post("/waitlist/claim", async (req, res) => {
         time: wl.time,
         user: user._id,
         status: "reserved",
-      })
-        .session(session)
-        .lean();
+      }).session(session).lean();
 
       if (alreadyByUser) {
         wl.status = "claimed";
@@ -2001,17 +1862,15 @@ router.post("/waitlist/claim", async (req, res) => {
       }
 
       const created = await Appointment.create(
-        [
-          {
-            date: wl.date,
-            time: wl.time,
-            service: EP_NAME,
-            user: user._id,
-            status: "reserved",
-            creditLotId: null,
-            creditExpiresAt: null,
-          },
-        ],
+        [{
+          date: wl.date,
+          time: wl.time,
+          service: EP_NAME,
+          user: user._id,
+          status: "reserved",
+          creditLotId: null,
+          creditExpiresAt: null,
+        }],
         { session }
       );
 
@@ -2049,27 +1908,16 @@ router.post("/waitlist/claim", async (req, res) => {
     const http = err?.http || 500;
     const msg = String(err?.message || "");
 
-    if (msg === "TOKEN_INVALID")
-      return res.status(404).json({ error: "Token inválido." });
-    if (msg === "TOKEN_EXPIRED")
-      return res.status(410).json({ error: "El link expiró." });
-    if (msg === "NO_LONGER_AVAILABLE")
-      return res
-        .status(409)
-        .json({ error: "El cupo ya no está disponible." });
+    if (msg === "TOKEN_INVALID") return res.status(404).json({ error: "Token inválido." });
+    if (msg === "TOKEN_EXPIRED") return res.status(410).json({ error: "El link expiró." });
+    if (msg === "NO_LONGER_AVAILABLE") return res.status(409).json({ error: "El cupo ya no está disponible." });
 
-    if (msg === "USER_NOT_FOUND")
-      return res.status(404).json({ error: "Usuario no encontrado." });
-    if (msg === "USER_SUSPENDED")
-      return res.status(403).json({ error: "Cuenta suspendida." });
+    if (msg === "USER_NOT_FOUND") return res.status(404).json({ error: "Usuario no encontrado." });
+    if (msg === "USER_SUSPENDED") return res.status(403).json({ error: "Cuenta suspendida." });
     if (msg === "APTO_REQUIRED")
-      return res
-        .status(403)
-        .json({ error: "Cuenta suspendida por falta de apto médico." });
-    if (msg === "NO_CREDITS")
-      return res.status(403).json({ error: "Sin créditos disponibles." });
-    if (msg.startsWith("NO_CREDITS_FOR_"))
-      return res.status(403).json({ error: "No tenés créditos válidos." });
+      return res.status(403).json({ error: "Cuenta suspendida por falta de apto médico." });
+    if (msg === "NO_CREDITS") return res.status(403).json({ error: "Sin créditos disponibles." });
+    if (msg.startsWith("NO_CREDITS_FOR_")) return res.status(403).json({ error: "No tenés créditos válidos." });
 
     console.error("Error en POST /appointments/waitlist/claim:", err);
     return res.status(http).json({ error: "No se pudo confirmar el turno." });
@@ -2140,13 +1988,37 @@ router.patch("/:id/cancel", async (req, res) => {
         throw e;
       }
 
+      console.log("[CANCEL][START]", {
+        appointmentId: String(ap._id),
+        userId: String(user._id),
+        userRole: user.role,
+        service: ap.service,
+        date: ap.date,
+        time: ap.time,
+        creditLotId: ap.creditLotId ? String(ap.creditLotId) : null,
+        appointmentCreditExpiresAt: ap.creditExpiresAt || null,
+        hoursToStart: hours,
+        beforeCredits: Number(user.credits || 0),
+        beforeLots: lotsDebug(user),
+      });
+
       ap.status = "cancelled";
       await ap.save({ session });
 
       const policy = getRefundPolicy(ap.service);
       const cutoff = policy.cutoffHours;
-
       const shouldRefund = user.role !== "admin" && policy.isEligible(hours);
+
+      console.log("[CANCEL][POLICY]", {
+        appointmentId: String(ap._id),
+        service: ap.service,
+        serviceKey: serviceToKey(ap.service),
+        refundPolicyKey: policy.key,
+        cutoffHours: policy.cutoffHours,
+        inclusive: policy.inclusive,
+        hoursToStart: hours,
+        shouldRefund,
+      });
 
       if (user.role !== "admin") {
         user.history = user.history || [];
@@ -2161,35 +2033,65 @@ router.patch("/:id/cancel", async (req, res) => {
 
         if (shouldRefund) {
           const now = nowDate();
-          const sk = serviceToKey(ap.service);
-
           const lot = ap.creditLotId ? findLotById(user, ap.creditLotId) : null;
           const lotExp = lot?.expiresAt ? new Date(lot.expiresAt) : null;
           const lotStillValid = !!lot && (!lotExp || lotExp > now);
 
+          console.log("[CANCEL][LOT-CHECK]", {
+            appointmentId: String(ap._id),
+            creditLotId: ap.creditLotId ? String(ap.creditLotId) : null,
+            lotFound: !!lot,
+            lotData: lot
+              ? {
+                  id: String(lot._id || ""),
+                  serviceKey: lot.serviceKey,
+                  amount: Number(lot.amount || 0),
+                  remaining: Number(lot.remaining || 0),
+                  expiresAt: lot.expiresAt || null,
+                  source: lot.source || "",
+                }
+              : null,
+            now,
+            lotStillValid,
+          });
+
           if (lotStillValid) {
             lot.remaining = Number(lot.remaining || 0) + 1;
-          } else {
-            const exp = new Date(now);
-            exp.setDate(
-              exp.getDate() + Number(getCreditsExpireDays(user) || 30)
-            );
 
-            user.creditLots = user.creditLots || [];
-            user.creditLots.push({
-              serviceKey: sk,
-              amount: 1,
-              remaining: 1,
-              expiresAt: exp,
-              source: "refund",
-              orderId: null,
-              createdAt: now,
+            console.log("[CANCEL][REFUND-TO-ORIGINAL-LOT]", {
+              appointmentId: String(ap._id),
+              lotId: String(lot._id || ""),
+              newRemaining: Number(lot.remaining || 0),
+            });
+          } else {
+            const refundInfo = makeRefundLot(user, ap.service);
+
+            console.log("[CANCEL][REFUND-NEW-LOT]", {
+              appointmentId: String(ap._id),
+              service: ap.service,
+              serviceKey: refundInfo.sk,
+              expiresAt: refundInfo.expiresAt,
             });
           }
         }
 
         recalcUserCredits(user);
+
+        console.log("[CANCEL][BEFORE-SAVE-USER]", {
+          appointmentId: String(ap._id),
+          userId: String(user._id),
+          recalculatedCredits: Number(user.credits || 0),
+          lotsAfterRefund: lotsDebug(user),
+        });
+
         await user.save({ session });
+
+        console.log("[CANCEL][USER-SAVED]", {
+          appointmentId: String(ap._id),
+          userId: String(user._id),
+          savedCredits: Number(user.credits || 0),
+          savedLots: lotsDebug(user),
+        });
       }
 
       const populated = await Appointment.findById(ap._id)
@@ -2236,12 +2138,7 @@ router.patch("/:id/cancel", async (req, res) => {
     if (mailUser && mailAp) {
       fireAndForget(async () => {
         try {
-          await sendAppointmentCancelledEmail(
-            mailUser,
-            mailAp,
-            mailServiceName,
-            mailMeta
-          );
+          await sendAppointmentCancelledEmail(mailUser, mailAp, mailServiceName, mailMeta);
         } catch (e) {
           console.log("[MAIL] cancelled error:", e?.message || e);
           await sendAdminCopy({
@@ -2258,22 +2155,14 @@ router.patch("/:id/cancel", async (req, res) => {
 
     if (http) {
       const msg = String(err?.message || "");
-      if (msg === "NOT_FOUND")
-        return res.status(404).json({ error: "Turno no encontrado." });
+      if (msg === "NOT_FOUND") return res.status(404).json({ error: "Turno no encontrado." });
       if (msg === "FORBIDDEN")
-        return res.status(403).json({
-          error: "Solo el dueño del turno o un admin pueden cancelarlo.",
-        });
-      if (msg === "ALREADY_CANCELLED")
-        return res.status(400).json({ error: "El turno ya estaba cancelado." });
-      if (msg === "INVALID_AP_DATE")
-        return res.status(400).json({ error: "Turno con fecha/hora inválida." });
+        return res.status(403).json({ error: "Solo el dueño del turno o un admin pueden cancelarlo." });
+      if (msg === "ALREADY_CANCELLED") return res.status(400).json({ error: "El turno ya estaba cancelado." });
+      if (msg === "INVALID_AP_DATE") return res.status(400).json({ error: "Turno con fecha/hora inválida." });
       if (msg === "PAST_APPOINTMENT")
-        return res
-          .status(400)
-          .json({ error: "No se puede cancelar un turno que ya pasó." });
-      if (msg === "USER_NOT_FOUND")
-        return res.status(404).json({ error: "Usuario no encontrado." });
+        return res.status(400).json({ error: "No se puede cancelar un turno que ya pasó." });
+      if (msg === "USER_NOT_FOUND") return res.status(404).json({ error: "Usuario no encontrado." });
       return res.status(http).json({ error: "Error al cancelar el turno." });
     }
 
