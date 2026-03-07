@@ -89,7 +89,6 @@ function validateBookingWindow(slotDate) {
   return { ok: true };
 }
 
-// ✅ regla mínima de anticipación
 function validateMinAdvance(slotDate) {
   const now = new Date();
   const limit = new Date(now.getTime() + MIN_BOOKING_MINUTES * 60 * 1000);
@@ -116,14 +115,6 @@ function isSunday(dateStr) {
   return dt.getDay() === 0;
 }
 
-/**
- * Match con front:
- * - mañana: 07..12
- * - bloqueado: 12:01..13:29
- * - 13:30 permitido
- * - tarde:  14..17
- * - noche: 18..20
- */
 function getTurnoFromTime(time) {
   if (!time) return "";
   const [hStr, mStr] = String(time).split(":");
@@ -285,7 +276,6 @@ function requiresApto(user) {
 ========================= */
 const TOTAL_CAP = 6;
 
-// ⚠️ Nombres “humanos”
 const EP_NAME = "Entrenamiento Personal";
 const RA_NAME = "Rehabilitación activa";
 const RF_NAME = "Reeducación funcional";
@@ -297,7 +287,6 @@ const TIMES_EP = [
   "18:00","19:00","20:00",
 ];
 
-// RA y RF: 07:00 a 18:00 inclusive
 const TIMES_REHAB = [
   "07:00","08:00","09:00","10:00",
   "11:00","12:00","13:30",
@@ -323,15 +312,6 @@ function isAllowedTimeForService(serviceName, time) {
   return getAllowedTimesForService(serviceName).includes(t);
 }
 
-/**
- * TU REGLA:
- * - TOTAL 6 por horario
- * - Antes de 12hs: EP máximo 4
- * - Dentro de 12hs:
- *    - si NO hay RA NI RF -> EP puede 6
- *    - si hay 1 de (RA/RF) -> EP puede 5
- *    - si hay ambos -> EP queda en 4
- */
 function calcEpCap({ hoursToStart, hasRF, hasRA, otherReservedCount }) {
   let cap = 4;
 
@@ -401,12 +381,10 @@ function validateBasicSlotRules({ date, time, service }) {
 
   const timeNorm = String(time).slice(0, 5);
 
-  // ✅ 13:xx inválido salvo 13:30
   if (timeNorm.startsWith("13:") && timeNorm !== "13:30") {
     return { ok: false, error: "Horario inválido." };
   }
 
-  // ✅ validación real por servicio
   if (!isAllowedTimeForService(service, timeNorm)) {
     return {
       ok: false,
@@ -733,7 +711,6 @@ router.get("/availability", async (req, res) => {
             .filter((t) => allowedTimes.includes(t))
         : allowedTimes;
 
-    // ✅ validación de acceso por créditos vigentes del usuario
     const requesterId = req.user?._id || req.user?.id;
     const requesterRole = String(req.user?.role || "");
 
