@@ -20,7 +20,7 @@ const historySchema = new mongoose.Schema(
 
 const creditLotSchema = new mongoose.Schema(
   {
-    serviceKey: { type: String, default: "ALL", uppercase: true, trim: true }, // EP/AR/RA/NUT o ALL
+    serviceKey: { type: String, default: "ALL", uppercase: true, trim: true }, // EP/RF/RA/NUT o ALL
     amount: { type: Number, default: 0 },
     remaining: { type: Number, default: 0 },
     expiresAt: { type: Date, default: null },
@@ -39,6 +39,143 @@ const clinicalNoteSchema = new mongoose.Schema(
   },
   { _id: false }
 );
+
+/* ============================================
+   ✅ PLAN MENSUAL
+============================================ */
+function makeMonthlyPlanWeek() {
+  return new mongoose.Schema(
+    {
+      weekNumber: { type: Number, default: 1 },
+      series: { type: String, default: "" },
+      reps: { type: String, default: "" },
+      rir: { type: String, default: "" },
+    },
+    { _id: false }
+  );
+}
+
+function makeMonthlyPlanRow() {
+  return new mongoose.Schema(
+    {
+      exercise: { type: String, default: "" },
+      weekCells: {
+        1: { type: [String], default: ["", "", "", ""] },
+        2: { type: [String], default: ["", "", "", ""] },
+        3: { type: [String], default: ["", "", "", ""] },
+        4: { type: [String], default: ["", "", "", ""] },
+      },
+    },
+    { _id: false }
+  );
+}
+
+const monthlyPlanSectionSchema = new mongoose.Schema(
+  {
+    key: { type: String, default: "B2" },
+    rows: { type: [makeMonthlyPlanRow()], default: [] },
+  },
+  { _id: false }
+);
+
+const monthlyPlanDaySchema = new mongoose.Schema(
+  {
+    dayNumber: { type: Number, default: 1 },
+    sections: { type: [monthlyPlanSectionSchema], default: [] },
+  },
+  { _id: false }
+);
+
+const monthlyPlanSchema = new mongoose.Schema(
+  {
+    meta: {
+      fullName: { type: String, default: "" },
+      age: { type: String, default: "" },
+      weight: { type: String, default: "" },
+      height: { type: String, default: "" },
+      healthConditions: { type: String, default: "" },
+      trainingPeriod: { type: String, default: "" },
+      objective: { type: String, default: "" },
+      weeklyFrequency: { type: String, default: "" },
+      startDate: { type: String, default: "" },
+      mesocycleNumber: { type: String, default: "" },
+      observations: { type: String, default: "" },
+    },
+
+    weeks: { type: [makeMonthlyPlanWeek()], default: [] },
+    days: { type: [monthlyPlanDaySchema], default: [] },
+
+    footer: {
+      activation: { type: String, default: "Plan del día." },
+      finisher: {
+        type: String,
+        default: "A criterio de cada entrenador (metabólico, accesorios).",
+      },
+      cooldown: {
+        type: String,
+        default: "Plan del día o estiramiento comunitario.",
+      },
+    },
+
+    updatedAt: { type: Date, default: null },
+    updatedBy: { type: String, default: "" },
+  },
+  { _id: false }
+);
+
+function createDefaultMonthlyPlan() {
+  const makeWeek = (weekNumber) => ({
+    weekNumber,
+    series: "",
+    reps: "",
+    rir: "",
+  });
+
+  const makeRow = () => ({
+    exercise: "",
+    weekCells: {
+      1: ["", "", "", ""],
+      2: ["", "", "", ""],
+      3: ["", "", "", ""],
+      4: ["", "", "", ""],
+    },
+  });
+
+  const makeSection = (key) => ({
+    key,
+    rows: [makeRow(), makeRow(), makeRow()],
+  });
+
+  const makeDay = (dayNumber) => ({
+    dayNumber,
+    sections: [makeSection("B2"), makeSection("B3")],
+  });
+
+  return {
+    meta: {
+      fullName: "",
+      age: "",
+      weight: "",
+      height: "",
+      healthConditions: "",
+      trainingPeriod: "",
+      objective: "",
+      weeklyFrequency: "",
+      startDate: "",
+      mesocycleNumber: "",
+      observations: "",
+    },
+    weeks: [makeWeek(1), makeWeek(2), makeWeek(3), makeWeek(4)],
+    days: [makeDay(1), makeDay(2), makeDay(3)],
+    footer: {
+      activation: "Plan del día.",
+      finisher: "A criterio de cada entrenador (metabólico, accesorios).",
+      cooldown: "Plan del día o estiramiento comunitario.",
+    },
+    updatedAt: null,
+    updatedBy: "",
+  };
+}
 
 // Helpers para required condicional (guest vs client/admin)
 function requiredIfNotGuest() {
@@ -106,11 +243,17 @@ const userSchema = new mongoose.Schema(
       activeUntil: { type: Date, default: null },
 
       // ✅ Se elimina todo lo de "límite de cancelaciones".
-      // Solo dejamos lo que afecta vencimiento de créditos (si querés seguir distinguiendo Basic vs Plus)
+      // Solo dejamos lo que afecta vencimiento de créditos
       creditsExpireDays: { type: Number, default: 30 },
     },
 
     creditLots: { type: [creditLotSchema], default: [] },
+
+    // ✅ NUEVO: plan mensual editable por staff/admin
+    monthlyPlan: {
+      type: monthlyPlanSchema,
+      default: createDefaultMonthlyPlan,
+    },
 
     // ✅ NUEVO: marca para no enviar 2 veces el mail de "alta aprobada"
     welcomeApprovedEmailSentAt: { type: Date, default: null },
@@ -127,5 +270,5 @@ userSchema.index(
   }
 );
 
-const User = mongoose.model("User", userSchema);
+const User = mongoose.models.User || mongoose.model("User", userSchema);
 export default User;

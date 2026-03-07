@@ -549,6 +549,173 @@ function queueCreditsEmails({ req, updatedUser, items }) {
     }
   }, "USER_CREDITS_MAIL");
 }
+/* ============================================
+   ✅ HELPERS: PLAN MENSUAL
+============================================ */
+function createDefaultMonthlyPlan() {
+  const makeWeek = (weekNumber) => ({
+    weekNumber,
+    series: "",
+    reps: "",
+    rir: "",
+  });
+
+  const makeRow = () => ({
+    exercise: "",
+    weekCells: {
+      1: ["", "", "", ""],
+      2: ["", "", "", ""],
+      3: ["", "", "", ""],
+      4: ["", "", "", ""],
+    },
+  });
+
+  const makeSection = (key) => ({
+    key,
+    rows: [makeRow(), makeRow(), makeRow()],
+  });
+
+  const makeDay = (dayNumber) => ({
+    dayNumber,
+    sections: [makeSection("B2"), makeSection("B3")],
+  });
+
+  return {
+    meta: {
+      fullName: "",
+      age: "",
+      weight: "",
+      height: "",
+      healthConditions: "",
+      trainingPeriod: "",
+      objective: "",
+      weeklyFrequency: "",
+      startDate: "",
+      mesocycleNumber: "",
+      observations: "",
+    },
+    weeks: [makeWeek(1), makeWeek(2), makeWeek(3), makeWeek(4)],
+    days: [makeDay(1), makeDay(2), makeDay(3)],
+    footer: {
+      activation: "Plan del día.",
+      finisher: "A criterio de cada entrenador (metabólico, accesorios).",
+      cooldown: "Plan del día o estiramiento comunitario.",
+    },
+    updatedAt: null,
+    updatedBy: "",
+  };
+}
+
+function safePlanStr(v, max = 1000) {
+  return String(v ?? "").slice(0, max).trim();
+}
+
+function normalizeWeekCells(input) {
+  const out = {
+    1: ["", "", "", ""],
+    2: ["", "", "", ""],
+    3: ["", "", "", ""],
+    4: ["", "", "", ""],
+  };
+
+  for (const wk of [1, 2, 3, 4]) {
+    const arr = Array.isArray(input?.[wk]) ? input[wk] : [];
+    out[wk] = [0, 1, 2, 3].map((i) => safePlanStr(arr[i] || "", 40));
+  }
+
+  return out;
+}
+
+function sanitizeMonthlyPlanPayload(payload = {}, targetUser = null, actor = null) {
+  const base = createDefaultMonthlyPlan();
+
+  const fullNameFromUser = targetUser
+    ? `${String(targetUser.name || "").trim()} ${String(targetUser.lastName || "").trim()}`.trim()
+    : "";
+
+  const meta = payload?.meta || {};
+  const weeks = Array.isArray(payload?.weeks) ? payload.weeks : [];
+  const days = Array.isArray(payload?.days) ? payload.days : [];
+  const footer = payload?.footer || {};
+
+  const actorName =
+    `${String(actor?.name || "").trim()} ${String(actor?.lastName || "").trim()}`.trim() ||
+    String(actor?.email || "").trim() ||
+    "Staff";
+
+  return {
+    meta: {
+      fullName: safePlanStr(meta.fullName || fullNameFromUser, 120),
+      age: safePlanStr(meta.age, 20),
+      weight: safePlanStr(meta.weight, 20),
+      height: safePlanStr(meta.height, 20),
+      healthConditions: safePlanStr(meta.healthConditions, 800),
+      trainingPeriod: safePlanStr(meta.trainingPeriod, 120),
+      objective: safePlanStr(meta.objective, 300),
+      weeklyFrequency: safePlanStr(meta.weeklyFrequency, 60),
+      startDate: safePlanStr(meta.startDate, 40),
+      mesocycleNumber: safePlanStr(meta.mesocycleNumber, 40),
+      observations: safePlanStr(meta.observations, 1200),
+    },
+
+    weeks: [1, 2, 3, 4].map((n, idx) => ({
+      weekNumber: n,
+      series: safePlanStr(weeks[idx]?.series, 40),
+      reps: safePlanStr(weeks[idx]?.reps, 40),
+      rir: safePlanStr(weeks[idx]?.rir, 40),
+    })),
+
+    days: [1, 2, 3].map((dayNumber, dayIdx) => {
+      const srcDay = days[dayIdx] || {};
+      const srcSections = Array.isArray(srcDay.sections) ? srcDay.sections : [];
+
+      return {
+        dayNumber,
+        sections: ["B2", "B3"].map((sectionKey, secIdx) => {
+          const srcSection = srcSections[secIdx] || {};
+          const srcRows = Array.isArray(srcSection.rows) ? srcSection.rows : [];
+
+          return {
+            key: sectionKey,
+            rows: [0, 1, 2].map((rowIdx) => ({
+              exercise: safePlanStr(srcRows[rowIdx]?.exercise, 120),
+              weekCells: normalizeWeekCells(srcRows[rowIdx]?.weekCells),
+            })),
+          };
+        }),
+      };
+    }),
+
+    footer: {
+      activation: safePlanStr(footer.activation || base.footer.activation, 300),
+      finisher: safePlanStr(footer.finisher || base.footer.finisher, 300),
+      cooldown: safePlanStr(footer.cooldown || base.footer.cooldown, 300),
+    },
+
+    updatedAt: new Date(),
+    updatedBy: actorName,
+  };
+}
+
+function ensureMonthlyPlan(user) {
+  if (!user.monthlyPlan) {
+    user.monthlyPlan = createDefaultMonthlyPlan();
+  }
+
+  const normalized = sanitizeMonthlyPlanPayload(user.monthlyPlan, user, {
+    name: user.monthlyPlan?.updatedBy || "",
+    lastName: "",
+    email: "",
+  });
+
+  if (!normalized.meta.fullName) {
+    normalized.meta.fullName =
+      `${String(user.name || "").trim()} ${String(user.lastName || "").trim()}`.trim();
+  }
+
+  user.monthlyPlan = normalized;
+  return user.monthlyPlan;
+}
 
 /* ============================================
    ✅ TODAS LAS RUTAS REQUIEREN LOGIN
@@ -1550,5 +1717,152 @@ router.post("/:id/photo", validateObjectIdParam, avatarUploadSingle, async (req,
     });
   }
 });
+/* ============================================
+   ✅ PLAN MENSUAL
+============================================ */
+router.get(
+  "/:id/monthly-plan",
+  adminOrProfessor,
+  validateObjectIdParam,
+  async (req, res) => {
+    try {
+      const { id } = req.params;
+
+      const user = await User.findById(id);
+      if (!user) {
+        return res.status(404).json({ error: "Usuario no encontrado." });
+      }
+
+      const plan = ensureMonthlyPlan(user);
+
+      if (!user.monthlyPlan || !user.monthlyPlan.updatedAt) {
+        await user.save();
+      }
+
+      return res.json({
+        ok: true,
+        monthlyPlan: plan,
+      });
+    } catch (err) {
+      console.error("Error en GET /users/:id/monthly-plan:", err);
+      return res.status(500).json({ error: "Error al obtener el plan mensual." });
+    }
+  }
+);
+
+router.put(
+  "/:id/monthly-plan",
+  adminOrProfessor,
+  validateObjectIdParam,
+  async (req, res) => {
+    try {
+      const { id } = req.params;
+
+      const user = await User.findById(id);
+      if (!user) {
+        return res.status(404).json({ error: "Usuario no encontrado." });
+      }
+
+      const prevPlan = user.monthlyPlan || createDefaultMonthlyPlan();
+      const nextPlan = sanitizeMonthlyPlanPayload(req.body || {}, user, req.user);
+
+      user.monthlyPlan = nextPlan;
+
+      pushUserHistory(user, {
+        action: "monthly_plan_updated",
+        title: "Se actualizó el plan mensual.",
+        createdAt: new Date(),
+      });
+
+      await user.save();
+
+      await logActivity({
+        req,
+        category: "users",
+        action: "monthly_plan_updated",
+        entity: "user",
+        entityId: user._id,
+        title: "Plan mensual actualizado",
+        description: "Un miembro del staff actualizó el plan mensual del usuario.",
+        subject: buildUserSubject(user),
+        diff: buildDiff(
+          { monthlyPlan: prevPlan },
+          { monthlyPlan: nextPlan }
+        ),
+      });
+
+      return res.json({
+        ok: true,
+        monthlyPlan: user.monthlyPlan,
+      });
+    } catch (err) {
+      console.error("Error en PUT /users/:id/monthly-plan:", err);
+      return res.status(500).json({ error: "Error al guardar el plan mensual." });
+    }
+  }
+);
+
+router.post(
+  "/:id/monthly-plan/reset",
+  adminOrProfessor,
+  validateObjectIdParam,
+  async (req, res) => {
+    try {
+      const { id } = req.params;
+
+      const user = await User.findById(id);
+      if (!user) {
+        return res.status(404).json({ error: "Usuario no encontrado." });
+      }
+
+      const fullName =
+        `${String(user.name || "").trim()} ${String(user.lastName || "").trim()}`.trim();
+
+      const actorName =
+        `${String(req.user?.name || "").trim()} ${String(req.user?.lastName || "").trim()}`.trim() ||
+        String(req.user?.email || "").trim() ||
+        "Staff";
+
+      user.monthlyPlan = {
+        ...createDefaultMonthlyPlan(),
+        meta: {
+          ...createDefaultMonthlyPlan().meta,
+          fullName,
+          age: user.age != null ? String(user.age) : "",
+          weight: user.weight != null ? String(user.weight) : "",
+        },
+        updatedAt: new Date(),
+        updatedBy: actorName,
+      };
+
+      pushUserHistory(user, {
+        action: "monthly_plan_reset",
+        title: "Se reinició el plan mensual.",
+        createdAt: new Date(),
+      });
+
+      await user.save();
+
+      await logActivity({
+        req,
+        category: "users",
+        action: "monthly_plan_reset",
+        entity: "user",
+        entityId: user._id,
+        title: "Plan mensual reiniciado",
+        description: "Se reinició el plan mensual del usuario.",
+        subject: buildUserSubject(user),
+      });
+
+      return res.json({
+        ok: true,
+        monthlyPlan: user.monthlyPlan,
+      });
+    } catch (err) {
+      console.error("Error en POST /users/:id/monthly-plan/reset:", err);
+      return res.status(500).json({ error: "Error al reiniciar el plan mensual." });
+    }
+  }
+);
 
 export default router;
