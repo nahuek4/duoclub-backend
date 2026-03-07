@@ -4,9 +4,15 @@ import mongoose from "mongoose";
 const historySchema = new mongoose.Schema(
   {
     action: { type: String, default: "" },
+    title: { type: String, default: "" },
+    message: { type: String, default: "" },
+    field: { type: String, default: "" },
     date: { type: String, default: "" }, // YYYY-MM-DD
     time: { type: String, default: "" }, // HH:mm
     service: { type: String, default: "" },
+    serviceName: { type: String, default: "" },
+    serviceKey: { type: String, default: "" },
+    qty: { type: Number, default: 0 },
     createdAt: { type: Date, default: Date.now },
   },
   { _id: false }

@@ -164,6 +164,86 @@ function safeServiceFromOrder(order) {
   return String(order?.serviceKey || "ORDER").toUpperCase().trim() || "ORDER";
 }
 
+
+function prettyServiceNameFromKey(sk) {
+  const up = String(sk || "").toUpperCase().trim();
+  if (up === "EP") return "Entrenamiento Personal";
+  if (up === "RA") return "Rehabilitación Activa";
+  if (up === "RF") return "Reeducación Funcional";
+  if (up === "NUT") return "Nutrición";
+  return up || "Sesiones";
+}
+
+function pluralizeSessions(n) {
+  return Number(n) === 1 ? "sesión" : "sesiones";
+}
+
+function buildOrderHistoryTitle(order) {
+  const items = Array.isArray(order?.items) ? order.items : [];
+
+  if (items.length) {
+    const creditItems = items.filter(
+      (it) => String(it?.kind || "").toUpperCase() === "CREDITS"
+    );
+    const membershipItems = items.filter(
+      (it) => String(it?.kind || "").toUpperCase() === "MEMBERSHIP"
+    );
+
+    const parts = [];
+
+    for (const it of creditItems) {
+      const qty = Math.max(1, Number(it?.qty) || 1);
+      const credits = Math.max(0, Number(it?.credits) || 0);
+      const totalCredits = qty * credits;
+      const serviceName = prettyServiceNameFromKey(it?.serviceKey);
+
+      if (totalCredits > 0) {
+        parts.push(
+          `${totalCredits} ${pluralizeSessions(totalCredits)} para ${serviceName}`
+        );
+      }
+    }
+
+    if (membershipItems.length) {
+      const months = membershipItems.reduce(
+        (acc, it) => acc + Math.max(1, Number(it?.qty) || 1),
+        0
+      );
+      parts.push(months === 1 ? "DUO+ mensual" : `${months} meses de DUO+`);
+    }
+
+    if (parts.length === 1) {
+      return `Realizó una orden de ${parts[0]}.`;
+    }
+
+    if (parts.length > 1) {
+      return `Realizó una orden de ${parts.join(" y ")}.`;
+    }
+  }
+
+  const legacyCredits = Math.max(0, Number(order?.credits) || 0);
+  const legacyService = prettyServiceNameFromKey(order?.serviceKey);
+
+  if (legacyCredits > 0 && order?.plusIncluded) {
+    return `Realizó una orden de ${legacyCredits} ${pluralizeSessions(
+      legacyCredits
+    )} para ${legacyService} y DUO+ mensual.`;
+  }
+
+  if (legacyCredits > 0) {
+    return `Realizó una orden de ${legacyCredits} ${pluralizeSessions(
+      legacyCredits
+    )} para ${legacyService}.`;
+  }
+
+  if (order?.plusIncluded) {
+    return "Realizó una orden de DUO+ mensual.";
+  }
+
+  return "Realizó una orden.";
+}
+
+
 /* =======================
    ✅ Notificar admin (idempotente)
 ======================= */
@@ -527,6 +607,21 @@ router.post("/checkout", protect, async (req, res) => {
       creditsApplied: false,
     });
 
+    try {
+      const userDoc = await User.findById(req.user._id);
+      if (userDoc) {
+        userDoc.history = Array.isArray(userDoc.history) ? userDoc.history : [];
+        userDoc.history.push({
+          action: "order_created",
+          title: buildOrderHistoryTitle(order),
+          createdAt: new Date(),
+        });
+        await userDoc.save();
+      }
+    } catch (e) {
+      console.warn("ORDER HISTORY checkout:", e?.message || e);
+    }
+
     await logActivity({
       req,
       category: "orders",
@@ -626,6 +721,21 @@ router.post("/", protect, async (req, res) => {
       creditsApplied: false,
       applied: false,
     });
+
+    try {
+      const userDoc = await User.findById(req.user._id);
+      if (userDoc) {
+        userDoc.history = Array.isArray(userDoc.history) ? userDoc.history : [];
+        userDoc.history.push({
+          action: "order_created",
+          title: buildOrderHistoryTitle(order),
+          createdAt: new Date(),
+        });
+        await userDoc.save();
+      }
+    } catch (e) {
+      console.warn("ORDER HISTORY legacy:", e?.message || e);
+    }
 
     await logActivity({
       req,
@@ -774,6 +884,21 @@ router.patch("/:id/mark-paid", protect, adminOnly, async (req, res) => {
     }
 
     if (!wasPaid) {
+      try {
+        const userDoc = await User.findById(order.user);
+        if (userDoc) {
+          userDoc.history = Array.isArray(userDoc.history) ? userDoc.history : [];
+          userDoc.history.push({
+            action: "order_paid",
+            title: "Se acreditó una orden.",
+            createdAt: new Date(),
+          });
+          await userDoc.save();
+        }
+      } catch (e) {
+        console.warn("ORDER PAID HISTORY:", e?.message || e);
+      }
+
       fireAndForget(() => notifyOrderPaidIfNeeded(order), "MAIL_ORDER_PAID");
     }
 

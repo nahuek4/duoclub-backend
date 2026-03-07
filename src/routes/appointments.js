@@ -645,7 +645,7 @@ async function createAppointmentForTargetUser({
     date,
     time: t,
     service,
-    notes: String(notes || "").trim(),
+    serviceName: service,
     createdAt: new Date(),
   });
 
@@ -1226,7 +1226,7 @@ router.post("/", async (req, res) => {
           date,
           time: t,
           service,
-          notes: String(notes || "").trim(),
+          serviceName: service,
           createdAt: new Date(),
         });
 
@@ -1580,6 +1580,7 @@ router.post("/batch", async (req, res) => {
             date: it.date,
             time: it.time,
             service: it.service,
+            serviceName: it.service,
             createdAt: new Date(),
           });
         }
@@ -1823,6 +1824,7 @@ router.post("/waitlist/claim", async (req, res) => {
           date: wl.date,
           time: wl.time,
           service: EP_NAME,
+          serviceName: EP_NAME,
           createdAt: new Date(),
         });
 
@@ -1972,6 +1974,7 @@ router.patch("/:id/cancel", async (req, res) => {
           date: ap.date,
           time: ap.time,
           service: ap.service,
+          serviceName: ap.service,
           createdAt: new Date(),
         });
 

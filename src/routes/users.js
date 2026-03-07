@@ -106,6 +106,94 @@ function validateObjectIdParam(req, res, next) {
   next();
 }
 
+
+function prettyServiceName(value) {
+  const s = String(value || "")
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase()
+    .trim();
+
+  if (s.includes("entrenamiento") && s.includes("personal")) {
+    return "Entrenamiento Personal";
+  }
+  if (s.includes("rehabilitacion") && s.includes("activa")) {
+    return "Rehabilitación Activa";
+  }
+  if (s.includes("reeducacion") && s.includes("funcional")) {
+    return "Reeducación Funcional";
+  }
+  if (s.includes("nutric")) {
+    return "Nutrición";
+  }
+
+  const up = String(value || "").toUpperCase().trim();
+  if (up === "EP") return "Entrenamiento Personal";
+  if (up === "RA") return "Rehabilitación Activa";
+  if (up === "RF") return "Reeducación Funcional";
+  if (up === "NUT") return "Nutrición";
+
+  return String(value || "Sesión").trim() || "Sesión";
+}
+
+function formatHistoryHumanDate(dateStr) {
+  try {
+    const [y, m, d] = String(dateStr || "").split("-").map(Number);
+    if (!y || !m || !d) return "";
+    const dt = new Date(y, m - 1, d);
+
+    const weekday = dt.toLocaleDateString("es-AR", { weekday: "long" });
+    const cap = weekday.charAt(0).toUpperCase() + weekday.slice(1).toLowerCase();
+
+    const dd = String(d).padStart(2, "0");
+    const mm = String(m).padStart(2, "0");
+    const yy = String(y).slice(-2);
+
+    return `${cap} ${dd}/${mm}/${yy}`;
+  } catch {
+    return "";
+  }
+}
+
+function humanProfileFieldLabel(field) {
+  const f = String(field || "").trim().toLowerCase();
+  if (f === "name") return "el Nombre";
+  if (f === "lastname" || f === "lastName".toLowerCase()) return "el Apellido";
+  if (f === "phone") return "el Teléfono";
+  if (f === "dni") return "el DNI";
+  return "su información personal";
+}
+
+function pushUserHistory(user, item = {}) {
+  user.history = Array.isArray(user.history) ? user.history : [];
+  user.history.push({
+    action: String(item.action || "").trim() || "activity",
+    title: String(item.title || "").trim(),
+    message: String(item.message || "").trim(),
+    field: String(item.field || "").trim(),
+    date: String(item.date || "").trim(),
+    time: String(item.time || "").trim(),
+    service: String(item.service || "").trim(),
+    serviceName: String(item.serviceName || item.service || "").trim(),
+    serviceKey: String(item.serviceKey || "").trim(),
+    qty: Number(item.qty || 0) || 0,
+    createdAt: item.createdAt || new Date(),
+  });
+}
+
+function buildLegacyAppointmentHistoryTitle(ap) {
+  const svc = prettyServiceName(ap?.service || ap?.serviceName || "");
+  const when = formatHistoryHumanDate(ap?.date);
+
+  if (String(ap?.status || "").toLowerCase() === "cancelled") {
+    return `Canceló el turno de ${svc} el ${when}.`;
+  }
+
+  return `Reservó turno para ${svc} el ${when}.`;
+}
+
+
+
 /* ============================================
    MULTER APTOS (PDF) ✅ ROBUSTO
 ============================================ */
@@ -793,49 +881,86 @@ router.put("/:id", validateObjectIdParam, async (req, res) => {
         .json({ error: "No tenés permiso para editar este usuario." });
     }
 
-    const name =
+    const nextName =
       typeof req.body?.name === "string" ? req.body.name.trim() : undefined;
-    const lastName =
+    const nextLastName =
       typeof req.body?.lastName === "string"
         ? req.body.lastName.trim()
         : undefined;
-    const phone =
+    const nextPhone =
       typeof req.body?.phone === "string" ? req.body.phone.trim() : undefined;
-    const dni =
+    const nextDni =
       typeof req.body?.dni === "string" ? req.body.dni.trim() : undefined;
 
-    if (dni !== undefined && dni !== "" && !/^\d{6,10}$/.test(dni)) {
+    if (nextDni !== undefined && nextDni !== "" && !/^\d{6,10}$/.test(nextDni)) {
       return res.status(400).json({ error: "DNI inválido." });
     }
 
-    const update = {};
-    if (name !== undefined) update.name = name;
-    if (lastName !== undefined) update.lastName = lastName;
-    if (phone !== undefined) update.phone = phone;
-    if (dni !== undefined) update.dni = dni;
+    const user = await User.findById(id);
+    if (!user) return res.status(404).json({ error: "Usuario no encontrado." });
 
-    if (Object.keys(update).length === 0) {
-      return res.status(400).json({ error: "No hay campos para actualizar." });
+    const changedFields = [];
+
+    if (nextName !== undefined && nextName !== user.name) {
+      user.name = nextName;
+      changedFields.push("name");
     }
 
-    const u = await User.findByIdAndUpdate(id, update, {
-      new: true,
-      runValidators: true,
-    }).lean();
-    if (!u) return res.status(404).json({ error: "Usuario no encontrado." });
+    if (nextLastName !== undefined && nextLastName !== user.lastName) {
+      user.lastName = nextLastName;
+      changedFields.push("lastName");
+    }
 
-    const svc = computeServiceAccessFromLots(u);
-    const membership = normalizeMembershipForUI(u);
+    if (nextPhone !== undefined && nextPhone !== user.phone) {
+      user.phone = nextPhone;
+      changedFields.push("phone");
+    }
+
+    if (nextDni !== undefined && String(nextDni) !== String(user.dni || "")) {
+      user.dni = nextDni;
+      changedFields.push("dni");
+    }
+
+    if (!changedFields.length) {
+      return res.status(400).json({ error: "No hay cambios para guardar." });
+    }
+
+    for (const field of changedFields) {
+      pushUserHistory(user, {
+        action: "profile_field_updated",
+        field,
+        title: `Modificó ${humanProfileFieldLabel(field)} de su información personal.`,
+        createdAt: new Date(),
+      });
+    }
+
+    await user.save();
+
+    const saved = user.toObject();
+    const svc = computeServiceAccessFromLots(saved);
+    const membership = normalizeMembershipForUI(saved);
+
+    await logActivity({
+      req,
+      category: "users",
+      action: "user_profile_updated",
+      entity: "user",
+      entityId: user._id,
+      title: "Perfil actualizado",
+      description: "Se actualizó información personal del usuario.",
+      subject: buildUserSubject(user),
+      meta: { changedFields },
+    });
 
     if (!isAdmin) {
       // eslint-disable-next-line no-unused-vars
-      const { clinicalNotes, ...safeUser } = stripSensitive(u);
+      const { clinicalNotes, ...safeUser } = stripSensitive(saved);
       return res.json({ ...safeUser, ...svc, membership });
     }
 
-    const creditsByService = buildCreditsByService(u);
+    const creditsByService = buildCreditsByService(saved);
     return res.json({
-      ...stripSensitive(u),
+      ...stripSensitive(saved),
       ...svc,
       membership,
       creditsByService,
@@ -975,7 +1100,8 @@ router.get("/:id/history", validateObjectIdParam, async (req, res) => {
   try {
     const { id } = req.params;
 
-    const isAdmin = req.user.role === "admin";
+    const role = String(req.user?.role || "").toLowerCase();
+    const isAdmin = role === "admin";
     const isSelf = req.user._id.toString() === id;
 
     if (!isAdmin && !isSelf) {
@@ -984,19 +1110,33 @@ router.get("/:id/history", validateObjectIdParam, async (req, res) => {
       });
     }
 
-    const appointments = await Appointment.find({ user: id })
-      .sort({ createdAt: 1 })
-      .lean();
+    const user = await User.findById(id).select("history").lean();
+    if (!user) return res.status(404).json({ error: "Usuario no encontrado." });
 
-    const history = appointments.map((ap) => ({
-      date: ap.date,
-      time: ap.time,
-      service: ap.service,
-      serviceName: ap.service,
-      status: ap.status,
-      action: ap.status,
-      createdAt: ap.createdAt,
-    }));
+    let history = Array.isArray(user.history) ? [...user.history] : [];
+
+    if (!history.length) {
+      const appointments = await Appointment.find({ user: id })
+        .sort({ createdAt: -1 })
+        .lean();
+
+      history = appointments.map((ap) => ({
+        action: String(ap?.status || "reserved").toLowerCase(),
+        date: ap.date,
+        time: ap.time,
+        service: ap.service,
+        serviceName: ap.service,
+        status: ap.status,
+        createdAt: ap.createdAt,
+        title: buildLegacyAppointmentHistoryTitle(ap),
+      }));
+    }
+
+    history.sort((a, b) => {
+      const ad = a?.createdAt ? new Date(a.createdAt).getTime() : 0;
+      const bd = b?.createdAt ? new Date(b.createdAt).getTime() : 0;
+      return bd - ad;
+    });
 
     return res.json(history);
   } catch (err) {
@@ -1291,22 +1431,23 @@ router.post("/:id/apto", validateObjectIdParam, uploadAptoSingle, async (req, re
       return res.status(400).json({ error: "No se recibió ningún archivo." });
     }
 
-    // 1) busco usuario (solo para saber si había un apto previo y borrarlo)
-    const prevUser = await User.findById(id).lean();
-    if (!prevUser) return res.status(404).json({ error: "Usuario no encontrado." });
+    const user = await User.findById(id);
+    if (!user) return res.status(404).json({ error: "Usuario no encontrado." });
 
-    if (prevUser.aptoPath) {
-      safeUnlink(absFromPublicUploadsPath(prevUser.aptoPath));
+    if (user.aptoPath) {
+      safeUnlink(absFromPublicUploadsPath(user.aptoPath));
     }
 
-    // 2) update atómico (NO dispara validation required de otros campos)
-    const newPath = "/api/uploads/" + req.file.filename;
+    const newPath = "/api/uploads/aptos/" + req.file.filename;
 
-    await User.updateOne(
-      { _id: id },
-      { $set: { aptoPath: newPath, aptoStatus: "uploaded" } }
-      // runValidators: false (por defecto) => NO valida lastName/phone faltantes
-    );
+    user.aptoPath = newPath;
+    user.aptoStatus = "uploaded";
+    pushUserHistory(user, {
+      action: "apto_uploaded",
+      title: "Cargó el Apto Físico.",
+      createdAt: new Date(),
+    });
+    await user.save();
 
     return res.json({
       ok: true,
@@ -1356,16 +1497,21 @@ router.delete("/:id/apto", validateObjectIdParam, async (req, res) => {
     const isSelf = req.user._id.toString() === id;
     if (!isAdmin && !isSelf) return res.status(403).json({ error: "No autorizado." });
 
-    // 1) leo usuario para saber qué archivo borrar
-    const prevUser = await User.findById(id).lean();
-    if (!prevUser) return res.status(404).json({ error: "Usuario no encontrado." });
+    const user = await User.findById(id);
+    if (!user) return res.status(404).json({ error: "Usuario no encontrado." });
 
-    if (prevUser.aptoPath) {
-      safeUnlink(absFromPublicUploadsPath(prevUser.aptoPath));
+    if (user.aptoPath) {
+      safeUnlink(absFromPublicUploadsPath(user.aptoPath));
     }
 
-    // 2) update atómico (NO save)
-    await User.updateOne({ _id: id }, { $set: { aptoPath: "", aptoStatus: "" } });
+    user.aptoPath = "";
+    user.aptoStatus = "";
+    pushUserHistory(user, {
+      action: "apto_deleted",
+      title: "Borró el Apto Físico.",
+      createdAt: new Date(),
+    });
+    await user.save();
 
     return res.json({ ok: true, message: "Apto eliminado correctamente." });
   } catch (err) {
