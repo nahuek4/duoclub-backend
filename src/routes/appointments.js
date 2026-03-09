@@ -23,7 +23,23 @@ const router = express.Router();
    CONFIG: ventana de reserva
 ========================= */
 const MAX_ADVANCE_DAYS = 14;
-const MIN_BOOKING_MINUTES = Number(process.env.MIN_BOOKING_MINUTES || 60);
+
+/**
+ * ✅ Anticipación mínima por servicio
+ * EP = 60 min fijo
+ * resto = variable por env o fallback 60
+ */
+const DEFAULT_MIN_BOOKING_MINUTES = Number(
+  process.env.MIN_BOOKING_MINUTES || 60
+);
+
+const MIN_BOOKING_MINUTES_BY_SERVICE = {
+  EP: 60,
+  RA: DEFAULT_MIN_BOOKING_MINUTES,
+  RF: DEFAULT_MIN_BOOKING_MINUTES,
+  NUT: DEFAULT_MIN_BOOKING_MINUTES,
+  OTHER: DEFAULT_MIN_BOOKING_MINUTES,
+};
 
 /* =========================
    ✅ CRÉDITOS: vencen SI O SI a 30 días
@@ -87,13 +103,23 @@ function validateBookingWindow(slotDate) {
   return { ok: true };
 }
 
-function validateMinAdvance(slotDate) {
+function getMinBookingMinutesForService(serviceName) {
+  const sk = serviceToKey(serviceName);
+  return (
+    MIN_BOOKING_MINUTES_BY_SERVICE[sk] ??
+    MIN_BOOKING_MINUTES_BY_SERVICE.OTHER
+  );
+}
+
+function validateMinAdvance(slotDate, serviceName) {
   const now = new Date();
-  const limit = new Date(now.getTime() + MIN_BOOKING_MINUTES * 60 * 1000);
+  const minMinutes = getMinBookingMinutesForService(serviceName);
+  const limit = new Date(now.getTime() + minMinutes * 60 * 1000);
+
   if (slotDate.getTime() < limit.getTime()) {
     return {
       ok: false,
-      error: `El turno debe reservarse con al menos ${MIN_BOOKING_MINUTES} minutos de anticipación.`,
+      error: `El turno debe reservarse con al menos ${minMinutes} minutos de anticipación.`,
     };
   }
   return { ok: true };
@@ -432,7 +458,7 @@ function validateBasicSlotRules({ date, time, service }) {
   const w = validateBookingWindow(slotDate);
   if (!w.ok) return w;
 
-  const adv = validateMinAdvance(slotDate);
+  const adv = validateMinAdvance(slotDate, service);
   if (!adv.ok) return adv;
 
   const isEpService = sameService(service, EP_NAME);
@@ -478,7 +504,7 @@ function validateBasicSlotRulesAdmin({ date, time, service, bypassWindow = false
     const w = validateBookingWindow(slotDate);
     if (!w.ok) return w;
 
-    const adv = validateMinAdvance(slotDate);
+    const adv = validateMinAdvance(slotDate, service);
     if (!adv.ok) return adv;
   }
 
@@ -711,7 +737,10 @@ async function createAppointmentForTargetUser({
     },
   });
 
-  return serializeAppointment(populated);
+  const serialized = serializeAppointment(populated);
+  serialized.userCredits = Number(targetUser.credits || 0);
+
+  return serialized;
 }
 
 /* =========================
@@ -1231,7 +1260,14 @@ router.post("/", async (req, res) => {
           { session }
         );
 
-        out = { kind: "waitlist", date, time: t, service: EP_NAME, status: "waiting" };
+        out = {
+          kind: "waitlist",
+          date,
+          time: t,
+          service: EP_NAME,
+          status: "waiting",
+          userCredits: Number(user.credits || 0),
+        };
         return;
       }
 
@@ -1279,7 +1315,10 @@ router.post("/", async (req, res) => {
         .populate("user", "name lastName email")
         .session(session);
 
-      out = serializeAppointment(populated);
+      out = {
+        ...serializeAppointment(populated),
+        userCredits: Number(user.credits || 0),
+      };
 
       mailUser = { ...user.toObject(), _id: user._id };
       mailAp = { date, time: t, service };
@@ -1414,6 +1453,7 @@ router.post("/batch", async (req, res) => {
     const userId = req.user._id || req.user.id;
     let createdItems = [];
     let waitlistedItems = [];
+    let userCreditsAfter = null;
 
     await session.withTransaction(async () => {
       const user = await User.findById(userId).session(session);
@@ -1639,6 +1679,7 @@ router.post("/batch", async (req, res) => {
         await user.save({ session });
       }
 
+      userCreditsAfter = Number(user.credits || 0);
       mailUser = { ...user.toObject(), _id: user._id };
       mailItems = createdItems.map((x) => ({ date: x.date, time: x.time, service: x.service }));
     });
@@ -1666,7 +1707,11 @@ router.post("/batch", async (req, res) => {
       },
     });
 
-    res.status(201).json({ items: createdItems, waitlisted: waitlistedItems });
+    res.status(201).json({
+      items: createdItems,
+      waitlisted: waitlistedItems,
+      userCredits: userCreditsAfter,
+    });
 
     if (mailUser && mailItems?.length) {
       fireAndForget(async () => {
@@ -1830,9 +1875,12 @@ router.post("/waitlist/claim", async (req, res) => {
         wl.status = "claimed";
         wl.claimedAt = new Date();
         await wl.save({ session });
-        payload = { ok: true, alreadyHadIt: true };
+        payload = { ok: true, alreadyHadIt: true, userCredits: Number(user.credits || 0) };
         return;
       }
+
+      let usedLotId = null;
+      let usedLotExp = null;
 
       if (user.role !== "admin") {
         if (user.suspended) throw new Error("USER_SUSPENDED");
@@ -1846,6 +1894,8 @@ router.post("/waitlist/claim", async (req, res) => {
         if (!lot) throw new Error(`NO_CREDITS_FOR_${sk}`);
 
         lot.remaining = Number(lot.remaining || 0) - 1;
+        usedLotId = lot._id;
+        usedLotExp = lot.expiresAt || null;
 
         user.history = user.history || [];
         user.history.push({
@@ -1868,8 +1918,8 @@ router.post("/waitlist/claim", async (req, res) => {
           service: EP_NAME,
           user: user._id,
           status: "reserved",
-          creditLotId: null,
-          creditExpiresAt: null,
+          creditLotId: usedLotId,
+          creditExpiresAt: usedLotExp,
         }],
         { session }
       );
@@ -1878,7 +1928,11 @@ router.post("/waitlist/claim", async (req, res) => {
       wl.claimedAt = new Date();
       await wl.save({ session });
 
-      payload = { ok: true, appointmentId: String(created[0]._id) };
+      payload = {
+        ok: true,
+        appointmentId: String(created[0]._id),
+        userCredits: Number(user.credits || 0),
+      };
       logEntityId = String(created[0]._id);
       logSubject = buildUserSubject(user);
       logMeta = {
@@ -2008,7 +2062,6 @@ router.patch("/:id/cancel", async (req, res) => {
       const policy = getRefundPolicy(ap.service);
       const cutoff = policy.cutoffHours;
 
-      // ✅ SIN BLOQUEO POR ROL
       const shouldRefund = policy.isEligible(hours);
 
       console.log("[CANCEL][POLICY]", {
@@ -2102,6 +2155,7 @@ router.patch("/:id/cancel", async (req, res) => {
         ...serializeAppointment(populated),
         refund: shouldRefund,
         refundCutoffHours: cutoff,
+        userCredits: Number(user.credits || 0),
       };
 
       mailUser = { ...user.toObject(), _id: user._id };
