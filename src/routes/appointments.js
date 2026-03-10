@@ -25,7 +25,7 @@ const router = express.Router();
 const MAX_ADVANCE_DAYS = 14;
 
 /**
- * ✅ Anticipación mínima por servicio
+ * Anticipación mínima por servicio
  * EP = 60 min fijo
  * resto = variable por env o fallback 60
  */
@@ -42,7 +42,7 @@ const MIN_BOOKING_MINUTES_BY_SERVICE = {
 };
 
 /* =========================
-   ✅ CRÉDITOS: vencen SI O SI a 30 días
+   CRÉDITOS
 ========================= */
 const CREDITS_EXPIRE_DAYS = 30;
 
@@ -278,11 +278,9 @@ function serializeAppointment(ap) {
     status: json?.status || "reserved",
     coach: json?.coach || "",
     userId,
-
     userName,
     userLastName,
     userFullName,
-
     userEmail: userObj?.email || "",
     creditExpiresAt: json?.creditExpiresAt || null,
   };
@@ -352,43 +350,18 @@ function calcEpCap({ hoursToStart, hasRF, hasRA, otherReservedCount }) {
 }
 
 /* =========================
-   CANCELACIÓN (REINTEGRO)
+   CANCELACIÓN / REINTEGRO
+   REGLA SIMPLE:
+   - si faltan menos de 1h: NO reintegra
+   - si falta 1h o más: reintegra 1 crédito
 ========================= */
-const REFUND_POLICY = {
-  EP: { cutoffHours: 2, inclusive: false },
-  RA: { cutoffHours: 12, inclusive: true },
-  RF: { cutoffHours: 12, inclusive: true },
-  OTHER: { cutoffHours: 12, inclusive: true },
-};
+const REFUND_CUTOFF_HOURS = 1;
 
-function refundHoursEligible(hoursToStart, policy) {
+function isRefundEligible(hoursToStart) {
   const h = Number(hoursToStart);
   if (!Number.isFinite(h)) return false;
   if (h <= 0) return false;
-  const cutoff = Number(policy?.cutoffHours || 0);
-  const inclusive = Boolean(policy?.inclusive);
-  return inclusive ? h >= cutoff : h > cutoff;
-}
-
-function serviceRefundKey(serviceName) {
-  const k = serviceToKey(serviceName);
-  if (k === "EP") return "EP";
-  if (k === "RA") return "RA";
-  if (k === "RF") return "RF";
-  return "OTHER";
-}
-
-function getRefundPolicy(serviceName) {
-  const k = serviceRefundKey(serviceName);
-  const p = REFUND_POLICY[k] || REFUND_POLICY.OTHER;
-  return {
-    key: k,
-    cutoffHours: p.cutoffHours,
-    inclusive: p.inclusive,
-    isEligible(hoursToStart) {
-      return refundHoursEligible(hoursToStart, p);
-    },
-  };
+  return h >= REFUND_CUTOFF_HOURS;
 }
 
 function makeRefundLot(user, apService) {
@@ -683,6 +656,7 @@ async function createAppointmentForTargetUser({
     }
   }
 
+  // DESCUENTA 1 CRÉDITO AL ASIGNAR
   const lot = pickLotToConsume(targetUser, requestedSk);
   if (!lot) {
     const e = new Error(`NO_CREDITS_FOR_${requestedSk}`);
@@ -1036,7 +1010,7 @@ router.post("/admin/assign", async (req, res) => {
           time: String(it?.time || "").slice(0, 5),
           service: String(it?.service || "").trim(),
           notes,
-          bypassWindow: false,
+          bypassWindow: true,
         });
         created.push(ap);
       } catch (e) {
@@ -1274,6 +1248,7 @@ router.post("/", async (req, res) => {
       let usedLotId = null;
       let usedLotExp = null;
 
+      // DESCUENTA 1 CRÉDITO AL RESERVAR
       if (!isAdmin) {
         const sk = serviceToKey(service);
         const lot = pickLotToConsume(user, sk);
@@ -1630,6 +1605,7 @@ router.post("/batch", async (req, res) => {
         let usedLotId = null;
         let usedLotExp = null;
 
+        // DESCUENTA 1 CRÉDITO POR CADA RESERVA DEL BATCH
         if (!isAdmin) {
           const sk = serviceToKey(it.service);
           const lot = pickLotToConsume(user, sk);
@@ -2059,18 +2035,13 @@ router.patch("/:id/cancel", async (req, res) => {
       ap.status = "cancelled";
       await ap.save({ session });
 
-      const policy = getRefundPolicy(ap.service);
-      const cutoff = policy.cutoffHours;
-
-      const shouldRefund = policy.isEligible(hours);
+      const shouldRefund = isRefundEligible(hours);
 
       console.log("[CANCEL][POLICY]", {
         appointmentId: String(ap._id),
         service: ap.service,
         serviceKey: serviceToKey(ap.service),
-        refundPolicyKey: policy.key,
-        cutoffHours: policy.cutoffHours,
-        inclusive: policy.inclusive,
+        cutoffHours: REFUND_CUTOFF_HOURS,
         hoursToStart: hours,
         shouldRefund,
       });
@@ -2154,14 +2125,14 @@ router.patch("/:id/cancel", async (req, res) => {
       payload = {
         ...serializeAppointment(populated),
         refund: shouldRefund,
-        refundCutoffHours: cutoff,
+        refundCutoffHours: REFUND_CUTOFF_HOURS,
         userCredits: Number(user.credits || 0),
       };
 
       mailUser = { ...user.toObject(), _id: user._id };
       mailAp = { date: ap.date, time: ap.time, service: ap.service };
       mailServiceName = ap.service;
-      mailMeta = { refund: shouldRefund, refundCutoffHours: cutoff };
+      mailMeta = { refund: shouldRefund, refundCutoffHours: REFUND_CUTOFF_HOURS };
     });
 
     await logActivity({
