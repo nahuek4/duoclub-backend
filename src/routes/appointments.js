@@ -202,6 +202,12 @@ function getCreditsExpireDays(_user) {
   return CREDITS_EXPIRE_DAYS;
 }
 
+function markCreditLotsModified(user) {
+  if (user && typeof user.markModified === "function") {
+    user.markModified("creditLots");
+  }
+}
+
 function recalcUserCredits(user) {
   const now = nowDate();
   const lots = Array.isArray(user.creditLots) ? user.creditLots : [];
@@ -245,6 +251,19 @@ function pickLotToConsume(user, wantedServiceKey) {
     });
 
   return sorted[0] || null;
+}
+
+function consumeCreditLot(user, lot, amount = 1) {
+  if (!user || !lot) return;
+  const next = Math.max(0, Number(lot.remaining || 0) - Number(amount || 0));
+  lot.remaining = next;
+  markCreditLotsModified(user);
+}
+
+function refundCreditToLot(user, lot, amount = 1) {
+  if (!user || !lot) return;
+  lot.remaining = Number(lot.remaining || 0) + Number(amount || 0);
+  markCreditLotsModified(user);
 }
 
 function hasValidCreditsForService(user, serviceNameOrKey) {
@@ -391,6 +410,7 @@ function makeRefundLot(user, apService) {
     orderId: null,
     createdAt: now,
   });
+  markCreditLotsModified(user);
 
   return { sk, expiresAt: exp };
 }
@@ -674,7 +694,7 @@ async function createAppointmentForTargetUser({
     throw e;
   }
 
-  lot.remaining = Number(lot.remaining || 0) - 1;
+  consumeCreditLot(targetUser, lot, 1);
   const usedLotId = lot._id;
   const usedLotExp = lot.expiresAt || null;
 
@@ -1265,7 +1285,7 @@ router.post("/", async (req, res) => {
         const lot = pickLotToConsume(user, sk);
         if (!lot) throw new Error(`NO_CREDITS_FOR_${sk}`);
 
-        lot.remaining = Number(lot.remaining || 0) - 1;
+        consumeCreditLot(user, lot, 1);
         usedLotId = lot._id;
         usedLotExp = lot.expiresAt || null;
 
@@ -1627,7 +1647,7 @@ router.post("/batch", async (req, res) => {
             throw e;
           }
 
-          lot.remaining = Number(lot.remaining || 0) - 1;
+          consumeCreditLot(user, lot, 1);
           usedLotId = lot._id;
           usedLotExp = lot.expiresAt || null;
 
@@ -1888,7 +1908,7 @@ router.post("/waitlist/claim", async (req, res) => {
         const lot = pickLotToConsume(user, sk);
         if (!lot) throw new Error(`NO_CREDITS_FOR_${sk}`);
 
-        lot.remaining = Number(lot.remaining || 0) - 1;
+        consumeCreditLot(user, lot, 1);
         usedLotId = lot._id;
         usedLotExp = lot.expiresAt || null;
 
@@ -2101,7 +2121,7 @@ router.patch("/:id/cancel", async (req, res) => {
         });
 
         if (lotStillValid) {
-          lot.remaining = Number(lot.remaining || 0) + 1;
+          refundCreditToLot(user, lot, 1);
 
           console.log("[CANCEL][REFUND-TO-ORIGINAL-LOT]", {
             appointmentId: String(ap._id),
