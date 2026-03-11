@@ -26,7 +26,8 @@ const MAX_ADVANCE_DAYS = 14;
 
 /**
  * Anticipación mínima por servicio
- * EP = 60 min fijo
+ * EP = 30 min fijo
+ * RA/RF = 120 min fijos
  * resto = variable por env o fallback 60
  */
 const DEFAULT_MIN_BOOKING_MINUTES = Number(
@@ -34,9 +35,9 @@ const DEFAULT_MIN_BOOKING_MINUTES = Number(
 );
 
 const MIN_BOOKING_MINUTES_BY_SERVICE = {
-  EP: 60,
-  RA: DEFAULT_MIN_BOOKING_MINUTES,
-  RF: DEFAULT_MIN_BOOKING_MINUTES,
+  EP: 30,
+  RA: 120,
+  RF: 120,
   NUT: DEFAULT_MIN_BOOKING_MINUTES,
   OTHER: DEFAULT_MIN_BOOKING_MINUTES,
 };
@@ -256,6 +257,19 @@ function findLotById(user, lotId) {
   return lots.find((l) => String(l._id) === String(lotId)) || null;
 }
 
+function serializeUserCreditLots(user) {
+  return (Array.isArray(user?.creditLots) ? user.creditLots : []).map((lot) => ({
+    _id: String(lot?._id || ""),
+    serviceKey: String(lot?.serviceKey || "").toUpperCase().trim(),
+    amount: Number(lot?.amount || 0),
+    remaining: Number(lot?.remaining || 0),
+    expiresAt: lot?.expiresAt || null,
+    source: lot?.source || "",
+    orderId: lot?.orderId || null,
+    createdAt: lot?.createdAt || null,
+  }));
+}
+
 function serializeAppointment(ap) {
   const json = ap?.toObject ? ap.toObject() : ap;
 
@@ -351,9 +365,6 @@ function calcEpCap({ hoursToStart, hasRF, hasRA, otherReservedCount }) {
 
 /* =========================
    CANCELACIÓN / REINTEGRO
-   REGLA SIMPLE:
-   - si faltan menos de 1h: NO reintegra
-   - si falta 1h o más: reintegra 1 crédito
 ========================= */
 const REFUND_CUTOFF_HOURS = 1;
 
@@ -656,7 +667,6 @@ async function createAppointmentForTargetUser({
     }
   }
 
-  // DESCUENTA 1 CRÉDITO AL ASIGNAR
   const lot = pickLotToConsume(targetUser, requestedSk);
   if (!lot) {
     const e = new Error(`NO_CREDITS_FOR_${requestedSk}`);
@@ -713,6 +723,7 @@ async function createAppointmentForTargetUser({
 
   const serialized = serializeAppointment(populated);
   serialized.userCredits = Number(targetUser.credits || 0);
+  serialized.userCreditLots = serializeUserCreditLots(targetUser);
 
   return serialized;
 }
@@ -1241,6 +1252,7 @@ router.post("/", async (req, res) => {
           service: EP_NAME,
           status: "waiting",
           userCredits: Number(user.credits || 0),
+          userCreditLots: serializeUserCreditLots(user),
         };
         return;
       }
@@ -1248,7 +1260,6 @@ router.post("/", async (req, res) => {
       let usedLotId = null;
       let usedLotExp = null;
 
-      // DESCUENTA 1 CRÉDITO AL RESERVAR
       if (!isAdmin) {
         const sk = serviceToKey(service);
         const lot = pickLotToConsume(user, sk);
@@ -1293,6 +1304,7 @@ router.post("/", async (req, res) => {
       out = {
         ...serializeAppointment(populated),
         userCredits: Number(user.credits || 0),
+        userCreditLots: serializeUserCreditLots(user),
       };
 
       mailUser = { ...user.toObject(), _id: user._id };
@@ -1429,6 +1441,7 @@ router.post("/batch", async (req, res) => {
     let createdItems = [];
     let waitlistedItems = [];
     let userCreditsAfter = null;
+    let userCreditLotsAfter = [];
 
     await session.withTransaction(async () => {
       const user = await User.findById(userId).session(session);
@@ -1605,7 +1618,6 @@ router.post("/batch", async (req, res) => {
         let usedLotId = null;
         let usedLotExp = null;
 
-        // DESCUENTA 1 CRÉDITO POR CADA RESERVA DEL BATCH
         if (!isAdmin) {
           const sk = serviceToKey(it.service);
           const lot = pickLotToConsume(user, sk);
@@ -1656,6 +1668,7 @@ router.post("/batch", async (req, res) => {
       }
 
       userCreditsAfter = Number(user.credits || 0);
+      userCreditLotsAfter = serializeUserCreditLots(user);
       mailUser = { ...user.toObject(), _id: user._id };
       mailItems = createdItems.map((x) => ({ date: x.date, time: x.time, service: x.service }));
     });
@@ -1687,6 +1700,7 @@ router.post("/batch", async (req, res) => {
       items: createdItems,
       waitlisted: waitlistedItems,
       userCredits: userCreditsAfter,
+      userCreditLots: userCreditLotsAfter,
     });
 
     if (mailUser && mailItems?.length) {
@@ -1851,7 +1865,12 @@ router.post("/waitlist/claim", async (req, res) => {
         wl.status = "claimed";
         wl.claimedAt = new Date();
         await wl.save({ session });
-        payload = { ok: true, alreadyHadIt: true, userCredits: Number(user.credits || 0) };
+        payload = {
+          ok: true,
+          alreadyHadIt: true,
+          userCredits: Number(user.credits || 0),
+          userCreditLots: serializeUserCreditLots(user),
+        };
         return;
       }
 
@@ -1908,6 +1927,7 @@ router.post("/waitlist/claim", async (req, res) => {
         ok: true,
         appointmentId: String(created[0]._id),
         userCredits: Number(user.credits || 0),
+        userCreditLots: serializeUserCreditLots(user),
       };
       logEntityId = String(created[0]._id);
       logSubject = buildUserSubject(user);
@@ -2127,6 +2147,7 @@ router.patch("/:id/cancel", async (req, res) => {
         refund: shouldRefund,
         refundCutoffHours: REFUND_CUTOFF_HOURS,
         userCredits: Number(user.credits || 0),
+        userCreditLots: serializeUserCreditLots(user),
       };
 
       mailUser = { ...user.toObject(), _id: user._id };
