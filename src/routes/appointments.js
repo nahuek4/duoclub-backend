@@ -454,23 +454,23 @@ const RA_NAME = "Rehabilitación activa";
 const RF_NAME = "Reeducación funcional";
 
 const TIMES_EP = [
-  "07:00","08:00","09:00","10:00",
-  "11:00","12:00","13:30",
-  "14:00","15:00","16:00","17:00",
-  "18:00","19:00","20:00",
+  "07:00", "08:00", "09:00", "10:00",
+  "11:00", "12:00", "13:30",
+  "14:00", "15:00", "16:00", "17:00",
+  "18:00", "19:00", "20:00",
 ];
 
 const TIMES_REHAB = [
-  "07:00","08:00","09:00","10:00",
-  "11:00","12:00","13:30",
-  "14:00","15:00","16:00","17:00",
+  "07:00", "08:00", "09:00", "10:00",
+  "11:00", "12:00", "13:30",
+  "14:00", "15:00", "16:00", "17:00",
   "18:00",
 ];
 
 const TIMES_DEFAULT = [
-  "07:00","08:00","09:00","10:00",
-  "11:00","12:00","13:30",
-  "18:00","19:00","20:00",
+  "07:00", "08:00", "09:00", "10:00",
+  "11:00", "12:00", "13:30",
+  "18:00", "19:00", "20:00",
 ];
 
 function getAllowedTimesForService(serviceName) {
@@ -1355,6 +1355,8 @@ router.post("/", async (req, res) => {
           { session }
         );
 
+        recalcUserCredits(user);
+
         out = {
           kind: "waitlist",
           date,
@@ -1976,6 +1978,9 @@ router.post("/waitlist/claim", async (req, res) => {
         wl.status = "claimed";
         wl.claimedAt = new Date();
         await wl.save({ session });
+
+        recalcUserCredits(user);
+
         payload = {
           ok: true,
           alreadyHadIt: true,
@@ -2207,7 +2212,7 @@ router.patch("/:id/cancel", async (req, res) => {
           lotStillValid,
         });
 
-        if (lotStillValid) {
+        if (ap.creditLotId && lotStillValid) {
           effectiveUser = await refundCreditAtomicToOriginalLot({
             userId: user._id,
             lotId: lot._id,
@@ -2219,7 +2224,7 @@ router.patch("/:id/cancel", async (req, res) => {
             appointmentId: String(ap._id),
             lotId: String(lot._id || ""),
           });
-        } else {
+        } else if (ap.creditLotId && !lotStillValid) {
           const refundInfo = await refundCreditAtomicNewLot({
             userId: user._id,
             apService: ap.service,
@@ -2234,6 +2239,20 @@ router.patch("/:id/cancel", async (req, res) => {
             service: ap.service,
             serviceKey: refundInfo.sk,
             expiresAt: refundInfo.expiresAt,
+          });
+        } else {
+          user.history = user.history || [];
+          user.history.push({
+            ...historyItem,
+            createdAt: new Date(),
+          });
+          recalcUserCredits(user);
+          await user.save({ session });
+          effectiveUser = user;
+
+          console.log("[CANCEL][NO-REFUND-NO-LOT]", {
+            appointmentId: String(ap._id),
+            reason: "No creditLotId asociado al turno",
           });
         }
       } else {
@@ -2260,7 +2279,7 @@ router.patch("/:id/cancel", async (req, res) => {
 
       payload = {
         ...serializeAppointment(populated),
-        refund: shouldRefund,
+        refund: shouldRefund && !!ap.creditLotId,
         refundCutoffHours: REFUND_CUTOFF_HOURS,
         userCredits: Number(effectiveUser.credits || 0),
         userCreditLots: serializeUserCreditLots(effectiveUser),
@@ -2269,7 +2288,10 @@ router.patch("/:id/cancel", async (req, res) => {
       mailUser = { ...effectiveUser.toObject(), _id: effectiveUser._id };
       mailAp = { date: ap.date, time: ap.time, service: ap.service };
       mailServiceName = ap.service;
-      mailMeta = { refund: shouldRefund, refundCutoffHours: REFUND_CUTOFF_HOURS };
+      mailMeta = {
+        refund: shouldRefund && !!ap.creditLotId,
+        refundCutoffHours: REFUND_CUTOFF_HOURS,
+      };
     });
 
     await logActivity({
