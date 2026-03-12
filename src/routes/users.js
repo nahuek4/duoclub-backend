@@ -1,2299 +1,1868 @@
 import express from "express";
+import path from "path";
+import fs from "fs";
+import { fileURLToPath } from "url";
+
+import bcrypt from "bcryptjs";
 import mongoose from "mongoose";
 
-import Appointment from "../models/Appointment.js";
 import User from "../models/User.js";
-import WaitlistEntry from "../models/WaitlistEntry.js";
-import FixedSchedule from "../models/FixedSchedule.js";
+import Appointment from "../models/Appointment.js";
+import { protect, adminOnly, adminOrProfessor } from "../middleware/auth.js";
 
-import { notifyWaitlistForSlot } from "./waitlist.js";
-import { protect } from "../middleware/auth.js";
+import multer from "multer";
 
+// ✅ MAIL
 import {
   fireAndForget,
-  sendAppointmentBookedEmail,
-  sendAppointmentBookedBatchEmail,
-  sendAppointmentCancelledEmail,
+  sendUserApprovedEmail,
+  sendUserApprovalResultEmail,
+  sendAdminCreditsAssignedEmail,
+  sendUserCreditsAssignedEmail,
 } from "../mail.js";
-import { logActivity, buildUserSubject } from "../lib/activityLogger.js";
+import { sendMail } from "../mail/core.js";
+import {
+  logActivity,
+  buildUserSubject,
+  buildDiff,
+} from "../lib/activityLogger.js";
 
 const router = express.Router();
 
-/* =========================
-   CONFIG: ventana de reserva
-========================= */
-const MAX_ADVANCE_DAYS = 14;
-
-/**
- * Anticipación mínima por servicio
- * EP = 30 min fijo
- * RA/RF = 120 min fijos
- * resto = variable por env o fallback 60
- */
-const DEFAULT_MIN_BOOKING_MINUTES = Number(
-  process.env.MIN_BOOKING_MINUTES || 60
-);
-
-const MIN_BOOKING_MINUTES_BY_SERVICE = {
-  EP: 30,
-  RA: 120,
-  RF: 120,
-  NUT: DEFAULT_MIN_BOOKING_MINUTES,
-  OTHER: DEFAULT_MIN_BOOKING_MINUTES,
-};
-
-/* =========================
-   CRÉDITOS
-========================= */
+/* ============================================
+   ✅ CONFIG GLOBAL: VENCIMIENTO CRÉDITOS
+============================================ */
 const CREDITS_EXPIRE_DAYS = 30;
 
-/* =========================
-   ADMIN MAIL (fallback)
-========================= */
-const ADMIN_EMAIL = process.env.ADMIN_EMAIL || "duoclub.ar@gmail.com";
+/* ============================================
+   PATHS
+============================================ */
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
 
-async function sendAdminCopy({ kind, user, ap }) {
+// ✅ uploads root: backend/uploads
+// backend/src/routes  -> backend/src -> backend/uploads
+const uploadRoot = path.join(__dirname, "..", "..", "uploads");
+const aptosDir = path.join(uploadRoot, "aptos");
+
+if (!fs.existsSync(uploadRoot)) fs.mkdirSync(uploadRoot, { recursive: true });
+if (!fs.existsSync(aptosDir)) fs.mkdirSync(aptosDir, { recursive: true });
+
+function safeUnlink(absPath) {
   try {
-    if (String(process.env.MAIL_ADMIN_COPY || "true") !== "true") return;
-
-    console.log("[MAIL ADMIN FALLBACK]", {
-      to: ADMIN_EMAIL,
-      kind,
-      user: {
-        id: user?._id?.toString?.() || user?.id,
-        email: user?.email,
-        name: user?.name,
-      },
-      ap,
-    });
-  } catch (e) {
-    console.log("[MAIL] admin fallback error:", e?.message || e);
+    if (absPath && fs.existsSync(absPath)) fs.unlinkSync(absPath);
+  } catch {
+    // no-op
   }
 }
 
-/* =========================
-   HELPERS: fecha/hora
-========================= */
-function addDays(d, n) {
-  const x = new Date(d);
-  x.setDate(x.getDate() + n);
-  return x;
-}
+/**
+ * ✅ Convierte un publicPath a una ruta absoluta real dentro de backend/uploads
+ */
+function absFromPublicUploadsPath(publicPath) {
+  const raw = String(publicPath || "").trim();
+  if (!raw) return "";
 
-function buildSlotDate(dateStr, timeStr) {
-  if (!dateStr || !timeStr) return null;
-  const [year, month, day] = String(dateStr).split("-").map(Number);
-  const [hour, minute] = String(timeStr).split(":").map(Number);
-  if (!year || !month || !day) return null;
-  return new Date(year, month - 1, day, hour || 0, minute || 0, 0, 0);
-}
+  const clean = raw.split("?")[0].split("#")[0];
+  const parts = clean.split("/").filter(Boolean);
 
-function validateBookingWindow(slotDate) {
-  const now = new Date();
-  const max = addDays(now, MAX_ADVANCE_DAYS);
-
-  if (slotDate.getTime() < now.getTime()) {
-    return { ok: false, error: "No se puede reservar un turno pasado." };
+  const uploadsIdx = parts.findIndex((p) => p === "uploads");
+  if (uploadsIdx === -1) {
+    const filename = path.basename(clean);
+    return filename ? path.join(uploadRoot, filename) : "";
   }
-  if (slotDate.getTime() > max.getTime()) {
-    return {
-      ok: false,
-      error: `Solo se puede reservar hasta ${MAX_ADVANCE_DAYS} días de anticipación.`,
-    };
+
+  const relParts = parts.slice(uploadsIdx + 1);
+  if (!relParts.length) return "";
+
+  const safeParts = relParts.map((p) => path.basename(p)).filter(Boolean);
+  if (!safeParts.length) return "";
+
+  return path.join(uploadRoot, ...safeParts);
+}
+
+/* ============================================
+   ✅ VALIDACIÓN ID
+============================================ */
+function validateObjectIdParam(req, res, next) {
+  const { id } = req.params;
+  if (!mongoose.Types.ObjectId.isValid(String(id || ""))) {
+    return res.status(400).json({ error: "ID inválido." });
   }
-  return { ok: true };
+  next();
 }
 
-function getMinBookingMinutesForService(serviceName) {
-  const sk = serviceToKey(serviceName);
-  return (
-    MIN_BOOKING_MINUTES_BY_SERVICE[sk] ??
-    MIN_BOOKING_MINUTES_BY_SERVICE.OTHER
-  );
-}
-
-function validateMinAdvance(slotDate, serviceName) {
-  const now = new Date();
-  const minMinutes = getMinBookingMinutesForService(serviceName);
-  const limit = new Date(now.getTime() + minMinutes * 60 * 1000);
-
-  if (slotDate.getTime() < limit.getTime()) {
-    return {
-      ok: false,
-      error: `El turno debe reservarse con al menos ${minMinutes} minutos de anticipación.`,
-    };
-  }
-  return { ok: true };
-}
-
-function isSaturday(dateStr) {
-  const [y, m, d] = String(dateStr || "").split("-").map(Number);
-  if (!y || !m || !d) return false;
-  const dt = new Date(y, m - 1, d);
-  return dt.getDay() === 6;
-}
-
-function isSunday(dateStr) {
-  const [y, m, d] = String(dateStr || "").split("-").map(Number);
-  if (!y || !m || !d) return false;
-  const dt = new Date(y, m - 1, d);
-  return dt.getDay() === 0;
-}
-
-function getTurnoFromTime(time) {
-  if (!time) return "";
-  const [hStr, mStr] = String(time).split(":");
-  const h = Number(hStr);
-  const m = Number(mStr);
-
-  if (h === 13 && m === 30) return "maniana";
-
-  if (h >= 7 && h <= 12) return "maniana";
-  if (h >= 14 && h <= 17) return "tarde";
-  if (h >= 18 && h <= 20) return "noche";
-
-  return "";
-}
-
-/* =========================
-   HELPERS: normalización servicios
-========================= */
-function normSvcName(s) {
-  return String(s || "")
+function prettyServiceName(value) {
+  const s = String(value || "")
     .normalize("NFD")
     .replace(/[\u0300-\u036f]/g, "")
     .toLowerCase()
     .trim();
+
+  if (s.includes("entrenamiento") && s.includes("personal")) {
+    return "Entrenamiento Personal";
+  }
+  if (s.includes("rehabilitacion") && s.includes("activa")) {
+    return "Rehabilitación Activa";
+  }
+  if (s.includes("reeducacion") && s.includes("funcional")) {
+    return "Reeducación Funcional";
+  }
+  if (s.includes("nutric")) {
+    return "Nutrición";
+  }
+
+  const up = String(value || "").toUpperCase().trim();
+  if (up === "EP") return "Entrenamiento Personal";
+  if (up === "RA") return "Rehabilitación Activa";
+  if (up === "RF") return "Reeducación Funcional";
+  if (up === "NUT") return "Nutrición";
+
+  return String(value || "Sesión").trim() || "Sesión";
 }
 
-function sameService(a, b) {
-  return normSvcName(a) === normSvcName(b);
+function formatHistoryHumanDate(dateStr) {
+  try {
+    const [y, m, d] = String(dateStr || "").split("-").map(Number);
+    if (!y || !m || !d) return "";
+    const dt = new Date(y, m - 1, d);
+
+    const weekday = dt.toLocaleDateString("es-AR", { weekday: "long" });
+    const cap = weekday.charAt(0).toUpperCase() + weekday.slice(1).toLowerCase();
+
+    const dd = String(d).padStart(2, "0");
+    const mm = String(m).padStart(2, "0");
+    const yy = String(y).slice(-2);
+
+    return `${cap} ${dd}/${mm}/${yy}`;
+  } catch {
+    return "";
+  }
 }
 
-/* =========================
-   HELPERS: créditos
-========================= */
+function humanProfileFieldLabel(field) {
+  const f = String(field || "").trim().toLowerCase();
+  if (f === "name") return "el Nombre";
+  if (f === "lastname" || f === "lastName".toLowerCase()) return "el Apellido";
+  if (f === "phone") return "el Teléfono";
+  if (f === "dni") return "el DNI";
+  return "su información personal";
+}
+
+function pushUserHistory(user, item = {}) {
+  user.history = Array.isArray(user.history) ? user.history : [];
+  user.history.push({
+    action: String(item.action || "").trim() || "activity",
+    title: String(item.title || "").trim(),
+    message: String(item.message || "").trim(),
+    field: String(item.field || "").trim(),
+    date: String(item.date || "").trim(),
+    time: String(item.time || "").trim(),
+    service: String(item.service || "").trim(),
+    serviceName: String(item.serviceName || item.service || "").trim(),
+    serviceKey: String(item.serviceKey || "").trim(),
+    qty: Number(item.qty || 0) || 0,
+    createdAt: item.createdAt || new Date(),
+  });
+}
+
+function buildLegacyAppointmentHistoryTitle(ap) {
+  const svc = prettyServiceName(ap?.service || ap?.serviceName || "");
+  const when = formatHistoryHumanDate(ap?.date);
+
+  if (String(ap?.status || "").toLowerCase() === "cancelled") {
+    return `Canceló el turno de ${svc} el ${when}.`;
+  }
+
+  return `Reservó turno para ${svc} el ${when}.`;
+}
+
+/* ============================================
+   MULTER APTOS
+============================================ */
+const aptoStorage = multer.diskStorage({
+  destination: (req, file, cb) => cb(null, aptosDir),
+  filename: (req, file, cb) => {
+    const ext = path.extname(file.originalname) || ".pdf";
+    const base = "apto-" + req.params.id + "-" + Date.now();
+    cb(null, base + ext);
+  },
+});
+
+const uploadApto = multer({
+  storage: aptoStorage,
+  limits: { fileSize: 10 * 1024 * 1024 },
+  fileFilter: (req, file, cb) => {
+    const nameOk = String(file.originalname || "")
+      .toLowerCase()
+      .endsWith(".pdf");
+    const mimeOk =
+      file.mimetype === "application/pdf" ||
+      file.mimetype === "application/octet-stream";
+    if (!nameOk && !mimeOk) return cb(new Error("Solo se permite PDF."));
+    cb(null, true);
+  },
+});
+
+function uploadAptoSingle(req, res, next) {
+  const handler = uploadApto.single("apto");
+  handler(req, res, (err) => {
+    if (!err) return next();
+    if (err.code === "LIMIT_FILE_SIZE") {
+      return res.status(400).json({ error: "El PDF supera el límite de 10MB." });
+    }
+    return res
+      .status(400)
+      .json({ error: err.message || "Error al subir el archivo." });
+  });
+}
+
+/* ============================================
+   MULTER AVATAR
+============================================ */
+const avatarStorage = multer.diskStorage({
+  destination: (req, file, cb) => cb(null, uploadRoot),
+  filename: (req, file, cb) => {
+    const ext = path.extname(file.originalname) || ".jpg";
+    const base = "avatar-" + req.params.id + "-" + Date.now();
+    cb(null, base + ext);
+  },
+});
+
+const avatarUpload = multer({
+  storage: avatarStorage,
+  limits: { fileSize: 5 * 1024 * 1024 },
+  fileFilter: (req, file, cb) => {
+    const mt = String(file.mimetype || "");
+    if (!mt.startsWith("image/"))
+      return cb(new Error("Solo se permiten imágenes."));
+    cb(null, true);
+  },
+});
+
+function avatarUploadSingle(req, res, next) {
+  const handler = avatarUpload.single("photo");
+  handler(req, res, (err) => {
+    if (!err) return next();
+    if (err.code === "LIMIT_FILE_SIZE") {
+      return res
+        .status(400)
+        .json({ error: "La imagen supera el límite de 5MB." });
+    }
+    return res
+      .status(400)
+      .json({ error: err.message || "Error al subir la imagen." });
+  });
+}
+
+/* ============================================
+   HELPERS: CREDIT LOTS
+============================================ */
 function nowDate() {
   return new Date();
 }
 
-function markCreditLotsModified(user) {
-  if (user && typeof user.markModified === "function") {
-    user.markModified("creditLots");
-  }
+function isPlusActive(user) {
+  const m = user?.membership || {};
+  const tier = String(m.tier || "").toLowerCase().trim();
+  if (tier !== "plus") return false;
+  if (!m.activeUntil) return false;
+  return new Date(m.activeUntil) > new Date();
 }
 
-function stripAccents(s) {
-  return String(s || "")
-    .normalize("NFD")
-    .replace(/[\u0300-\u036f]/g, "");
+function getMonthlyCancelLimit(user) {
+  return isPlusActive(user) ? 3 : 2;
 }
 
-function serviceToKey(serviceName) {
-  const s = stripAccents(serviceName).toLowerCase().trim();
-
-  if (s.includes("entrenamiento") && s.includes("personal")) return "EP";
-  if (s.includes("rehabilitacion") && s.includes("activa")) return "RA";
-  if (s.includes("reeducacion") && s.includes("funcional")) return "RF";
-  if (s.includes("nutricion")) return "NUT";
-
-  const up = String(serviceName || "").toUpperCase().trim();
-  const allowed = new Set(["EP", "RA", "RF", "NUT"]);
-  if (allowed.has(up)) return up;
-
-  return "EP";
+function clamp(n, min, max) {
+  const x = Number(n);
+  if (!Number.isFinite(x)) return min;
+  return Math.min(Math.max(x, min), max);
 }
 
-function getCreditsExpireDays(_user) {
-  return CREDITS_EXPIRE_DAYS;
+function normalizeMembershipForUI(user) {
+  const m = user?.membership || {};
+  const plus = isPlusActive(user);
+  const limit = getMonthlyCancelLimit(user);
+
+  const cancelHoursDefault = plus ? 12 : 24;
+  const expireDaysDefault = CREDITS_EXPIRE_DAYS;
+
+  const tierNorm = String(m.tier || (plus ? "plus" : "basic"))
+    .toLowerCase()
+    .trim();
+
+  return {
+    tier: tierNorm || "basic",
+    activeUntil: m.activeUntil || null,
+    cancelHours: clamp(m.cancelHours ?? cancelHoursDefault, 1, 999),
+    cancelsLeft: clamp(m.cancelsLeft ?? limit, 0, limit),
+    creditsExpireDays: clamp(m.creditsExpireDays ?? expireDaysDefault, 1, 999),
+  };
 }
 
 function recalcUserCredits(user) {
   const now = nowDate();
   const lots = Array.isArray(user.creditLots) ? user.creditLots : [];
-
   const sum = lots.reduce((acc, lot) => {
     const exp = lot.expiresAt ? new Date(lot.expiresAt) : null;
     if (exp && exp <= now) return acc;
     return acc + Number(lot.remaining || 0);
   }, 0);
-
   user.credits = sum;
 }
 
 function normalizeLotServiceKey(lot) {
-  const raw = lot?.serviceKey;
-  const sk = String(raw || "").toUpperCase().trim();
+  const sk = String(lot?.serviceKey || "").toUpperCase().trim();
   return sk || "EP";
 }
 
-function pickLotToConsume(user, wantedServiceKey) {
-  const now = nowDate();
-  const want = String(wantedServiceKey || "").toUpperCase().trim() || "EP";
+const ALLOWED_SERVICE_KEYS = new Set(["EP", "RF", "RA", "NUT"]);
 
+const SERVICE_KEY_TO_NAME = {
+  EP: "Entrenamiento Personal",
+  RF: "Reeducacion Funcional",
+  RA: "Rehabilitacion Activa",
+  NUT: "Nutricion",
+};
+
+function computeServiceAccessFromLots(u) {
+  const now = new Date();
+  const lots = Array.isArray(u?.creditLots) ? u.creditLots : [];
+  const byKey = { EP: 0, RF: 0, RA: 0, NUT: 0 };
+
+  for (const lot of lots) {
+    const remaining = Number(lot?.remaining || 0);
+    if (remaining <= 0) continue;
+
+    const exp = lot?.expiresAt ? new Date(lot.expiresAt) : null;
+    if (exp && exp <= now) continue;
+
+    const sk = String(lot?.serviceKey || "").toUpperCase().trim();
+    if (byKey[sk] !== undefined) byKey[sk] += remaining;
+  }
+
+  const allowedServices = Object.entries(byKey)
+    .filter(([, v]) => v > 0)
+    .map(([k]) => SERVICE_KEY_TO_NAME[k])
+    .filter(Boolean);
+
+  const serviceCredits = {};
+  for (const [k, v] of Object.entries(byKey)) {
+    if (v > 0) serviceCredits[SERVICE_KEY_TO_NAME[k]] = v;
+  }
+
+  return { allowedServices, serviceCredits };
+}
+
+function sumCreditsForService(user, serviceKey) {
+  const now = nowDate();
+  const want = String(serviceKey || "EP").toUpperCase().trim() || "EP";
+  const lots = Array.isArray(user.creditLots) ? user.creditLots : [];
+
+  return lots.reduce((acc, lot) => {
+    const exp = lot.expiresAt ? new Date(lot.expiresAt) : null;
+    if (exp && exp <= now) return acc;
+
+    const lk = normalizeLotServiceKey(lot);
+    const rem = Number(lot.remaining || 0);
+    if (rem <= 0) return acc;
+
+    if (lk === want) return acc + rem;
+    return acc;
+  }, 0);
+}
+
+function consumeCreditsForService(user, toRemove, serviceKey) {
+  const now = nowDate();
+  let left = Math.max(0, Number(toRemove || 0));
+
+  const want = String(serviceKey || "EP").toUpperCase().trim() || "EP";
   const lots = Array.isArray(user.creditLots) ? user.creditLots : [];
 
   const sorted = lots
     .filter((l) => Number(l.remaining || 0) > 0)
     .filter((l) => !l.expiresAt || new Date(l.expiresAt) > now)
-    .filter((l) => {
-      const lk = normalizeLotServiceKey(l);
-      return lk === want;
-    })
+    .filter((l) => normalizeLotServiceKey(l) === want)
     .sort((a, b) => {
       const ae = a.expiresAt ? new Date(a.expiresAt).getTime() : Infinity;
       const be = b.expiresAt ? new Date(b.expiresAt).getTime() : Infinity;
       if (ae !== be) return ae - be;
-
       const ac = a.createdAt ? new Date(a.createdAt).getTime() : 0;
       const bc = b.createdAt ? new Date(b.createdAt).getTime() : 0;
       return ac - bc;
     });
 
-  return sorted[0] || null;
-}
-
-function consumeCreditLot(user, lot, amount = 1) {
-  if (!user || !lot) return;
-  const next = Math.max(0, Number(lot.remaining || 0) - Number(amount || 0));
-  lot.remaining = next;
-  markCreditLotsModified(user);
-}
-
-function refundCreditToLot(user, lot, amount = 1) {
-  if (!user || !lot) return;
-  lot.remaining = Number(lot.remaining || 0) + Number(amount || 0);
-  markCreditLotsModified(user);
-}
-
-function hasValidCreditsForService(user, serviceNameOrKey) {
-  const sk = serviceToKey(serviceNameOrKey);
-  return !!pickLotToConsume(user, sk);
-}
-
-function findLotById(user, lotId) {
-  const lots = Array.isArray(user.creditLots) ? user.creditLots : [];
-  return lots.find((l) => String(l._id) === String(lotId)) || null;
-}
-
-function serializeUserCreditLots(user) {
-  return (Array.isArray(user?.creditLots) ? user.creditLots : []).map((lot) => ({
-    _id: String(lot?._id || ""),
-    serviceKey: String(lot?.serviceKey || "").toUpperCase().trim(),
-    amount: Number(lot?.amount || 0),
-    remaining: Number(lot?.remaining || 0),
-    expiresAt: lot?.expiresAt || null,
-    source: lot?.source || "",
-    orderId: lot?.orderId || null,
-    createdAt: lot?.createdAt || null,
-  }));
-}
-
-function serializeAppointment(ap) {
-  const json = ap?.toObject ? ap.toObject() : ap;
-
-  const userObj = json?.user || {};
-  const userId =
-    userObj?._id?.toString?.() ||
-    json?.userId ||
-    userObj?.toString?.() ||
-    "";
-
-  const userName = String(userObj?.name || "").trim();
-  const userLastName = String(userObj?.lastName || "").trim();
-  const userFullName = [userName, userLastName].filter(Boolean).join(" ").trim();
-
-  return {
-    id: json?._id?.toString?.() || json?.id,
-    date: json?.date,
-    time: json?.time,
-    service: json?.service || "",
-    status: json?.status || "reserved",
-    coach: json?.coach || "",
-    userId,
-    userName,
-    userLastName,
-    userFullName,
-    userEmail: userObj?.email || "",
-    creditExpiresAt: json?.creditExpiresAt || null,
-  };
-}
-
-function requiresApto(user) {
-  if (!user?.createdAt) return false;
-  const created = new Date(user.createdAt);
-  const days = Math.floor((Date.now() - created.getTime()) / (1000 * 60 * 60 * 24));
-  return days > 20 && !user.aptoPath;
-}
-
-/* =========================
-   Cupos + horarios por servicio
-========================= */
-const TOTAL_CAP = 6;
-
-const EP_NAME = "Entrenamiento Personal";
-const RA_NAME = "Rehabilitación activa";
-const RF_NAME = "Reeducación funcional";
-
-const TIMES_EP = [
-  "07:00","08:00","09:00","10:00",
-  "11:00","12:00","13:30",
-  "14:00","15:00","16:00","17:00",
-  "18:00","19:00","20:00",
-];
-
-const TIMES_REHAB = [
-  "07:00","08:00","09:00","10:00",
-  "11:00","12:00","13:30",
-  "14:00","15:00","16:00","17:00",
-  "18:00",
-];
-
-const TIMES_DEFAULT = [
-  "07:00","08:00","09:00","10:00",
-  "11:00","12:00","13:30",
-  "18:00","19:00","20:00",
-];
-
-function getAllowedTimesForService(serviceName) {
-  if (sameService(serviceName, EP_NAME)) return TIMES_EP;
-  if (sameService(serviceName, RA_NAME)) return TIMES_REHAB;
-  if (sameService(serviceName, RF_NAME)) return TIMES_REHAB;
-  return TIMES_DEFAULT;
-}
-
-function isAllowedTimeForService(serviceName, time) {
-  const t = String(time || "").slice(0, 5);
-  return getAllowedTimesForService(serviceName).includes(t);
-}
-
-function calcEpCap({ hoursToStart, hasRF, hasRA, otherReservedCount }) {
-  let cap = 4;
-
-  if (Number(hoursToStart) <= 12) {
-    if (!hasRF && !hasRA) cap = 6;
-    else if (!!hasRF !== !!hasRA) cap = 5;
-    else cap = 4;
+  for (const lot of sorted) {
+    if (left <= 0) break;
+    const take = Math.min(Number(lot.remaining || 0), left);
+    lot.remaining = Number(lot.remaining || 0) - take;
+    left -= take;
   }
 
-  const totalLimit = Math.max(0, TOTAL_CAP - Number(otherReservedCount || 0));
-  cap = Math.min(cap, totalLimit);
-
-  return Math.max(0, cap);
+  recalcUserCredits(user);
 }
 
-/* =========================
-   CANCELACIÓN / REINTEGRO
-========================= */
-const REFUND_CUTOFF_HOURS = 1;
-
-function isRefundEligible(hoursToStart) {
-  const h = Number(hoursToStart);
-  if (!Number.isFinite(h)) return false;
-  if (h <= 0) return false;
-  return h >= REFUND_CUTOFF_HOURS;
-}
-
-function makeRefundLot(user, apService) {
+function addCreditLot(
+  user,
+  { amount, serviceKey = "EP", source = "admin-adjust" }
+) {
   const now = nowDate();
-  const sk = serviceToKey(apService);
   const exp = new Date(now);
-  exp.setDate(exp.getDate() + Number(getCreditsExpireDays(user) || 30));
+  exp.setDate(exp.getDate() + CREDITS_EXPIRE_DAYS);
 
-  user.creditLots = Array.isArray(user.creditLots) ? user.creditLots : [];
+  const sk = String(serviceKey || "EP").toUpperCase().trim() || "EP";
+
+  user.creditLots = user.creditLots || [];
   user.creditLots.push({
     serviceKey: sk,
-    amount: 1,
-    remaining: 1,
+    amount: Number(amount || 0),
+    remaining: Number(amount || 0),
     expiresAt: exp,
-    source: "refund",
+    source,
     orderId: null,
     createdAt: now,
   });
 
-  markCreditLotsModified(user);
-
-  return { sk, expiresAt: exp };
+  recalcUserCredits(user);
 }
 
-function lotsDebug(user) {
-  return (Array.isArray(user?.creditLots) ? user.creditLots : []).map((lot) => ({
-    id: String(lot?._id || ""),
-    serviceKey: String(lot?.serviceKey || ""),
-    amount: Number(lot?.amount || 0),
-    remaining: Number(lot?.remaining || 0),
-    expiresAt: lot?.expiresAt || null,
-    source: String(lot?.source || ""),
-  }));
+function buildCreditsByService(user) {
+  return {
+    EP: sumCreditsForService(user, "EP"),
+    RF: sumCreditsForService(user, "RF"),
+    RA: sumCreditsForService(user, "RA"),
+    NUT: sumCreditsForService(user, "NUT"),
+  };
 }
 
-/* =========================
-   Helpers: validación de item
-========================= */
-function validateBasicSlotRules({ date, time, service }) {
-  if (!date || !time || !service) {
-    return { ok: false, error: "Faltan campos: date, time y service." };
-  }
+function stripSensitive(u) {
+  if (!u || typeof u !== "object") return u;
+  const {
+    password,
+    emailVerificationToken,
+    emailVerificationExpires,
+    __v,
+    ...rest
+  } = u;
+  return rest;
+}
 
-  if (isSaturday(date)) {
-    return { ok: false, error: "Los sábados no hay turnos disponibles." };
-  }
+function decorateUserForResponse(rawUser, { includeClinicalNotes = true } = {}) {
+  if (!rawUser) return rawUser;
 
-  const timeNorm = String(time).slice(0, 5);
+  const u = { ...rawUser };
+  recalcUserCredits(u);
 
-  if (timeNorm.startsWith("13:") && timeNorm !== "13:30") {
-    return { ok: false, error: "Horario inválido." };
-  }
+  const svc = computeServiceAccessFromLots(u);
+  const membership = normalizeMembershipForUI(u);
+  const creditsByService = buildCreditsByService(u);
 
-  if (!isAllowedTimeForService(service, timeNorm)) {
+  const safe = stripSensitive(u);
+
+  if (!includeClinicalNotes) {
+    // eslint-disable-next-line no-unused-vars
+    const { clinicalNotes, ...withoutClinical } = safe;
     return {
-      ok: false,
-      error: "Ese horario no está disponible para el servicio seleccionado.",
+      ...withoutClinical,
+      ...svc,
+      membership,
+      creditsByService,
     };
   }
 
-  const turno = getTurnoFromTime(timeNorm);
-  if (!turno) {
-    return { ok: false, error: "Horario fuera del rango permitido." };
-  }
-
-  const slotDate = buildSlotDate(date, timeNorm);
-  if (!slotDate) return { ok: false, error: "Fecha/hora inválida." };
-
-  const w = validateBookingWindow(slotDate);
-  if (!w.ok) return w;
-
-  const adv = validateMinAdvance(slotDate, service);
-  if (!adv.ok) return adv;
-
-  const isEpService = sameService(service, EP_NAME);
-
-  return { ok: true, turno, slotDate, isEpService };
+  return {
+    ...safe,
+    ...svc,
+    membership,
+    creditsByService,
+  };
 }
 
-function validateBasicSlotRulesAdmin({ date, time, service, bypassWindow = false }) {
-  if (!date || !time || !service) {
-    return { ok: false, error: "Faltan campos: date, time y service." };
-  }
-
-  if (isSaturday(date)) {
-    return { ok: false, error: "Los sábados no hay turnos disponibles." };
-  }
-
-  if (isSunday(date)) {
-    return { ok: false, error: "Los domingos no hay turnos disponibles." };
-  }
-
-  const timeNorm = String(time).slice(0, 5);
-
-  if (timeNorm.startsWith("13:") && timeNorm !== "13:30") {
-    return { ok: false, error: "Horario inválido." };
-  }
-
-  if (!isAllowedTimeForService(service, timeNorm)) {
-    return {
-      ok: false,
-      error: "Ese horario no está disponible para el servicio seleccionado.",
-    };
-  }
-
-  const turno = getTurnoFromTime(timeNorm);
-  if (!turno) {
-    return { ok: false, error: "Horario fuera del rango permitido." };
-  }
-
-  const slotDate = buildSlotDate(date, timeNorm);
-  if (!slotDate) return { ok: false, error: "Fecha/hora inválida." };
-
-  if (!bypassWindow) {
-    const w = validateBookingWindow(slotDate);
-    if (!w.ok) return w;
-
-    const adv = validateMinAdvance(slotDate, service);
-    if (!adv.ok) return adv;
-  }
-
-  const isEpService = sameService(service, EP_NAME);
-
-  return { ok: true, turno, slotDate, isEpService, timeNorm };
+/* ============================================
+   HELPERS: MAIL CRÉDITOS
+============================================ */
+function adminActorNameFromReq(req) {
+  const me = req?.user || {};
+  const full =
+    `${String(me?.name || "").trim()} ${String(me?.lastName || "").trim()}`.trim() ||
+    String(me?.email || "").trim() ||
+    "Admin";
+  return full;
 }
 
-function slotKey(date, time) {
-  return `${date}__${time}`;
+function normalizeCreditMailItems(items) {
+  const list = Array.isArray(items) ? items : [];
+
+  return list
+    .map((it) => {
+      const serviceKey = String(it?.serviceKey || "")
+        .trim()
+        .toUpperCase();
+
+      const hasDelta = it?.delta !== undefined && it?.delta !== null;
+      const raw = hasDelta ? Number(it.delta) : Number(it.credits);
+
+      if (!serviceKey || !Number.isFinite(raw) || raw === 0) return null;
+
+      return {
+        serviceKey,
+        ...(hasDelta
+          ? { delta: Math.trunc(raw) }
+          : { credits: Math.trunc(raw) }),
+      };
+    })
+    .filter(Boolean);
 }
 
-function isValidYMD(s) {
-  if (typeof s !== "string") return false;
-  return /^\d{4}-\d{2}-\d{2}$/.test(s);
-}
+function queueCreditsEmails({ req, updatedUser, items }) {
+  const safeItems = normalizeCreditMailItems(items);
+  if (!updatedUser || !safeItems.length) return;
 
-function ymdAR(d = new Date()) {
-  const y = d.getFullYear();
-  const m = String(d.getMonth() + 1).padStart(2, "0");
-  const day = String(d.getDate()).padStart(2, "0");
-  return `${y}-${m}-${day}`;
-}
+  const actorName = adminActorNameFromReq(req);
 
-function addMonthsYmd(dateStr, months) {
-  const [y, m, d] = String(dateStr).split("-").map(Number);
-  const dt = new Date(y, (m || 1) - 1, d || 1);
-  dt.setMonth(dt.getMonth() + Number(months || 0));
-  return ymdAR(dt);
-}
+  fireAndForget(async () => {
+    try {
+      await sendAdminCreditsAssignedEmail({
+        user: updatedUser,
+        items: safeItems,
+        actorName,
+      });
 
-function getWeekdayMondayFirst(dateStr) {
-  const [y, m, d] = String(dateStr).split("-").map(Number);
-  const js = new Date(y, (m || 1) - 1, d || 1).getDay();
-  return js === 0 ? 7 : js;
-}
+      await sendUserCreditsAssignedEmail({
+        user: updatedUser,
+        items: safeItems,
+        actorName,
+      });
 
-function buildOccurrencesForFixedSchedule({ startDate, months, items }) {
-  const out = [];
-  const start = buildSlotDate(startDate, "00:00");
-  const end = buildSlotDate(addMonthsYmd(startDate, months), "23:59");
-
-  if (!start || !end) return out;
-
-  const cursor = new Date(start);
-
-  while (cursor <= end) {
-    const date = ymdAR(cursor);
-    const weekday = getWeekdayMondayFirst(date);
-
-    for (const it of items || []) {
-      if (Number(it?.weekday) === weekday) {
-        out.push({
-          date,
-          time: String(it?.time || "").slice(0, 5),
-        });
-      }
+      console.log("[MAIL][CREDITS] mails SENT ok", {
+        userId: String(updatedUser?._id || updatedUser?.id || ""),
+        email: updatedUser?.email,
+        items: safeItems,
+      });
+    } catch (e) {
+      console.log("[MAIL][CREDITS] mails FAILED", {
+        userId: String(updatedUser?._id || updatedUser?.id || ""),
+        email: updatedUser?.email,
+        error: e?.message || e,
+      });
     }
-
-    cursor.setDate(cursor.getDate() + 1);
-  }
-
-  return out.sort((a, b) => {
-    const ak = `${a.date} ${a.time}`;
-    const bk = `${b.date} ${b.time}`;
-    return ak.localeCompare(bk);
-  });
+  }, "USER_CREDITS_MAIL");
 }
-
-async function createAppointmentForTargetUser({
-  userId,
-  actorReq,
-  date,
-  time,
-  service,
-  notes = "",
-  bypassWindow = false,
-}) {
-  const basic = validateBasicSlotRulesAdmin({ date, time, service, bypassWindow });
-  if (!basic.ok) {
-    const e = new Error(basic.error);
-    e.http = 400;
-    throw e;
-  }
-
-  const targetUser = await User.findById(userId);
-  if (!targetUser) {
-    const e = new Error("USER_NOT_FOUND");
-    e.http = 404;
-    throw e;
-  }
-
-  if (targetUser.suspended) {
-    const e = new Error("USER_SUSPENDED");
-    e.http = 403;
-    throw e;
-  }
-
-  if (requiresApto(targetUser)) {
-    const e = new Error("APTO_REQUIRED");
-    e.http = 403;
-    throw e;
-  }
-
-  recalcUserCredits(targetUser);
-  if ((targetUser.credits || 0) <= 0) {
-    const e = new Error("NO_CREDITS");
-    e.http = 403;
-    throw e;
-  }
-
-  const requestedSk = serviceToKey(service);
-  if (!hasValidCreditsForService(targetUser, requestedSk)) {
-    const e = new Error(`NO_CREDITS_FOR_${requestedSk}`);
-    e.http = 403;
-    throw e;
-  }
-
-  const t = String(time).slice(0, 5);
-
-  const alreadyByUser = await Appointment.findOne({
-    date,
-    time: t,
-    user: targetUser._id,
-    status: "reserved",
-  }).lean();
-
-  if (alreadyByUser) {
-    const e = new Error("ALREADY_HAVE_SLOT");
-    e.http = 409;
-    throw e;
-  }
-
-  const existingAtSlot = await Appointment.find({
-    date,
-    time: t,
-    status: "reserved",
-  }).lean();
-
-  if (existingAtSlot.length >= TOTAL_CAP) {
-    const e = new Error("TOTAL_CAP_REACHED");
-    e.http = 409;
-    throw e;
-  }
-
-  const epCount = existingAtSlot.filter((a) => sameService(a.service, EP_NAME)).length;
-  const rfTaken = existingAtSlot.some((a) => sameService(a.service, RF_NAME)) ? 1 : 0;
-  const raTaken = existingAtSlot.some((a) => sameService(a.service, RA_NAME)) ? 1 : 0;
-  const otherReservedCount = rfTaken + raTaken;
-
-  if (sameService(service, RF_NAME) && rfTaken) {
-    const e = new Error("SERVICE_CAP_REACHED");
-    e.http = 409;
-    throw e;
-  }
-
-  if (sameService(service, RA_NAME) && raTaken) {
-    const e = new Error("SERVICE_CAP_REACHED");
-    e.http = 409;
-    throw e;
-  }
-
-  if (basic.isEpService) {
-    const hoursToStart = (basic.slotDate.getTime() - Date.now()) / (1000 * 60 * 60);
-    const epCap = calcEpCap({
-      hoursToStart,
-      hasRF: !!rfTaken,
-      hasRA: !!raTaken,
-      otherReservedCount,
-    });
-
-    if (epCount >= epCap) {
-      const e = new Error("SERVICE_CAP_REACHED");
-      e.http = 409;
-      throw e;
-    }
-  }
-
-  const lot = pickLotToConsume(targetUser, requestedSk);
-  if (!lot) {
-    const e = new Error(`NO_CREDITS_FOR_${requestedSk}`);
-    e.http = 403;
-    throw e;
-  }
-
-  consumeCreditLot(targetUser, lot, 1);
-  const usedLotId = lot._id;
-  const usedLotExp = lot.expiresAt || null;
-
-  targetUser.history = targetUser.history || [];
-  targetUser.history.push({
-    action: "reservado_por_admin",
-    date,
-    time: t,
-    service,
-    serviceName: service,
-    createdAt: new Date(),
+/* ============================================
+   ✅ HELPERS: PLAN MENSUAL
+============================================ */
+function createDefaultMonthlyPlan() {
+  const makeWeek = (weekNumber) => ({
+    weekNumber,
+    series: "",
+    reps: "",
+    rir: "",
   });
 
-  recalcUserCredits(targetUser);
-  await targetUser.save();
-
-  const created = await Appointment.create({
-    date,
-    time: t,
-    service,
-    user: targetUser._id,
-    status: "reserved",
-    creditLotId: usedLotId,
-    creditExpiresAt: usedLotExp,
-  });
-
-  const populated = await Appointment.findById(created._id)
-    .populate("user", "name lastName email");
-
-  await logActivity({
-    req: actorReq,
-    category: "appointments",
-    action: "appointment_assigned_by_admin",
-    entity: "appointment",
-    entityId: String(created._id),
-    title: "Turno asignado por admin",
-    description: "Se asignó un turno a un usuario desde administración.",
-    subject: buildUserSubject(targetUser),
-    meta: {
-      date,
-      time: t,
-      serviceName: service,
-      assignedByAdmin: true,
+  const makeRow = () => ({
+    exercise: "",
+    weekCells: {
+      1: ["", "", "", ""],
+      2: ["", "", "", ""],
+      3: ["", "", "", ""],
+      4: ["", "", "", ""],
     },
   });
 
-  const serialized = serializeAppointment(populated);
-  serialized.userCredits = Number(targetUser.credits || 0);
-  serialized.userCreditLots = serializeUserCreditLots(targetUser);
+  const makeSection = (key) => ({
+    key,
+    rows: [makeRow(), makeRow(), makeRow()],
+  });
 
-  return serialized;
+  const makeDay = (dayNumber) => ({
+    dayNumber,
+    sections: [makeSection("B2"), makeSection("B3")],
+  });
+
+  return {
+    meta: {
+      fullName: "",
+      age: "",
+      weight: "",
+      height: "",
+      healthConditions: "",
+      trainingPeriod: "",
+      objective: "",
+      weeklyFrequency: "",
+      startDate: "",
+      mesocycleNumber: "",
+      observations: "",
+    },
+    weeks: [makeWeek(1), makeWeek(2), makeWeek(3), makeWeek(4)],
+    days: [makeDay(1), makeDay(2), makeDay(3)],
+    footer: {
+      activation: "Plan del día.",
+      finisher: "A criterio de cada entrenador (metabólico, accesorios).",
+      cooldown: "Plan del día o estiramiento comunitario.",
+    },
+    updatedAt: null,
+    updatedBy: "",
+  };
 }
 
-/* =========================
-   AUTH required
-========================= */
+function safePlanStr(v, max = 1000) {
+  return String(v ?? "").slice(0, max).trim();
+}
+
+function normalizeWeekCells(input) {
+  const out = {
+    1: ["", "", "", ""],
+    2: ["", "", "", ""],
+    3: ["", "", "", ""],
+    4: ["", "", "", ""],
+  };
+
+  for (const wk of [1, 2, 3, 4]) {
+    const arr = Array.isArray(input?.[wk]) ? input[wk] : [];
+    out[wk] = [0, 1, 2, 3].map((i) => safePlanStr(arr[i] || "", 40));
+  }
+
+  return out;
+}
+
+function sanitizeMonthlyPlanPayload(payload = {}, targetUser = null, actor = null) {
+  const base = createDefaultMonthlyPlan();
+
+  const fullNameFromUser = targetUser
+    ? `${String(targetUser.name || "").trim()} ${String(targetUser.lastName || "").trim()}`.trim()
+    : "";
+
+  const meta = payload?.meta || {};
+  const weeks = Array.isArray(payload?.weeks) ? payload.weeks : [];
+  const days = Array.isArray(payload?.days) ? payload.days : [];
+  const footer = payload?.footer || {};
+
+  const actorName =
+    `${String(actor?.name || "").trim()} ${String(actor?.lastName || "").trim()}`.trim() ||
+    String(actor?.email || "").trim() ||
+    "Staff";
+
+  return {
+    meta: {
+      fullName: safePlanStr(meta.fullName || fullNameFromUser, 120),
+      age: safePlanStr(meta.age, 20),
+      weight: safePlanStr(meta.weight, 20),
+      height: safePlanStr(meta.height, 20),
+      healthConditions: safePlanStr(meta.healthConditions, 800),
+      trainingPeriod: safePlanStr(meta.trainingPeriod, 120),
+      objective: safePlanStr(meta.objective, 300),
+      weeklyFrequency: safePlanStr(meta.weeklyFrequency, 60),
+      startDate: safePlanStr(meta.startDate, 40),
+      mesocycleNumber: safePlanStr(meta.mesocycleNumber, 40),
+      observations: safePlanStr(meta.observations, 1200),
+    },
+
+    weeks: [1, 2, 3, 4].map((n, idx) => ({
+      weekNumber: n,
+      series: safePlanStr(weeks[idx]?.series, 40),
+      reps: safePlanStr(weeks[idx]?.reps, 40),
+      rir: safePlanStr(weeks[idx]?.rir, 40),
+    })),
+
+    days: [1, 2, 3].map((dayNumber, dayIdx) => {
+      const srcDay = days[dayIdx] || {};
+      const srcSections = Array.isArray(srcDay.sections) ? srcDay.sections : [];
+
+      return {
+        dayNumber,
+        sections: ["B2", "B3"].map((sectionKey, secIdx) => {
+          const srcSection = srcSections[secIdx] || {};
+          const srcRows = Array.isArray(srcSection.rows) ? srcSection.rows : [];
+
+          return {
+            key: sectionKey,
+            rows: [0, 1, 2].map((rowIdx) => ({
+              exercise: safePlanStr(srcRows[rowIdx]?.exercise, 120),
+              weekCells: normalizeWeekCells(srcRows[rowIdx]?.weekCells),
+            })),
+          };
+        }),
+      };
+    }),
+
+    footer: {
+      activation: safePlanStr(footer.activation || base.footer.activation, 300),
+      finisher: safePlanStr(footer.finisher || base.footer.finisher, 300),
+      cooldown: safePlanStr(footer.cooldown || base.footer.cooldown, 300),
+    },
+
+    updatedAt: new Date(),
+    updatedBy: actorName,
+  };
+}
+
+function ensureMonthlyPlan(user) {
+  if (!user.monthlyPlan) {
+    user.monthlyPlan = createDefaultMonthlyPlan();
+  }
+
+  const normalized = sanitizeMonthlyPlanPayload(user.monthlyPlan, user, {
+    name: user.monthlyPlan?.updatedBy || "",
+    lastName: "",
+    email: "",
+  });
+
+  if (!normalized.meta.fullName) {
+    normalized.meta.fullName =
+      `${String(user.name || "").trim()} ${String(user.lastName || "").trim()}`.trim();
+  }
+
+  user.monthlyPlan = normalized;
+  return user.monthlyPlan;
+}
+
+/* ============================================
+   ✅ TODAS LAS RUTAS REQUIEREN LOGIN
+============================================ */
 router.use(protect);
 
-/* =========================
-   GET /appointments/availability
-========================= */
-router.get("/availability", async (req, res) => {
+/* ============================================
+   ✅ TEST SMTP
+============================================ */
+router.post("/test-mail", adminOnly, async (req, res) => {
   try {
-    const date = String(req.query?.date || "").slice(0, 10);
-    const service = String(req.query?.service || "").trim();
+    const to =
+      String(req.body?.to || "").trim() ||
+      String(req.user?.email || "").trim() ||
+      String(process.env.ADMIN_EMAIL || "").trim();
 
-    if (!date || !service) {
-      return res.status(400).json({ error: "Faltan params: date y service." });
-    }
-
-    const allowedTimes = getAllowedTimesForService(service);
-
-    const times =
-      Array.isArray(req.query?.times) && req.query.times.length
-        ? req.query.times
-            .map((x) => String(x).slice(0, 5))
-            .filter((t) => allowedTimes.includes(t))
-        : allowedTimes;
-
-    const requesterId = req.user?._id || req.user?.id;
-    const requesterRole = String(req.user?.role || "");
-
-    if (requesterId && requesterRole !== "admin") {
-      const me = await User.findById(requesterId)
-        .select("role suspended aptoPath createdAt credits creditLots")
-        .lean();
-
-      if (!me) {
-        return res.status(403).json({ error: "Usuario no encontrado." });
-      }
-
-      if (me.suspended) {
-        return res.json({
-          date,
-          service,
-          slots: times.map((t) => ({
-            time: t,
-            state: "closed",
-            reason: "Cuenta suspendida",
-          })),
-        });
-      }
-
-      if (requiresApto(me)) {
-        return res.json({
-          date,
-          service,
-          slots: times.map((t) => ({
-            time: t,
-            state: "closed",
-            reason: "Falta apto médico",
-          })),
-        });
-      }
-
-      if (!hasValidCreditsForService(me, service)) {
-        return res.json({
-          date,
-          service,
-          slots: times.map((t) => ({
-            time: t,
-            state: "closed",
-            reason: "Sin sesiones válidas para este servicio",
-          })),
-        });
-      }
-    }
-
-    if (isSaturday(date)) {
-      return res.json({
-        date,
-        service,
-        slots: times.map((t) => ({
-          time: t,
-          state: "closed",
-          reason: "Sábados no disponibles",
-        })),
+    if (!to) {
+      return res.status(400).json({
+        error: "Falta destinatario. Enviá { to } o configurá ADMIN_EMAIL.",
       });
     }
 
-    const out = [];
+    const now = new Date();
+    const subject = `🧪 Test SMTP - DUO - ${now.toLocaleString("es-AR")}`;
 
-    for (const time of times) {
-      const t = String(time).slice(0, 5);
-      const basic = validateBasicSlotRules({ date, time: t, service });
+    const text = [
+      "Este es un mail de prueba del sistema DUO.",
+      "",
+      `Fecha: ${now.toLocaleString("es-AR")}`,
+      `Destino: ${to}`,
+      `Ejecutado por: ${String(req.user?.email || "admin")}`,
+      "",
+      "Si recibiste este correo, el SMTP está funcionando correctamente.",
+    ].join("\n");
 
-      if (!basic.ok) {
-        out.push({ time: t, state: "closed", reason: basic.error });
-        continue;
-      }
+    const html = `
+      <div style="font-family:Arial,sans-serif; color:#111; line-height:1.5;">
+        <h2 style="margin:0 0 12px;">Test SMTP - DUO</h2>
+        <p>Este es un mail de prueba del sistema.</p>
+        <p><b>Fecha:</b> ${now.toLocaleString("es-AR")}</p>
+        <p><b>Destino:</b> ${to}</p>
+        <p><b>Ejecutado por:</b> ${String(req.user?.email || "admin")}</p>
+        <p style="margin-top:16px;">
+          Si recibiste este correo, el SMTP está funcionando correctamente.
+        </p>
+      </div>
+    `;
 
-      const existing = await Appointment.find({ date, time: t, status: "reserved" })
-        .select("service")
-        .lean();
+    const info = await sendMail(to, subject, text, html);
 
-      const total = existing.length;
-
-      if (total >= TOTAL_CAP) {
-        if (basic.isEpService) {
-          out.push({
-            time: t,
-            state: "waitlist",
-            totalReserved: total,
-            epReserved: existing.filter((a) => sameService(a.service, EP_NAME)).length,
-          });
-        } else {
-          out.push({ time: t, state: "full", totalReserved: total });
-        }
-        continue;
-      }
-
-      if (sameService(service, RF_NAME)) {
-        const hasRF = existing.some((a) => sameService(a.service, RF_NAME));
-        if (hasRF) {
-          out.push({ time: t, state: "full", totalReserved: total });
-          continue;
-        }
-      }
-
-      if (sameService(service, RA_NAME)) {
-        const hasRA = existing.some((a) => sameService(a.service, RA_NAME));
-        if (hasRA) {
-          out.push({ time: t, state: "full", totalReserved: total });
-          continue;
-        }
-      }
-
-      if (basic.isEpService) {
-        const epCount = existing.filter((a) => sameService(a.service, EP_NAME)).length;
-        const rfTaken = existing.some((a) => sameService(a.service, RF_NAME)) ? 1 : 0;
-        const raTaken = existing.some((a) => sameService(a.service, RA_NAME)) ? 1 : 0;
-        const otherReservedCount = rfTaken + raTaken;
-
-        const hoursToStart = (basic.slotDate.getTime() - Date.now()) / (1000 * 60 * 60);
-        const epCap = calcEpCap({
-          hoursToStart,
-          hasRF: !!rfTaken,
-          hasRA: !!raTaken,
-          otherReservedCount,
-        });
-
-        if (epCount >= epCap) {
-          out.push({
-            time: t,
-            state: "waitlist",
-            totalReserved: total,
-            epReserved: epCount,
-            epCap,
-          });
-          continue;
-        }
-      }
-
-      out.push({ time: t, state: "available", totalReserved: total });
-    }
-
-    return res.json({ date, service, slots: out });
-  } catch (e) {
-    console.error("Error en GET /appointments/availability:", e);
-    return res.status(500).json({ error: "Error calculando disponibilidad." });
-  }
-});
-
-/* =========================
-   GET /appointments
-========================= */
-router.get("/", async (req, res) => {
-  try {
-    const scope = String(req.query?.scope || "mine");
-    const from = req.query?.from;
-    const to = req.query?.to;
-    const includePast = String(req.query?.includePast || "0") === "1";
-
-    const hasFrom = isValidYMD(from);
-    const hasTo = isValidYMD(to);
-
-    const tokenUserId = req.user?._id || req.user?.id;
-    const role = String(req.user?.role || "").toLowerCase();
-    const isStaff = role === "admin" || role === "profesor";
-
-    if (scope === "calendar") {
-      const q = { status: "reserved" };
-
-      if (hasFrom && hasTo) q.date = { $gte: from, $lt: to };
-      else if (hasFrom) q.date = { $gte: from };
-      else q.date = { $gte: ymdAR() };
-
-      const list = await Appointment.find(q)
-        .select("_id date time service status")
-        .lean();
-
-      return res.json(
-        (list || []).map((a) => ({
-          id: a?._id?.toString?.() || String(a?._id || ""),
-          date: a?.date,
-          time: a?.time,
-          service: a?.service || "",
-          status: a?.status || "reserved",
-        }))
-      );
-    }
-
-    if (scope === "all") {
-      if (!isStaff) return res.status(403).json({ error: "No autorizado." });
-
-      const q = {};
-      if (hasFrom && hasTo) q.date = { $gte: from, $lt: to };
-      else if (hasFrom) q.date = { $gte: from };
-
-      const list = await Appointment.find(q)
-        .populate("user", "name lastName email")
-        .lean();
-
-      return res.json((list || []).map(serializeAppointment));
-    }
-
-    {
-      const q = { user: tokenUserId, status: { $ne: "cancelled" } };
-
-      if (hasFrom && hasTo) q.date = { $gte: from, $lt: to };
-      else if (hasFrom) q.date = { $gte: from };
-      else if (!includePast) q.date = { $gte: ymdAR() };
-
-      const list = await Appointment.find(q)
-        .sort({ date: 1, time: 1 })
-        .lean();
-
-      return res.json(
-        (list || []).map((a) => ({
-          id: a?._id?.toString?.() || String(a?._id || ""),
-          date: a?.date,
-          time: a?.time,
-          service: a?.service || "",
-          status: a?.status || "reserved",
-          coach: a?.coach || "",
-          creditExpiresAt: a?.creditExpiresAt || null,
-          userId: String(a?.user || ""),
-        }))
-      );
-    }
-  } catch (err) {
-    console.error("Error en GET /appointments:", err);
-    res.status(500).json({ error: "Error al obtener turnos." });
-  }
-});
-
-/* =========================
-   POST /appointments/admin/assign
-========================= */
-router.post("/admin/assign", async (req, res) => {
-  try {
-    const role = String(req.user?.role || "").toLowerCase();
-    if (role !== "admin") {
-      return res.status(403).json({ error: "Solo un admin puede asignar turnos." });
-    }
-
-    const userId = String(req.body?.userId || "").trim();
-    const notes = String(req.body?.notes || "").trim();
-
-    if (!userId) {
-      return res.status(400).json({ error: "Falta userId." });
-    }
-
-    const items =
-      Array.isArray(req.body?.items) && req.body.items.length
-        ? req.body.items
-        : req.body?.date && req.body?.time && req.body?.service
-          ? [{ date: req.body.date, time: req.body.time, service: req.body.service }]
-          : [];
-
-    if (!items.length) {
-      return res.status(400).json({ error: "Faltan items para asignar." });
-    }
-
-    const created = [];
-    const conflicts = [];
-
-    for (const it of items) {
-      try {
-        const ap = await createAppointmentForTargetUser({
-          userId,
-          actorReq: req,
-          date: String(it?.date || "").slice(0, 10),
-          time: String(it?.time || "").slice(0, 5),
-          service: String(it?.service || "").trim(),
-          notes,
-          bypassWindow: true,
-        });
-        created.push(ap);
-      } catch (e) {
-        conflicts.push({
-          date: String(it?.date || "").slice(0, 10),
-          time: String(it?.time || "").slice(0, 5),
-          service: String(it?.service || "").trim(),
-          error: e?.message || "No se pudo asignar.",
-        });
-      }
-    }
-
-    if (!created.length && conflicts.length) {
-      return res.status(409).json({
-        error: conflicts[0]?.error || "No se pudo asignar ningún turno.",
-        createdCount: 0,
-        conflictsCount: conflicts.length,
-        conflicts,
-      });
-    }
-
-    return res.status(201).json({
+    return res.json({
       ok: true,
-      items: created,
-      createdCount: created.length,
-      conflictsCount: conflicts.length,
-      conflicts,
+      message: "Mail de prueba enviado.",
+      to,
+      messageId: info?.messageId || null,
+      accepted: info?.accepted || [],
+      rejected: info?.rejected || [],
+      response: info?.response || null,
     });
   } catch (err) {
-    console.error("Error en POST /appointments/admin/assign:", err);
-    return res.status(500).json({ error: "Error al asignar turnos." });
+    console.error("Error en POST /users/test-mail:", err);
+
+    return res.status(500).json({
+      ok: false,
+      error: "No se pudo enviar el mail de prueba.",
+      detail: err?.message || String(err),
+      code: err?.code || null,
+      command: err?.command || null,
+      response: err?.response || null,
+      responseCode: err?.responseCode || null,
+    });
   }
 });
 
-/* =========================
-   POST /appointments/admin/fixed-schedules
-========================= */
-router.post("/admin/fixed-schedules", async (req, res) => {
+/* ============================================
+   ✅ ADMIN - REGISTRACIONES
+============================================ */
+router.get("/registrations/list", adminOnly, async (req, res) => {
   try {
-    const role = String(req.user?.role || "").toLowerCase();
-    if (role !== "admin") {
-      return res.status(403).json({ error: "Solo un admin puede crear turnos fijos." });
-    }
+    const status = String(req.query.status || "pending");
+    const query = {};
+    if (status === "pending") query.approvalStatus = "pending";
+    if (status === "approved") query.approvalStatus = "approved";
+    if (status === "rejected") query.approvalStatus = "rejected";
 
-    const userId = String(req.body?.userId || "").trim();
-    const service = String(req.body?.service || "").trim();
-    const notes = String(req.body?.notes || "").trim();
-    const months = Math.max(1, Math.min(12, Number(req.body?.months || 1)));
-    const items = Array.isArray(req.body?.items) ? req.body.items : [];
+    const users = await User.find(query).sort({ createdAt: -1 }).lean();
 
-    if (!userId) return res.status(400).json({ error: "Falta userId." });
-    if (!service) return res.status(400).json({ error: "Falta service." });
-    if (!items.length) return res.status(400).json({ error: "Faltan días fijos." });
+    return res.json(users.map((u) => decorateUserForResponse(u)));
+  } catch (err) {
+    console.error("Error en GET /users/registrations/list:", err);
+    return res.status(500).json({ error: "Error al obtener registraciones." });
+  }
+});
 
-    const cleanItems = items
-      .map((it) => ({
-        weekday: Number(it?.weekday || 0),
-        time: String(it?.time || "").slice(0, 5),
-      }))
-      .filter((it) => it.weekday >= 1 && it.weekday <= 5 && !!it.time);
-
-    if (!cleanItems.length) {
-      return res.status(400).json({ error: "No hay items válidos para guardar." });
-    }
-
-    const startDate = ymdAR(new Date());
-    const endDate = addMonthsYmd(startDate, months);
-
-    const fixed = await FixedSchedule.create({
-      user: userId,
-      createdBy: req.user?._id || req.user?.id,
-      service,
-      items: cleanItems,
-      months,
-      startDate,
-      endDate,
+router.post("/", adminOnly, async (req, res) => {
+  try {
+    const {
+      name,
+      lastName,
+      email,
+      phone,
+      dni,
+      age,
+      weight,
       notes,
-      active: true,
-    });
+      credits,
+      role,
+      password,
+    } = req.body || {};
 
-    const occurrences = buildOccurrencesForFixedSchedule({
-      startDate,
-      months,
-      items: cleanItems,
-    });
+    const n = String(name || "").trim();
+    const ln = String(lastName || "").trim();
+    const em = String(email || "").trim().toLowerCase();
+    const ph = String(phone || "").trim();
 
-    const created = [];
-    const conflicts = [];
-
-    for (const occ of occurrences) {
-      try {
-        const ap = await createAppointmentForTargetUser({
-          userId,
-          actorReq: req,
-          date: occ.date,
-          time: occ.time,
-          service,
-          notes,
-          bypassWindow: true,
-        });
-        created.push(ap);
-      } catch (e) {
-        conflicts.push({
-          date: occ.date,
-          time: occ.time,
-          service,
-          error: e?.message || "No se pudo crear.",
-        });
-      }
-    }
-
-    return res.status(201).json({
-      ok: true,
-      fixedScheduleId: String(fixed._id),
-      createdCount: created.length,
-      conflictsCount: conflicts.length,
-      items: created,
-      conflicts,
-    });
-  } catch (err) {
-    console.error("Error en POST /appointments/admin/fixed-schedules:", err);
-    return res.status(500).json({ error: "Error al guardar turnos fijos." });
-  }
-});
-
-/* =========================
-   POST /appointments
-========================= */
-router.post("/", async (req, res) => {
-  const session = await mongoose.startSession();
-
-  let mailUser = null;
-  let mailAp = null;
-  let mailServiceName = null;
-
-  try {
-    const { date, time, service } = req.body || {};
-    const basic = validateBasicSlotRules({ date, time, service });
-    if (!basic.ok) return res.status(400).json({ error: basic.error });
-
-    const userId = req.user._id || req.user.id;
-    let out = null;
-
-    await session.withTransaction(async () => {
-      const user = await User.findById(userId).session(session);
-      if (!user) throw new Error("USER_NOT_FOUND");
-
-      const isAdmin = user.role === "admin";
-
-      if (!isAdmin) {
-        if (user.suspended) throw new Error("USER_SUSPENDED");
-        if (requiresApto(user)) throw new Error("APTO_REQUIRED");
-
-        recalcUserCredits(user);
-        if ((user.credits || 0) <= 0) throw new Error("NO_CREDITS");
-
-        const requestedSk = serviceToKey(service);
-        if (!hasValidCreditsForService(user, requestedSk)) {
-          throw new Error(`NO_CREDITS_FOR_${requestedSk}`);
-        }
-      }
-
-      const t = String(time).slice(0, 5);
-
-      const alreadyByUser = await Appointment.findOne({
-        date,
-        time: t,
-        user: user._id,
-        status: "reserved",
-      }).session(session).lean();
-
-      if (alreadyByUser) throw new Error("ALREADY_HAVE_SLOT");
-
-      const existingAtSlot = await Appointment.find({
-        date,
-        time: t,
-        status: "reserved",
-      }).session(session).lean();
-
-      let willWaitlist = false;
-
-      if (existingAtSlot.length >= TOTAL_CAP) {
-        if (basic.isEpService) willWaitlist = true;
-        else throw new Error("TOTAL_CAP_REACHED");
-      }
-
-      const epCount = existingAtSlot.filter((a) => sameService(a.service, EP_NAME)).length;
-      const rfTaken = existingAtSlot.some((a) => sameService(a.service, RF_NAME)) ? 1 : 0;
-      const raTaken = existingAtSlot.some((a) => sameService(a.service, RA_NAME)) ? 1 : 0;
-      const otherReservedCount = rfTaken + raTaken;
-
-      if (sameService(service, RF_NAME) && rfTaken) throw new Error("SERVICE_CAP_REACHED");
-      if (sameService(service, RA_NAME) && raTaken) throw new Error("SERVICE_CAP_REACHED");
-
-      if (basic.isEpService) {
-        const hoursToStart = (basic.slotDate.getTime() - Date.now()) / (1000 * 60 * 60);
-
-        const epCap = calcEpCap({
-          hoursToStart,
-          hasRF: !!rfTaken,
-          hasRA: !!raTaken,
-          otherReservedCount,
-        });
-
-        if (epCount >= epCap) willWaitlist = true;
-      }
-
-      if (willWaitlist && basic.isEpService) {
-        const wlExists = await WaitlistEntry.findOne({
-          user: user._id,
-          date,
-          time: t,
-          service: EP_NAME,
-          status: { $in: ["waiting", "notified"] },
-        }).session(session);
-
-        if (wlExists) throw new Error("ALREADY_IN_WAITLIST");
-
-        await WaitlistEntry.create(
-          [{ user: user._id, date, time: t, service: EP_NAME, status: "waiting" }],
-          { session }
-        );
-
-        out = {
-          kind: "waitlist",
-          date,
-          time: t,
-          service: EP_NAME,
-          status: "waiting",
-          userCredits: Number(user.credits || 0),
-          userCreditLots: serializeUserCreditLots(user),
-        };
-        return;
-      }
-
-      let usedLotId = null;
-      let usedLotExp = null;
-
-      if (!isAdmin) {
-        const sk = serviceToKey(service);
-        const lot = pickLotToConsume(user, sk);
-        if (!lot) throw new Error(`NO_CREDITS_FOR_${sk}`);
-
-        consumeCreditLot(user, lot, 1);
-        usedLotId = lot._id;
-        usedLotExp = lot.expiresAt || null;
-
-        recalcUserCredits(user);
-
-        user.history = user.history || [];
-        user.history.push({
-          action: "reservado",
-          date,
-          time: t,
-          service,
-          serviceName: service,
-          createdAt: new Date(),
-        });
-
-        await user.save({ session });
-      }
-
-      const created = await Appointment.create(
-        [{
-          date,
-          time: t,
-          service,
-          user: user._id,
-          status: "reserved",
-          creditLotId: usedLotId,
-          creditExpiresAt: usedLotExp,
-        }],
-        { session }
-      );
-
-      const populated = await Appointment.findById(created[0]._id)
-        .populate("user", "name lastName email")
-        .session(session);
-
-      out = {
-        ...serializeAppointment(populated),
-        userCredits: Number(user.credits || 0),
-        userCreditLots: serializeUserCreditLots(user),
-      };
-
-      mailUser = { ...user.toObject(), _id: user._id };
-      mailAp = { date, time: t, service };
-      mailServiceName = service;
-    });
-
-    if (out?.kind === "waitlist") {
-      await logActivity({
-        req,
-        category: "appointments",
-        action: "waitlist_joined",
-        entity: "waitlist",
-        entityId:
-          String(out?.date || "") +
-          "-" +
-          String(out?.time || "") +
-          "-" +
-          String(req.user?._id || ""),
-        title: "Lista de espera",
-        description: "Se agregó a lista de espera de turnos.",
-        subject: buildUserSubject(req.user),
-        meta: {
-          date: out?.date,
-          time: out?.time,
-          serviceName: out?.service,
-        },
-      });
-    } else if (out?.id) {
-      await logActivity({
-        req,
-        category: "appointments",
-        action: "appointment_reserved",
-        entity: "appointment",
-        entityId: out.id,
-        title: "Turno reservado",
-        description: "Se registró una nueva reserva.",
-        subject: buildUserSubject(req.user),
-        meta: {
-          date: out?.date,
-          time: out?.time,
-          serviceName: out?.service,
-        },
+    if (!n || !ln || !em || !ph) {
+      return res.status(400).json({
+        error: "Nombre, apellido, teléfono y email son obligatorios.",
       });
     }
 
-    const httpCode = out?.kind === "waitlist" ? 202 : 201;
-    res.status(httpCode).json(out);
+    const plainPassword =
+      password && String(password).trim().length >= 4
+        ? String(password).trim()
+        : Math.random().toString(36).slice(2, 10);
 
-    if (mailUser && mailAp && out?.kind !== "waitlist") {
-      fireAndForget(async () => {
-        try {
-          await sendAppointmentBookedEmail(mailUser, mailAp, mailServiceName);
-        } catch (e) {
-          console.log("[MAIL] booked error:", e?.message || e);
-          await sendAdminCopy({ kind: "booked", user: mailUser, ap: mailAp });
-        }
-      }, "MAIL_BOOKED");
-    }
-  } catch (err) {
-    console.error("Error en POST /appointments:", err);
-    const msg = String(err?.message || "");
+    const hashed = await bcrypt.hash(plainPassword, 10);
 
-    if (err?.code === 11000) {
-      return res.status(409).json({
-        error: "Conflicto: ese turno o ese servicio ya fue reservado. Actualizá y probá de nuevo.",
-      });
-    }
-
-    if (msg === "USER_NOT_FOUND") return res.status(403).json({ error: "Usuario no encontrado." });
-    if (msg === "USER_SUSPENDED") return res.status(403).json({ error: "Cuenta suspendida." });
-    if (msg === "APTO_REQUIRED") {
-      return res.status(403).json({ error: "Cuenta suspendida por falta de apto médico." });
-    }
-    if (msg === "NO_CREDITS") return res.status(403).json({ error: "Sin créditos disponibles." });
-
-    if (msg === "ALREADY_HAVE_SLOT") {
-      return res.status(409).json({ error: "Ya tenés un turno reservado en ese horario." });
-    }
-
-    if (msg === "ALREADY_IN_WAITLIST") {
-      return res.status(409).json({ error: "Ya estás en lista de espera para ese horario." });
-    }
-
-    if (msg === "TOTAL_CAP_REACHED") {
-      return res.status(409).json({ error: "Se alcanzó el cupo total disponible para este horario." });
-    }
-
-    if (msg === "SERVICE_CAP_REACHED") {
-      return res.status(409).json({ error: "Ese servicio ya alcanzó su cupo para ese horario." });
-    }
-
-    if (msg.startsWith("NO_CREDITS_FOR_")) {
-      const sk = msg.replace("NO_CREDITS_FOR_", "");
-      return res.status(403).json({
-        error: `No tenés créditos válidos para este servicio (${sk}).`,
-      });
-    }
-
-    return res.status(500).json({ error: "Error al crear el turno." });
-  } finally {
-    session.endSession();
-  }
-});
-
-/* =========================
-   POST /appointments/batch
-========================= */
-router.post("/batch", async (req, res) => {
-  const session = await mongoose.startSession();
-
-  let mailUser = null;
-  let mailItems = null;
-
-  try {
-    const items = Array.isArray(req.body?.items) ? req.body.items : [];
-    if (!items.length) {
-      return res.status(400).json({ error: "Faltan items: [{date,time,service}]." });
-    }
-    if (items.length > 12) {
-      return res.status(400).json({ error: "Máximo 12 turnos por operación." });
-    }
-
-    const seen = new Set();
-    const normalized = items.map((it, idx) => {
-      const date = String(it?.date || "").trim();
-      const time = String(it?.time || "").trim();
-      const service = String(it?.service || "").trim();
-
-      const basic = validateBasicSlotRules({ date, time, service });
-      if (!basic.ok) {
-        const e = new Error(`ITEM_${idx}_INVALID:${basic.error}`);
-        e.http = 400;
-        throw e;
-      }
-
-      const timeNorm = String(time).slice(0, 5);
-      const key = `${date}__${timeNorm}__${service}`;
-      if (seen.has(key)) {
-        const e = new Error(`ITEM_${idx}_DUP`);
-        e.http = 409;
-        throw e;
-      }
-      seen.add(key);
-
-      return { date, time: timeNorm, service, ...basic };
+    const user = await User.create({
+      name: n,
+      lastName: ln,
+      email: em,
+      phone: ph,
+      dni: dni || "",
+      age: age ?? null,
+      weight: weight ?? null,
+      notes: notes || "",
+      credits: 0,
+      creditLots: [],
+      role: role || "client",
+      password: hashed,
+      mustChangePassword: true,
+      suspended: false,
+      emailVerified: true,
+      approvalStatus: "approved",
+      aptoPath: "",
+      aptoStatus: "",
+      welcomeApprovedEmailSentAt: new Date(),
     });
 
-    const userId = req.user._id || req.user.id;
-    let createdItems = [];
-    let waitlistedItems = [];
-    let userCreditsAfter = null;
-    let userCreditLotsAfter = [];
+    const initialCredits = Number(credits ?? 0);
+    if (initialCredits > 0) {
+      addCreditLot(user, {
+        amount: initialCredits,
+        serviceKey: "EP",
+        source: "admin-create",
+      });
+      await user.save();
+    }
 
-    await session.withTransaction(async () => {
-      const user = await User.findById(userId).session(session);
-      if (!user) throw new Error("USER_NOT_FOUND");
+    fireAndForget(
+      async () => {
+        await sendUserApprovedEmail({
+          to: em,
+          user: { name: n, lastName: ln, email: em },
+          password: plainPassword,
+        });
+      },
+      "MAIL_APPROVED_CREATE"
+    );
 
-      const isAdmin = user.role === "admin";
-
-      if (!isAdmin) {
-        if (user.suspended) throw new Error("USER_SUSPENDED");
-        if (requiresApto(user)) throw new Error("APTO_REQUIRED");
-
-        recalcUserCredits(user);
-        if ((user.credits || 0) <= 0) throw new Error("NO_CREDITS");
-      }
-
-      const slotSet = new Set(normalized.map((x) => slotKey(x.date, x.time)));
-      if (slotSet.size !== normalized.length) {
-        const e = new Error("DUP_SLOT_IN_BATCH");
-        e.http = 409;
-        throw e;
-      }
-
-      const orSlots = normalized.map((x) => ({ date: x.date, time: x.time }));
-      const alreadyByUserAny = await Appointment.findOne({
-        user: user._id,
-        status: "reserved",
-        $or: orSlots,
-      }).session(session).lean();
-
-      if (alreadyByUserAny) throw new Error("ALREADY_HAVE_SLOT");
-
-      const existing = await Appointment.find({
-        status: "reserved",
-        $or: orSlots,
-      }).session(session).lean();
-
-      const bySlot = new Map();
-      for (const ap of existing) {
-        const k = slotKey(ap.date, ap.time);
-        if (!bySlot.has(k)) bySlot.set(k, []);
-        bySlot.get(k).push(ap);
-      }
-
-      for (const it of normalized) {
-        const k = slotKey(it.date, it.time);
-        const cur = bySlot.get(k) || [];
-
-        if (cur.length >= TOTAL_CAP) {
-          if (it.isEpService) {
-            it.waitlist = true;
-            continue;
-          }
-          const e = new Error("TOTAL_CAP_REACHED");
-          e.http = 409;
-          throw e;
-        }
-
-        if (sameService(it.service, RF_NAME)) {
-          if (cur.some((a) => sameService(a.service, RF_NAME))) {
-            const e = new Error("SERVICE_CAP_REACHED");
-            e.http = 409;
-            throw e;
-          }
-        }
-        if (sameService(it.service, RA_NAME)) {
-          if (cur.some((a) => sameService(a.service, RA_NAME))) {
-            const e = new Error("SERVICE_CAP_REACHED");
-            e.http = 409;
-            throw e;
-          }
-        }
-
-        if (it.isEpService) {
-          const epCount = cur.filter((a) => sameService(a.service, EP_NAME)).length;
-          const rfTaken = cur.some((a) => sameService(a.service, RF_NAME)) ? 1 : 0;
-          const raTaken = cur.some((a) => sameService(a.service, RA_NAME)) ? 1 : 0;
-          const otherReservedCount = rfTaken + raTaken;
-
-          const hoursToStart = (it.slotDate.getTime() - Date.now()) / (1000 * 60 * 60);
-
-          const epCap = calcEpCap({
-            hoursToStart,
-            hasRF: !!rfTaken,
-            hasRA: !!raTaken,
-            otherReservedCount,
-          });
-
-          if (epCount >= epCap) {
-            it.waitlist = true;
-            continue;
-          }
-        }
-
-        cur.push({ date: it.date, time: it.time, service: it.service });
-        bySlot.set(k, cur);
-      }
-
-      createdItems = [];
-      waitlistedItems = [];
-
-      const toReserve = normalized.filter((x) => !x.waitlist);
-
-      if (!isAdmin) {
-        recalcUserCredits(user);
-        if ((user.credits || 0) < toReserve.length) {
-          const e = new Error("NO_CREDITS");
-          e.http = 403;
-          throw e;
-        }
-
-        const needByService = { EP: 0, RF: 0, RA: 0, NUT: 0 };
-
-        for (const it of toReserve) {
-          const sk = serviceToKey(it.service);
-          if (needByService[sk] !== undefined) needByService[sk] += 1;
-        }
-
-        for (const [sk, need] of Object.entries(needByService)) {
-          if (!need) continue;
-
-          let available = 0;
-          for (const lot of Array.isArray(user.creditLots) ? user.creditLots : []) {
-            const rem = Number(lot?.remaining || 0);
-            if (rem <= 0) continue;
-
-            const exp = lot?.expiresAt ? new Date(lot.expiresAt) : null;
-            if (exp && exp <= new Date()) continue;
-
-            const lk = String(lot?.serviceKey || "").toUpperCase().trim();
-            if (lk === sk) available += rem;
-          }
-
-          if (available < need) {
-            const e = new Error(`NO_CREDITS_FOR_${sk}`);
-            e.http = 403;
-            throw e;
-          }
-        }
-      }
-
-      for (const it of normalized) {
-        if (it.waitlist) {
-          const wlExists = await WaitlistEntry.findOne({
-            user: user._id,
-            date: it.date,
-            time: it.time,
-            service: EP_NAME,
-            status: { $in: ["waiting", "notified"] },
-          }).session(session);
-
-          if (!wlExists) {
-            await WaitlistEntry.create(
-              [{
-                user: user._id,
-                date: it.date,
-                time: it.time,
-                service: EP_NAME,
-                status: "waiting",
-              }],
-              { session }
-            );
-          }
-
-          waitlistedItems.push({
-            kind: "waitlist",
-            date: it.date,
-            time: it.time,
-            service: EP_NAME,
-            status: "waiting",
-          });
-          continue;
-        }
-
-        let usedLotId = null;
-        let usedLotExp = null;
-
-        if (!isAdmin) {
-          const sk = serviceToKey(it.service);
-          const lot = pickLotToConsume(user, sk);
-          if (!lot) {
-            const e = new Error(`NO_CREDITS_FOR_${sk}`);
-            e.http = 403;
-            throw e;
-          }
-
-          consumeCreditLot(user, lot, 1);
-          usedLotId = lot._id;
-          usedLotExp = lot.expiresAt || null;
-
-          user.history = user.history || [];
-          user.history.push({
-            action: "reservado",
-            date: it.date,
-            time: it.time,
-            service: it.service,
-            serviceName: it.service,
-            createdAt: new Date(),
-          });
-        }
-
-        const created = await Appointment.create(
-          [{
-            date: it.date,
-            time: it.time,
-            service: it.service,
-            user: user._id,
-            status: "reserved",
-            creditLotId: usedLotId,
-            creditExpiresAt: usedLotExp,
-          }],
-          { session }
-        );
-
-        const populated = await Appointment.findById(created[0]._id)
-          .populate("user", "name lastName email")
-          .session(session);
-
-        createdItems.push(serializeAppointment(populated));
-      }
-
-      if (!isAdmin) {
-        recalcUserCredits(user);
-        await user.save({ session });
-      }
-
-      userCreditsAfter = Number(user.credits || 0);
-      userCreditLotsAfter = serializeUserCreditLots(user);
-      mailUser = { ...user.toObject(), _id: user._id };
-      mailItems = createdItems.map((x) => ({ date: x.date, time: x.time, service: x.service }));
-    });
+    const uLean =
+      (await User.findById(user._id).lean()) || user.toObject?.() || user;
 
     await logActivity({
       req,
-      category: "appointments",
-      action: "appointment_batch_created",
-      entity: "appointment_batch",
-      entityId: String(req.user?._id || "") + "-" + String(Date.now()),
-      title: "Reserva múltiple",
-      description: "Se registró una reserva múltiple de turnos.",
-      subject: buildUserSubject(req.user),
-      meta: {
-        createdCount: createdItems.length,
-        waitlistedCount: waitlistedItems.length,
-        steps: [
-          ...createdItems.map(
-            (x) => `Reservó ${x.service} el ${x.date} a las ${x.time}`
-          ),
-          ...waitlistedItems.map(
-            (x) => `Entró en lista de espera para ${x.service} el ${x.date} a las ${x.time}`
-          ),
-        ],
-      },
+      category: "users",
+      action: "user_created",
+      entity: "user",
+      entityId: user._id,
+      title: "Usuario creado",
+      description: (`Se creó el usuario ${n} ${ln}`).trim(),
+      subject: buildUserSubject(user),
+      meta: { initialCredits, createdBy: "admin" },
     });
 
-    res.status(201).json({
-      items: createdItems,
-      waitlisted: waitlistedItems,
-      userCredits: userCreditsAfter,
-      userCreditLots: userCreditLotsAfter,
+    return res.status(201).json({
+      ok: true,
+      user: decorateUserForResponse(uLean),
+      tempPassword: password ? undefined : plainPassword,
     });
-
-    if (mailUser && mailItems?.length) {
-      fireAndForget(async () => {
-        try {
-          await sendAppointmentBookedBatchEmail(mailUser, mailItems);
-        } catch (e) {
-          console.log("[MAIL] batch booked error:", e?.message || e);
-          await sendAdminCopy({
-            kind: "batch_booked",
-            user: mailUser,
-            ap: { items: mailItems },
-          });
-        }
-      }, "MAIL_BATCH_BOOKED");
-    }
   } catch (err) {
-    console.error("Error en POST /appointments/batch:", err);
-    const msg = String(err?.message || "");
-    const http = err?.http;
-
-    if (http) {
-      if (msg.startsWith("ITEM_") && msg.includes("_INVALID:")) {
-        const parts = msg.split("_INVALID:");
-        return res.status(400).json({ error: parts[1] || "Item inválido." });
-      }
-      if (msg.startsWith("ITEM_") && msg.endsWith("_DUP")) {
-        return res.status(409).json({ error: "Hay items duplicados dentro del batch." });
-      }
-      if (msg === "SERVICE_CAP_REACHED") {
-        return res.status(409).json({
-          error: "Ese servicio ya alcanzó su cupo en uno de los horarios.",
-        });
-      }
-      if (msg === "TOTAL_CAP_REACHED") {
-        return res.status(409).json({
-          error: "Se alcanzó el cupo total disponible para alguno de los horarios.",
-        });
-      }
-      if (msg === "NO_CREDITS") {
-        return res.status(403).json({ error: "Sin créditos disponibles." });
-      }
-      if (msg.startsWith("NO_CREDITS_FOR_")) {
-        const sk = msg.replace("NO_CREDITS_FOR_", "");
-        return res.status(403).json({
-          error: `No tenés créditos válidos para este servicio (${sk}).`,
-        });
-      }
-      return res.status(http).json({ error: "No se pudo reservar el batch." });
+    console.error("Error en POST /users:", err);
+    if (err.code === 11000 && err.keyPattern?.email) {
+      return res
+        .status(400)
+        .json({ error: "Ya existe un usuario con ese email." });
     }
-
-    if (err?.code === 11000) {
-      return res.status(409).json({
-        error: "Conflicto: alguno de los turnos/servicios ya fue reservado. Actualizá y probá de nuevo.",
-      });
-    }
-
-    if (msg === "USER_NOT_FOUND") return res.status(403).json({ error: "Usuario no encontrado." });
-    if (msg === "USER_SUSPENDED") return res.status(403).json({ error: "Cuenta suspendida." });
-    if (msg === "APTO_REQUIRED") {
-      return res.status(403).json({ error: "Cuenta suspendida por falta de apto médico." });
-    }
-    if (msg === "NO_CREDITS") return res.status(403).json({ error: "Sin créditos disponibles." });
-
-    if (msg === "DUP_SLOT_IN_BATCH") {
-      return res.status(409).json({
-        error: "No podés reservar 2 turnos en el mismo horario en un solo batch.",
-      });
-    }
-
-    if (msg === "ALREADY_HAVE_SLOT") {
-      return res.status(409).json({
-        error: "Ya tenés un turno reservado en alguno de esos horarios.",
-      });
-    }
-
-    if (msg === "TOTAL_CAP_REACHED") {
-      return res.status(409).json({
-        error: "Se alcanzó el cupo total disponible para alguno de los horarios.",
-      });
-    }
-
-    if (msg.startsWith("NO_CREDITS_FOR_")) {
-      const sk = msg.replace("NO_CREDITS_FOR_", "");
-      return res.status(403).json({
-        error: `No tenés créditos válidos para este servicio (${sk}).`,
-      });
-    }
-
-    return res.status(500).json({ error: "Error al reservar el batch." });
-  } finally {
-    session.endSession();
+    return res.status(500).json({ error: "Error al crear usuario." });
   }
 });
 
-/* =========================
-   POST /appointments/waitlist/claim
-========================= */
-router.post("/waitlist/claim", async (req, res) => {
-  const session = await mongoose.startSession();
-
+router.get("/", adminOrProfessor, async (req, res) => {
   try {
-    const token = String(req.body?.token || "").trim();
-    if (!token) return res.status(400).json({ error: "Falta token." });
+    const role = String(req.user?.role || "").toLowerCase();
+    const isAdmin = role === "admin";
 
-    let payload = null;
-    let logMeta = null;
-    let logEntityId = null;
-    let logSubject = null;
+    const list = await User.find().lean();
 
-    await session.withTransaction(async () => {
-      const wl = await WaitlistEntry.findOne({
-        notifyToken: token,
-        status: "notified",
-      }).session(session);
-
-      if (!wl) {
-        const e = new Error("TOKEN_INVALID");
-        e.http = 404;
-        throw e;
-      }
-
-      if (wl.tokenExpiresAt && new Date(wl.tokenExpiresAt) <= new Date()) {
-        wl.status = "expired";
-        await wl.save({ session });
-        const e = new Error("TOKEN_EXPIRED");
-        e.http = 410;
-        throw e;
-      }
-
-      const user = await User.findById(wl.user).session(session);
-      if (!user) {
-        const e = new Error("USER_NOT_FOUND");
-        e.http = 404;
-        throw e;
-      }
-
-      const basic = validateBasicSlotRules({
-        date: wl.date,
-        time: wl.time,
-        service: EP_NAME,
-      });
-      if (!basic.ok) {
-        const e = new Error("SLOT_NOT_VALID");
-        e.http = 409;
-        throw e;
-      }
-
-      const existingAtSlot = await Appointment.find({
-        date: wl.date,
-        time: wl.time,
-        status: "reserved",
-      }).session(session).lean();
-
-      if (existingAtSlot.length >= TOTAL_CAP) {
-        const e = new Error("NO_LONGER_AVAILABLE");
-        e.http = 409;
-        throw e;
-      }
-
-      const epCount = existingAtSlot.filter((a) => sameService(a.service, EP_NAME)).length;
-      const rfTaken = existingAtSlot.some((a) => sameService(a.service, RF_NAME)) ? 1 : 0;
-      const raTaken = existingAtSlot.some((a) => sameService(a.service, RA_NAME)) ? 1 : 0;
-      const otherReservedCount = rfTaken + raTaken;
-
-      const hoursToStart = (basic.slotDate.getTime() - Date.now()) / (1000 * 60 * 60);
-      const epCap = calcEpCap({
-        hoursToStart,
-        hasRF: !!rfTaken,
-        hasRA: !!raTaken,
-        otherReservedCount,
-      });
-
-      if (epCount >= epCap) {
-        const e = new Error("NO_LONGER_AVAILABLE");
-        e.http = 409;
-        throw e;
-      }
-
-      const alreadyByUser = await Appointment.findOne({
-        date: wl.date,
-        time: wl.time,
-        user: user._id,
-        status: "reserved",
-      }).session(session).lean();
-
-      if (alreadyByUser) {
-        wl.status = "claimed";
-        wl.claimedAt = new Date();
-        await wl.save({ session });
-        payload = {
-          ok: true,
-          alreadyHadIt: true,
-          userCredits: Number(user.credits || 0),
-          userCreditLots: serializeUserCreditLots(user),
-        };
-        return;
-      }
-
-      let usedLotId = null;
-      let usedLotExp = null;
-
-      if (user.role !== "admin") {
-        if (user.suspended) throw new Error("USER_SUSPENDED");
-        if (requiresApto(user)) throw new Error("APTO_REQUIRED");
-
-        recalcUserCredits(user);
-        if ((user.credits || 0) <= 0) throw new Error("NO_CREDITS");
-
-        const sk = serviceToKey(EP_NAME);
-        const lot = pickLotToConsume(user, sk);
-        if (!lot) throw new Error(`NO_CREDITS_FOR_${sk}`);
-
-        consumeCreditLot(user, lot, 1);
-        usedLotId = lot._id;
-        usedLotExp = lot.expiresAt || null;
-
-        user.history = user.history || [];
-        user.history.push({
-          action: "reservado_desde_waitlist",
-          date: wl.date,
-          time: wl.time,
-          service: EP_NAME,
-          serviceName: EP_NAME,
-          createdAt: new Date(),
-        });
-
-        recalcUserCredits(user);
-        await user.save({ session });
-      }
-
-      const created = await Appointment.create(
-        [{
-          date: wl.date,
-          time: wl.time,
-          service: EP_NAME,
-          user: user._id,
-          status: "reserved",
-          creditLotId: usedLotId,
-          creditExpiresAt: usedLotExp,
-        }],
-        { session }
-      );
-
-      wl.status = "claimed";
-      wl.claimedAt = new Date();
-      await wl.save({ session });
-
-      payload = {
-        ok: true,
-        appointmentId: String(created[0]._id),
-        userCredits: Number(user.credits || 0),
-        userCreditLots: serializeUserCreditLots(user),
-      };
-      logEntityId = String(created[0]._id);
-      logSubject = buildUserSubject(user);
-      logMeta = {
-        date: wl.date,
-        time: wl.time,
-        serviceName: EP_NAME,
-        fromWaitlist: true,
-      };
-    });
-
-    if (payload?.appointmentId) {
-      await logActivity({
-        req,
-        category: "appointments",
-        action: "appointment_reserved",
-        entity: "appointment",
-        entityId: logEntityId,
-        title: "Turno confirmado desde lista de espera",
-        description: "Se confirmó una reserva desde la lista de espera.",
-        subject: logSubject || buildUserSubject(req.user),
-        meta: logMeta || {},
-      });
-    }
-
-    res.json(payload);
+    return res.json(
+      list.map((u) =>
+        decorateUserForResponse(u, {
+          includeClinicalNotes: isAdmin,
+        })
+      )
+    );
   } catch (err) {
-    const http = err?.http || 500;
-    const msg = String(err?.message || "");
-
-    if (msg === "TOKEN_INVALID") return res.status(404).json({ error: "Token inválido." });
-    if (msg === "TOKEN_EXPIRED") return res.status(410).json({ error: "El link expiró." });
-    if (msg === "NO_LONGER_AVAILABLE") {
-      return res.status(409).json({ error: "El cupo ya no está disponible." });
-    }
-
-    if (msg === "USER_NOT_FOUND") return res.status(404).json({ error: "Usuario no encontrado." });
-    if (msg === "USER_SUSPENDED") return res.status(403).json({ error: "Cuenta suspendida." });
-    if (msg === "APTO_REQUIRED") {
-      return res.status(403).json({ error: "Cuenta suspendida por falta de apto médico." });
-    }
-    if (msg === "NO_CREDITS") return res.status(403).json({ error: "Sin créditos disponibles." });
-    if (msg.startsWith("NO_CREDITS_FOR_")) {
-      return res.status(403).json({ error: "No tenés créditos válidos." });
-    }
-
-    console.error("Error en POST /appointments/waitlist/claim:", err);
-    return res.status(http).json({ error: "No se pudo confirmar el turno." });
-  } finally {
-    session.endSession();
+    console.error("Error en GET /users:", err);
+    return res.status(500).json({ error: "Error al obtener usuarios." });
   }
 });
 
-/* =========================
-   PATCH /appointments/:id/cancel
-========================= */
-router.patch("/:id/cancel", async (req, res) => {
-  const session = await mongoose.startSession();
+router.get("/pending", adminOnly, async (req, res) => {
+  try {
+    const pending = await User.find({ approvalStatus: "pending" })
+      .sort({ createdAt: -1 })
+      .lean();
 
-  let mailUser = null;
-  let mailAp = null;
-  let mailServiceName = null;
-  let mailMeta = null;
+    return res.json(pending.map((u) => decorateUserForResponse(u)));
+  } catch (err) {
+    console.error("Error en GET /users/pending:", err);
+    return res.status(500).json({ error: "Error al obtener pendientes." });
+  }
+});
 
+router.patch("/:id/approval", adminOnly, validateObjectIdParam, async (req, res) => {
   try {
     const { id } = req.params;
-    let payload = null;
+    const status = String(req.body?.status || "").toLowerCase().trim();
 
-    await session.withTransaction(async () => {
-      const ap = await Appointment.findById(id).session(session);
-      if (!ap) {
-        const e = new Error("NOT_FOUND");
-        e.http = 404;
-        throw e;
+    if (!["approved", "rejected"].includes(status)) {
+      return res.status(400).json({ error: "Estado inválido." });
+    }
+
+    const user = await User.findById(id);
+    if (!user) return res.status(404).json({ error: "Usuario no encontrado." });
+
+    if (status === "approved" && !user.emailVerified) {
+      return res
+        .status(400)
+        .json({ error: "No se puede aprobar: el email no está verificado." });
+    }
+
+    const prevStatus = String(user.approvalStatus || "pending");
+
+    if (status === "rejected") {
+      const to = String(user.email || "").trim();
+      const shouldSendRejectionMail = !!to && prevStatus !== "rejected";
+
+      if (shouldSendRejectionMail) {
+        fireAndForget(
+          () => sendUserApprovalResultEmail(user, "rejected"),
+          "MAIL_REJECT_AND_DELETE"
+        );
       }
 
-      const tokenUserId = req.user._id || req.user.id;
-      const isOwner = ap.user?.toString?.() === String(tokenUserId);
-      const isAdmin = req.user.role === "admin";
+      await Appointment.deleteMany({ user: user._id });
 
-      if (!isOwner && !isAdmin) {
-        const e = new Error("FORBIDDEN");
-        e.http = 403;
-        throw e;
-      }
-
-      if (ap.status === "cancelled") {
-        const e = new Error("ALREADY_CANCELLED");
-        e.http = 400;
-        throw e;
-      }
-
-      const apDate = buildSlotDate(ap.date, ap.time);
-      if (!apDate) {
-        const e = new Error("INVALID_AP_DATE");
-        e.http = 400;
-        throw e;
-      }
-
-      const diffMs = apDate.getTime() - Date.now();
-      const hours = diffMs / (1000 * 60 * 60);
-
-      if (hours < 0) {
-        const e = new Error("PAST_APPOINTMENT");
-        e.http = 400;
-        throw e;
-      }
-
-      const user = await User.findById(ap.user).session(session);
-      if (!user) {
-        const e = new Error("USER_NOT_FOUND");
-        e.http = 404;
-        throw e;
-      }
-
-      console.log("[CANCEL][START]", {
-        appointmentId: String(ap._id),
-        userId: String(user._id),
-        userRole: user.role,
-        service: ap.service,
-        date: ap.date,
-        time: ap.time,
-        creditLotId: ap.creditLotId ? String(ap.creditLotId) : null,
-        appointmentCreditExpiresAt: ap.creditExpiresAt || null,
-        hoursToStart: hours,
-        beforeCredits: Number(user.credits || 0),
-        beforeLots: lotsDebug(user),
+      await logActivity({
+        req,
+        category: "users",
+        action: "user_rejected_deleted",
+        entity: "user",
+        entityId: user._id,
+        title: "Usuario rechazado y eliminado",
+        description: "Un admin rechazó el alta y eliminó al usuario.",
+        subject: buildUserSubject(user),
+        deletedSnapshot: user.toObject(),
       });
 
-      ap.status = "cancelled";
-      await ap.save({ session });
+      await user.deleteOne();
 
-      const shouldRefund = isRefundEligible(hours);
-
-      console.log("[CANCEL][POLICY]", {
-        appointmentId: String(ap._id),
-        service: ap.service,
-        serviceKey: serviceToKey(ap.service),
-        cutoffHours: REFUND_CUTOFF_HOURS,
-        hoursToStart: hours,
-        shouldRefund,
+      return res.json({
+        ok: true,
+        deleted: true,
+        message: "Usuario rechazado y eliminado. Puede registrarse nuevamente.",
       });
+    }
 
-      user.history = user.history || [];
-      user.history.push({
-        action: shouldRefund ? "cancelado" : "cancelado_sin_reintegro",
+    user.approvalStatus = "approved";
+    user.suspended = false;
+
+    const changed = prevStatus !== "approved";
+    const shouldSendApprovalMail =
+      changed &&
+      !!String(user.email || "").trim() &&
+      !user.welcomeApprovedEmailSentAt;
+
+    if (shouldSendApprovalMail) user.welcomeApprovedEmailSentAt = new Date();
+
+    await user.save();
+
+    await logActivity({
+      req,
+      category: "users",
+      action: "user_approval_updated",
+      entity: "user",
+      entityId: user._id,
+      title: "Aprobación actualizada",
+      description: `Estado de aprobación cambiado de ${prevStatus} a ${user.approvalStatus}.`,
+      subject: buildUserSubject(user),
+      diff: buildDiff(
+        { approvalStatus: prevStatus },
+        { approvalStatus: user.approvalStatus }
+      ),
+    });
+
+    if (shouldSendApprovalMail) {
+      fireAndForget(
+        () => sendUserApprovalResultEmail(user, "approved"),
+        "MAIL_APPROVED_WEB"
+      );
+    }
+
+    return res.json({
+      ok: true,
+      approvalStatus: user.approvalStatus,
+      suspended: user.suspended,
+      emailVerified: user.emailVerified,
+    });
+  } catch (err) {
+    console.error("Error en PATCH /users/:id/approval:", err);
+    return res.status(500).json({ error: "Error al actualizar aprobación." });
+  }
+});
+
+router.put("/:id", validateObjectIdParam, async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    const role = String(req.user?.role || "").toLowerCase();
+    const isAdmin = role === "admin";
+    const isProfessor = role === "profesor";
+    const isStaff = isAdmin || isProfessor;
+    const isSelf = req.user._id.toString() === id;
+
+    if (!isStaff && !isSelf) {
+      return res
+        .status(403)
+        .json({ error: "No tenés permiso para editar este usuario." });
+    }
+
+    const nextName =
+      typeof req.body?.name === "string" ? req.body.name.trim() : undefined;
+    const nextLastName =
+      typeof req.body?.lastName === "string"
+        ? req.body.lastName.trim()
+        : undefined;
+    const nextPhone =
+      typeof req.body?.phone === "string" ? req.body.phone.trim() : undefined;
+    const nextDni =
+      typeof req.body?.dni === "string" ? req.body.dni.trim() : undefined;
+
+    if (nextDni !== undefined && nextDni !== "" && !/^\d{6,10}$/.test(nextDni)) {
+      return res.status(400).json({ error: "DNI inválido." });
+    }
+
+    const user = await User.findById(id);
+    if (!user) return res.status(404).json({ error: "Usuario no encontrado." });
+
+    const changedFields = [];
+
+    if (nextName !== undefined && nextName !== user.name) {
+      user.name = nextName;
+      changedFields.push("name");
+    }
+
+    if (nextLastName !== undefined && nextLastName !== user.lastName) {
+      user.lastName = nextLastName;
+      changedFields.push("lastName");
+    }
+
+    if (nextPhone !== undefined && nextPhone !== user.phone) {
+      user.phone = nextPhone;
+      changedFields.push("phone");
+    }
+
+    if (nextDni !== undefined && String(nextDni) !== String(user.dni || "")) {
+      user.dni = nextDni;
+      changedFields.push("dni");
+    }
+
+    if (!changedFields.length) {
+      return res.status(400).json({ error: "No hay cambios para guardar." });
+    }
+
+    for (const field of changedFields) {
+      pushUserHistory(user, {
+        action: "profile_field_updated",
+        field,
+        title: `Modificó ${humanProfileFieldLabel(field)} de su información personal.`,
+        createdAt: new Date(),
+      });
+    }
+
+    await user.save();
+
+    const saved = user.toObject();
+
+    await logActivity({
+      req,
+      category: "users",
+      action: "user_profile_updated",
+      entity: "user",
+      entityId: user._id,
+      title: "Perfil actualizado",
+      description: "Se actualizó información personal del usuario.",
+      subject: buildUserSubject(user),
+      meta: { changedFields },
+    });
+
+    return res.json(
+      decorateUserForResponse(saved, {
+        includeClinicalNotes: isAdmin,
+      })
+    );
+  } catch (err) {
+    console.error("Error en PUT /users/:id:", err);
+    return res.status(500).json({ error: "Error interno." });
+  }
+});
+
+router.get("/:id", validateObjectIdParam, async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    const role = String(req.user?.role || "").toLowerCase();
+    const isAdmin = role === "admin";
+    const isProfessor = role === "profesor";
+    const isStaff = isAdmin || isProfessor;
+    const isSelf = req.user._id.toString() === id;
+
+    if (!isStaff && !isSelf) {
+      return res
+        .status(403)
+        .json({ error: "No tenés permiso para ver este usuario." });
+    }
+
+    const u = await User.findById(id).lean();
+    if (!u) return res.status(404).json({ error: "Usuario no encontrado." });
+
+    return res.json(
+      decorateUserForResponse(u, {
+        includeClinicalNotes: isAdmin,
+      })
+    );
+  } catch (err) {
+    console.error("Error en GET /users/:id:", err);
+    return res.status(500).json({ error: "Error interno." });
+  }
+});
+
+router.patch("/:id/role", adminOnly, validateObjectIdParam, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const rawRole = String(req.body?.role || "").toLowerCase().trim();
+
+    const nextRole = rawRole === "usuario" ? "client" : rawRole;
+
+    if (!["admin", "profesor", "client"].includes(nextRole)) {
+      return res.status(400).json({ error: "Rol inválido." });
+    }
+
+    const user = await User.findById(id);
+    if (!user) return res.status(404).json({ error: "Usuario no encontrado." });
+
+    user.role = nextRole;
+    await user.save();
+
+    return res.json({
+      ok: true,
+      user: decorateUserForResponse(user.toObject()),
+    });
+  } catch (err) {
+    console.error("Error en PATCH /users/:id/role:", err);
+    return res.status(500).json({ error: "Error al actualizar rol." });
+  }
+});
+
+router.patch("/:id", adminOnly, validateObjectIdParam, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const updates = req.body || {};
+    const u = await User.findByIdAndUpdate(id, updates, { new: true }).lean();
+    if (!u) return res.status(404).json({ error: "Usuario no encontrado." });
+
+    return res.json(decorateUserForResponse(u));
+  } catch (err) {
+    console.error("Error en PATCH /users/:id:", err);
+    return res.status(500).json({ error: "Error interno." });
+  }
+});
+
+router.delete("/:id", adminOnly, validateObjectIdParam, async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    const user = await User.findById(id);
+    if (!user) return res.status(404).json({ error: "Usuario no encontrado." });
+
+    await Appointment.deleteMany({ user: id });
+
+    await logActivity({
+      req,
+      category: "users",
+      action: "user_deleted",
+      entity: "user",
+      entityId: user._id,
+      title: "Usuario eliminado",
+      description: "Un admin eliminó un usuario.",
+      subject: buildUserSubject(user),
+      deletedSnapshot: user.toObject(),
+    });
+
+    await user.deleteOne();
+
+    return res.json({
+      ok: true,
+      message: "Usuario y turnos asociados eliminados correctamente.",
+    });
+  } catch (err) {
+    console.error("Error en DELETE /users/:id:", err);
+    return res
+      .status(500)
+      .json({ error: "Error al eliminar usuario y sus turnos." });
+  }
+});
+
+router.get("/:id/history", validateObjectIdParam, async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    const role = String(req.user?.role || "").toLowerCase();
+    const isAdmin = role === "admin";
+    const isSelf = req.user._id.toString() === id;
+
+    if (!isAdmin && !isSelf) {
+      return res.status(403).json({
+        error: "No tenés permisos para ver el historial de este usuario.",
+      });
+    }
+
+    const user = await User.findById(id).select("history").lean();
+    if (!user) return res.status(404).json({ error: "Usuario no encontrado." });
+
+    let history = Array.isArray(user.history) ? [...user.history] : [];
+
+    if (!history.length) {
+      const appointments = await Appointment.find({ user: id })
+        .sort({ createdAt: -1 })
+        .lean();
+
+      history = appointments.map((ap) => ({
+        action: String(ap?.status || "reserved").toLowerCase(),
         date: ap.date,
         time: ap.time,
         service: ap.service,
         serviceName: ap.service,
-        createdAt: new Date(),
+        status: ap.status,
+        createdAt: ap.createdAt,
+        title: buildLegacyAppointmentHistoryTitle(ap),
+      }));
+    }
+
+    history.sort((a, b) => {
+      const ad = a?.createdAt ? new Date(a.createdAt).getTime() : 0;
+      const bd = b?.createdAt ? new Date(b.createdAt).getTime() : 0;
+      return bd - ad;
+    });
+
+    return res.json(history);
+  } catch (err) {
+    console.error("Error en GET /users/:id/history:", err);
+    return res.status(500).json({ error: "Error al obtener historial." });
+  }
+});
+
+router.get(
+  "/:id/clinical-notes",
+  adminOrProfessor,
+  validateObjectIdParam,
+  async (req, res) => {
+    try {
+      const { id } = req.params;
+      const user = await User.findById(id).lean();
+      if (!user) return res.status(404).json({ error: "Paciente no encontrado." });
+      return res.json(user.clinicalNotes || []);
+    } catch (err) {
+      console.error("Error en GET /users/:id/clinical-notes:", err);
+      return res
+        .status(500)
+        .json({ error: "Error al obtener historia clínica." });
+    }
+  }
+);
+
+router.post(
+  "/:id/clinical-notes",
+  adminOrProfessor,
+  validateObjectIdParam,
+  async (req, res) => {
+    try {
+      const { id } = req.params;
+      const { text } = req.body || {};
+
+      if (!text || !String(text).trim()) {
+        return res.status(400).json({
+          error: "El texto de la nota clínica es obligatorio.",
+        });
+      }
+
+      const user = await User.findById(id);
+      if (!user) return res.status(404).json({ error: "Paciente no encontrado." });
+
+      user.clinicalNotes = user.clinicalNotes || [];
+      user.clinicalNotes.push({
+        date: new Date(),
+        author: req.user.name || req.user.email || "Admin",
+        text: String(text).trim(),
       });
 
-      if (shouldRefund) {
-        const now = nowDate();
-        const lot = ap.creditLotId ? findLotById(user, ap.creditLotId) : null;
-        const lotExp = lot?.expiresAt ? new Date(lot.expiresAt) : null;
-        const lotStillValid = !!lot && (!lotExp || lotExp > now);
+      await user.save();
+      return res.json({ ok: true, clinicalNotes: user.clinicalNotes });
+    } catch (err) {
+      console.error("Error en POST /users/:id/clinical-notes:", err);
+      return res
+        .status(500)
+        .json({ error: "Error al guardar historia clínica." });
+    }
+  }
+);
 
-        console.log("[CANCEL][LOT-CHECK]", {
-          appointmentId: String(ap._id),
-          creditLotId: ap.creditLotId ? String(ap.creditLotId) : null,
-          lotFound: !!lot,
-          lotData: lot
-            ? {
-                id: String(lot._id || ""),
-                serviceKey: lot.serviceKey,
-                amount: Number(lot.amount || 0),
-                remaining: Number(lot.remaining || 0),
-                expiresAt: lot.expiresAt || null,
-                source: lot.source || "",
-              }
-            : null,
-          now,
-          lotStillValid,
-        });
+/* ============================================
+   ✅ CRÉDITOS
+============================================ */
+async function updateCredits(req, res) {
+  try {
+    const { id } = req.params;
+    const { credits, delta, serviceKey, items, source } = req.body || {};
 
-        if (lotStillValid) {
-          refundCreditToLot(user, lot, 1);
+    const user = await User.findById(id);
+    if (!user) return res.status(404).json({ error: "Usuario no encontrado." });
 
-          console.log("[CANCEL][REFUND-TO-ORIGINAL-LOT]", {
-            appointmentId: String(ap._id),
-            lotId: String(lot._id || ""),
-            newRemaining: Number(lot.remaining || 0),
-          });
-        } else {
-          const refundInfo = makeRefundLot(user, ap.service);
+    recalcUserCredits(user);
+    const beforeCredits = buildCreditsByService(user);
+    const beforeTotal = Object.values(beforeCredits || {}).reduce(
+      (a, b) => a + Number(b || 0),
+      0
+    );
 
-          console.log("[CANCEL][REFUND-NEW-LOT]", {
-            appointmentId: String(ap._id),
-            service: ap.service,
-            serviceKey: refundInfo.sk,
-            expiresAt: refundInfo.expiresAt,
-          });
-        }
+    const applyOne = ({
+      credits: c,
+      delta: d,
+      serviceKey: skRaw,
+      source: src,
+    }) => {
+      const sk = String(skRaw || "EP").toUpperCase().trim() || "EP";
+      if (!ALLOWED_SERVICE_KEYS.has(sk)) {
+        const err = new Error("serviceKey inválido.");
+        err.status = 400;
+        throw err;
       }
 
       recalcUserCredits(user);
+      const currentForService = sumCreditsForService(user, sk);
 
-      console.log("[CANCEL][BEFORE-SAVE-USER]", {
-        appointmentId: String(ap._id),
-        userId: String(user._id),
-        recalculatedCredits: Number(user.credits || 0),
-        lotsAfterRefund: lotsDebug(user),
+      if (typeof c === "number") {
+        const target = Math.max(0, Math.round(c));
+        const diff = target - currentForService;
+        if (diff > 0) {
+          addCreditLot(user, {
+            amount: diff,
+            serviceKey: sk,
+            source: src || "admin-set",
+          });
+        } else if (diff < 0) {
+          consumeCreditsForService(user, Math.abs(diff), sk);
+        }
+        return;
+      }
+
+      if (typeof d === "number") {
+        const dd = Math.round(d);
+        if (dd > 0) {
+          addCreditLot(user, {
+            amount: dd,
+            serviceKey: sk,
+            source: src || "admin-delta",
+          });
+        } else if (dd < 0) {
+          consumeCreditsForService(user, Math.abs(dd), sk);
+        }
+        return;
+      }
+
+      const err = new Error("Valor inválido.");
+      err.status = 400;
+      throw err;
+    };
+
+    if (Array.isArray(items) && items.length > 0) {
+      for (const it of items) {
+        applyOne({
+          credits: it?.credits,
+          delta: it?.delta,
+          serviceKey: it?.serviceKey,
+          source: it?.source || source || "admin-batch",
+        });
+      }
+    } else {
+      applyOne({
+        credits,
+        delta,
+        serviceKey,
+        source: source || "admin-single",
       });
+    }
 
-      await user.save({ session });
+    recalcUserCredits(user);
+    await user.save();
 
-      console.log("[CANCEL][USER-SAVED]", {
-        appointmentId: String(ap._id),
-        userId: String(user._id),
-        savedCredits: Number(user.credits || 0),
-        savedLots: lotsDebug(user),
-      });
-
-      const populated = await Appointment.findById(ap._id)
-        .populate("user", "name lastName email")
-        .session(session);
-
-      payload = {
-        ...serializeAppointment(populated),
-        refund: shouldRefund,
-        refundCutoffHours: REFUND_CUTOFF_HOURS,
-        userCredits: Number(user.credits || 0),
-        userCreditLots: serializeUserCreditLots(user),
-      };
-
-      mailUser = { ...user.toObject(), _id: user._id };
-      mailAp = { date: ap.date, time: ap.time, service: ap.service };
-      mailServiceName = ap.service;
-      mailMeta = { refund: shouldRefund, refundCutoffHours: REFUND_CUTOFF_HOURS };
-    });
+    const creditsByService = buildCreditsByService(user);
 
     await logActivity({
       req,
-      category: "appointments",
-      action: "appointment_cancelled",
-      entity: "appointment",
-      entityId: id,
-      title: "Turno cancelado",
-      description: "Se canceló un turno existente.",
-      subject: buildUserSubject(mailUser || req.user),
+      category: "users",
+      action: "credits_updated",
+      entity: "user",
+      entityId: user._id,
+      title: "Créditos modificados",
+      description: "Se modificaron los créditos/sesiones del usuario.",
+      subject: buildUserSubject(user),
+      diff: buildDiff(
+        { total: beforeTotal, byService: beforeCredits },
+        { total: Number(user.credits || 0), byService: creditsByService }
+      ),
       meta: {
-        date: payload?.date,
-        time: payload?.time,
-        serviceName: payload?.service,
-        refund: payload?.refund,
+        source: source || (Array.isArray(items) ? "admin-batch" : "admin-single"),
       },
     });
 
-    res.json(payload);
+    queueCreditsEmails({
+      req,
+      updatedUser: user.toObject ? user.toObject() : user,
+      items:
+        Array.isArray(items) && items.length > 0
+          ? items
+          : [{ credits, delta, serviceKey }],
+    });
 
-    if (mailAp?.date && mailAp?.time) {
-      fireAndForget(async () => {
-        await notifyWaitlistForSlot({ date: mailAp.date, time: mailAp.time });
-      }, "WAITLIST_NOTIFY");
-    }
+    const decorated = decorateUserForResponse(user.toObject());
 
-    if (mailUser && mailAp) {
-      fireAndForget(async () => {
-        try {
-          await sendAppointmentCancelledEmail(mailUser, mailAp, mailServiceName, mailMeta);
-        } catch (e) {
-          console.log("[MAIL] cancelled error:", e?.message || e);
-          await sendAdminCopy({
-            kind: "cancelled",
-            user: mailUser,
-            ap: { ...mailAp, refund: mailMeta?.refund },
-          });
-        }
-      }, "MAIL_CANCELLED");
-    }
+    return res.json({
+      ok: true,
+      credits: Number(user.credits || 0),
+      creditsByService,
+      creditLots: user.creditLots || [],
+      ...decorated,
+    });
   } catch (err) {
-    console.error("Error en PATCH /appointments/:id/cancel:", err);
-    const http = err?.http;
+    console.error("Error en créditos:", err);
+    const status = err?.status || 500;
+    return res.status(status).json({ error: err?.message || "Error interno." });
+  }
+}
+router.patch("/:id/credits", adminOnly, validateObjectIdParam, updateCredits);
+router.post("/:id/credits", adminOnly, validateObjectIdParam, updateCredits);
 
-    if (http) {
-      const msg = String(err?.message || "");
-      if (msg === "NOT_FOUND") return res.status(404).json({ error: "Turno no encontrado." });
-      if (msg === "FORBIDDEN") {
-        return res.status(403).json({
-          error: "Solo el dueño del turno o un admin pueden cancelarlo.",
-        });
-      }
-      if (msg === "ALREADY_CANCELLED") {
-        return res.status(400).json({ error: "El turno ya estaba cancelado." });
-      }
-      if (msg === "INVALID_AP_DATE") {
-        return res.status(400).json({ error: "Turno con fecha/hora inválida." });
-      }
-      if (msg === "PAST_APPOINTMENT") {
-        return res.status(400).json({ error: "No se puede cancelar un turno que ya pasó." });
-      }
-      if (msg === "USER_NOT_FOUND") {
-        return res.status(404).json({ error: "Usuario no encontrado." });
-      }
-      return res.status(http).json({ error: "Error al cancelar el turno." });
+router.post(
+  "/:id/reset-password",
+  adminOnly,
+  validateObjectIdParam,
+  async (req, res) => {
+    try {
+      const { id } = req.params;
+      const user = await User.findById(id);
+      if (!user) return res.status(404).json({ error: "Usuario no encontrado." });
+
+      const tempPassword = Math.random().toString(36).slice(2, 10);
+      const hash = await bcrypt.hash(tempPassword, 10);
+
+      user.password = hash;
+      user.mustChangePassword = true;
+      await user.save();
+
+      await logActivity({
+        req,
+        category: "users",
+        action: "user_password_reset",
+        entity: "user",
+        entityId: user._id,
+        title: "Password reseteada",
+        description: "Un admin reseteó la contraseña del usuario.",
+        subject: buildUserSubject(user),
+      });
+
+      return res.json({ ok: true, tempPassword });
+    } catch (err) {
+      console.error("Error en reset password:", err);
+      return res.status(500).json({ error: "Error interno." });
     }
+  }
+);
 
-    return res.status(500).json({ error: "Error al cancelar el turno." });
-  } finally {
-    session.endSession();
+router.patch("/:id/suspend", adminOnly, validateObjectIdParam, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { suspended } = req.body || {};
+
+    const user = await User.findById(id);
+    if (!user) return res.status(404).json({ error: "Usuario no encontrado." });
+
+    const prevSuspended = !!user.suspended;
+    user.suspended = !!suspended;
+    await user.save();
+
+    await logActivity({
+      req,
+      category: "users",
+      action: "user_suspend_updated",
+      entity: "user",
+      entityId: user._id,
+      title: "Estado de suspensión actualizado",
+      description: user.suspended ? "Usuario suspendido." : "Usuario reactivado.",
+      subject: buildUserSubject(user),
+      diff: buildDiff(
+        { suspended: prevSuspended },
+        { suspended: !!user.suspended }
+      ),
+    });
+
+    return res.json({ ok: true, suspended: user.suspended });
+  } catch (err) {
+    console.error("Error en PATCH /users/:id/suspend:", err);
+    return res
+      .status(500)
+      .json({ error: "Error al cambiar estado de suspensión." });
   }
 });
+
+/* ============================================
+   ✅ APTO
+============================================ */
+router.post("/:id/apto", validateObjectIdParam, uploadAptoSingle, async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    const isAdmin = req.user.role === "admin";
+    const isSelf = req.user._id.toString() === id;
+
+    if (!isAdmin && !isSelf) {
+      return res.status(403).json({
+        error: "No tenés permisos para subir el apto de este usuario.",
+      });
+    }
+
+    if (!req.file) {
+      return res.status(400).json({ error: "No se recibió ningún archivo." });
+    }
+
+    const user = await User.findById(id);
+    if (!user) return res.status(404).json({ error: "Usuario no encontrado." });
+
+    if (user.aptoPath) {
+      safeUnlink(absFromPublicUploadsPath(user.aptoPath));
+    }
+
+    const newPath = "/api/uploads/aptos/" + req.file.filename;
+
+    user.aptoPath = newPath;
+    user.aptoStatus = "uploaded";
+    pushUserHistory(user, {
+      action: "apto_uploaded",
+      title: "Cargó el Apto Físico.",
+      createdAt: new Date(),
+    });
+    await user.save();
+
+    return res.json({
+      ok: true,
+      message: "Apto subido correctamente.",
+      aptoPath: newPath,
+    });
+  } catch (err) {
+    console.error("Error en POST /users/:id/apto:", err);
+    return res.status(500).json({
+      error: "Error al subir el apto.",
+      detail: err?.message || String(err),
+    });
+  }
+});
+
+router.get("/:id/apto", validateObjectIdParam, async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    const role = String(req.user?.role || "").toLowerCase();
+    const isStaff = role === "admin" || role === "profesor";
+    const isSelf = req.user._id.toString() === id;
+    if (!isStaff && !isSelf) return res.status(403).json({ error: "No autorizado." });
+
+    const user = await User.findById(id).lean();
+    if (!user || !user.aptoPath) return res.status(404).json({ error: "Apto no encontrado." });
+
+    const abs = absFromPublicUploadsPath(user.aptoPath);
+    if (!abs || !fs.existsSync(abs)) {
+      return res.status(404).json({ error: "El archivo no existe en el servidor." });
+    }
+
+    res.setHeader("Content-Type", "application/pdf");
+    res.setHeader("Content-Disposition", 'inline; filename="apto.pdf"');
+    return res.sendFile(abs);
+  } catch (err) {
+    console.error("Error en GET /users/:id/apto:", err);
+    return res.status(500).json({ error: "Error al obtener apto." });
+  }
+});
+
+router.delete("/:id/apto", validateObjectIdParam, async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    const isAdmin = req.user.role === "admin";
+    const isSelf = req.user._id.toString() === id;
+    if (!isAdmin && !isSelf) return res.status(403).json({ error: "No autorizado." });
+
+    const user = await User.findById(id);
+    if (!user) return res.status(404).json({ error: "Usuario no encontrado." });
+
+    if (user.aptoPath) {
+      safeUnlink(absFromPublicUploadsPath(user.aptoPath));
+    }
+
+    user.aptoPath = "";
+    user.aptoStatus = "";
+    pushUserHistory(user, {
+      action: "apto_deleted",
+      title: "Borró el Apto Físico.",
+      createdAt: new Date(),
+    });
+    await user.save();
+
+    return res.json({ ok: true, message: "Apto eliminado correctamente." });
+  } catch (err) {
+    console.error("Error en DELETE /users/:id/apto:", err);
+    return res.status(500).json({
+      error: "Error al borrar apto.",
+      detail: err?.message || String(err),
+    });
+  }
+});
+
+/* ============================================
+   ✅ FOTO (AVATAR)
+============================================ */
+router.post("/:id/photo", validateObjectIdParam, avatarUploadSingle, async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    const isAdmin = req.user.role === "admin";
+    const isSelf = req.user._id.toString() === id;
+    if (!isAdmin && !isSelf) {
+      return res.status(403).json({
+        error: "Solo el paciente o un admin pueden subir la foto.",
+      });
+    }
+
+    if (!req.file) {
+      return res.status(400).json({ error: "No se recibió ninguna imagen." });
+    }
+
+    const prevUser = await User.findById(id).lean();
+    if (!prevUser) return res.status(404).json({ error: "Usuario no encontrado." });
+
+    if (prevUser.photoPath) {
+      safeUnlink(absFromPublicUploadsPath(prevUser.photoPath));
+    }
+
+    const newPath = "/api/uploads/" + req.file.filename;
+
+    await User.updateOne({ _id: id }, { $set: { photoPath: newPath } });
+
+    return res.json({ ok: true, photoPath: newPath });
+  } catch (err) {
+    console.error("Error en POST /users/:id/photo:", err);
+    return res.status(500).json({
+      error: "Error al subir foto del paciente.",
+      detail: err?.message || String(err),
+    });
+  }
+});
+/* ============================================
+   ✅ PLAN MENSUAL
+============================================ */
+router.get(
+  "/:id/monthly-plan",
+  adminOrProfessor,
+  validateObjectIdParam,
+  async (req, res) => {
+    try {
+      const { id } = req.params;
+
+      const user = await User.findById(id);
+      if (!user) {
+        return res.status(404).json({ error: "Usuario no encontrado." });
+      }
+
+      const plan = ensureMonthlyPlan(user);
+
+      if (!user.monthlyPlan || !user.monthlyPlan.updatedAt) {
+        await user.save();
+      }
+
+      return res.json({
+        ok: true,
+        monthlyPlan: plan,
+      });
+    } catch (err) {
+      console.error("Error en GET /users/:id/monthly-plan:", err);
+      return res.status(500).json({ error: "Error al obtener el plan mensual." });
+    }
+  }
+);
+
+router.put(
+  "/:id/monthly-plan",
+  adminOrProfessor,
+  validateObjectIdParam,
+  async (req, res) => {
+    try {
+      const { id } = req.params;
+
+      const user = await User.findById(id);
+      if (!user) {
+        return res.status(404).json({ error: "Usuario no encontrado." });
+      }
+
+      const prevPlan = user.monthlyPlan || createDefaultMonthlyPlan();
+      const nextPlan = sanitizeMonthlyPlanPayload(req.body || {}, user, req.user);
+
+      user.monthlyPlan = nextPlan;
+
+      pushUserHistory(user, {
+        action: "monthly_plan_updated",
+        title: "Se actualizó el plan mensual.",
+        createdAt: new Date(),
+      });
+
+      await user.save();
+
+      await logActivity({
+        req,
+        category: "users",
+        action: "monthly_plan_updated",
+        entity: "user",
+        entityId: user._id,
+        title: "Plan mensual actualizado",
+        description: "Un miembro del staff actualizó el plan mensual del usuario.",
+        subject: buildUserSubject(user),
+        diff: buildDiff(
+          { monthlyPlan: prevPlan },
+          { monthlyPlan: nextPlan }
+        ),
+      });
+
+      return res.json({
+        ok: true,
+        monthlyPlan: user.monthlyPlan,
+      });
+    } catch (err) {
+      console.error("Error en PUT /users/:id/monthly-plan:", err);
+      return res.status(500).json({ error: "Error al guardar el plan mensual." });
+    }
+  }
+);
+
+router.post(
+  "/:id/monthly-plan/reset",
+  adminOrProfessor,
+  validateObjectIdParam,
+  async (req, res) => {
+    try {
+      const { id } = req.params;
+
+      const user = await User.findById(id);
+      if (!user) {
+        return res.status(404).json({ error: "Usuario no encontrado." });
+      }
+
+      const fullName =
+        `${String(user.name || "").trim()} ${String(user.lastName || "").trim()}`.trim();
+
+      const actorName =
+        `${String(req.user?.name || "").trim()} ${String(req.user?.lastName || "").trim()}`.trim() ||
+        String(req.user?.email || "").trim() ||
+        "Staff";
+
+      user.monthlyPlan = {
+        ...createDefaultMonthlyPlan(),
+        meta: {
+          ...createDefaultMonthlyPlan().meta,
+          fullName,
+          age: user.age != null ? String(user.age) : "",
+          weight: user.weight != null ? String(user.weight) : "",
+        },
+        updatedAt: new Date(),
+        updatedBy: actorName,
+      };
+
+      pushUserHistory(user, {
+        action: "monthly_plan_reset",
+        title: "Se reinició el plan mensual.",
+        createdAt: new Date(),
+      });
+
+      await user.save();
+
+      await logActivity({
+        req,
+        category: "users",
+        action: "monthly_plan_reset",
+        entity: "user",
+        entityId: user._id,
+        title: "Plan mensual reiniciado",
+        description: "Se reinició el plan mensual del usuario.",
+        subject: buildUserSubject(user),
+      });
+
+      return res.json({
+        ok: true,
+        monthlyPlan: user.monthlyPlan,
+      });
+    } catch (err) {
+      console.error("Error en POST /users/:id/monthly-plan/reset:", err);
+      return res.status(500).json({ error: "Error al reiniciar el plan mensual." });
+    }
+  }
+);
 
 export default router;
