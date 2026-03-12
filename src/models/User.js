@@ -1,4 +1,3 @@
-// backend/src/models/User.js
 import mongoose from "mongoose";
 
 const historySchema = new mongoose.Schema(
@@ -20,12 +19,17 @@ const historySchema = new mongoose.Schema(
 
 const creditLotSchema = new mongoose.Schema(
   {
-    serviceKey: { type: String, default: "ALL", uppercase: true, trim: true }, // EP/RF/RA/NUT o ALL
+    // ✅ antes estaba "ALL", pero tu lógica trabaja con EP/RF/RA/NUT
+    serviceKey: { type: String, default: "EP", uppercase: true, trim: true },
     amount: { type: Number, default: 0 },
     remaining: { type: Number, default: 0 },
     expiresAt: { type: Date, default: null },
     source: { type: String, default: "" },
-    orderId: { type: mongoose.Schema.Types.ObjectId, ref: "Order", default: null },
+    orderId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "Order",
+      default: null,
+    },
     createdAt: { type: Date, default: Date.now },
   },
   { _id: true }
@@ -212,7 +216,11 @@ const userSchema = new mongoose.Schema(
     // cache (se recalcula desde lots)
     credits: { type: Number, default: 0 },
 
-    role: { type: String, default: "client", enum: ["admin", "profesor", "client", "guest"] },
+    role: {
+      type: String,
+      default: "client",
+      enum: ["admin", "profesor", "client", "guest"],
+    },
 
     password: { type: String, required: requiredIfNotGuest, default: "" },
 
@@ -242,20 +250,19 @@ const userSchema = new mongoose.Schema(
       tier: { type: String, default: "basic", enum: ["basic", "plus"] },
       activeUntil: { type: Date, default: null },
 
-      // ✅ Se elimina todo lo de "límite de cancelaciones".
-      // Solo dejamos lo que afecta vencimiento de créditos
+      // ✅ Solo dejamos lo que afecta vencimiento de créditos
       creditsExpireDays: { type: Number, default: 30 },
     },
 
     creditLots: { type: [creditLotSchema], default: [] },
 
-    // ✅ NUEVO: plan mensual editable por staff/admin
+    // ✅ plan mensual editable por staff/admin
     monthlyPlan: {
       type: monthlyPlanSchema,
       default: createDefaultMonthlyPlan,
     },
 
-    // ✅ NUEVO: marca para no enviar 2 veces el mail de "alta aprobada"
+    // ✅ marca para no enviar 2 veces el mail de "alta aprobada"
     welcomeApprovedEmailSentAt: { type: Date, default: null },
   },
   { timestamps: true }
