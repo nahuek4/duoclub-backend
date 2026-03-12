@@ -21,7 +21,6 @@ import evaluationsRoutes from "./routes/evaluations.js";
 import testMailRouter from "./routes/testMail.js";
 import waitlistRouter from "./routes/waitlist.js";
 
-// ✅ NUEVO
 import adminApprovalLinksRoutes from "./routes/adminApprovalLinks.js";
 import adminDashboardRoutes from "./routes/adminDashboard.js";
 
@@ -46,7 +45,7 @@ const __dirname = path.dirname(__filename);
 await connectDB();
 
 /* =========================
-   ✅ JOBS (AUTO)
+   JOBS
 ========================= */
 startAppointmentReminderScheduler({
   everyMinutes: Number(process.env.REMINDER_EVERY_MINUTES || 10),
@@ -70,7 +69,7 @@ app.use(
 app.use(express.json({ limit: "2mb" }));
 
 /* =========================
-   ✅ CORS
+   CORS
 ========================= */
 const allowedOrigins = [
   "http://localhost:5173",
@@ -84,7 +83,7 @@ const allowedOrigins = [
 app.use(
   cors({
     origin(origin, cb) {
-      if (!origin) return cb(null, true); // Postman/curl
+      if (!origin) return cb(null, true);
       const o = String(origin).trim();
 
       if (allowedOrigins.includes(o)) return cb(null, true);
@@ -117,12 +116,10 @@ app.use(
 
 /* =========================
    STATIC (UPLOADS)
-   ✅ backend/uploads (al lado de /src)
 ========================= */
 const uploadsDir = path.join(__dirname, "..", "uploads");
 fs.mkdirSync(uploadsDir, { recursive: true });
 
-// ✅ Servimos ambos paths para compatibilidad
 app.use("/uploads", express.static(uploadsDir));
 app.use("/api/uploads", express.static(uploadsDir));
 
@@ -140,7 +137,6 @@ app.get("/health", (req, res) => {
 
 /* =========================
    RUTAS
-   ✅ Montamos 2 veces: con / y con /api
 ========================= */
 function mountRoutes(prefix = "") {
   app.use(`${prefix}/auth`, authRoutes);
@@ -155,14 +151,8 @@ function mountRoutes(prefix = "") {
   app.use(`${prefix}/admission`, admissionRoutes);
   app.use(`${prefix}/admin/evaluations`, adminEvaluationsRoutes);
   app.use(`${prefix}/evaluations`, evaluationsRoutes);
-
-  // ✅ NUEVO: Admin Dashboard
   app.use(`${prefix}/admin/dashboard`, adminDashboardRoutes);
-
-  // (ojo: este router ya trae su propio path; si tu archivo es /routes/testMail.js
-  // y adentro define /test-mail, podés dejarlo como estaba. Lo mantengo igual a tu base.)
   app.use(`${prefix}/api/test-mail`, testMailRouter);
-
   app.use(`${prefix}/waitlist`, waitlistRouter);
 }
 

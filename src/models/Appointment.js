@@ -1,4 +1,3 @@
-// backend/src/models/Appointment.js
 import mongoose from "mongoose";
 
 const EP_KEY = "Entrenamiento Personal";
@@ -11,8 +10,8 @@ const appointmentSchema = new mongoose.Schema(
       required: true,
     },
 
-    date: { type: String, required: true }, // "YYYY-MM-DD"
-    time: { type: String, required: true }, // "HH:mm"
+    date: { type: String, required: true },
+    time: { type: String, required: true },
 
     service: { type: String, required: true },
 
@@ -24,35 +23,19 @@ const appointmentSchema = new mongoose.Schema(
 
     coach: { type: String, default: "" },
 
-    // ✅ de qué lote se descontó el crédito (para devolverlo al cancelar)
     creditLotId: {
       type: mongoose.Schema.Types.ObjectId,
       default: null,
     },
 
-    // ✅ vencimiento del crédito usado (debug/UI)
     creditExpiresAt: { type: Date, default: null },
 
-    /* =========================================================
-       ✅ REMINDERS (24hs antes)
-       - Para no spamear y poder auditar
-    ========================================================= */
     reminder24hSentAt: { type: Date, default: null },
     reminder24hLastError: { type: String, default: "" },
   },
   { timestamps: true }
 );
 
-/**
- * ✅ IMPORTANTE:
- * Antes tenías un índice único por (date,time,service,status) que
- * ROMPE Entrenamiento Personal, porque EP necesita múltiples cupos
- * en el mismo horario con el mismo "service".
- *
- * Solución:
- * - Mantener “1 por servicio” SOLO para los servicios NO EP
- * - Permitir múltiples EP
- */
 appointmentSchema.index(
   { date: 1, time: 1, service: 1, status: 1 },
   {
@@ -64,13 +47,11 @@ appointmentSchema.index(
   }
 );
 
-// Evita que el mismo usuario reserve 2 veces el mismo horario
 appointmentSchema.index(
   { date: 1, time: 1, user: 1, status: 1 },
   { unique: true, partialFilterExpression: { status: "reserved" } }
 );
 
-// ✅ ayuda para el job (no es único)
 appointmentSchema.index({ status: 1, date: 1, time: 1, reminder24hSentAt: 1 });
 
 const Appointment = mongoose.model("Appointment", appointmentSchema);
