@@ -262,54 +262,39 @@ async function consumeCreditAtomic({
 }) {
   const requestedSk = serviceToKey(serviceName);
 
-  const currentUser = await User.findById(userId).session(session);
-  if (!currentUser) throw new Error("USER_NOT_FOUND");
+  const user = await User.findById(userId).session(session);
+  if (!user) throw new Error("USER_NOT_FOUND");
 
-  recalcUserCredits(currentUser);
-  if ((currentUser.credits || 0) <= 0) {
+  recalcUserCredits(user);
+  if ((user.credits || 0) <= 0) {
     throw new Error("NO_CREDITS");
   }
 
-  const lot = pickLotToConsume(currentUser, requestedSk);
+  const lot = pickLotToConsume(user, requestedSk);
   if (!lot) {
     throw new Error(`NO_CREDITS_FOR_${requestedSk}`);
   }
 
-  const lotId = lot._id;
-  const lotExp = lot.expiresAt || null;
-
-  const upd = await User.updateOne(
-    {
-      _id: userId,
-      "creditLots._id": lotId,
-      "creditLots.remaining": { $gt: 0 },
-    },
-    {
-      $inc: { "creditLots.$.remaining": -1 },
-    },
-    { session }
-  );
-
-  if (!upd.modifiedCount) {
+  const currentRemaining = Number(lot.remaining || 0);
+  if (currentRemaining <= 0) {
     throw new Error("CREDIT_CONSUME_FAILED");
   }
 
-  const freshUser = await User.findById(userId).session(session);
-  if (!freshUser) throw new Error("USER_NOT_FOUND");
+  lot.remaining = currentRemaining - 1;
 
-  freshUser.history = freshUser.history || [];
-  freshUser.history.push({
+  user.history = user.history || [];
+  user.history.push({
     ...historyItem,
     createdAt: new Date(),
   });
 
-  recalcUserCredits(freshUser);
-  await freshUser.save({ session });
+  recalcUserCredits(user);
+  await user.save({ session });
 
   return {
-    user: freshUser,
-    usedLotId: lotId,
-    usedLotExp: lotExp,
+    user,
+    usedLotId: lot._id || null,
+    usedLotExp: lot.expiresAt || null,
     requestedSk,
   };
 }
@@ -320,34 +305,26 @@ async function refundCreditAtomicToOriginalLot({
   historyItem,
   session,
 }) {
-  const upd = await User.updateOne(
-    {
-      _id: userId,
-      "creditLots._id": lotId,
-    },
-    {
-      $inc: { "creditLots.$.remaining": 1 },
-    },
-    { session }
-  );
+  const user = await User.findById(userId).session(session);
+  if (!user) throw new Error("USER_NOT_FOUND");
 
-  if (!upd.modifiedCount) {
+  const lot = findLotById(user, lotId);
+  if (!lot) {
     throw new Error("REFUND_FAILED");
   }
 
-  const freshUser = await User.findById(userId).session(session);
-  if (!freshUser) throw new Error("USER_NOT_FOUND");
+  lot.remaining = Number(lot.remaining || 0) + 1;
 
-  freshUser.history = freshUser.history || [];
-  freshUser.history.push({
+  user.history = user.history || [];
+  user.history.push({
     ...historyItem,
     createdAt: new Date(),
   });
 
-  recalcUserCredits(freshUser);
-  await freshUser.save({ session });
+  recalcUserCredits(user);
+  await user.save({ session });
 
-  return freshUser;
+  return user;
 }
 
 async function refundCreditAtomicNewLot({
@@ -356,42 +333,35 @@ async function refundCreditAtomicNewLot({
   historyItem,
   session,
 }) {
+  const user = await User.findById(userId).session(session);
+  if (!user) throw new Error("USER_NOT_FOUND");
+
   const now = nowDate();
   const sk = serviceToKey(apService);
   const exp = new Date(now);
   exp.setDate(exp.getDate() + Number(getCreditsExpireDays() || 30));
 
-  await User.updateOne(
-    { _id: userId },
-    {
-      $push: {
-        creditLots: {
-          serviceKey: sk,
-          amount: 1,
-          remaining: 1,
-          expiresAt: exp,
-          source: "refund",
-          orderId: null,
-          createdAt: now,
-        },
-      },
-    },
-    { session }
-  );
+  user.creditLots = Array.isArray(user.creditLots) ? user.creditLots : [];
+  user.creditLots.push({
+    serviceKey: sk,
+    amount: 1,
+    remaining: 1,
+    expiresAt: exp,
+    source: "refund",
+    orderId: null,
+    createdAt: now,
+  });
 
-  const freshUser = await User.findById(userId).session(session);
-  if (!freshUser) throw new Error("USER_NOT_FOUND");
-
-  freshUser.history = freshUser.history || [];
-  freshUser.history.push({
+  user.history = user.history || [];
+  user.history.push({
     ...historyItem,
     createdAt: new Date(),
   });
 
-  recalcUserCredits(freshUser);
-  await freshUser.save({ session });
+  recalcUserCredits(user);
+  await user.save({ session });
 
-  return { user: freshUser, sk, expiresAt: exp };
+  return { user, sk, expiresAt: exp };
 }
 
 function serializeUserCreditLots(user) {
@@ -454,23 +424,23 @@ const RA_NAME = "Rehabilitación activa";
 const RF_NAME = "Reeducación funcional";
 
 const TIMES_EP = [
-  "07:00", "08:00", "09:00", "10:00",
-  "11:00", "12:00", "13:30",
-  "14:00", "15:00", "16:00", "17:00",
-  "18:00", "19:00", "20:00",
+  "07:00","08:00","09:00","10:00",
+  "11:00","12:00","13:30",
+  "14:00","15:00","16:00","17:00",
+  "18:00","19:00","20:00",
 ];
 
 const TIMES_REHAB = [
-  "07:00", "08:00", "09:00", "10:00",
-  "11:00", "12:00", "13:30",
-  "14:00", "15:00", "16:00", "17:00",
+  "07:00","08:00","09:00","10:00",
+  "11:00","12:00","13:30",
+  "14:00","15:00","16:00","17:00",
   "18:00",
 ];
 
 const TIMES_DEFAULT = [
-  "07:00", "08:00", "09:00", "10:00",
-  "11:00", "12:00", "13:30",
-  "18:00", "19:00", "20:00",
+  "07:00","08:00","09:00","10:00",
+  "11:00","12:00","13:30",
+  "18:00","19:00","20:00",
 ];
 
 function getAllowedTimesForService(serviceName) {
@@ -1390,6 +1360,15 @@ router.post("/", async (req, res) => {
         effectiveUser = consumed.user;
         usedLotId = consumed.usedLotId;
         usedLotExp = consumed.usedLotExp;
+
+        console.log("[BOOK][CREDIT-CONSUMED]", {
+          userId: String(user._id),
+          service,
+          usedLotId: usedLotId ? String(usedLotId) : null,
+          usedLotExp,
+          creditsAfter: Number(effectiveUser.credits || 0),
+          lotsAfter: serializeUserCreditLots(effectiveUser),
+        });
       }
 
       const created = await Appointment.create(
@@ -1404,6 +1383,16 @@ router.post("/", async (req, res) => {
         }],
         { session }
       );
+
+      console.log("[BOOK][APPOINTMENT-CREATED]", {
+        appointmentId: String(created[0]?._id || ""),
+        userId: String(user._id),
+        date,
+        time: t,
+        service,
+        creditLotId: usedLotId ? String(usedLotId) : null,
+        creditExpiresAt: usedLotExp || null,
+      });
 
       const populated = await Appointment.findById(created[0]._id)
         .populate("user", "name lastName email")
