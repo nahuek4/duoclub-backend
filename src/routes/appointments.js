@@ -177,6 +177,12 @@ function nowDate() {
   return new Date();
 }
 
+function markCreditLotsModified(user) {
+  if (user && typeof user.markModified === "function") {
+    user.markModified("creditLots");
+  }
+}
+
 function stripAccents(s) {
   return String(s || "")
     .normalize("NFD")
@@ -200,12 +206,6 @@ function serviceToKey(serviceName) {
 
 function getCreditsExpireDays(_user) {
   return CREDITS_EXPIRE_DAYS;
-}
-
-function markCreditLotsModified(user) {
-  if (user && typeof user.markModified === "function") {
-    user.markModified("creditLots");
-  }
 }
 
 function recalcUserCredits(user) {
@@ -410,6 +410,7 @@ function makeRefundLot(user, apService) {
     orderId: null,
     createdAt: now,
   });
+
   markCreditLotsModified(user);
 
   return { sk, expiresAt: exp };
@@ -1338,7 +1339,12 @@ router.post("/", async (req, res) => {
         category: "appointments",
         action: "waitlist_joined",
         entity: "waitlist",
-        entityId: String(out?.date || "") + "-" + String(out?.time || "") + "-" + String(req.user?._id || ""),
+        entityId:
+          String(out?.date || "") +
+          "-" +
+          String(out?.time || "") +
+          "-" +
+          String(req.user?._id || ""),
         title: "Lista de espera",
         description: "Se agregó a lista de espera de turnos.",
         subject: buildUserSubject(req.user),
@@ -1391,25 +1397,32 @@ router.post("/", async (req, res) => {
 
     if (msg === "USER_NOT_FOUND") return res.status(403).json({ error: "Usuario no encontrado." });
     if (msg === "USER_SUSPENDED") return res.status(403).json({ error: "Cuenta suspendida." });
-    if (msg === "APTO_REQUIRED")
+    if (msg === "APTO_REQUIRED") {
       return res.status(403).json({ error: "Cuenta suspendida por falta de apto médico." });
+    }
     if (msg === "NO_CREDITS") return res.status(403).json({ error: "Sin créditos disponibles." });
 
-    if (msg === "ALREADY_HAVE_SLOT")
+    if (msg === "ALREADY_HAVE_SLOT") {
       return res.status(409).json({ error: "Ya tenés un turno reservado en ese horario." });
+    }
 
-    if (msg === "ALREADY_IN_WAITLIST")
+    if (msg === "ALREADY_IN_WAITLIST") {
       return res.status(409).json({ error: "Ya estás en lista de espera para ese horario." });
+    }
 
-    if (msg === "TOTAL_CAP_REACHED")
+    if (msg === "TOTAL_CAP_REACHED") {
       return res.status(409).json({ error: "Se alcanzó el cupo total disponible para este horario." });
+    }
 
-    if (msg === "SERVICE_CAP_REACHED")
+    if (msg === "SERVICE_CAP_REACHED") {
       return res.status(409).json({ error: "Ese servicio ya alcanzó su cupo para ese horario." });
+    }
 
     if (msg.startsWith("NO_CREDITS_FOR_")) {
       const sk = msg.replace("NO_CREDITS_FOR_", "");
-      return res.status(403).json({ error: `No tenés créditos válidos para este servicio (${sk}).` });
+      return res.status(403).json({
+        error: `No tenés créditos válidos para este servicio (${sk}).`,
+      });
     }
 
     return res.status(500).json({ error: "Error al crear el turno." });
@@ -1429,8 +1442,12 @@ router.post("/batch", async (req, res) => {
 
   try {
     const items = Array.isArray(req.body?.items) ? req.body.items : [];
-    if (!items.length) return res.status(400).json({ error: "Faltan items: [{date,time,service}]." });
-    if (items.length > 12) return res.status(400).json({ error: "Máximo 12 turnos por operación." });
+    if (!items.length) {
+      return res.status(400).json({ error: "Faltan items: [{date,time,service}]." });
+    }
+    if (items.length > 12) {
+      return res.status(400).json({ error: "Máximo 12 turnos por operación." });
+    }
 
     const seen = new Set();
     const normalized = items.map((it, idx) => {
@@ -1729,7 +1746,11 @@ router.post("/batch", async (req, res) => {
           await sendAppointmentBookedBatchEmail(mailUser, mailItems);
         } catch (e) {
           console.log("[MAIL] batch booked error:", e?.message || e);
-          await sendAdminCopy({ kind: "batch_booked", user: mailUser, ap: { items: mailItems } });
+          await sendAdminCopy({
+            kind: "batch_booked",
+            user: mailUser,
+            ap: { items: mailItems },
+          });
         }
       }, "MAIL_BATCH_BOOKED");
     }
@@ -1747,17 +1768,23 @@ router.post("/batch", async (req, res) => {
         return res.status(409).json({ error: "Hay items duplicados dentro del batch." });
       }
       if (msg === "SERVICE_CAP_REACHED") {
-        return res.status(409).json({ error: "Ese servicio ya alcanzó su cupo en uno de los horarios." });
+        return res.status(409).json({
+          error: "Ese servicio ya alcanzó su cupo en uno de los horarios.",
+        });
       }
       if (msg === "TOTAL_CAP_REACHED") {
-        return res.status(409).json({ error: "Se alcanzó el cupo total disponible para alguno de los horarios." });
+        return res.status(409).json({
+          error: "Se alcanzó el cupo total disponible para alguno de los horarios.",
+        });
       }
       if (msg === "NO_CREDITS") {
         return res.status(403).json({ error: "Sin créditos disponibles." });
       }
       if (msg.startsWith("NO_CREDITS_FOR_")) {
         const sk = msg.replace("NO_CREDITS_FOR_", "");
-        return res.status(403).json({ error: `No tenés créditos válidos para este servicio (${sk}).` });
+        return res.status(403).json({
+          error: `No tenés créditos válidos para este servicio (${sk}).`,
+        });
       }
       return res.status(http).json({ error: "No se pudo reservar el batch." });
     }
@@ -1770,22 +1797,34 @@ router.post("/batch", async (req, res) => {
 
     if (msg === "USER_NOT_FOUND") return res.status(403).json({ error: "Usuario no encontrado." });
     if (msg === "USER_SUSPENDED") return res.status(403).json({ error: "Cuenta suspendida." });
-    if (msg === "APTO_REQUIRED")
+    if (msg === "APTO_REQUIRED") {
       return res.status(403).json({ error: "Cuenta suspendida por falta de apto médico." });
+    }
     if (msg === "NO_CREDITS") return res.status(403).json({ error: "Sin créditos disponibles." });
 
-    if (msg === "DUP_SLOT_IN_BATCH")
-      return res.status(409).json({ error: "No podés reservar 2 turnos en el mismo horario en un solo batch." });
+    if (msg === "DUP_SLOT_IN_BATCH") {
+      return res.status(409).json({
+        error: "No podés reservar 2 turnos en el mismo horario en un solo batch.",
+      });
+    }
 
-    if (msg === "ALREADY_HAVE_SLOT")
-      return res.status(409).json({ error: "Ya tenés un turno reservado en alguno de esos horarios." });
+    if (msg === "ALREADY_HAVE_SLOT") {
+      return res.status(409).json({
+        error: "Ya tenés un turno reservado en alguno de esos horarios.",
+      });
+    }
 
-    if (msg === "TOTAL_CAP_REACHED")
-      return res.status(409).json({ error: "Se alcanzó el cupo total disponible para alguno de los horarios." });
+    if (msg === "TOTAL_CAP_REACHED") {
+      return res.status(409).json({
+        error: "Se alcanzó el cupo total disponible para alguno de los horarios.",
+      });
+    }
 
     if (msg.startsWith("NO_CREDITS_FOR_")) {
       const sk = msg.replace("NO_CREDITS_FOR_", "");
-      return res.status(403).json({ error: `No tenés créditos válidos para este servicio (${sk}).` });
+      return res.status(403).json({
+        error: `No tenés créditos válidos para este servicio (${sk}).`,
+      });
     }
 
     return res.status(500).json({ error: "Error al reservar el batch." });
@@ -1836,7 +1875,11 @@ router.post("/waitlist/claim", async (req, res) => {
         throw e;
       }
 
-      const basic = validateBasicSlotRules({ date: wl.date, time: wl.time, service: EP_NAME });
+      const basic = validateBasicSlotRules({
+        date: wl.date,
+        time: wl.time,
+        service: EP_NAME,
+      });
       if (!basic.ok) {
         const e = new Error("SLOT_NOT_VALID");
         e.http = 409;
@@ -1980,14 +2023,19 @@ router.post("/waitlist/claim", async (req, res) => {
 
     if (msg === "TOKEN_INVALID") return res.status(404).json({ error: "Token inválido." });
     if (msg === "TOKEN_EXPIRED") return res.status(410).json({ error: "El link expiró." });
-    if (msg === "NO_LONGER_AVAILABLE") return res.status(409).json({ error: "El cupo ya no está disponible." });
+    if (msg === "NO_LONGER_AVAILABLE") {
+      return res.status(409).json({ error: "El cupo ya no está disponible." });
+    }
 
     if (msg === "USER_NOT_FOUND") return res.status(404).json({ error: "Usuario no encontrado." });
     if (msg === "USER_SUSPENDED") return res.status(403).json({ error: "Cuenta suspendida." });
-    if (msg === "APTO_REQUIRED")
+    if (msg === "APTO_REQUIRED") {
       return res.status(403).json({ error: "Cuenta suspendida por falta de apto médico." });
+    }
     if (msg === "NO_CREDITS") return res.status(403).json({ error: "Sin créditos disponibles." });
-    if (msg.startsWith("NO_CREDITS_FOR_")) return res.status(403).json({ error: "No tenés créditos válidos." });
+    if (msg.startsWith("NO_CREDITS_FOR_")) {
+      return res.status(403).json({ error: "No tenés créditos válidos." });
+    }
 
     console.error("Error en POST /appointments/waitlist/claim:", err);
     return res.status(http).json({ error: "No se pudo confirmar el turno." });
@@ -2222,13 +2270,23 @@ router.patch("/:id/cancel", async (req, res) => {
     if (http) {
       const msg = String(err?.message || "");
       if (msg === "NOT_FOUND") return res.status(404).json({ error: "Turno no encontrado." });
-      if (msg === "FORBIDDEN")
-        return res.status(403).json({ error: "Solo el dueño del turno o un admin pueden cancelarlo." });
-      if (msg === "ALREADY_CANCELLED") return res.status(400).json({ error: "El turno ya estaba cancelado." });
-      if (msg === "INVALID_AP_DATE") return res.status(400).json({ error: "Turno con fecha/hora inválida." });
-      if (msg === "PAST_APPOINTMENT")
+      if (msg === "FORBIDDEN") {
+        return res.status(403).json({
+          error: "Solo el dueño del turno o un admin pueden cancelarlo.",
+        });
+      }
+      if (msg === "ALREADY_CANCELLED") {
+        return res.status(400).json({ error: "El turno ya estaba cancelado." });
+      }
+      if (msg === "INVALID_AP_DATE") {
+        return res.status(400).json({ error: "Turno con fecha/hora inválida." });
+      }
+      if (msg === "PAST_APPOINTMENT") {
         return res.status(400).json({ error: "No se puede cancelar un turno que ya pasó." });
-      if (msg === "USER_NOT_FOUND") return res.status(404).json({ error: "Usuario no encontrado." });
+      }
+      if (msg === "USER_NOT_FOUND") {
+        return res.status(404).json({ error: "Usuario no encontrado." });
+      }
       return res.status(http).json({ error: "Error al cancelar el turno." });
     }
 
