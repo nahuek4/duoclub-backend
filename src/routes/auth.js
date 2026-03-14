@@ -22,7 +22,8 @@ const router = express.Router();
 ============================================ */
 
 function signToken(user) {
-  return jwt.sign({ id: user._id }, process.env.JWT_SECRET, {
+  const secret = process.env.JWT_SECRET || "dev_secret";
+  return jwt.sign({ id: user._id }, secret, {
     expiresIn: "30d",
   });
 }
@@ -312,16 +313,17 @@ router.post("/register", async (req, res) => {
     fireAndForget(() => sendUserRegistrationReceivedEmail(user), "MAIL_REGISTER_RECEIVED");
 
     const backendBase = getBackendBase(req);
+    const secret = process.env.JWT_SECRET || "dev_secret";
 
     const approveToken = jwt.sign(
       { uid: user._id.toString(), action: "approved", kind: "admin_approval" },
-      process.env.JWT_SECRET,
+      secret,
       { expiresIn: "14d" }
     );
 
     const rejectToken = jwt.sign(
       { uid: user._id.toString(), action: "rejected", kind: "admin_approval" },
-      process.env.JWT_SECRET,
+      secret,
       { expiresIn: "14d" }
     );
 
@@ -487,7 +489,8 @@ router.get("/admin-approval", async (req, res) => {
 
     let payload;
     try {
-      payload = jwt.verify(t, process.env.JWT_SECRET);
+      const secret = process.env.JWT_SECRET || "dev_secret";
+      payload = jwt.verify(t, secret);
     } catch {
       return res.status(400).send("Token inválido o expirado.");
     }
@@ -497,8 +500,9 @@ router.get("/admin-approval", async (req, res) => {
     const uid = String(payload?.uid || "").trim();
     const action = String(payload?.action || "").toLowerCase().trim();
 
-    if (!uid || !["approved", "rejected"].includes(action))
+    if (!uid || !["approved", "rejected"].includes(action)) {
       return res.status(400).send("Token inválido.");
+    }
 
     const user = await User.findById(uid);
     if (!user) return res.status(404).send("Usuario no encontrado.");
