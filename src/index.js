@@ -34,6 +34,8 @@ const app = express();
 const PORT =
   process.env.PORT || (process.env.NODE_ENV === "production" ? 3000 : 4000);
 
+const HOST = process.env.HOST || "0.0.0.0";
+
 app.set("trust proxy", 1);
 
 const __filename = fileURLToPath(import.meta.url);
@@ -84,6 +86,7 @@ app.use(
   cors({
     origin(origin, cb) {
       if (!origin) return cb(null, true);
+
       const o = String(origin).trim();
 
       if (allowedOrigins.includes(o)) return cb(null, true);
@@ -186,6 +189,6 @@ app.use((req, res) => {
 /* =========================
    START
 ========================= */
-app.listen(PORT, () => {
-  console.log(`✅ Servidor escuchando en http://localhost:${PORT}`);
+app.listen(PORT, HOST, () => {
+  console.log(`✅ Servidor escuchando en http://${HOST}:${PORT}`);
 });

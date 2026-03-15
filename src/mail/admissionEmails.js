@@ -6,7 +6,7 @@ const EMAIL_FONT =
   "'Helvetica Now Display', 'Helvetica Neue', Helvetica, Arial, sans-serif";
 
 /* =========================================================
-   ✅ ADMISSION (Formulario completo Step2) — ADMIN + USER
+   Helpers
 ========================================================= */
 
 function safeAdmId(adm) {
@@ -44,21 +44,10 @@ function formatARDateTime(dateLike) {
   }
 }
 
-/* =========================================================
-   ✅ helpers para render Q/A
-========================================================= */
-
 function qaRow(question, answer) {
   return kvRow(question, cleanStr(answer));
 }
 
-function qaRowRaw(question, rawHtml) {
-  return kvRowRaw(question, rawHtml || "-");
-}
-
-/* =========================================================
-   ✅ summary FULL (Step1 + Step2)
-========================================================= */
 function admissionSummary(adm = {}, user = null) {
   const s1 = adm?.step1 || {};
   const s2 = adm?.step2 || {};
@@ -251,7 +240,7 @@ function admissionSummary(adm = {}, user = null) {
 }
 
 /* =========================================================
-   ADMIN email (FULL Q/A)
+   ADMIN email
 ========================================================= */
 export async function sendAdminAdmissionCompletedEmail(
   admissionDoc = {},
@@ -582,7 +571,7 @@ export async function sendUserAdmissionReceivedEmail(
 }
 
 /* =========================================================
-   ✅ USER email: Alta aprobada
+   USER email: Alta aprobada
 ========================================================= */
 export async function sendUserApprovedEmail({
   to,

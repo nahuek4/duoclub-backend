@@ -1,5 +1,3 @@
-// backend/src/mail/appointments.js (o donde tengas estos mails)
-
 import { ADMIN_EMAIL, BRAND_NAME, BRAND_URL, sendMail } from "./core.js";
 import { EMAIL_FONT, escapeHtml, prettyDateAR } from "./helpers.js";
 import { buildEmailLayout } from "./layout.js";
@@ -27,7 +25,7 @@ function getServiceName(ap = {}, serviceName = "") {
 }
 
 /* =========================================================
-   Helpers visuales EXACTOS (look 1:1 referencia)
+   Helpers visuales EXACTOS
 ========================================================= */
 
 function renderExactUserShell(innerHtml) {
@@ -291,15 +289,7 @@ function renderExactTurnsPanel(items = []) {
   `;
 }
 
-/* =========================================================
-   ÍCONO RECORDATORIO (campana + reloj) SVG INLINE
-   - evita emoji
-   - consistente en todos los clientes
-========================================================= */
-
 function renderExactReminderBellIcon() {
-  // SVG simple y "limpio" con trazo negro, similar a tu imagen
-  // (campana + líneas de vibración + badge de reloj abajo a la derecha)
   return `
     <div style="margin:0 auto 6px; text-align:center;">
       <svg
@@ -312,14 +302,11 @@ function renderExactReminderBellIcon() {
         aria-label="Recordatorio"
         style="display:block; margin:0 auto;"
       >
-        <!-- vibración izquierda -->
         <path d="M18 26 C10 32,10 44,18 50" fill="none" stroke="#111" stroke-width="6" stroke-linecap="round"/>
         <path d="M26 20 C14 30,14 46,26 56" fill="none" stroke="#111" stroke-width="6" stroke-linecap="round"/>
-        <!-- vibración derecha -->
         <path d="M78 26 C86 32,86 44,78 50" fill="none" stroke="#111" stroke-width="6" stroke-linecap="round"/>
         <path d="M70 20 C82 30,82 46,70 56" fill="none" stroke="#111" stroke-width="6" stroke-linecap="round"/>
 
-        <!-- campana -->
         <path
           d="M48 16
              C35 16 26 26 26 40
@@ -337,7 +324,6 @@ function renderExactReminderBellIcon() {
           stroke-linejoin="round"
         />
 
-        <!-- badajo -->
         <path
           d="M40 70 C40 76 44 80 48 80 C52 80 56 76 56 70"
           fill="none"
@@ -346,17 +332,12 @@ function renderExactReminderBellIcon() {
           stroke-linecap="round"
         />
 
-        <!-- badge reloj -->
         <circle cx="70" cy="66" r="14" fill="#fff" stroke="#111" stroke-width="6"/>
         <path d="M70 58 V66 L76 70" fill="none" stroke="#111" stroke-width="6" stroke-linecap="round" stroke-linejoin="round"/>
       </svg>
     </div>
   `;
 }
-
-/* =========================================================
-   Panel admin horizontal (usuario/email a lo ancho)
-========================================================= */
 
 function renderAdminMetaPanel(rows = []) {
   const validRows = (Array.isArray(rows) ? rows : []).filter(
@@ -492,10 +473,6 @@ function renderAdminDetailPanel(rows = []) {
   `;
 }
 
-/* =========================================================
-   Card principal EXACTA para booked/cancelled
-========================================================= */
-
 function buildExactAppointmentVisualHtml({
   items = [],
   kind = "booked",
@@ -558,10 +535,6 @@ function buildExactAppointmentVisualHtml({
   });
 }
 
-/* =========================================================
-   Card REMINDER EXACTA (como tu imagen)
-========================================================= */
-
 function buildExactReminderVisualHtml({ items = [] }) {
   const innerHtml = `
     ${renderExactReminderBellIcon()}
@@ -586,10 +559,6 @@ function buildExactReminderVisualHtml({ items = [] }) {
     footerNote: "",
   });
 }
-
-/* =========================================================
-   Card admin con misma estética
-========================================================= */
 
 function buildExactAdminAppointmentVisualHtml({
   user,
@@ -759,7 +728,6 @@ export async function sendAppointmentCancelledEmail(
   await sendAdminAppointmentCancelledEmail(user, ap, serviceName, meta);
 }
 
-/* ✅ RECORDATORIO (ESTILO EXACTO COMO TU FOTO) */
 export async function sendAppointmentReminderEmail(user, ap, serviceName) {
   console.log("[MAIL][APPT] reminder ->", {
     to: user?.email,
@@ -794,7 +762,7 @@ export async function sendAppointmentReminderEmail(user, ap, serviceName) {
 }
 
 /* =========================================================
-   ADMIN emails (misma estética)
+   ADMIN emails
 ========================================================= */
 
 export async function sendAdminAppointmentBookedEmail(user, ap, serviceName) {
@@ -895,7 +863,7 @@ export async function sendAdminAppointmentCancelledEmail(
 }
 
 /* =========================================================
-   Batch (turnos)
+   Batch
 ========================================================= */
 
 export async function sendAppointmentBookedBatchEmail(user, items = []) {

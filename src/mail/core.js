@@ -1,7 +1,4 @@
 import nodemailer from "nodemailer";
-import dotenv from "dotenv";
-
-dotenv.config();
 
 let transporter = null;
 
@@ -38,7 +35,7 @@ function envBool(key, fallback = "false") {
 }
 
 /* =========================================================
-   Boot log (SIEMPRE)
+   Boot log
 ========================================================= */
 console.log("[MAIL] core loaded", {
   NODE_ENV: process.env.NODE_ENV,
@@ -107,11 +104,10 @@ function getTransporter() {
     host: SMTP_HOST,
     port: SMTP_PORT,
     secure: SMTP_SECURE,
-    authMethod: "LOGIN",
     auth: { user: SMTP_USER, pass: SMTP_PASS },
-    connectionTimeout: 15_000,
-    greetingTimeout: 15_000,
-    socketTimeout: 30_000,
+    connectionTimeout: 15000,
+    greetingTimeout: 15000,
+    socketTimeout: 30000,
     pool: true,
     maxConnections: 2,
     maxMessages: 50,
