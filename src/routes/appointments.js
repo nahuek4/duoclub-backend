@@ -11,7 +11,7 @@ import { protect } from "../middleware/auth.js";
 
 import {
   fireAndForget,
-  sendAppointmentBookedEmail,
+  sendAppoinstmentBookedEmail,
   sendAppointmentBookedBatchEmail,
   sendAppointmentCancelledEmail,
 } from "../mail.js";
@@ -1273,6 +1273,9 @@ router.post("/", async (req, res) => {
     if (!basic.ok) return res.status(400).json({ error: basic.error });
 
     const userId = req.user._id || req.user.id;
+    console.log("[POST /appointments] VERSION NUEVA ADMIN DESCUENTA");
+    console.log("[POST /appointments] role:", req.user?.role);
+    console.log("[POST /appointments] body:", req.body);
     let out = null;
 
     await session.withTransaction(async () => {
@@ -1384,6 +1387,9 @@ router.post("/", async (req, res) => {
       const effectiveUser = consumed.user;
       usedLotId = consumed.usedLotId;
       usedLotExp = consumed.usedLotExp;
+
+      console.log("[POST /appointments] userCredits despues de consumir:", Number(effectiveUser?.credits || 0));
+      console.log("[POST /appointments] userCreditLots despues de consumir:", serializeUserCreditLots(effectiveUser));
 
       const created = await Appointment.create(
         [{
@@ -1546,6 +1552,9 @@ router.post("/batch", async (req, res) => {
     });
 
     const userId = req.user._id || req.user.id;
+    console.log("[POST /appointments/batch] VERSION NUEVA ADMIN DESCUENTA");
+    console.log("[POST /appointments/batch] role:", req.user?.role);
+    console.log("[POST /appointments/batch] body:", req.body);
     let createdItems = [];
     let waitlistedItems = [];
     let userCreditsAfter = null;
@@ -1736,6 +1745,9 @@ router.post("/batch", async (req, res) => {
         usedLotId = consumed.usedLotId;
         usedLotExp = consumed.usedLotExp;
 
+        console.log("[POST /appointments/batch] userCredits despues de consumir item:", Number(consumed?.user?.credits || 0));
+        console.log("[POST /appointments/batch] item:", { date: it.date, time: it.time, service: it.service });
+
         const created = await Appointment.create(
           [{
             date: it.date,
@@ -1882,6 +1894,7 @@ router.post("/waitlist/claim", async (req, res) => {
     const token = String(req.body?.token || "").trim();
     if (!token) return res.status(400).json({ error: "Falta token." });
 
+    console.log("[POST /appointments/waitlist/claim] VERSION NUEVA ADMIN DESCUENTA");
     let payload = null;
     let logMeta = null;
     let logEntityId = null;
@@ -1998,6 +2011,9 @@ router.post("/waitlist/claim", async (req, res) => {
       effectiveUser = consumed.user;
       usedLotId = consumed.usedLotId;
       usedLotExp = consumed.usedLotExp;
+
+      console.log("[POST /appointments/waitlist/claim] userCredits despues de consumir:", Number(effectiveUser?.credits || 0));
+      console.log("[POST /appointments/waitlist/claim] userCreditLots despues de consumir:", serializeUserCreditLots(effectiveUser));
 
       const created = await Appointment.create(
         [{
