@@ -1279,15 +1279,30 @@ router.post("/", async (req, res) => {
       const user = await User.findById(userId).session(session);
       if (!user) throw new Error("USER_NOT_FOUND");
 
-      if (user.suspended) throw new Error("USER_SUSPENDED");
-      if (requiresApto(user)) throw new Error("APTO_REQUIRED");
+      const isAdmin = user.role === "admin";
 
-      recalcUserCredits(user);
-      if ((user.credits || 0) <= 0) throw new Error("NO_CREDITS");
+      console.log("[POST /appointments] DEBUG_ROLE", {
+        userId: String(user._id),
+        role: user.role,
+        isAdmin,
+        date,
+        time: String(time).slice(0, 5),
+        service,
+        creditsBefore: Number(user.credits || 0),
+        creditLotsBefore: serializeUserCreditLots(user),
+      });
 
-      const requestedSk = serviceToKey(service);
-      if (!hasValidCreditsForService(user, requestedSk)) {
-        throw new Error(`NO_CREDITS_FOR_${requestedSk}`);
+      if (!isAdmin) {
+        if (user.suspended) throw new Error("USER_SUSPENDED");
+        if (requiresApto(user)) throw new Error("APTO_REQUIRED");
+
+        recalcUserCredits(user);
+        if ((user.credits || 0) <= 0) throw new Error("NO_CREDITS");
+
+        const requestedSk = serviceToKey(service);
+        if (!hasValidCreditsForService(user, requestedSk)) {
+          throw new Error(`NO_CREDITS_FOR_${requestedSk}`);
+        }
       }
 
       const t = String(time).slice(0, 5);
@@ -1353,6 +1368,16 @@ router.post("/", async (req, res) => {
 
         recalcUserCredits(user);
 
+        console.log("[POST /appointments] DEBUG_WAITLIST", {
+          userId: String(user._id),
+          role: user.role,
+          date,
+          time: t,
+          service: EP_NAME,
+          userCredits: Number(user.credits || 0),
+          userCreditLots: serializeUserCreditLots(user),
+        });
+
         out = {
           kind: "waitlist",
           date,
@@ -1367,23 +1392,53 @@ router.post("/", async (req, res) => {
 
       let usedLotId = null;
       let usedLotExp = null;
+      let effectiveUser = user;
 
-      const consumed = await consumeCreditAtomic({
-        userId: user._id,
-        serviceName: service,
-        historyItem: {
-          action: "reservado",
-          date,
-          time: t,
-          service,
-          serviceName: service,
-        },
-        session,
+      console.log("[POST /appointments] DEBUG_BEFORE_CONSUME", {
+        userId: String(user._id),
+        role: user.role,
+        isAdmin,
+        date,
+        time: t,
+        service,
+        creditsBeforeConsume: Number(user.credits || 0),
+        creditLotsBeforeConsume: serializeUserCreditLots(user),
       });
 
-      const effectiveUser = consumed.user;
-      usedLotId = consumed.usedLotId;
-      usedLotExp = consumed.usedLotExp;
+      if (!isAdmin) {
+        const consumed = await consumeCreditAtomic({
+          userId: user._id,
+          serviceName: service,
+          historyItem: {
+            action: "reservado",
+            date,
+            time: t,
+            service,
+            serviceName: service,
+          },
+          session,
+        });
+
+        effectiveUser = consumed.user;
+        usedLotId = consumed.usedLotId;
+        usedLotExp = consumed.usedLotExp;
+
+        console.log("[POST /appointments] DEBUG_AFTER_CONSUME", {
+          userId: String(effectiveUser._id),
+          role: effectiveUser.role,
+          usedLotId,
+          usedLotExp,
+          creditsAfterConsume: Number(effectiveUser.credits || 0),
+          userCreditLotsAfterConsume: serializeUserCreditLots(effectiveUser),
+        });
+      } else {
+        console.log("[POST /appointments] DEBUG_ADMIN_SKIP_CONSUME", {
+          userId: String(user._id),
+          role: user.role,
+          creditsWithoutConsume: Number(user.credits || 0),
+          creditLotsWithoutConsume: serializeUserCreditLots(user),
+        });
+      }
 
       const created = await Appointment.create(
         [{
@@ -1407,6 +1462,13 @@ router.post("/", async (req, res) => {
         userCredits: Number(effectiveUser.credits || 0),
         userCreditLots: serializeUserCreditLots(effectiveUser),
       };
+
+      console.log("[POST /appointments] DEBUG_RESPONSE_PAYLOAD", {
+        appointmentId: String(created[0]._id),
+        role: effectiveUser.role,
+        userCredits: Number(effectiveUser.credits || 0),
+        userCreditLots: serializeUserCreditLots(effectiveUser),
+      });
 
       mailUser = { ...effectiveUser.toObject(), _id: effectiveUser._id };
       mailAp = { date, time: t, service };
@@ -1555,11 +1617,24 @@ router.post("/batch", async (req, res) => {
       const user = await User.findById(userId).session(session);
       if (!user) throw new Error("USER_NOT_FOUND");
 
-      if (user.suspended) throw new Error("USER_SUSPENDED");
-      if (requiresApto(user)) throw new Error("APTO_REQUIRED");
+      const isAdmin = user.role === "admin";
 
-      recalcUserCredits(user);
-      if ((user.credits || 0) <= 0) throw new Error("NO_CREDITS");
+      console.log("[POST /appointments/batch] DEBUG_ROLE", {
+        userId: String(user._id),
+        role: user.role,
+        isAdmin,
+        items: normalized.map((x) => ({ date: x.date, time: x.time, service: x.service })),
+        creditsBefore: Number(user.credits || 0),
+        creditLotsBefore: serializeUserCreditLots(user),
+      });
+
+      if (!isAdmin) {
+        if (user.suspended) throw new Error("USER_SUSPENDED");
+        if (requiresApto(user)) throw new Error("APTO_REQUIRED");
+
+        recalcUserCredits(user);
+        if ((user.credits || 0) <= 0) throw new Error("NO_CREDITS");
+      }
 
       const slotSet = new Set(normalized.map((x) => slotKey(x.date, x.time)));
       if (slotSet.size !== normalized.length) {
@@ -1648,39 +1723,50 @@ router.post("/batch", async (req, res) => {
 
       const toReserve = normalized.filter((x) => !x.waitlist);
 
-      recalcUserCredits(user);
-      if ((user.credits || 0) < toReserve.length) {
-        const e = new Error("NO_CREDITS");
-        e.http = 403;
-        throw e;
-      }
+      console.log("[POST /appointments/batch] DEBUG_BEFORE_CONSUME", {
+        userId: String(user._id),
+        role: user.role,
+        isAdmin,
+        reserveCount: toReserve.length,
+        waitlistCount: normalized.filter((x) => !!x.waitlist).length,
+        toReserve: toReserve.map((x) => ({ date: x.date, time: x.time, service: x.service })),
+      });
 
-      const needByService = { EP: 0, RF: 0, RA: 0, NUT: 0 };
-
-      for (const it of toReserve) {
-        const sk = serviceToKey(it.service);
-        if (needByService[sk] !== undefined) needByService[sk] += 1;
-      }
-
-      for (const [sk, need] of Object.entries(needByService)) {
-        if (!need) continue;
-
-        let available = 0;
-        for (const lot of Array.isArray(user.creditLots) ? user.creditLots : []) {
-          const rem = Number(lot?.remaining || 0);
-          if (rem <= 0) continue;
-
-          const exp = lot?.expiresAt ? new Date(lot.expiresAt) : null;
-          if (exp && exp <= new Date()) continue;
-
-          const lk = String(lot?.serviceKey || "").toUpperCase().trim();
-          if (lk === sk) available += rem;
-        }
-
-        if (available < need) {
-          const e = new Error(`NO_CREDITS_FOR_${sk}`);
+      if (!isAdmin) {
+        recalcUserCredits(user);
+        if ((user.credits || 0) < toReserve.length) {
+          const e = new Error("NO_CREDITS");
           e.http = 403;
           throw e;
+        }
+
+        const needByService = { EP: 0, RF: 0, RA: 0, NUT: 0 };
+
+        for (const it of toReserve) {
+          const sk = serviceToKey(it.service);
+          if (needByService[sk] !== undefined) needByService[sk] += 1;
+        }
+
+        for (const [sk, need] of Object.entries(needByService)) {
+          if (!need) continue;
+
+          let available = 0;
+          for (const lot of Array.isArray(user.creditLots) ? user.creditLots : []) {
+            const rem = Number(lot?.remaining || 0);
+            if (rem <= 0) continue;
+
+            const exp = lot?.expiresAt ? new Date(lot.expiresAt) : null;
+            if (exp && exp <= new Date()) continue;
+
+            const lk = String(lot?.serviceKey || "").toUpperCase().trim();
+            if (lk === sk) available += rem;
+          }
+
+          if (available < need) {
+            const e = new Error(`NO_CREDITS_FOR_${sk}`);
+            e.http = 403;
+            throw e;
+          }
         }
       }
 
@@ -1720,21 +1806,37 @@ router.post("/batch", async (req, res) => {
         let usedLotId = null;
         let usedLotExp = null;
 
-        const consumed = await consumeCreditAtomic({
-          userId: user._id,
-          serviceName: it.service,
-          historyItem: {
-            action: "reservado",
-            date: it.date,
-            time: it.time,
-            service: it.service,
+        if (!isAdmin) {
+          const consumed = await consumeCreditAtomic({
+            userId: user._id,
             serviceName: it.service,
-          },
-          session,
-        });
+            historyItem: {
+              action: "reservado",
+              date: it.date,
+              time: it.time,
+              service: it.service,
+              serviceName: it.service,
+            },
+            session,
+          });
 
-        usedLotId = consumed.usedLotId;
-        usedLotExp = consumed.usedLotExp;
+          usedLotId = consumed.usedLotId;
+          usedLotExp = consumed.usedLotExp;
+
+          console.log("[POST /appointments/batch] DEBUG_AFTER_ITEM_CONSUME", {
+            userId: String(user._id),
+            role: user.role,
+            item: { date: it.date, time: it.time, service: it.service },
+            usedLotId,
+            usedLotExp,
+          });
+        } else {
+          console.log("[POST /appointments/batch] DEBUG_ADMIN_SKIP_ITEM_CONSUME", {
+            userId: String(user._id),
+            role: user.role,
+            item: { date: it.date, time: it.time, service: it.service },
+          });
+        }
 
         const created = await Appointment.create(
           [{
@@ -1764,6 +1866,15 @@ router.post("/batch", async (req, res) => {
 
       userCreditsAfter = Number(finalUser.credits || 0);
       userCreditLotsAfter = serializeUserCreditLots(finalUser);
+
+      console.log("[POST /appointments/batch] DEBUG_RESPONSE_PAYLOAD", {
+        userId: String(finalUser._id),
+        role: finalUser.role,
+        userCreditsAfter,
+        userCreditLotsAfter,
+        createdCount: createdItems.length,
+        waitlistedCount: waitlistedItems.length,
+      });
       mailUser = { ...finalUser.toObject(), _id: finalUser._id };
       mailItems = createdItems.map((x) => ({ date: x.date, time: x.time, service: x.service }));
     });
@@ -1914,6 +2025,17 @@ router.post("/waitlist/claim", async (req, res) => {
         throw e;
       }
 
+      console.log("[POST /appointments/waitlist/claim] DEBUG_ROLE", {
+        userId: String(user._id),
+        role: user.role,
+        waitlistId: String(wl._id),
+        date: wl.date,
+        time: wl.time,
+        service: EP_NAME,
+        creditsBefore: Number(user.credits || 0),
+        creditLotsBefore: serializeUserCreditLots(user),
+      });
+
       const basic = validateBasicSlotRules({ date: wl.date, time: wl.time, service: EP_NAME });
       if (!basic.ok) {
         const e = new Error("SLOT_NOT_VALID");
@@ -1979,25 +2101,53 @@ router.post("/waitlist/claim", async (req, res) => {
       let usedLotExp = null;
       let effectiveUser = user;
 
-      if (user.suspended) throw new Error("USER_SUSPENDED");
-      if (requiresApto(user)) throw new Error("APTO_REQUIRED");
-
-      const consumed = await consumeCreditAtomic({
-        userId: user._id,
-        serviceName: EP_NAME,
-        historyItem: {
-          action: "reservado_desde_waitlist",
-          date: wl.date,
-          time: wl.time,
-          service: EP_NAME,
-          serviceName: EP_NAME,
-        },
-        session,
+      console.log("[POST /appointments/waitlist/claim] DEBUG_BEFORE_CONSUME", {
+        userId: String(user._id),
+        role: user.role,
+        date: wl.date,
+        time: wl.time,
+        service: EP_NAME,
+        creditsBeforeConsume: Number(user.credits || 0),
+        creditLotsBeforeConsume: serializeUserCreditLots(user),
       });
 
-      effectiveUser = consumed.user;
-      usedLotId = consumed.usedLotId;
-      usedLotExp = consumed.usedLotExp;
+      if (user.role !== "admin") {
+        if (user.suspended) throw new Error("USER_SUSPENDED");
+        if (requiresApto(user)) throw new Error("APTO_REQUIRED");
+
+        const consumed = await consumeCreditAtomic({
+          userId: user._id,
+          serviceName: EP_NAME,
+          historyItem: {
+            action: "reservado_desde_waitlist",
+            date: wl.date,
+            time: wl.time,
+            service: EP_NAME,
+            serviceName: EP_NAME,
+          },
+          session,
+        });
+
+        effectiveUser = consumed.user;
+        usedLotId = consumed.usedLotId;
+        usedLotExp = consumed.usedLotExp;
+
+        console.log("[POST /appointments/waitlist/claim] DEBUG_AFTER_CONSUME", {
+          userId: String(effectiveUser._id),
+          role: effectiveUser.role,
+          usedLotId,
+          usedLotExp,
+          creditsAfterConsume: Number(effectiveUser.credits || 0),
+          userCreditLotsAfterConsume: serializeUserCreditLots(effectiveUser),
+        });
+      } else {
+        console.log("[POST /appointments/waitlist/claim] DEBUG_ADMIN_SKIP_CONSUME", {
+          userId: String(user._id),
+          role: user.role,
+          creditsWithoutConsume: Number(user.credits || 0),
+          creditLotsWithoutConsume: serializeUserCreditLots(user),
+        });
+      }
 
       const created = await Appointment.create(
         [{
@@ -2015,6 +2165,13 @@ router.post("/waitlist/claim", async (req, res) => {
       wl.status = "claimed";
       wl.claimedAt = new Date();
       await wl.save({ session });
+
+      console.log("[POST /appointments/waitlist/claim] DEBUG_RESPONSE_PAYLOAD", {
+        appointmentId: String(created[0]._id),
+        role: effectiveUser.role,
+        userCredits: Number(effectiveUser.credits || 0),
+        userCreditLots: serializeUserCreditLots(effectiveUser),
+      });
 
       payload = {
         ok: true,
