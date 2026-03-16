@@ -19,8 +19,6 @@ import { logActivity, buildUserSubject } from "../lib/activityLogger.js";
 
 const router = express.Router();
 
-console.log("=== APPOINTMENTS FILE CORRECTO CARGADO (BOOT) ===");
-
 /* =========================
    CONFIG: ventana de reserva
 ========================= */
@@ -322,23 +320,16 @@ async function refundCreditAtomicToOriginalLot({
   historyItem,
   session,
 }) {
-  const upd = await User.updateOne(
-    {
-      _id: userId,
-      "creditLots._id": lotId,
-    },
-    {
-      $inc: { "creditLots.$.remaining": 1 },
-    },
-    { session }
-  );
-
-  if (!upd.modifiedCount) {
-    throw new Error("REFUND_FAILED");
-  }
-
   const freshUser = await User.findById(userId).session(session);
   if (!freshUser) throw new Error("USER_NOT_FOUND");
+
+  const lot = findLotById(freshUser, lotId);
+  if (!lot) throw new Error("REFUND_FAILED");
+
+  const currentRemaining = Number(lot.remaining || 0);
+  const maxAmount = Number(lot.amount || 0);
+
+  lot.remaining = Math.min(currentRemaining + 1, maxAmount);
 
   freshUser.history = freshUser.history || [];
   freshUser.history.push({
@@ -1281,16 +1272,6 @@ router.post("/", async (req, res) => {
       const user = await User.findById(userId).session(session);
       if (!user) throw new Error("USER_NOT_FOUND");
 
-      const isAdmin = user.role === "admin";
-
-      console.log("=== APPOINTMENTS FILE CORRECTO CARGADO ===");
-      console.log("[RESERVA] user inicial", {
-        userId: String(user._id),
-        role: user.role,
-        credits: Number(user.credits || 0),
-        lots: lotsDebug(user),
-      });
-
       if (user.suspended) throw new Error("USER_SUSPENDED");
       if (requiresApto(user)) throw new Error("APTO_REQUIRED");
 
@@ -1301,14 +1282,6 @@ router.post("/", async (req, res) => {
       if (!hasValidCreditsForService(user, requestedSk)) {
         throw new Error(`NO_CREDITS_FOR_${requestedSk}`);
       }
-
-      console.log("[RESERVA] antes de consumir", {
-        role: user.role,
-        isAdmin,
-        credits: Number(user.credits || 0),
-        requestedSk,
-        lots: lotsDebug(user),
-      });
 
       const t = String(time).slice(0, 5);
 
@@ -1405,14 +1378,6 @@ router.post("/", async (req, res) => {
       effectiveUser = consumed.user;
       usedLotId = consumed.usedLotId;
       usedLotExp = consumed.usedLotExp;
-
-      console.log("[RESERVA] despues de consumir", {
-        role: effectiveUser.role,
-        credits: Number(effectiveUser.credits || 0),
-        usedLotId: usedLotId ? String(usedLotId) : null,
-        usedLotExp: usedLotExp || null,
-        lots: serializeUserCreditLots(effectiveUser),
-      });
 
       const created = await Appointment.create(
         [{
@@ -1583,8 +1548,6 @@ router.post("/batch", async (req, res) => {
     await session.withTransaction(async () => {
       const user = await User.findById(userId).session(session);
       if (!user) throw new Error("USER_NOT_FOUND");
-
-      const isAdmin = user.role === "admin";
 
       if (user.suspended) throw new Error("USER_SUSPENDED");
       if (requiresApto(user)) throw new Error("APTO_REQUIRED");
