@@ -1279,19 +1279,15 @@ router.post("/", async (req, res) => {
       const user = await User.findById(userId).session(session);
       if (!user) throw new Error("USER_NOT_FOUND");
 
-      const isAdmin = user.role === "admin";
+      if (user.suspended) throw new Error("USER_SUSPENDED");
+      if (requiresApto(user)) throw new Error("APTO_REQUIRED");
 
-      if (!isAdmin) {
-        if (user.suspended) throw new Error("USER_SUSPENDED");
-        if (requiresApto(user)) throw new Error("APTO_REQUIRED");
+      recalcUserCredits(user);
+      if ((user.credits || 0) <= 0) throw new Error("NO_CREDITS");
 
-        recalcUserCredits(user);
-        if ((user.credits || 0) <= 0) throw new Error("NO_CREDITS");
-
-        const requestedSk = serviceToKey(service);
-        if (!hasValidCreditsForService(user, requestedSk)) {
-          throw new Error(`NO_CREDITS_FOR_${requestedSk}`);
-        }
+      const requestedSk = serviceToKey(service);
+      if (!hasValidCreditsForService(user, requestedSk)) {
+        throw new Error(`NO_CREDITS_FOR_${requestedSk}`);
       }
 
       const t = String(time).slice(0, 5);
@@ -1371,26 +1367,23 @@ router.post("/", async (req, res) => {
 
       let usedLotId = null;
       let usedLotExp = null;
-      let effectiveUser = user;
 
-      if (!isAdmin) {
-        const consumed = await consumeCreditAtomic({
-          userId: user._id,
+      const consumed = await consumeCreditAtomic({
+        userId: user._id,
+        serviceName: service,
+        historyItem: {
+          action: "reservado",
+          date,
+          time: t,
+          service,
           serviceName: service,
-          historyItem: {
-            action: "reservado",
-            date,
-            time: t,
-            service,
-            serviceName: service,
-          },
-          session,
-        });
+        },
+        session,
+      });
 
-        effectiveUser = consumed.user;
-        usedLotId = consumed.usedLotId;
-        usedLotExp = consumed.usedLotExp;
-      }
+      const effectiveUser = consumed.user;
+      usedLotId = consumed.usedLotId;
+      usedLotExp = consumed.usedLotExp;
 
       const created = await Appointment.create(
         [{
@@ -1562,15 +1555,11 @@ router.post("/batch", async (req, res) => {
       const user = await User.findById(userId).session(session);
       if (!user) throw new Error("USER_NOT_FOUND");
 
-      const isAdmin = user.role === "admin";
+      if (user.suspended) throw new Error("USER_SUSPENDED");
+      if (requiresApto(user)) throw new Error("APTO_REQUIRED");
 
-      if (!isAdmin) {
-        if (user.suspended) throw new Error("USER_SUSPENDED");
-        if (requiresApto(user)) throw new Error("APTO_REQUIRED");
-
-        recalcUserCredits(user);
-        if ((user.credits || 0) <= 0) throw new Error("NO_CREDITS");
-      }
+      recalcUserCredits(user);
+      if ((user.credits || 0) <= 0) throw new Error("NO_CREDITS");
 
       const slotSet = new Set(normalized.map((x) => slotKey(x.date, x.time)));
       if (slotSet.size !== normalized.length) {
@@ -1659,41 +1648,39 @@ router.post("/batch", async (req, res) => {
 
       const toReserve = normalized.filter((x) => !x.waitlist);
 
-      if (!isAdmin) {
-        recalcUserCredits(user);
-        if ((user.credits || 0) < toReserve.length) {
-          const e = new Error("NO_CREDITS");
+      recalcUserCredits(user);
+      if ((user.credits || 0) < toReserve.length) {
+        const e = new Error("NO_CREDITS");
+        e.http = 403;
+        throw e;
+      }
+
+      const needByService = { EP: 0, RF: 0, RA: 0, NUT: 0 };
+
+      for (const it of toReserve) {
+        const sk = serviceToKey(it.service);
+        if (needByService[sk] !== undefined) needByService[sk] += 1;
+      }
+
+      for (const [sk, need] of Object.entries(needByService)) {
+        if (!need) continue;
+
+        let available = 0;
+        for (const lot of Array.isArray(user.creditLots) ? user.creditLots : []) {
+          const rem = Number(lot?.remaining || 0);
+          if (rem <= 0) continue;
+
+          const exp = lot?.expiresAt ? new Date(lot.expiresAt) : null;
+          if (exp && exp <= new Date()) continue;
+
+          const lk = String(lot?.serviceKey || "").toUpperCase().trim();
+          if (lk === sk) available += rem;
+        }
+
+        if (available < need) {
+          const e = new Error(`NO_CREDITS_FOR_${sk}`);
           e.http = 403;
           throw e;
-        }
-
-        const needByService = { EP: 0, RF: 0, RA: 0, NUT: 0 };
-
-        for (const it of toReserve) {
-          const sk = serviceToKey(it.service);
-          if (needByService[sk] !== undefined) needByService[sk] += 1;
-        }
-
-        for (const [sk, need] of Object.entries(needByService)) {
-          if (!need) continue;
-
-          let available = 0;
-          for (const lot of Array.isArray(user.creditLots) ? user.creditLots : []) {
-            const rem = Number(lot?.remaining || 0);
-            if (rem <= 0) continue;
-
-            const exp = lot?.expiresAt ? new Date(lot.expiresAt) : null;
-            if (exp && exp <= new Date()) continue;
-
-            const lk = String(lot?.serviceKey || "").toUpperCase().trim();
-            if (lk === sk) available += rem;
-          }
-
-          if (available < need) {
-            const e = new Error(`NO_CREDITS_FOR_${sk}`);
-            e.http = 403;
-            throw e;
-          }
         }
       }
 
@@ -1733,23 +1720,21 @@ router.post("/batch", async (req, res) => {
         let usedLotId = null;
         let usedLotExp = null;
 
-        if (!isAdmin) {
-          const consumed = await consumeCreditAtomic({
-            userId: user._id,
+        const consumed = await consumeCreditAtomic({
+          userId: user._id,
+          serviceName: it.service,
+          historyItem: {
+            action: "reservado",
+            date: it.date,
+            time: it.time,
+            service: it.service,
             serviceName: it.service,
-            historyItem: {
-              action: "reservado",
-              date: it.date,
-              time: it.time,
-              service: it.service,
-              serviceName: it.service,
-            },
-            session,
-          });
+          },
+          session,
+        });
 
-          usedLotId = consumed.usedLotId;
-          usedLotExp = consumed.usedLotExp;
-        }
+        usedLotId = consumed.usedLotId;
+        usedLotExp = consumed.usedLotExp;
 
         const created = await Appointment.create(
           [{
@@ -1994,27 +1979,25 @@ router.post("/waitlist/claim", async (req, res) => {
       let usedLotExp = null;
       let effectiveUser = user;
 
-      if (user.role !== "admin") {
-        if (user.suspended) throw new Error("USER_SUSPENDED");
-        if (requiresApto(user)) throw new Error("APTO_REQUIRED");
+      if (user.suspended) throw new Error("USER_SUSPENDED");
+      if (requiresApto(user)) throw new Error("APTO_REQUIRED");
 
-        const consumed = await consumeCreditAtomic({
-          userId: user._id,
+      const consumed = await consumeCreditAtomic({
+        userId: user._id,
+        serviceName: EP_NAME,
+        historyItem: {
+          action: "reservado_desde_waitlist",
+          date: wl.date,
+          time: wl.time,
+          service: EP_NAME,
           serviceName: EP_NAME,
-          historyItem: {
-            action: "reservado_desde_waitlist",
-            date: wl.date,
-            time: wl.time,
-            service: EP_NAME,
-            serviceName: EP_NAME,
-          },
-          session,
-        });
+        },
+        session,
+      });
 
-        effectiveUser = consumed.user;
-        usedLotId = consumed.usedLotId;
-        usedLotExp = consumed.usedLotExp;
-      }
+      effectiveUser = consumed.user;
+      usedLotId = consumed.usedLotId;
+      usedLotExp = consumed.usedLotExp;
 
       const created = await Appointment.create(
         [{
