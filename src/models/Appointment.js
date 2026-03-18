@@ -39,7 +39,6 @@ const appointmentSchema = new mongoose.Schema(
 appointmentSchema.index(
   { date: 1, time: 1, service: 1, status: 1 },
   {
-    unique: true,
     partialFilterExpression: {
       status: "reserved",
       service: { $ne: EP_KEY },

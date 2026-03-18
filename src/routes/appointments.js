@@ -36,8 +36,8 @@ const DEFAULT_MIN_BOOKING_MINUTES = Number(
 
 const MIN_BOOKING_MINUTES_BY_SERVICE = {
   EP: 30,
-  RA: 120,
-  RF: 120,
+  RA: 24 * 60,
+  RF: 24 * 60,
   NUT: DEFAULT_MIN_BOOKING_MINUTES,
   OTHER: DEFAULT_MIN_BOOKING_MINUTES,
 };
@@ -441,23 +441,29 @@ function requiresApto(user) {
    Cupos + horarios por servicio
 ========================= */
 const TOTAL_CAP = 6;
+const EP_CAP_WHEN_THERAPY_ACTIVE = 4;
+const THERAPY_CAP_WHEN_ACTIVE = 2;
 
 const EP_NAME = "Entrenamiento Personal";
 const RA_NAME = "Rehabilitación activa";
 const RF_NAME = "Reeducación funcional";
 
-const TIMES_EP = [
+const TIMES_EP_WEEKDAY = [
   "07:00", "08:00", "09:00", "10:00",
   "11:00", "12:00", "13:30",
   "14:00", "15:00", "16:00", "17:00",
   "18:00", "19:00", "20:00",
 ];
 
-const TIMES_REHAB = [
+const TIMES_REHAB_MWF = [
   "07:00", "08:00", "09:00", "10:00",
-  "11:00", "12:00", "13:30",
-  "14:00", "15:00", "16:00", "17:00",
-  "18:00",
+  "11:00", "12:00", "13:30", "14:00", "15:00",
+];
+
+const TIMES_REHAB_TT = [
+  "07:00", "08:00", "09:00", "10:00",
+  "11:00", "12:00",
+  "15:00", "16:00", "17:00", "18:00",
 ];
 
 const TIMES_DEFAULT = [
@@ -466,43 +472,168 @@ const TIMES_DEFAULT = [
   "18:00", "19:00", "20:00",
 ];
 
-function getAllowedTimesForService(serviceName) {
-  if (sameService(serviceName, EP_NAME)) return TIMES_EP;
-  if (sameService(serviceName, RA_NAME)) return TIMES_REHAB;
-  if (sameService(serviceName, RF_NAME)) return TIMES_REHAB;
+function isTherapyService(serviceName) {
+  return sameService(serviceName, RA_NAME) || sameService(serviceName, RF_NAME);
+}
+
+function getRehabTimesForDate(dateStr) {
+  const weekday = getWeekdayMondayFirst(dateStr);
+  if ([1, 3, 5].includes(weekday)) return TIMES_REHAB_MWF;
+  if ([2, 4].includes(weekday)) return TIMES_REHAB_TT;
+  return [];
+}
+
+function getAllowedTimesForService(serviceName, dateStr = "") {
+  if (!dateStr || isSaturday(dateStr) || isSunday(dateStr)) return [];
+
+  if (sameService(serviceName, EP_NAME)) return TIMES_EP_WEEKDAY;
+  if (isTherapyService(serviceName)) return getRehabTimesForDate(dateStr);
   return TIMES_DEFAULT;
 }
 
-function isAllowedTimeForService(serviceName, time) {
+function isAllowedTimeForService(serviceName, dateStr, time) {
   const t = String(time || "").slice(0, 5);
-  return getAllowedTimesForService(serviceName).includes(t);
+  return getAllowedTimesForService(serviceName, dateStr).includes(t);
 }
 
-function calcEpCap({ hoursToStart, hasRF, hasRA, otherReservedCount }) {
-  let cap = 4;
+function isTherapyAreaActiveAt(dateStr, time) {
+  const t = String(time || "").slice(0, 5);
+  return getRehabTimesForDate(dateStr).includes(t);
+}
 
-  if (Number(hoursToStart) <= 12) {
-    if (!hasRF && !hasRA) cap = 6;
-    else if (!!hasRF !== !!hasRA) cap = 5;
-    else cap = 4;
-  }
+function getTherapyCapForSlot(dateStr, time) {
+  return isTherapyAreaActiveAt(dateStr, time) ? THERAPY_CAP_WHEN_ACTIVE : 0;
+}
 
-  const totalLimit = Math.max(0, TOTAL_CAP - Number(otherReservedCount || 0));
-  cap = Math.min(cap, totalLimit);
+function getEpCapForSlot(dateStr, time) {
+  return getTherapyCapForSlot(dateStr, time) > 0
+    ? EP_CAP_WHEN_THERAPY_ACTIVE
+    : TOTAL_CAP;
+}
 
-  return Math.max(0, cap);
+function getSlotReservationStats(existing, dateStr, time) {
+  const list = Array.isArray(existing) ? existing : [];
+
+  const epReserved = list.filter((a) => sameService(a.service, EP_NAME)).length;
+  const therapyReserved = list.filter((a) => isTherapyService(a.service)).length;
+
+  return {
+    totalReserved: list.length,
+    epReserved,
+    therapyReserved,
+    therapyCap: getTherapyCapForSlot(dateStr, time),
+    epCap: getEpCapForSlot(dateStr, time),
+    therapyActive: isTherapyAreaActiveAt(dateStr, time),
+  };
 }
 
 /* =========================
    CANCELACIÓN / REINTEGRO
 ========================= */
-const REFUND_CUTOFF_HOURS = 1;
+const EP_REFUND_CUTOFF_HOURS = 1;
+const THERAPY_REFUND_CUTOFF_HOURS = 2;
+const MONTHLY_LATE_REFUND_LIMIT = 1;
+const MONTHLY_THERAPY_REPROGRAM_LIMIT = 2;
 
-function isRefundEligible(hoursToStart) {
-  const h = Number(hoursToStart);
-  if (!Number.isFinite(h)) return false;
-  if (h <= 0) return false;
-  return h >= REFUND_CUTOFF_HOURS;
+function getRefundCutoffHoursForService(serviceName) {
+  return isTherapyService(serviceName)
+    ? THERAPY_REFUND_CUTOFF_HOURS
+    : EP_REFUND_CUTOFF_HOURS;
+}
+
+function getMonthKey(dateValue = new Date()) {
+  const dt = new Date(dateValue);
+  if (Number.isNaN(dt.getTime())) return "";
+  const y = dt.getFullYear();
+  const m = String(dt.getMonth() + 1).padStart(2, "0");
+  return `${y}-${m}`;
+}
+
+function countHistoryEntriesInMonth(user, matcher, refDate = new Date()) {
+  const monthKey = getMonthKey(refDate);
+  const history = Array.isArray(user?.history) ? user.history : [];
+
+  return history.reduce((acc, item) => {
+    const createdAt = item?.createdAt ? new Date(item.createdAt) : null;
+    if (!createdAt || Number.isNaN(createdAt.getTime())) return acc;
+    if (getMonthKey(createdAt) !== monthKey) return acc;
+    return matcher(item) ? acc + 1 : acc;
+  }, 0);
+}
+
+function countMonthlyLateCourtesyRefunds(user, refDate = new Date()) {
+  return countHistoryEntriesInMonth(
+    user,
+    (item) => String(item?.action || "") === "cancelado_tarde_con_cortesia",
+    refDate
+  );
+}
+
+function countMonthlyTherapyReprograms(user, refDate = new Date()) {
+  return countHistoryEntriesInMonth(
+    user,
+    (item) => String(item?.action || "") === "cancelado_con_reintegro_terapia",
+    refDate
+  );
+}
+
+function resolveCancellationPolicy({ user, appointment, hoursToStart }) {
+  const service = appointment?.service || "";
+  const serviceKey = serviceToKey(service);
+  const isTherapy = serviceKey === "RA" || serviceKey === "RF";
+  const refundCutoffHours = getRefundCutoffHoursForService(service);
+  const hasProperNotice =
+    Number.isFinite(Number(hoursToStart)) && Number(hoursToStart) >= refundCutoffHours;
+
+  if (hasProperNotice) {
+    if (isTherapy) {
+      const used = countMonthlyTherapyReprograms(user);
+      if (used >= MONTHLY_THERAPY_REPROGRAM_LIMIT) {
+        return {
+          refund: false,
+          refundMode: "none",
+          refundCutoffHours,
+          reason: "MONTHLY_THERAPY_REPROGRAM_LIMIT_REACHED",
+          historyAction: "cancelado_sin_reintegro",
+        };
+      }
+
+      return {
+        refund: true,
+        refundMode: "timely",
+        refundCutoffHours,
+        reason: "WITH_NOTICE_THERAPY",
+        historyAction: "cancelado_con_reintegro_terapia",
+      };
+    }
+
+    return {
+      refund: true,
+      refundMode: "timely",
+      refundCutoffHours,
+      reason: "WITH_NOTICE_EP",
+      historyAction: "cancelado_con_reintegro_ep",
+    };
+  }
+
+  const lateUsed = countMonthlyLateCourtesyRefunds(user);
+  if (lateUsed >= MONTHLY_LATE_REFUND_LIMIT) {
+    return {
+      refund: false,
+      refundMode: "none",
+      refundCutoffHours,
+      reason: "MONTHLY_LATE_REFUND_LIMIT_REACHED",
+      historyAction: "cancelado_sin_reintegro",
+    };
+  }
+
+  return {
+    refund: true,
+    refundMode: "late-courtesy",
+    refundCutoffHours,
+    reason: "LATE_COURTESY",
+    historyAction: "cancelado_tarde_con_cortesia",
+  };
 }
 
 function lotsDebug(user) {
@@ -528,13 +659,17 @@ function validateBasicSlotRules({ date, time, service }) {
     return { ok: false, error: "Los sábados no hay turnos disponibles." };
   }
 
+  if (isSunday(date)) {
+    return { ok: false, error: "Los domingos no hay turnos disponibles." };
+  }
+
   const timeNorm = String(time).slice(0, 5);
 
   if (timeNorm.startsWith("13:") && timeNorm !== "13:30") {
     return { ok: false, error: "Horario inválido." };
   }
 
-  if (!isAllowedTimeForService(service, timeNorm)) {
+  if (!isAllowedTimeForService(service, date, timeNorm)) {
     return {
       ok: false,
       error: "Ese horario no está disponible para el servicio seleccionado.",
@@ -579,7 +714,7 @@ function validateBasicSlotRulesAdmin({ date, time, service, bypassWindow = false
     return { ok: false, error: "Horario inválido." };
   }
 
-  if (!isAllowedTimeForService(service, timeNorm)) {
+  if (!isAllowedTimeForService(service, date, timeNorm)) {
     return {
       ok: false,
       error: "Ese horario no está disponible para el servicio seleccionado.",
@@ -738,43 +873,32 @@ async function createAppointmentForTargetUser({
     status: "reserved",
   }).lean();
 
-  if (existingAtSlot.length >= TOTAL_CAP) {
-    const e = new Error("TOTAL_CAP_REACHED");
-    e.http = 409;
-    throw e;
-  }
-
-  const epCount = existingAtSlot.filter((a) => sameService(a.service, EP_NAME)).length;
-  const rfTaken = existingAtSlot.some((a) => sameService(a.service, RF_NAME)) ? 1 : 0;
-  const raTaken = existingAtSlot.some((a) => sameService(a.service, RA_NAME)) ? 1 : 0;
-  const otherReservedCount = rfTaken + raTaken;
-
-  if (sameService(service, RF_NAME) && rfTaken) {
-    const e = new Error("SERVICE_CAP_REACHED");
-    e.http = 409;
-    throw e;
-  }
-
-  if (sameService(service, RA_NAME) && raTaken) {
-    const e = new Error("SERVICE_CAP_REACHED");
-    e.http = 409;
-    throw e;
-  }
+  const stats = getSlotReservationStats(existingAtSlot, date, t);
 
   if (basic.isEpService) {
-    const hoursToStart = (basic.slotDate.getTime() - Date.now()) / (1000 * 60 * 60);
-    const epCap = calcEpCap({
-      hoursToStart,
-      hasRF: !!rfTaken,
-      hasRA: !!raTaken,
-      otherReservedCount,
-    });
+    if (stats.totalReserved >= TOTAL_CAP || stats.epReserved >= stats.epCap) {
+      const e = new Error(
+        stats.totalReserved >= TOTAL_CAP ? "TOTAL_CAP_REACHED" : "SERVICE_CAP_REACHED"
+      );
+      e.http = 409;
+      throw e;
+    }
+  } else if (isTherapyService(service)) {
+    if (stats.totalReserved >= TOTAL_CAP) {
+      const e = new Error("TOTAL_CAP_REACHED");
+      e.http = 409;
+      throw e;
+    }
 
-    if (epCount >= epCap) {
+    if (stats.therapyReserved >= stats.therapyCap) {
       const e = new Error("SERVICE_CAP_REACHED");
       e.http = 409;
       throw e;
     }
+  } else if (stats.totalReserved >= TOTAL_CAP) {
+    const e = new Error("TOTAL_CAP_REACHED");
+    e.http = 409;
+    throw e;
   }
 
   const consumed = await consumeCreditAtomic({
@@ -848,7 +972,7 @@ router.get("/availability", async (req, res) => {
       return res.status(400).json({ error: "Faltan params: date y service." });
     }
 
-    const allowedTimes = getAllowedTimesForService(service);
+    const allowedTimes = getAllowedTimesForService(service, date);
 
     const times =
       Array.isArray(req.query?.times) && req.query.times.length
@@ -906,14 +1030,16 @@ router.get("/availability", async (req, res) => {
       }
     }
 
-    if (isSaturday(date)) {
+    if (isSaturday(date) || isSunday(date)) {
       return res.json({
         date,
         service,
         slots: times.map((t) => ({
           time: t,
           state: "closed",
-          reason: "Sábados no disponibles",
+          reason: isSunday(date)
+            ? "Domingos no disponibles"
+            : "Sábados no disponibles",
         })),
       });
     }
@@ -933,65 +1059,47 @@ router.get("/availability", async (req, res) => {
         .select("service")
         .lean();
 
-      const total = existing.length;
+      const stats = getSlotReservationStats(existing, date, t);
+      const isTherapy = isTherapyService(service);
 
-      if (total >= TOTAL_CAP) {
-        if (basic.isEpService) {
+      if (basic.isEpService) {
+        if (stats.totalReserved >= TOTAL_CAP || stats.epReserved >= stats.epCap) {
           out.push({
             time: t,
             state: "waitlist",
-            totalReserved: total,
-            epReserved: existing.filter((a) => sameService(a.service, EP_NAME)).length,
+            totalReserved: stats.totalReserved,
+            epReserved: stats.epReserved,
+            epCap: stats.epCap,
+            therapyReserved: stats.therapyReserved,
+            therapyCap: stats.therapyCap,
           });
-        } else {
-          out.push({ time: t, state: "full", totalReserved: total });
+          continue;
         }
+      } else if (isTherapy) {
+        if (stats.totalReserved >= TOTAL_CAP || stats.therapyReserved >= stats.therapyCap) {
+          out.push({
+            time: t,
+            state: "full",
+            totalReserved: stats.totalReserved,
+            therapyReserved: stats.therapyReserved,
+            therapyCap: stats.therapyCap,
+          });
+          continue;
+        }
+      } else if (stats.totalReserved >= TOTAL_CAP) {
+        out.push({ time: t, state: "full", totalReserved: stats.totalReserved });
         continue;
       }
 
-      if (sameService(service, RF_NAME)) {
-        const hasRF = existing.some((a) => sameService(a.service, RF_NAME));
-        if (hasRF) {
-          out.push({ time: t, state: "full", totalReserved: total });
-          continue;
-        }
-      }
-
-      if (sameService(service, RA_NAME)) {
-        const hasRA = existing.some((a) => sameService(a.service, RA_NAME));
-        if (hasRA) {
-          out.push({ time: t, state: "full", totalReserved: total });
-          continue;
-        }
-      }
-
-      if (basic.isEpService) {
-        const epCount = existing.filter((a) => sameService(a.service, EP_NAME)).length;
-        const rfTaken = existing.some((a) => sameService(a.service, RF_NAME)) ? 1 : 0;
-        const raTaken = existing.some((a) => sameService(a.service, RA_NAME)) ? 1 : 0;
-        const otherReservedCount = rfTaken + raTaken;
-
-        const hoursToStart = (basic.slotDate.getTime() - Date.now()) / (1000 * 60 * 60);
-        const epCap = calcEpCap({
-          hoursToStart,
-          hasRF: !!rfTaken,
-          hasRA: !!raTaken,
-          otherReservedCount,
-        });
-
-        if (epCount >= epCap) {
-          out.push({
-            time: t,
-            state: "waitlist",
-            totalReserved: total,
-            epReserved: epCount,
-            epCap,
-          });
-          continue;
-        }
-      }
-
-      out.push({ time: t, state: "available", totalReserved: total });
+      out.push({
+        time: t,
+        state: "available",
+        totalReserved: stats.totalReserved,
+        epReserved: stats.epReserved,
+        epCap: stats.epCap,
+        therapyReserved: stats.therapyReserved,
+        therapyCap: stats.therapyCap,
+      });
     }
 
     return res.json({ date, service, slots: out });
@@ -1301,31 +1409,19 @@ router.post("/", async (req, res) => {
       }).session(session).lean();
 
       let willWaitlist = false;
-
-      if (existingAtSlot.length >= TOTAL_CAP) {
-        if (basic.isEpService) willWaitlist = true;
-        else throw new Error("TOTAL_CAP_REACHED");
-      }
-
-      const epCount = existingAtSlot.filter((a) => sameService(a.service, EP_NAME)).length;
-      const rfTaken = existingAtSlot.some((a) => sameService(a.service, RF_NAME)) ? 1 : 0;
-      const raTaken = existingAtSlot.some((a) => sameService(a.service, RA_NAME)) ? 1 : 0;
-      const otherReservedCount = rfTaken + raTaken;
-
-      if (sameService(service, RF_NAME) && rfTaken) throw new Error("SERVICE_CAP_REACHED");
-      if (sameService(service, RA_NAME) && raTaken) throw new Error("SERVICE_CAP_REACHED");
+      const stats = getSlotReservationStats(existingAtSlot, date, t);
 
       if (basic.isEpService) {
-        const hoursToStart = (basic.slotDate.getTime() - Date.now()) / (1000 * 60 * 60);
-
-        const epCap = calcEpCap({
-          hoursToStart,
-          hasRF: !!rfTaken,
-          hasRA: !!raTaken,
-          otherReservedCount,
-        });
-
-        if (epCount >= epCap) willWaitlist = true;
+        if (stats.totalReserved >= TOTAL_CAP || stats.epReserved >= stats.epCap) {
+          willWaitlist = true;
+        }
+      } else if (isTherapyService(service)) {
+        if (stats.totalReserved >= TOTAL_CAP) throw new Error("TOTAL_CAP_REACHED");
+        if (stats.therapyReserved >= stats.therapyCap) {
+          throw new Error("SERVICE_CAP_REACHED");
+        }
+      } else if (stats.totalReserved >= TOTAL_CAP) {
+        throw new Error("TOTAL_CAP_REACHED");
       }
 
       if (willWaitlist && basic.isEpService) {
@@ -1586,51 +1682,29 @@ router.post("/batch", async (req, res) => {
       for (const it of normalized) {
         const k = slotKey(it.date, it.time);
         const cur = bySlot.get(k) || [];
+        const stats = getSlotReservationStats(cur, it.date, it.time);
 
-        if (cur.length >= TOTAL_CAP) {
-          if (it.isEpService) {
+        if (it.isEpService) {
+          if (stats.totalReserved >= TOTAL_CAP || stats.epReserved >= stats.epCap) {
             it.waitlist = true;
             continue;
           }
+        } else if (isTherapyService(it.service)) {
+          if (stats.totalReserved >= TOTAL_CAP) {
+            const e = new Error("TOTAL_CAP_REACHED");
+            e.http = 409;
+            throw e;
+          }
+
+          if (stats.therapyReserved >= stats.therapyCap) {
+            const e = new Error("SERVICE_CAP_REACHED");
+            e.http = 409;
+            throw e;
+          }
+        } else if (stats.totalReserved >= TOTAL_CAP) {
           const e = new Error("TOTAL_CAP_REACHED");
           e.http = 409;
           throw e;
-        }
-
-        if (sameService(it.service, RF_NAME)) {
-          if (cur.some((a) => sameService(a.service, RF_NAME))) {
-            const e = new Error("SERVICE_CAP_REACHED");
-            e.http = 409;
-            throw e;
-          }
-        }
-        if (sameService(it.service, RA_NAME)) {
-          if (cur.some((a) => sameService(a.service, RA_NAME))) {
-            const e = new Error("SERVICE_CAP_REACHED");
-            e.http = 409;
-            throw e;
-          }
-        }
-
-        if (it.isEpService) {
-          const epCount = cur.filter((a) => sameService(a.service, EP_NAME)).length;
-          const rfTaken = cur.some((a) => sameService(a.service, RF_NAME)) ? 1 : 0;
-          const raTaken = cur.some((a) => sameService(a.service, RA_NAME)) ? 1 : 0;
-          const otherReservedCount = rfTaken + raTaken;
-
-          const hoursToStart = (it.slotDate.getTime() - Date.now()) / (1000 * 60 * 60);
-
-          const epCap = calcEpCap({
-            hoursToStart,
-            hasRF: !!rfTaken,
-            hasRA: !!raTaken,
-            otherReservedCount,
-          });
-
-          if (epCount >= epCap) {
-            it.waitlist = true;
-            continue;
-          }
         }
 
         cur.push({ date: it.date, time: it.time, service: it.service });
@@ -1921,26 +1995,9 @@ router.post("/waitlist/claim", async (req, res) => {
         status: "reserved",
       }).session(session).lean();
 
-      if (existingAtSlot.length >= TOTAL_CAP) {
-        const e = new Error("NO_LONGER_AVAILABLE");
-        e.http = 409;
-        throw e;
-      }
+      const stats = getSlotReservationStats(existingAtSlot, wl.date, wl.time);
 
-      const epCount = existingAtSlot.filter((a) => sameService(a.service, EP_NAME)).length;
-      const rfTaken = existingAtSlot.some((a) => sameService(a.service, RF_NAME)) ? 1 : 0;
-      const raTaken = existingAtSlot.some((a) => sameService(a.service, RA_NAME)) ? 1 : 0;
-      const otherReservedCount = rfTaken + raTaken;
-
-      const hoursToStart = (basic.slotDate.getTime() - Date.now()) / (1000 * 60 * 60);
-      const epCap = calcEpCap({
-        hoursToStart,
-        hasRF: !!rfTaken,
-        hasRA: !!raTaken,
-        otherReservedCount,
-      });
-
-      if (epCount >= epCap) {
+      if (stats.totalReserved >= TOTAL_CAP || stats.epReserved >= stats.epCap) {
         const e = new Error("NO_LONGER_AVAILABLE");
         e.http = 409;
         throw e;
@@ -2144,28 +2201,36 @@ router.patch("/:id/cancel", async (req, res) => {
       ap.status = "cancelled";
       await ap.save({ session });
 
-      const shouldRefund = isRefundEligible(hours);
+      const cancelPolicy = resolveCancellationPolicy({
+        user,
+        appointment: ap,
+        hoursToStart: hours,
+      });
 
       console.log("[CANCEL][POLICY]", {
         appointmentId: String(ap._id),
         service: ap.service,
         serviceKey: serviceToKey(ap.service),
-        cutoffHours: REFUND_CUTOFF_HOURS,
+        cutoffHours: cancelPolicy.refundCutoffHours,
         hoursToStart: hours,
-        shouldRefund,
+        shouldRefund: cancelPolicy.refund,
+        refundMode: cancelPolicy.refundMode,
+        reason: cancelPolicy.reason,
       });
 
       let effectiveUser = user;
+      let refundApplied = false;
 
       const historyItem = {
-        action: shouldRefund ? "cancelado" : "cancelado_sin_reintegro",
+        action: cancelPolicy.historyAction,
         date: ap.date,
         time: ap.time,
         service: ap.service,
         serviceName: ap.service,
+        serviceKey: serviceToKey(ap.service),
       };
 
-      if (shouldRefund) {
+      if (cancelPolicy.refund) {
         const now = nowDate();
         const lot = ap.creditLotId ? findLotById(user, ap.creditLotId) : null;
         const lotExp = lot?.expiresAt ? new Date(lot.expiresAt) : null;
@@ -2187,21 +2252,10 @@ router.patch("/:id/cancel", async (req, res) => {
             : null,
           now,
           lotStillValid,
+          refundMode: cancelPolicy.refundMode,
         });
 
-        if (ap.creditLotId && lotStillValid) {
-          effectiveUser = await refundCreditAtomicToOriginalLot({
-            userId: user._id,
-            lotId: lot._id,
-            historyItem,
-            session,
-          });
-
-          console.log("[CANCEL][REFUND-TO-ORIGINAL-LOT]", {
-            appointmentId: String(ap._id),
-            lotId: String(lot._id || ""),
-          });
-        } else if (ap.creditLotId && !lotStillValid) {
+        if (cancelPolicy.refundMode === "late-courtesy" && ap.creditLotId) {
           const refundInfo = await refundCreditAtomicNewLot({
             userId: user._id,
             apService: ap.service,
@@ -2210,6 +2264,37 @@ router.patch("/:id/cancel", async (req, res) => {
           });
 
           effectiveUser = refundInfo.user;
+          refundApplied = true;
+
+          console.log("[CANCEL][REFUND-LATE-COURTESY]", {
+            appointmentId: String(ap._id),
+            service: ap.service,
+            serviceKey: refundInfo.sk,
+            expiresAt: refundInfo.expiresAt,
+          });
+        } else if (ap.creditLotId && lotStillValid) {
+          effectiveUser = await refundCreditAtomicToOriginalLot({
+            userId: user._id,
+            lotId: lot._id,
+            historyItem,
+            session,
+          });
+          refundApplied = true;
+
+          console.log("[CANCEL][REFUND-TO-ORIGINAL-LOT]", {
+            appointmentId: String(ap._id),
+            lotId: String(lot._id || ""),
+          });
+        } else if (ap.creditLotId) {
+          const refundInfo = await refundCreditAtomicNewLot({
+            userId: user._id,
+            apService: ap.service,
+            historyItem,
+            session,
+          });
+
+          effectiveUser = refundInfo.user;
+          refundApplied = true;
 
           console.log("[CANCEL][REFUND-NEW-LOT]", {
             appointmentId: String(ap._id),
@@ -2256,8 +2341,11 @@ router.patch("/:id/cancel", async (req, res) => {
 
       payload = {
         ...serializeAppointment(populated),
-        refund: shouldRefund && !!ap.creditLotId,
-        refundCutoffHours: REFUND_CUTOFF_HOURS,
+        refund: refundApplied,
+        refundRequested: !!cancelPolicy.refund,
+        refundMode: cancelPolicy.refundMode,
+        refundCutoffHours: cancelPolicy.refundCutoffHours,
+        refundReason: cancelPolicy.reason,
         userCredits: Number(effectiveUser.credits || 0),
         userCreditLots: serializeUserCreditLots(effectiveUser),
       };
@@ -2266,8 +2354,10 @@ router.patch("/:id/cancel", async (req, res) => {
       mailAp = { date: ap.date, time: ap.time, service: ap.service };
       mailServiceName = ap.service;
       mailMeta = {
-        refund: shouldRefund && !!ap.creditLotId,
-        refundCutoffHours: REFUND_CUTOFF_HOURS,
+        refund: refundApplied,
+        refundRequested: !!cancelPolicy.refund,
+        refundMode: cancelPolicy.refundMode,
+        refundCutoffHours: cancelPolicy.refundCutoffHours,
       };
     });
 
