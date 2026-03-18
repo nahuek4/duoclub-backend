@@ -27,7 +27,7 @@ const MAX_ADVANCE_DAYS = 14;
 /**
  * Anticipación mínima por servicio
  * EP = 30 min fijo
- * RA/RF = 120 min fijos
+ * RA/RF = 24 h fijas
  * resto = variable por env o fallback 60
  */
 const DEFAULT_MIN_BOOKING_MINUTES = Number(
@@ -533,7 +533,6 @@ function getSlotReservationStats(existing, dateStr, time) {
 const EP_REFUND_CUTOFF_HOURS = 1;
 const THERAPY_REFUND_CUTOFF_HOURS = 2;
 const MONTHLY_LATE_REFUND_LIMIT = 1;
-const MONTHLY_THERAPY_REPROGRAM_LIMIT = 2;
 
 function getRefundCutoffHoursForService(serviceName) {
   return isTherapyService(serviceName)
@@ -569,50 +568,20 @@ function countMonthlyLateCourtesyRefunds(user, refDate = new Date()) {
   );
 }
 
-function countMonthlyTherapyReprograms(user, refDate = new Date()) {
-  return countHistoryEntriesInMonth(
-    user,
-    (item) => String(item?.action || "") === "cancelado_con_reintegro_terapia",
-    refDate
-  );
-}
 
 function resolveCancellationPolicy({ user, appointment, hoursToStart }) {
   const service = appointment?.service || "";
-  const serviceKey = serviceToKey(service);
-  const isTherapy = serviceKey === "RA" || serviceKey === "RF";
   const refundCutoffHours = getRefundCutoffHoursForService(service);
   const hasProperNotice =
     Number.isFinite(Number(hoursToStart)) && Number(hoursToStart) >= refundCutoffHours;
 
   if (hasProperNotice) {
-    if (isTherapy) {
-      const used = countMonthlyTherapyReprograms(user);
-      if (used >= MONTHLY_THERAPY_REPROGRAM_LIMIT) {
-        return {
-          refund: false,
-          refundMode: "none",
-          refundCutoffHours,
-          reason: "MONTHLY_THERAPY_REPROGRAM_LIMIT_REACHED",
-          historyAction: "cancelado_sin_reintegro",
-        };
-      }
-
-      return {
-        refund: true,
-        refundMode: "timely",
-        refundCutoffHours,
-        reason: "WITH_NOTICE_THERAPY",
-        historyAction: "cancelado_con_reintegro_terapia",
-      };
-    }
-
     return {
       refund: true,
       refundMode: "timely",
       refundCutoffHours,
-      reason: "WITH_NOTICE_EP",
-      historyAction: "cancelado_con_reintegro_ep",
+      reason: "WITH_NOTICE",
+      historyAction: "cancelado_con_reintegro",
     };
   }
 
