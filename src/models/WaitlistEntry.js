@@ -1,29 +1,79 @@
-// backend/src/models/WaitlistEntry.js
 import mongoose from "mongoose";
 
-const WaitlistEntrySchema = new mongoose.Schema(
+const { Schema } = mongoose;
+
+const WaitlistEntrySchema = new Schema(
   {
-    user: { type: mongoose.Schema.Types.ObjectId, ref: "User", required: true, index: true },
-    date: { type: String, required: true, index: true }, // YYYY-MM-DD
-    time: { type: String, required: true, index: true }, // HH:mm
-    service: { type: String, required: true }, // "Entrenamiento Personal" (EP)
-
-    // waiting -> notified -> claimed | expired | cancelled
-    status: { type: String, default: "waiting", index: true },
-
-    // token para “claim” cuando se libera cupo
-    notifyToken: { type: String, default: null, index: true },
-    notifiedAt: { type: Date, default: null },
-    tokenExpiresAt: { type: Date, default: null },
-    claimedAt: { type: Date, default: null },
+    user: {
+      type: Schema.Types.ObjectId,
+      ref: "User",
+      required: true,
+      index: true,
+    },
+    date: {
+      type: String,
+      required: true,
+      index: true,
+    },
+    time: {
+      type: String,
+      required: true,
+      index: true,
+    },
+    service: {
+      type: String,
+      required: true,
+      default: "Entrenamiento Personal",
+      trim: true,
+    },
+    status: {
+      type: String,
+      enum: ["waiting", "notified", "claimed", "expired", "removed"],
+      default: "waiting",
+      index: true,
+    },
+    notes: {
+      type: String,
+      default: "",
+      trim: true,
+    },
+    notifyToken: {
+      type: String,
+      default: null,
+      index: true,
+    },
+    tokenExpiresAt: {
+      type: Date,
+      default: null,
+    },
+    notifiedAt: {
+      type: Date,
+      default: null,
+    },
+    claimedAt: {
+      type: Date,
+      default: null,
+    },
+    removedAt: {
+      type: Date,
+      default: null,
+    },
+    removedBy: {
+      type: Schema.Types.ObjectId,
+      ref: "User",
+      default: null,
+    },
   },
-  { timestamps: true }
+  {
+    timestamps: true,
+  }
 );
 
-// Evita duplicados activos del mismo usuario al mismo slot
-WaitlistEntrySchema.index(
-  { user: 1, date: 1, time: 1, service: 1, status: 1 },
-  { name: "wl_user_slot_status" }
-);
+WaitlistEntrySchema.index({ date: 1, time: 1, service: 1, status: 1, createdAt: 1 });
+WaitlistEntrySchema.index({ user: 1, date: 1, time: 1, service: 1, status: 1 });
 
-export default mongoose.model("WaitlistEntry", WaitlistEntrySchema);
+const WaitlistEntry =
+  mongoose.models.WaitlistEntry ||
+  mongoose.model("WaitlistEntry", WaitlistEntrySchema);
+
+export default WaitlistEntry;

@@ -48,6 +48,11 @@ const MIN_BOOKING_MINUTES_BY_SERVICE = {
 const CREDITS_EXPIRE_DAYS = 30;
 
 /* =========================
+   WAITLIST
+========================= */
+const ACTIVE_WAITLIST_STATUSES = ["waiting", "notified"];
+
+/* =========================
    ADMIN MAIL (fallback)
 ========================= */
 const ADMIN_EMAIL = process.env.ADMIN_EMAIL || "duoclub.ar@gmail.com";
@@ -69,6 +74,14 @@ async function sendAdminCopy({ kind, user, ap }) {
   } catch (e) {
     console.log("[MAIL] admin fallback error:", e?.message || e);
   }
+}
+
+function ensureStaff(req, res, next) {
+  const role = String(req.user?.role || "").toLowerCase();
+  if (!["admin", "profesor", "staff"].includes(role)) {
+    return res.status(403).json({ error: "No autorizado." });
+  }
+  return next();
 }
 
 /* =========================
@@ -430,6 +443,30 @@ function serializeAppointment(ap) {
   };
 }
 
+function serializeWaitlistEntry(entry) {
+  const json = entry?.toObject ? entry.toObject() : entry;
+  const userObj = json?.user || {};
+
+  return {
+    id: json?._id?.toString?.() || json?.id,
+    date: json?.date,
+    time: json?.time,
+    service: json?.service || EP_NAME,
+    status: json?.status || "waiting",
+    createdAt: json?.createdAt || null,
+    notifiedAt: json?.notifiedAt || null,
+    claimedAt: json?.claimedAt || null,
+    user: {
+      _id: userObj?._id?.toString?.() || json?.user?.toString?.() || "",
+      name: userObj?.name || "",
+      lastName: userObj?.lastName || "",
+      email: userObj?.email || "",
+      phone: userObj?.phone || "",
+      dni: userObj?.dni || "",
+    },
+  };
+}
+
 function requiresApto(user) {
   if (!user?.createdAt) return false;
   const created = new Date(user.createdAt);
@@ -567,7 +604,6 @@ function countMonthlyLateCourtesyRefunds(user, refDate = new Date()) {
     refDate
   );
 }
-
 
 function resolveCancellationPolicy({ user, appointment, hoursToStart }) {
   const service = appointment?.service || "";
@@ -879,6 +915,7 @@ async function createAppointmentForTargetUser({
       time: t,
       service,
       serviceName: service,
+      notes,
     },
     session: null,
   });
@@ -928,6 +965,47 @@ async function createAppointmentForTargetUser({
    AUTH required
 ========================= */
 router.use(protect);
+
+/* =========================
+   GET /appointments/waitlist
+========================= */
+router.get("/waitlist", ensureStaff, async (req, res) => {
+  try {
+    const items = await WaitlistEntry.find({
+      status: { $in: ACTIVE_WAITLIST_STATUSES },
+    })
+      .populate("user", "name lastName email phone dni")
+      .sort({ date: 1, time: 1, createdAt: 1 })
+      .lean();
+
+    return res.json(items.map(serializeWaitlistEntry));
+  } catch (err) {
+    console.error("Error en GET /appointments/waitlist:", err);
+    return res.status(500).json({ error: "No se pudo cargar la lista de espera." });
+  }
+});
+
+/* =========================
+   DELETE /appointments/waitlist/:id
+========================= */
+router.delete("/waitlist/:id", ensureStaff, async (req, res) => {
+  try {
+    const item = await WaitlistEntry.findById(req.params.id);
+    if (!item) {
+      return res.status(404).json({ error: "Elemento de lista de espera no encontrado." });
+    }
+
+    item.status = "removed";
+    item.removedAt = new Date();
+    item.removedBy = req.user?._id || req.user?.id || null;
+    await item.save();
+
+    return res.json({ ok: true });
+  } catch (err) {
+    console.error("Error en DELETE /appointments/waitlist/:id:", err);
+    return res.status(500).json({ error: "No se pudo quitar de la lista de espera." });
+  }
+});
 
 /* =========================
    GET /appointments/availability
@@ -1338,7 +1416,7 @@ router.post("/", async (req, res) => {
   let mailServiceName = null;
 
   try {
-    const { date, time, service } = req.body || {};
+    const { date, time, service, notes = "" } = req.body || {};
     const basic = validateBasicSlotRules({ date, time, service });
     if (!basic.ok) return res.status(400).json({ error: basic.error });
 
@@ -1399,13 +1477,20 @@ router.post("/", async (req, res) => {
           date,
           time: t,
           service: EP_NAME,
-          status: { $in: ["waiting", "notified"] },
+          status: { $in: ACTIVE_WAITLIST_STATUSES },
         }).session(session);
 
         if (wlExists) throw new Error("ALREADY_IN_WAITLIST");
 
-        await WaitlistEntry.create(
-          [{ user: user._id, date, time: t, service: EP_NAME, status: "waiting" }],
+        const [createdWaitlist] = await WaitlistEntry.create(
+          [{
+            user: user._id,
+            date,
+            time: t,
+            service: EP_NAME,
+            status: "waiting",
+            notes: String(notes || "").trim(),
+          }],
           { session }
         );
 
@@ -1413,10 +1498,12 @@ router.post("/", async (req, res) => {
 
         out = {
           kind: "waitlist",
+          id: String(createdWaitlist._id),
           date,
           time: t,
           service: EP_NAME,
           status: "waiting",
+          createdAt: createdWaitlist.createdAt || new Date(),
           userCredits: Number(user.credits || 0),
           userCreditLots: serializeUserCreditLots(user),
         };
@@ -1728,11 +1815,11 @@ router.post("/batch", async (req, res) => {
             date: it.date,
             time: it.time,
             service: EP_NAME,
-            status: { $in: ["waiting", "notified"] },
+            status: { $in: ACTIVE_WAITLIST_STATUSES },
           }).session(session);
 
           if (!wlExists) {
-            await WaitlistEntry.create(
+            const [createdWaitlist] = await WaitlistEntry.create(
               [{
                 user: user._id,
                 date: it.date,
@@ -1742,15 +1829,17 @@ router.post("/batch", async (req, res) => {
               }],
               { session }
             );
-          }
 
-          waitlistedItems.push({
-            kind: "waitlist",
-            date: it.date,
-            time: it.time,
-            service: EP_NAME,
-            status: "waiting",
-          });
+            waitlistedItems.push({
+              kind: "waitlist",
+              id: String(createdWaitlist._id),
+              date: it.date,
+              time: it.time,
+              service: EP_NAME,
+              status: "waiting",
+              createdAt: createdWaitlist.createdAt || new Date(),
+            });
+          }
           continue;
         }
 
@@ -2351,7 +2440,7 @@ router.patch("/:id/cancel", async (req, res) => {
 
     if (mailAp?.date && mailAp?.time) {
       fireAndForget(async () => {
-        await notifyWaitlistForSlot({ date: mailAp.date, time: mailAp.time });
+        await notifyWaitlistForSlot({ date: mailAp.date, time: mailAp.time, service: mailAp.service });
       }, "WAITLIST_NOTIFY");
     }
 
