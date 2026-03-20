@@ -4,7 +4,7 @@ import bcrypt from "bcryptjs";
 import mongoose from "mongoose";
 import Admission from "../models/Admission.js";
 import User from "../models/User.js";
-import { protect, adminOnly } from "../middleware/auth.js";
+import { protect, adminOnly, adminOrProfessor } from "../middleware/auth.js";
 
 import {
   fireAndForget,
@@ -133,7 +133,6 @@ function buildNotesFromAdmission(step1 = {}, step2 = {}) {
   if (step1.lastBloodTest) lines.push(`Último análisis: ${step1.lastBloodTest}`);
   if (step1.relevantInfo) lines.push(`Info relevante: ${step1.relevantInfo}`);
 
-  // Step2
   if (step2?.needsRehab) lines.push(`Rehab: ${step2.needsRehab}`);
   if (step2?.symptoms) lines.push(`Síntomas: ${step2.symptoms}`);
   if (step2?.immediateGoal) lines.push(`Objetivo: ${step2.immediateGoal}`);
@@ -156,8 +155,6 @@ function mapAdmissionToUserUpdate(adm) {
     name: name || undefined,
     lastName: lastName || undefined,
     phone: String(s1.phone || "").trim() || undefined,
-
-    // ⚠️ no tocamos email por seguridad acá
     age: age ?? null,
     weight: weight ?? null,
     notes: buildNotesFromAdmission(s1, s2) || "",
@@ -184,8 +181,6 @@ function normEmail(v) {
 
 /* =========================================================
    PUBLIC: guardar step1
-   ✅ Siempre crea una nueva admisión
-   ✅ Permite múltiples envíos con el mismo email
 ========================================================= */
 router.post("/step1", async (req, res) => {
   try {
@@ -223,9 +218,7 @@ router.post("/step1", async (req, res) => {
 });
 
 /* =========================================================
-   PUBLIC: guardar step2 + mails (admin + user) UNA SOLA VEZ
-   ✅ Step2 idempotente por admisión
-   ✅ step2EmailSent solo se marca si el envío salió OK
+   PUBLIC: guardar step2 + mails (admin + user)
 ========================================================= */
 router.patch("/:id/step2", async (req, res) => {
   try {
@@ -328,9 +321,9 @@ router.patch("/:id/step2", async (req, res) => {
 });
 
 /* =========================================================
-   ADMIN: listar
+   ADMIN/STAFF: listar
 ========================================================= */
-router.get("/admin", protect, adminOnly, async (req, res) => {
+router.get("/admin", protect, adminOrProfessor, async (req, res) => {
   try {
     const items = await Admission.find({})
       .sort({ createdAt: -1 })
@@ -362,9 +355,9 @@ router.get("/admin", protect, adminOnly, async (req, res) => {
 });
 
 /* =========================================================
-   ADMIN: detalle
+   ADMIN/STAFF: detalle
 ========================================================= */
-router.get("/admin/:id", protect, adminOnly, async (req, res) => {
+router.get("/admin/:id", protect, adminOrProfessor, async (req, res) => {
   try {
     const doc = await Admission.findById(req.params.id).lean();
     if (!doc) return res.status(404).json({ ok: false, error: "No encontrado." });
@@ -377,7 +370,7 @@ router.get("/admin/:id", protect, adminOnly, async (req, res) => {
 });
 
 /* =========================================================
-   ADMIN: crear/vincular usuario desde admisión + sync perfil
+   SOLO ADMIN: crear/vincular usuario desde admisión + sync perfil
 ========================================================= */
 router.post("/admin/:id/create-user", protect, adminOnly, async (req, res) => {
   try {
@@ -491,7 +484,7 @@ router.post("/admin/:id/create-user", protect, adminOnly, async (req, res) => {
 });
 
 /* =========================================================
-   ADMIN: vincular usuario existente por email
+   SOLO ADMIN: vincular usuario existente por email
 ========================================================= */
 router.post("/admin/:id/link-user", protect, adminOnly, async (req, res) => {
   try {
@@ -545,7 +538,7 @@ router.post("/admin/:id/link-user", protect, adminOnly, async (req, res) => {
 });
 
 /* =========================================================
-   ADMIN: eliminar admisión
+   SOLO ADMIN: eliminar admisión
 ========================================================= */
 router.delete("/admin/:id", protect, adminOnly, async (req, res) => {
   try {

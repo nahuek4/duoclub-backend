@@ -1,4 +1,3 @@
-// backend/src/routes/adminEvaluations.js
 import express from "express";
 import mongoose from "mongoose";
 import crypto from "crypto";
@@ -6,7 +5,7 @@ import bcrypt from "bcryptjs";
 
 import User from "../models/User.js";
 import Evaluation from "../models/Evaluation.js";
-import { protect, adminOnly } from "../middleware/auth.js";
+import { protect, adminOnly, adminOrProfessor } from "../middleware/auth.js";
 import { logActivity, buildUserSubject, buildDiff } from "../lib/activityLogger.js";
 
 const router = express.Router();
@@ -81,7 +80,7 @@ function serializeEvalLite(e) {
 /* =========================================================
    GET /admin/evaluations/users
 ========================================================= */
-router.get("/users", protect, adminOnly, async (req, res) => {
+router.get("/users", protect, adminOrProfessor, async (req, res) => {
   try {
     const q = (req.query.q || "").trim();
     const page = Math.max(1, safeInt(req.query.page, 1));
@@ -157,7 +156,7 @@ router.get("/users", protect, adminOnly, async (req, res) => {
 /* =========================================================
    GET /admin/evaluations/guests
 ========================================================= */
-router.get("/guests", protect, adminOnly, async (req, res) => {
+router.get("/guests", protect, adminOrProfessor, async (req, res) => {
   try {
     const q = (req.query.q || "").trim();
     const limit = Math.min(500, Math.max(1, safeInt(req.query.limit, 200)));
@@ -219,7 +218,7 @@ router.get("/guests", protect, adminOnly, async (req, res) => {
 });
 
 /* =========================================================
-   POST /admin/evaluations/guest
+   SOLO ADMIN: POST /admin/evaluations/guest
 ========================================================= */
 router.post("/guest", protect, adminOnly, async (req, res) => {
   try {
@@ -289,7 +288,7 @@ router.post("/guest", protect, adminOnly, async (req, res) => {
 });
 
 /* =========================================================
-   DELETE /admin/evaluations/guest/:id
+   SOLO ADMIN: DELETE /admin/evaluations/guest/:id
 ========================================================= */
 router.delete("/guest/:id", protect, adminOnly, async (req, res) => {
   try {
@@ -344,7 +343,7 @@ router.delete("/guest/:id", protect, adminOnly, async (req, res) => {
 /* =========================================================
    GET /admin/evaluations/user/:userId
 ========================================================= */
-router.get("/user/:userId", protect, adminOnly, async (req, res) => {
+router.get("/user/:userId", protect, adminOrProfessor, async (req, res) => {
   try {
     const { userId } = req.params;
     const limit = Math.min(200, Math.max(1, safeInt(req.query.limit, 50)));
@@ -371,7 +370,7 @@ router.get("/user/:userId", protect, adminOnly, async (req, res) => {
 /* =========================================================
    POST /admin/evaluations/user/:userId
 ========================================================= */
-router.post("/user/:userId", protect, adminOnly, async (req, res) => {
+router.post("/user/:userId", protect, adminOrProfessor, async (req, res) => {
   try {
     const { userId } = req.params;
     const { type, title = "", scoring = {}, notes = "" } = req.body || {};
@@ -431,7 +430,7 @@ router.post("/user/:userId", protect, adminOnly, async (req, res) => {
 /* =========================================================
    GET /admin/evaluations/:id
 ========================================================= */
-router.get("/:id", protect, adminOnly, async (req, res) => {
+router.get("/:id", protect, adminOrProfessor, async (req, res) => {
   try {
     const { id } = req.params;
 
@@ -463,7 +462,7 @@ router.get("/:id", protect, adminOnly, async (req, res) => {
 /* =========================================================
    PATCH /admin/evaluations/:id
 ========================================================= */
-router.patch("/:id", protect, adminOnly, async (req, res) => {
+router.patch("/:id", protect, adminOrProfessor, async (req, res) => {
   try {
     const { id } = req.params;
     const { title, scoring, notes } = req.body || {};
@@ -533,7 +532,7 @@ router.patch("/:id", protect, adminOnly, async (req, res) => {
 });
 
 /* =========================================================
-   DELETE /admin/evaluations/:id
+   SOLO ADMIN: DELETE /admin/evaluations/:id
 ========================================================= */
 router.delete("/:id", protect, adminOnly, async (req, res) => {
   try {

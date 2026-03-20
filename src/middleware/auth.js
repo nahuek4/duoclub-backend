@@ -1,10 +1,9 @@
-// backend/src/middleware/auth.js
 import jwt from "jsonwebtoken";
 import User from "../models/User.js";
 
 function normalizeUrl(u) {
   const raw = String(u || "").split("?")[0];
-  return raw.startsWith("/api/") ? raw.slice(4) : raw; // "/api/auth/me" => "/auth/me"
+  return raw.startsWith("/api/") ? raw.slice(4) : raw;
 }
 
 const PASS_CHANGE_ALLOWLIST = [
@@ -40,7 +39,6 @@ export async function protect(req, res, next) {
 
     req.user = user;
 
-    // ✅ BLOQUEO POR CONTRASEÑA TEMPORAL (solo no-admin)
     const isAdmin = String(user.role || "").toLowerCase() === "admin";
     const mustChange = !!user.mustChangePassword;
 
@@ -63,7 +61,7 @@ export async function protect(req, res, next) {
 }
 
 export function adminOnly(req, res, next) {
-  const role = String(req.user?.role || "").toLowerCase();
+  const role = String(req.user?.role || "").toLowerCase().trim();
   if (role !== "admin") {
     return res.status(403).json({ error: "No autorizado. Solo administradores." });
   }
@@ -71,8 +69,8 @@ export function adminOnly(req, res, next) {
 }
 
 export function adminOrProfessor(req, res, next) {
-  const role = String(req.user?.role || "").toLowerCase();
-  if (role !== "admin" && role !== "profesor") {
+  const role = String(req.user?.role || "").toLowerCase().trim();
+  if (!["admin", "profesor", "staff"].includes(role)) {
     return res.status(403).json({ error: "No autorizado." });
   }
   next();
