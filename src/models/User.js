@@ -19,7 +19,6 @@ const historySchema = new mongoose.Schema(
 
 const creditLotSchema = new mongoose.Schema(
   {
-    // ✅ antes estaba "ALL", pero tu lógica trabaja con EP/RF/RA/NUT
     serviceKey: { type: String, default: "EP", uppercase: true, trim: true },
     amount: { type: Number, default: 0 },
     remaining: { type: Number, default: 0 },
@@ -45,7 +44,7 @@ const clinicalNoteSchema = new mongoose.Schema(
 );
 
 /* ============================================
-   ✅ PLAN MENSUAL
+   PLAN MENSUAL
 ============================================ */
 function makeMonthlyPlanWeek() {
   return new mongoose.Schema(
@@ -181,7 +180,6 @@ function createDefaultMonthlyPlan() {
   };
 }
 
-// Helpers para required condicional (guest vs client/admin)
 function requiredIfNotGuest() {
   return this.role !== "guest";
 }
@@ -191,8 +189,6 @@ const userSchema = new mongoose.Schema(
     name: { type: String, required: true, trim: true },
     lastName: { type: String, required: true, trim: true },
 
-    // ✅ Email NO obligatorio para guest
-    // ✅ default NULL (NO ""), para que el índice único no choque
     email: {
       type: String,
       required: requiredIfNotGuest,
@@ -213,7 +209,6 @@ const userSchema = new mongoose.Schema(
     weight: { type: Number, default: null },
     notes: { type: String, default: "" },
 
-    // cache (se recalcula desde lots)
     credits: { type: Number, default: 0 },
 
     role: {
@@ -228,12 +223,10 @@ const userSchema = new mongoose.Schema(
     suspended: { type: Boolean, default: false },
 
     aptoPath: { type: String, default: "" },
-    aptoStatus: { type: String, default: "" }, // "uploaded" | "approved" | "rejected"
+    aptoStatus: { type: String, default: "" },
     photoPath: { type: String, default: "" },
 
     history: { type: [historySchema], default: [] },
-
-    // ✅ existe (lo usás en /users/:id/clinical-notes)
     clinicalNotes: { type: [clinicalNoteSchema], default: [] },
 
     emailVerified: { type: Boolean, default: false },
@@ -249,26 +242,24 @@ const userSchema = new mongoose.Schema(
     membership: {
       tier: { type: String, default: "basic", enum: ["basic", "plus"] },
       activeUntil: { type: Date, default: null },
-
-      // ✅ Solo dejamos lo que afecta vencimiento de créditos
       creditsExpireDays: { type: Number, default: 30 },
     },
 
     creditLots: { type: [creditLotSchema], default: [] },
 
-    // ✅ plan mensual editable por staff/admin
     monthlyPlan: {
       type: monthlyPlanSchema,
       default: createDefaultMonthlyPlan,
     },
 
-    // ✅ marca para no enviar 2 veces el mail de "alta aprobada"
     welcomeApprovedEmailSentAt: { type: Date, default: null },
+
+    firstEvaluationCompleted: { type: Boolean, default: false },
+    firstEvaluationCompletedAt: { type: Date, default: null },
   },
   { timestamps: true }
 );
 
-// ✅ índice único REAL solo si email es string y no vacío
 userSchema.index(
   { email: 1 },
   {
