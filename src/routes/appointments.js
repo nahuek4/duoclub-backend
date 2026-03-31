@@ -1190,6 +1190,32 @@ async function createAppointmentForTargetUser({
 router.use(protect);
 
 /* =========================
+   GET /appointments/me/status
+========================= */
+router.get("/me/status", async (req, res) => {
+  try {
+    const userId = req.user?._id || req.user?.id;
+
+    const user = await syncPastAppointmentsForUserId(userId);
+    if (!user) {
+      return res.status(404).json({ error: "Usuario no encontrado." });
+    }
+
+    return res.json({
+      ok: true,
+      firstEvaluationCompleted: !!user.firstEvaluationCompleted,
+      firstEvaluationCompletedAt: user.firstEvaluationCompletedAt || null,
+      credits: Number(user.credits || 0),
+    });
+  } catch (err) {
+    console.error("Error en GET /appointments/me/status:", err);
+    return res.status(500).json({
+      error: "No se pudo obtener el estado del usuario.",
+    });
+  }
+});
+
+/* =========================
    GET /appointments/waitlist
 ========================= */
 router.get("/waitlist", ensureStaff, async (req, res) => {
@@ -1453,33 +1479,31 @@ router.get("/", async (req, res) => {
       return res.json((list || []).map(serializeAppointment));
     }
 
-    {
-      await syncPastAppointmentsForUserId(tokenUserId);
+    await syncPastAppointmentsForUserId(tokenUserId);
 
-      const q = { user: tokenUserId, status: { $ne: "cancelled" } };
+    const q = { user: tokenUserId, status: { $ne: "cancelled" } };
 
-      if (hasFrom && hasTo) q.date = { $gte: from, $lt: to };
-      else if (hasFrom) q.date = { $gte: from };
-      else if (!includePast) q.date = { $gte: ymdAR() };
+    if (hasFrom && hasTo) q.date = { $gte: from, $lt: to };
+    else if (hasFrom) q.date = { $gte: from };
+    else if (!includePast) q.date = { $gte: ymdAR() };
 
-      const list = await Appointment.find(q)
-        .sort({ date: 1, time: 1 })
-        .lean();
+    const list = await Appointment.find(q)
+      .sort({ date: 1, time: 1 })
+      .lean();
 
-      return res.json(
-        (list || []).map((a) => ({
-          id: a?._id?.toString?.() || String(a?._id || ""),
-          date: a?.date,
-          time: a?.time,
-          service: a?.service || "",
-          status: a?.status || "reserved",
-          coach: a?.coach || "",
-          creditExpiresAt: a?.creditExpiresAt || null,
-          completedAt: a?.completedAt || null,
-          userId: String(a?.user || ""),
-        }))
-      );
-    }
+    return res.json(
+      (list || []).map((a) => ({
+        id: a?._id?.toString?.() || String(a?._id || ""),
+        date: a?.date,
+        time: a?.time,
+        service: a?.service || "",
+        status: a?.status || "reserved",
+        coach: a?.coach || "",
+        creditExpiresAt: a?.creditExpiresAt || null,
+        completedAt: a?.completedAt || null,
+        userId: String(a?.user || ""),
+      }))
+    );
   } catch (err) {
     console.error("Error en GET /appointments:", err);
     res.status(500).json({ error: "Error al obtener turnos." });
@@ -2240,216 +2264,155 @@ router.post("/batch", async (req, res) => {
       if (user.suspended) throw new Error("USER_SUSPENDED");
       if (requiresApto(user)) throw new Error("APTO_REQUIRED");
 
-      recalcUserCredits(user);
-      if ((user.credits || 0) <= 0) throw new Error("NO_CREDITS");
+      for (let i = 0; i < normalized.length; i += 1) {
+        const item = normalized[i];
 
-      const slotSet = new Set(normalized.map((x) => slotKey(x.date, x.time)));
-      if (slotSet.size !== normalized.length) {
-        const e = new Error("DUP_SLOT_IN_BATCH");
-        e.http = 409;
-        throw e;
-      }
+        if (
+          !user.firstEvaluationCompleted &&
+          !isFirstEvaluationService(item.service)
+        ) {
+          throw new Error(`ITEM_${i}_FIRST_EVALUATION_REQUIRED`);
+        }
 
-      const orSlots = normalized.map((x) => ({ date: x.date, time: x.time }));
-      const alreadyByUserAny = await Appointment.findOne({
-        user: user._id,
-        status: "reserved",
-        $or: orSlots,
-      }).session(session).lean();
+        recalcUserCredits(user);
+        if ((user.credits || 0) <= 0) {
+          throw new Error(`ITEM_${i}_NO_CREDITS`);
+        }
 
-      if (alreadyByUserAny) throw new Error("ALREADY_HAVE_SLOT");
+        const requestedSk = serviceToKey(item.service);
+        if (!hasValidCreditsForServiceAndSlot(user, requestedSk, item.slotDate)) {
+          throw new Error(`ITEM_${i}_NO_CREDITS_FOR_SLOT_${requestedSk}`);
+        }
 
-      const existing = await Appointment.find({
-        status: "reserved",
-        $or: orSlots,
-      }).session(session).lean();
+        const alreadyByUser = await Appointment.findOne({
+          date: item.date,
+          time: item.time,
+          user: user._id,
+          status: "reserved",
+        }).session(session).lean();
 
-      const bySlot = new Map();
-      for (const ap of existing) {
-        const k = slotKey(ap.date, ap.time);
-        if (!bySlot.has(k)) bySlot.set(k, []);
-        bySlot.get(k).push(ap);
-      }
+        if (alreadyByUser) throw new Error(`ITEM_${i}_ALREADY_HAVE_SLOT`);
 
-      for (const it of normalized) {
-        const k = slotKey(it.date, it.time);
-        const cur = bySlot.get(k) || [];
-        const stats = getSlotReservationStats(cur, it.date, it.time);
+        const existingAtSlot = await Appointment.find({
+          date: item.date,
+          time: item.time,
+          status: "reserved",
+        }).session(session).lean();
 
-        if (it.isEpService) {
-          if (stats.totalReserved >= TOTAL_CAP || stats.epReserved >= stats.epCap) {
-            it.waitlist = true;
-            continue;
+        const stats = getSlotReservationStats(
+          existingAtSlot,
+          item.date,
+          item.time
+        );
+
+        let willWaitlist = false;
+
+        if (item.isEpService) {
+          if (
+            stats.totalReserved >= TOTAL_CAP ||
+            stats.epReserved >= stats.epCap
+          ) {
+            willWaitlist = true;
           }
-        } else if (isTherapyService(it.service)) {
+        } else if (isTherapyService(item.service)) {
           if (stats.totalReserved >= TOTAL_CAP) {
-            const e = new Error("TOTAL_CAP_REACHED");
-            e.http = 409;
-            throw e;
+            throw new Error(`ITEM_${i}_TOTAL_CAP_REACHED`);
           }
-
           if (stats.therapyReserved >= stats.therapyCap) {
-            const e = new Error("SERVICE_CAP_REACHED");
-            e.http = 409;
-            throw e;
+            throw new Error(`ITEM_${i}_SERVICE_CAP_REACHED`);
           }
         } else if (stats.totalReserved >= TOTAL_CAP) {
-          const e = new Error("TOTAL_CAP_REACHED");
-          e.http = 409;
-          throw e;
+          throw new Error(`ITEM_${i}_TOTAL_CAP_REACHED`);
         }
 
-        cur.push({ date: it.date, time: it.time, service: it.service });
-        bySlot.set(k, cur);
-      }
-
-      createdItems = [];
-      waitlistedItems = [];
-
-      const toReserve = normalized.filter((x) => !x.waitlist);
-
-      recalcUserCredits(user);
-      if ((user.credits || 0) < toReserve.length) {
-        const e = new Error("NO_CREDITS");
-        e.http = 403;
-        throw e;
-      }
-
-      const needByService = { PE: 0, EP: 0, RF: 0, RA: 0, NUT: 0 };
-
-      for (const it of normalized) {
-        const requestedSk = serviceToKey(it.service);
-
-        if (!user.firstEvaluationCompleted && !isFirstEvaluationService(it.service)) {
-          const e = new Error("FIRST_EVALUATION_REQUIRED");
-          e.http = 403;
-          throw e;
-        }
-
-        if (!it.waitlist && !hasValidCreditsForServiceAndSlot(user, requestedSk, it.slotDate)) {
-          const e = new Error(`NO_CREDITS_FOR_SLOT_${requestedSk}`);
-          e.http = 403;
-          throw e;
-        }
-      }
-
-      for (const it of toReserve) {
-        const sk = serviceToKey(it.service);
-        if (needByService[sk] !== undefined) needByService[sk] += 1;
-      }
-
-      for (const [sk, need] of Object.entries(needByService)) {
-        if (!need) continue;
-
-        let available = 0;
-        for (const lot of Array.isArray(user.creditLots) ? user.creditLots : []) {
-          const rem = Number(lot?.remaining || 0);
-          if (rem <= 0) continue;
-
-          const exp = lot?.expiresAt ? new Date(lot.expiresAt) : null;
-          if (exp && exp <= new Date()) continue;
-
-          const lk = String(lot?.serviceKey || "").toUpperCase().trim();
-          if (lk === sk) available += rem;
-        }
-
-        if (available < need) {
-          const e = new Error(`NO_CREDITS_FOR_${sk}`);
-          e.http = 403;
-          throw e;
-        }
-      }
-
-      for (const it of normalized) {
-        if (it.waitlist) {
-          const wlWindow = validateWaitlistOpen(it.slotDate, it.service);
-          if (!wlWindow.ok) {
-            const e = new Error("WAITLIST_CLOSED");
-            e.http = 409;
-            throw e;
-          }
+        if (willWaitlist && item.isEpService) {
+          const wlWindow = validateWaitlistOpen(item.slotDate, item.service);
+          if (!wlWindow.ok) throw new Error(`ITEM_${i}_WAITLIST_CLOSED`);
 
           const wlExists = await WaitlistEntry.findOne({
             user: user._id,
-            date: it.date,
-            time: it.time,
+            date: item.date,
+            time: item.time,
             service: EP_NAME,
             status: { $in: ACTIVE_WAITLIST_STATUSES },
           }).session(session);
 
-          if (!wlExists) {
-            const lastPriority = await WaitlistEntry.findOne({
-              date: it.date,
-              time: it.time,
-              service: EP_NAME,
-              status: { $in: ACTIVE_WAITLIST_STATUSES },
-            })
-              .sort({ priorityOrder: -1, createdAt: -1 })
-              .session(session)
-              .lean();
+          if (wlExists) throw new Error(`ITEM_${i}_ALREADY_IN_WAITLIST`);
 
-            const nextPriority = Number(lastPriority?.priorityOrder || 0) + 1;
+          const lastPriority = await WaitlistEntry.findOne({
+            date: item.date,
+            time: item.time,
+            service: EP_NAME,
+            status: { $in: ACTIVE_WAITLIST_STATUSES },
+          })
+            .sort({ priorityOrder: -1, createdAt: -1 })
+            .session(session)
+            .lean();
 
-            const [createdWaitlist] = await WaitlistEntry.create(
-              [{
+          const nextPriority = Number(lastPriority?.priorityOrder || 0) + 1;
+
+          const [createdWaitlist] = await WaitlistEntry.create(
+            [
+              {
                 user: user._id,
-                date: it.date,
-                time: it.time,
+                date: item.date,
+                time: item.time,
                 service: EP_NAME,
                 status: "waiting",
+                notes: "",
                 priorityOrder: nextPriority,
                 createdByUser: user._id,
                 createdByRole: String(req.user?.role || "client").toLowerCase(),
-              }],
-              { session }
-            );
+              },
+            ],
+            { session }
+          );
 
-            waitlistedItems.push({
-              kind: "waitlist",
-              id: String(createdWaitlist._id),
-              date: it.date,
-              time: it.time,
-              service: EP_NAME,
-              status: "waiting",
-              priorityOrder: nextPriority,
-              createdAt: createdWaitlist.createdAt || new Date(),
-            });
-          }
+          waitlistedItems.push({
+            kind: "waitlist",
+            id: String(createdWaitlist._id),
+            date: item.date,
+            time: item.time,
+            service: EP_NAME,
+            status: "waiting",
+            priorityOrder: nextPriority,
+            createdAt: createdWaitlist.createdAt || new Date(),
+          });
+
+          recalcUserCredits(user);
           continue;
         }
 
-        let usedLotId = null;
-        let usedLotExp = null;
-
         const consumed = await consumeCreditAtomic({
           userId: user._id,
-          serviceName: it.service,
+          serviceName: item.service,
           historyItem: {
             action: "reservado",
-            date: it.date,
-            time: it.time,
-            service: it.service,
-            serviceName: it.service,
+            date: item.date,
+            time: item.time,
+            service: item.service,
+            serviceName: item.service,
           },
-          slotDate: it.slotDate,
+          slotDate: item.slotDate,
           session,
         });
 
-        usedLotId = consumed.usedLotId;
-        usedLotExp = consumed.usedLotExp;
+        user = consumed.user;
 
         const created = await Appointment.create(
-          [{
-            date: it.date,
-            time: it.time,
-            service: it.service,
-            user: user._id,
-            status: "reserved",
-            creditLotId: usedLotId,
-            creditExpiresAt: usedLotExp,
-            createdByRole: String(req.user?.role || "").toLowerCase(),
-            createdByUser: req.user?._id || req.user?.id || null,
-          }],
+          [
+            {
+              date: item.date,
+              time: item.time,
+              service: item.service,
+              user: user._id,
+              status: "reserved",
+              creditLotId: consumed.usedLotId,
+              creditExpiresAt: consumed.usedLotExp,
+              createdByRole: String(req.user?.role || "").toLowerCase(),
+              createdByUser: req.user?._id || req.user?.id || null,
+            },
+          ],
           { session }
         );
 
@@ -2460,170 +2423,172 @@ router.post("/batch", async (req, res) => {
         createdItems.push(serializeAppointment(populated));
       }
 
-      const finalUser = await User.findById(user._id).session(session);
-      if (!finalUser) throw new Error("USER_NOT_FOUND");
-
-      recalcUserCredits(finalUser);
-      await finalUser.save({ session });
-
-      userCreditsAfter = Number(finalUser.credits || 0);
-      userCreditLotsAfter = serializeUserCreditLots(finalUser);
-      firstEvaluationCompletedAfter = !!finalUser.firstEvaluationCompleted;
-      firstEvaluationCompletedAtAfter = finalUser.firstEvaluationCompletedAt || null;
-      mailUser = { ...finalUser.toObject(), _id: finalUser._id };
-      mailItems = createdItems.map((x) => ({ date: x.date, time: x.time, service: x.service }));
+      recalcUserCredits(user);
+      userCreditsAfter = Number(user.credits || 0);
+      userCreditLotsAfter = serializeUserCreditLots(user);
+      firstEvaluationCompletedAfter = !!user.firstEvaluationCompleted;
+      firstEvaluationCompletedAtAfter = user.firstEvaluationCompletedAt || null;
+      mailUser = { ...user.toObject(), _id: user._id };
+      mailItems = createdItems.map((x) => ({
+        date: x.date,
+        time: x.time,
+        service: x.service,
+      }));
     });
 
-    await logActivity({
-      req,
-      category: "appointments",
-      action: "appointment_batch_created",
-      entity: "appointment_batch",
-      entityId: String(req.user?._id || "") + "-" + String(Date.now()),
-      title: "Reserva múltiple",
-      description: "Se registró una reserva múltiple de turnos.",
-      subject: buildUserSubject(req.user),
-      meta: {
-        createdCount: createdItems.length,
-        waitlistedCount: waitlistedItems.length,
-        steps: [
-          ...createdItems.map(
-            (x) => `Reservó ${x.service} el ${x.date} a las ${x.time}`
-          ),
-          ...waitlistedItems.map(
-            (x) => `Entró en lista de espera para ${x.service} el ${x.date} a las ${x.time}`
-          ),
-        ],
-      },
-    });
+    await Promise.all(
+      createdItems.map((item) =>
+        logActivity({
+          req,
+          category: "appointments",
+          action: "appointment_reserved",
+          entity: "appointment",
+          entityId: item.id,
+          title: "Turno reservado",
+          description: "Se registró una nueva reserva.",
+          subject: buildUserSubject(req.user),
+          meta: {
+            date: item.date,
+            time: item.time,
+            serviceName: item.service,
+          },
+        })
+      )
+    );
 
-    res.status(201).json({
+    await Promise.all(
+      waitlistedItems.map((item) =>
+        logActivity({
+          req,
+          category: "appointments",
+          action: "waitlist_joined",
+          entity: "waitlist",
+          entityId:
+            String(item.date || "") +
+            "-" +
+            String(item.time || "") +
+            "-" +
+            String(req.user?._id || ""),
+          title: "Lista de espera",
+          description: "Se agregó a lista de espera de turnos.",
+          subject: buildUserSubject(req.user),
+          meta: {
+            date: item.date,
+            time: item.time,
+            serviceName: item.service,
+            priorityOrder: item.priorityOrder || null,
+          },
+        })
+      )
+    );
+
+    const out = {
+      ok: true,
+      createdCount: createdItems.length,
+      waitlistedCount: waitlistedItems.length,
       items: createdItems,
-      waitlisted: waitlistedItems,
+      waitlistItems: waitlistedItems,
       userCredits: userCreditsAfter,
       userCreditLots: userCreditLotsAfter,
       firstEvaluationCompleted: firstEvaluationCompletedAfter,
       firstEvaluationCompletedAt: firstEvaluationCompletedAtAfter,
-    });
+    };
+
+    res.status(201).json(out);
 
     if (mailUser && mailItems?.length) {
       fireAndForget(async () => {
         try {
           await sendAppointmentBookedBatchEmail(mailUser, mailItems);
         } catch (e) {
-          console.log("[MAIL] batch booked error:", e?.message || e);
-          await sendAdminCopy({ kind: "batch_booked", user: mailUser, ap: { items: mailItems } });
+          console.log("[MAIL] booked batch error:", e?.message || e);
         }
-      }, "MAIL_BATCH_BOOKED");
+      }, "MAIL_BOOKED_BATCH");
     }
   } catch (err) {
     console.error("Error en POST /appointments/batch:", err);
     const msg = String(err?.message || "");
-    const http = err?.http;
 
-    if (http) {
-      if (msg.startsWith("ITEM_") && msg.includes("_INVALID:")) {
-        const parts = msg.split("_INVALID:");
-        return res.status(400).json({ error: parts[1] || "Item inválido." });
-      }
-      if (msg.startsWith("ITEM_") && msg.endsWith("_DUP")) {
-        return res.status(409).json({ error: "Hay items duplicados dentro del batch." });
-      }
-      if (msg === "SERVICE_CAP_REACHED") {
-        return res.status(409).json({ error: "Ese servicio ya alcanzó su cupo en uno de los horarios." });
-      }
-      if (msg === "TOTAL_CAP_REACHED") {
-        return res.status(409).json({ error: "Se alcanzó el cupo total disponible para alguno de los horarios." });
-      }
-      if (msg === "NO_CREDITS") {
-        return res.status(403).json({ error: "Sin créditos disponibles." });
-      }
-      if (msg === "FIRST_EVALUATION_REQUIRED") {
+    if (msg === "USER_NOT_FOUND") {
+      return res.status(404).json({ error: "Usuario no encontrado." });
+    }
+    if (msg === "USER_SUSPENDED") {
+      return res.status(403).json({ error: "Cuenta suspendida." });
+    }
+    if (msg === "APTO_REQUIRED") {
+      return res.status(403).json({ error: "Falta apto médico." });
+    }
+
+    const itemMatch = msg.match(/^ITEM_(\d+)_(.+)$/);
+    if (itemMatch) {
+      const idx = Number(itemMatch[1]);
+      const code = itemMatch[2];
+
+      if (code === "FIRST_EVALUATION_REQUIRED") {
         return res.status(403).json({
           error: "Primero debés completar tu primera evaluación presencial.",
+          itemIndex: idx,
         });
       }
-      if (msg.startsWith("NO_CREDITS_FOR_SLOT_") || msg.startsWith("NO_CREDITS_FOR_")) {
+      if (code === "NO_CREDITS") {
         return res.status(403).json({
-          error: "No tenés suficientes sesiones válidas para los servicios seleccionados.",
+          error: "Sin créditos disponibles.",
+          itemIndex: idx,
         });
       }
-      if (msg === "ALREADY_HAVE_SLOT") {
-        return res.status(409).json({ error: "Ya tenés un turno reservado en uno de esos horarios." });
+      if (code.startsWith("NO_CREDITS_FOR_SLOT_")) {
+        return res.status(403).json({
+          error: "No tenés sesiones válidas para ese día y horario.",
+          itemIndex: idx,
+        });
       }
-      if (msg === "DUP_SLOT_IN_BATCH") {
-        return res.status(409).json({ error: "Hay horarios duplicados dentro del batch." });
+      if (code === "ALREADY_HAVE_SLOT") {
+        return res.status(409).json({
+          error: "Ya tenés un turno reservado en ese horario.",
+          itemIndex: idx,
+        });
       }
-      if (msg === "WAITLIST_CLOSED") {
-        return res.status(409).json({ error: "La lista de espera ya está cerrada para alguno de los horarios." });
+      if (code === "WAITLIST_CLOSED") {
+        return res.status(409).json({
+          error: "La lista de espera ya está cerrada para ese horario.",
+          itemIndex: idx,
+        });
+      }
+      if (code === "ALREADY_IN_WAITLIST") {
+        return res.status(409).json({
+          error: "Ya estás en la lista de espera para ese horario.",
+          itemIndex: idx,
+        });
+      }
+      if (code === "SERVICE_CAP_REACHED") {
+        return res.status(409).json({
+          error: "Ese servicio ya alcanzó su cupo para ese horario.",
+          itemIndex: idx,
+        });
+      }
+      if (code === "TOTAL_CAP_REACHED") {
+        return res.status(409).json({
+          error: "Se alcanzó el cupo total disponible para ese horario.",
+          itemIndex: idx,
+        });
+      }
+      if (code.startsWith("INVALID:")) {
+        return res.status(400).json({
+          error: code.replace(/^INVALID:/, ""),
+          itemIndex: idx,
+        });
+      }
+      if (code === "DUP") {
+        return res.status(409).json({
+          error: "Hay turnos repetidos dentro de la misma selección.",
+          itemIndex: idx,
+        });
       }
     }
 
     return res.status(500).json({ error: "No se pudieron reservar los turnos." });
   } finally {
     await session.endSession();
-  }
-});
-
-/* =========================
-   GET /appointments/fixed-schedules
-========================= */
-router.get("/fixed-schedules", ensureStaff, async (req, res) => {
-  try {
-    const userId = String(req.query?.userId || "").trim();
-
-    const q = { active: true };
-    if (userId) q.user = userId;
-
-    const list = await FixedSchedule.find(q)
-      .populate("user", "name lastName email")
-      .sort({ createdAt: -1 })
-      .lean();
-
-    return res.json(list || []);
-  } catch (err) {
-    console.error("Error en GET /appointments/fixed-schedules:", err);
-    return res.status(500).json({ error: "No se pudieron cargar los turnos fijos." });
-  }
-});
-
-/* =========================
-   DELETE /appointments/fixed-schedules/:id
-========================= */
-router.delete("/fixed-schedules/:id", ensureStaff, async (req, res) => {
-  try {
-    const fixed = await FixedSchedule.findById(req.params.id);
-    if (!fixed) {
-      return res.status(404).json({ error: "Turno fijo no encontrado." });
-    }
-
-    fixed.active = false;
-    fixed.closedAt = new Date();
-    fixed.closedBy = req.user?._id || req.user?.id || null;
-    await fixed.save();
-
-    return res.json({ ok: true });
-  } catch (err) {
-    console.error("Error en DELETE /appointments/fixed-schedules/:id:", err);
-    return res.status(500).json({ error: "No se pudo desactivar el turno fijo." });
-  }
-});
-
-/* =========================
-   GET /appointments/debug/credits
-========================= */
-router.get("/debug/credits", async (req, res) => {
-  try {
-    const user = await User.findById(req.user._id || req.user.id).lean();
-    if (!user) return res.status(404).json({ error: "Usuario no encontrado." });
-
-    return res.json({
-      credits: Number(user.credits || 0),
-      lots: lotsDebug(user),
-    });
-  } catch (err) {
-    console.error("Error en GET /appointments/debug/credits:", err);
-    return res.status(500).json({ error: "No se pudo obtener debug de créditos." });
   }
 });
 

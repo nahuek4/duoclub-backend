@@ -214,7 +214,7 @@ const userSchema = new mongoose.Schema(
     role: {
       type: String,
       default: "client",
-      enum: ["admin", "profesor", "client", "guest"],
+      enum: ["admin", "profesor", "staff", "client", "guest"],
     },
 
     password: { type: String, required: requiredIfNotGuest, default: "" },
@@ -243,6 +243,8 @@ const userSchema = new mongoose.Schema(
       tier: { type: String, default: "basic", enum: ["basic", "plus"] },
       activeUntil: { type: Date, default: null },
       creditsExpireDays: { type: Number, default: 30 },
+      cancelHours: { type: Number, default: 24 },
+      cancelsLeft: { type: Number, default: 1 },
     },
 
     creditLots: { type: [creditLotSchema], default: [] },
