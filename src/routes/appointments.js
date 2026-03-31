@@ -769,27 +769,50 @@ function countMonthlyRefundsByType(
 ) {
   const wantedSk = String(serviceKey || "").toUpperCase().trim();
   const wantedType = String(refundType || "").trim();
+  const wantedMonth = getMonthKey(refDate);
+  const history = Array.isArray(user?.history) ? user.history : [];
 
-  return countHistoryEntriesInMonth(
-    user,
-    (item) => {
-      const itemSk = getHistoryServiceKey(item);
-      if (wantedSk && itemSk !== wantedSk) return false;
+  return history.reduce((acc, item) => {
+    const explicitMonth = String(item?.policyMonthKey || "").trim();
+    const explicitServiceKey = String(item?.policyServiceKey || "").toUpperCase().trim();
+    const explicitRefundType = String(item?.policyRefundType || "").trim();
 
+    const createdAt = item?.createdAt ? new Date(item.createdAt) : null;
+    const inferredMonth =
+      createdAt && !Number.isNaN(createdAt.getTime()) ? getMonthKey(createdAt) : "";
+    const itemMonth = explicitMonth || inferredMonth;
+
+    const itemSk = explicitServiceKey || getHistoryServiceKey(item);
+
+    let itemType = explicitRefundType;
+    if (!itemType) {
       const action = String(item?.action || "").trim();
+      if (action === "cancelado_con_reintegro") itemType = "timely";
+      else if (action === "cancelado_tarde_con_cortesia") itemType = "late";
+      else itemType = "none";
+    }
 
-      if (wantedType === "timely") {
-        return action === "cancelado_con_reintegro";
-      }
+    if (itemMonth !== wantedMonth) return acc;
+    if (wantedSk && itemSk !== wantedSk) return acc;
+    if (itemType !== wantedType) return acc;
 
-      if (wantedType === "late") {
-        return action === "cancelado_tarde_con_cortesia";
-      }
+    return acc + 1;
+  }, 0);
+}
 
-      return false;
-    },
-    refDate
-  );
+function buildCancellationHistoryMeta({ appointment, decision, now = new Date() }) {
+  const serviceKey = serviceToKey(appointment?.service || "");
+  const monthKey = getMonthKey(now);
+
+  let refundType = "none";
+  if (decision?.refundMode === "timely") refundType = "timely";
+  if (decision?.refundMode === "late-courtesy") refundType = "late";
+
+  return {
+    policyMonthKey: monthKey,
+    policyServiceKey: serviceKey,
+    policyRefundType: refundType,
+  };
 }
 
 function resolveCancellationPolicy({ user, appointment, hoursToStart }) {
@@ -1134,7 +1157,6 @@ async function createAppointmentForTargetUser({
       time: t,
       service,
       serviceName: service,
-      notes,
     },
     slotDate: basic.slotDate,
     session: null,
@@ -1188,7 +1210,6 @@ async function createAppointmentForTargetUser({
    AUTH required
 ========================= */
 router.use(protect);
-
 
 /* =========================
    POST /appointments/admin/:userId/complete-first-evaluation
@@ -2099,6 +2120,7 @@ router.delete("/:id", async (req, res) => {
     const isStaff = ["admin", "profesor", "staff"].includes(role);
 
     let ap;
+    let updatedUser = null;
     await session.withTransaction(async () => {
       ap = await Appointment.findById(req.params.id).session(session);
       if (!ap) throw new Error("NOT_FOUND");
@@ -2124,6 +2146,12 @@ router.delete("/:id", async (req, res) => {
         hoursToStart,
       });
 
+      const historyMeta = buildCancellationHistoryMeta({
+        appointment: ap,
+        decision,
+        now: new Date(),
+      });
+
       ap.status = "cancelled";
       ap.cancelledAt = new Date();
       ap.cancelledBy = req.user?._id || req.user?.id || null;
@@ -2133,8 +2161,6 @@ router.delete("/:id", async (req, res) => {
       ap.refundReason = decision.reason || "";
 
       await ap.save({ session });
-
-      let updatedUser = user;
 
       if (decision.refund) {
         if (ap.creditLotId) {
@@ -2147,6 +2173,7 @@ router.delete("/:id", async (req, res) => {
               time: ap.time,
               service: ap.service,
               serviceName: ap.service,
+              ...historyMeta,
             },
             session,
           });
@@ -2160,6 +2187,7 @@ router.delete("/:id", async (req, res) => {
               time: ap.time,
               service: ap.service,
               serviceName: ap.service,
+              ...historyMeta,
             },
             session,
           });
@@ -2173,6 +2201,7 @@ router.delete("/:id", async (req, res) => {
           time: ap.time,
           service: ap.service,
           serviceName: ap.service,
+          ...historyMeta,
           createdAt: new Date(),
         });
         recalcUserCredits(user);
@@ -2235,7 +2264,7 @@ router.delete("/:id", async (req, res) => {
               session,
             });
 
-            const createdWaitlistAp = await Appointment.create(
+            const [newAp] = await Appointment.create(
               [{
                 date: ap.date,
                 time: ap.time,
@@ -2244,66 +2273,75 @@ router.delete("/:id", async (req, res) => {
                 status: "reserved",
                 creditLotId: consumed.usedLotId,
                 creditExpiresAt: consumed.usedLotExp,
-                createdByRole: "staff",
-                createdByUser: req.user?._id || req.user?.id || null,
-                assignedFromWaitlist: true,
                 waitlistEntryId: wl._id,
+                createdByRole: "system",
+                createdByUser: null,
+                assignedFromWaitlist: true,
               }],
               { session }
             );
 
             wl.status = "claimed";
             wl.claimedAt = new Date();
-            wl.assignedAppointmentId = createdWaitlistAp[0]._id;
-            await wl.save({ session });
-          } else {
-            wl.status = "closed";
-            wl.closeReason = "NO_VALID_CREDITS";
+            wl.claimedAppointmentId = newAp._id;
             await wl.save({ session });
           }
-        } else if (wl) {
-          wl.status = "closed";
-          wl.closeReason = "USER_NOT_ELIGIBLE";
-          await wl.save({ session });
         }
       }
-
-      recalcUserCredits(updatedUser);
-      await updatedUser.save({ session });
     });
 
-    const populated = await Appointment.findById(req.params.id)
-      .populate("user", "name lastName email")
-      .lean();
+    const populatedAp = await Appointment.findById(ap._id).lean();
 
     await logActivity({
       req,
       category: "appointments",
       action: "appointment_cancelled",
       entity: "appointment",
-      entityId: String(req.params.id),
+      entityId: String(ap._id),
       title: "Turno cancelado",
       description: "Se canceló un turno.",
       subject: buildUserSubject(req.user),
       meta: {
-        date: populated?.date,
-        time: populated?.time,
-        serviceName: populated?.service,
+        date: ap.date,
+        time: ap.time,
+        serviceName: ap.service,
+        refundApplied: !!ap.refundApplied,
+        refundMode: ap.refundMode || "",
+        refundReason: ap.refundReason || "",
       },
     });
 
-    res.json({ ok: true });
+    res.json({
+      ok: true,
+      refundApplied: !!ap.refundApplied,
+      refundMode: ap.refundMode || "none",
+      refundReason: ap.refundReason || "",
+      cancelReason: ap.cancelReason || "",
+      userCredits: Number(updatedUser?.credits || 0),
+      userCreditLots: serializeUserCreditLots(updatedUser),
+      appointment: {
+        id: String(populatedAp?._id || ap._id),
+        date: populatedAp?.date || ap.date,
+        time: populatedAp?.time || ap.time,
+        service: populatedAp?.service || ap.service,
+        status: populatedAp?.status || ap.status,
+      },
+    });
 
-    if (populated?.user) {
-      fireAndForget(async () => {
-        try {
-          await sendAppointmentCancelledEmail(populated.user, populated);
-        } catch (e) {
-          console.log("[MAIL] cancelled error:", e?.message || e);
-          await sendAdminCopy({ kind: "cancelled", user: populated.user, ap: populated });
+    fireAndForget(async () => {
+      try {
+        const user = await User.findById(ap.user).lean();
+        if (user) {
+          await sendAppointmentCancelledEmail(user, {
+            date: ap.date,
+            time: ap.time,
+            service: ap.service,
+          });
         }
-      }, "MAIL_CANCELLED");
-    }
+      } catch (e) {
+        console.log("[MAIL] cancelled error:", e?.message || e);
+      }
+    }, "MAIL_CANCELLED");
   } catch (err) {
     console.error("Error en DELETE /appointments/:id:", err);
     const msg = String(err?.message || "");
@@ -2315,7 +2353,13 @@ router.delete("/:id", async (req, res) => {
       return res.status(403).json({ error: "No autorizado." });
     }
     if (msg === "ALREADY_CANCELLED") {
-      return res.status(409).json({ error: "El turno ya estaba cancelado." });
+      return res.status(409).json({ error: "Ese turno ya fue cancelado." });
+    }
+    if (msg === "USER_NOT_FOUND") {
+      return res.status(404).json({ error: "Usuario no encontrado." });
+    }
+    if (msg === "INVALID_SLOT") {
+      return res.status(400).json({ error: "Fecha/hora inválida." });
     }
 
     return res.status(500).json({ error: "No se pudo cancelar el turno." });
@@ -2331,7 +2375,7 @@ router.post("/batch", async (req, res) => {
   const session = await mongoose.startSession();
 
   let mailUser = null;
-  let mailItems = null;
+  let mailItems = [];
 
   try {
     const items = Array.isArray(req.body?.items) ? req.body.items : [];
@@ -2340,34 +2384,22 @@ router.post("/batch", async (req, res) => {
     }
 
     const seen = new Set();
-    const normalized = items.map((raw, idx) => {
-      const date = String(raw?.date || "").slice(0, 10);
-      const timeNorm = String(raw?.time || "").slice(0, 5);
-      const service = String(raw?.service || "").trim();
+    const normalized = items.map((it, idx) => {
+      const date = String(it?.date || "").slice(0, 10);
+      const time = String(it?.time || "").slice(0, 5);
+      const service = String(it?.service || "").trim();
 
-      const basic = validateBasicSlotRules({
-        date,
-        time: timeNorm,
-        service,
-      });
+      const basic = validateBasicSlotRules({ date, time, service });
+      if (!basic.ok) throw new Error(`ITEM_${idx}_INVALID:${basic.error}`);
 
-      if (!basic.ok) {
-        const e = new Error(`ITEM_${idx}_INVALID:${basic.error}`);
-        e.http = 400;
-        throw e;
-      }
-
-      const key = slotKey(date, timeNorm);
-      if (seen.has(key)) {
-        const e = new Error(`ITEM_${idx}_DUP`);
-        e.http = 409;
-        throw e;
-      }
-      seen.add(key);
+      const k = slotKey(date, time);
+      if (seen.has(k)) throw new Error(`ITEM_${idx}_DUP`);
+      seen.add(k);
 
       return {
+        idx,
         date,
-        time: timeNorm,
+        time,
         service,
         slotDate: basic.slotDate,
         isEpService: basic.isEpService,
@@ -2375,7 +2407,7 @@ router.post("/batch", async (req, res) => {
     });
 
     const userId = req.user._id || req.user.id;
-    let outItems = [];
+    const outItems = [];
 
     await session.withTransaction(async () => {
       let user = await User.findById(userId).session(session);
