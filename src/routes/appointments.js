@@ -1,7 +1,3 @@
-// =========================
-// BACKEND: appointments_politicas_actualizadas.js
-// =========================
-
 import express from "express";
 import mongoose from "mongoose";
 
@@ -233,13 +229,14 @@ function stripAccents(s) {
 function serviceToKey(serviceName) {
   const s = stripAccents(serviceName).toLowerCase().trim();
 
+  if (s.includes("primera") && s.includes("evaluacion")) return "PE";
   if (s.includes("entrenamiento") && s.includes("personal")) return "EP";
   if (s.includes("rehabilitacion") && s.includes("activa")) return "RA";
   if (s.includes("reeducacion") && s.includes("funcional")) return "RF";
   if (s.includes("nutricion")) return "NUT";
 
   const up = String(serviceName || "").toUpperCase().trim();
-  const allowed = new Set(["EP", "RA", "RF", "NUT"]);
+  const allowed = new Set(["PE", "EP", "RA", "RF", "NUT"]);
   if (allowed.has(up)) return up;
 
   return "EP";
@@ -266,6 +263,61 @@ function normalizeLotServiceKey(lot) {
   const raw = lot?.serviceKey;
   const sk = String(raw || "").toUpperCase().trim();
   return sk || "EP";
+}
+
+function isFirstEvaluationService(serviceName) {
+  return serviceToKey(serviceName) === "PE";
+}
+
+async function syncPastAppointmentsForUserId(userId, session = null) {
+  if (!userId) return null;
+
+  const userQuery = User.findById(userId);
+  if (session) userQuery.session(session);
+  const user = await userQuery;
+  if (!user) return null;
+
+  const now = new Date();
+
+  const apQuery = Appointment.find({
+    user: user._id,
+    status: "reserved",
+  });
+  if (session) apQuery.session(session);
+  const reservedPast = await apQuery;
+
+  let changed = false;
+  let completedFirstEvaluation = false;
+
+  for (const ap of reservedPast) {
+    const slotDate = buildSlotDate(ap.date, ap.time);
+    if (!slotDate) continue;
+    if (slotDate.getTime() > now.getTime()) continue;
+
+    ap.status = "completed";
+    ap.completedAt = now;
+    if (session) await ap.save({ session });
+    else await ap.save();
+    changed = true;
+
+    if (isFirstEvaluationService(ap.service)) {
+      completedFirstEvaluation = true;
+    }
+  }
+
+  if (completedFirstEvaluation && !user.firstEvaluationCompleted) {
+    user.firstEvaluationCompleted = true;
+    user.firstEvaluationCompletedAt = user.firstEvaluationCompletedAt || now;
+    changed = true;
+  }
+
+  if (changed) {
+    recalcUserCredits(user);
+    if (session) await user.save({ session });
+    else await user.save();
+  }
+
+  return user;
 }
 
 function ensureSlotBeforeCreditExpiry(slotDate, lotExpiresAt) {
@@ -525,6 +577,7 @@ function serializeAppointment(ap) {
     userFullName,
     userEmail: userObj?.email || "",
     creditExpiresAt: json?.creditExpiresAt || null,
+    completedAt: json?.completedAt || null,
   };
 }
 
@@ -566,6 +619,7 @@ const TOTAL_CAP = 6;
 const EP_CAP_WHEN_THERAPY_ACTIVE = 4;
 const THERAPY_CAP_WHEN_ACTIVE = 2;
 
+const PE_NAME = "Primera evaluación presencial";
 const EP_NAME = "Entrenamiento Personal";
 const RA_NAME = "Rehabilitación activa";
 const RF_NAME = "Reeducación funcional";
@@ -608,6 +662,9 @@ function getRehabTimesForDate(dateStr) {
 function getAllowedTimesForService(serviceName, dateStr = "") {
   if (!dateStr || isSaturday(dateStr) || isSunday(dateStr)) return [];
 
+  if (sameService(serviceName, PE_NAME) || serviceToKey(serviceName) === "PE") {
+    return TIMES_EP_WEEKDAY;
+  }
   if (sameService(serviceName, EP_NAME)) return TIMES_EP_WEEKDAY;
   if (isTherapyService(serviceName)) return getRehabTimesForDate(dateStr);
   return TIMES_DEFAULT;
@@ -1199,8 +1256,10 @@ router.get("/availability", async (req, res) => {
     const requesterRole = String(req.user?.role || "");
 
     if (requesterId && requesterRole !== "admin") {
+      await syncPastAppointmentsForUserId(requesterId);
+
       const me = await User.findById(requesterId)
-        .select("role suspended aptoPath createdAt credits creditLots")
+        .select("role suspended aptoPath createdAt credits creditLots firstEvaluationCompleted firstEvaluationCompletedAt")
         .lean();
 
       if (!me) {
@@ -1227,6 +1286,18 @@ router.get("/availability", async (req, res) => {
             time: t,
             state: "closed",
             reason: "Falta apto médico",
+          })),
+        });
+      }
+
+      if (!me.firstEvaluationCompleted && !isFirstEvaluationService(service)) {
+        return res.json({
+          date,
+          service,
+          slots: times.map((t) => ({
+            time: t,
+            state: "closed",
+            reason: "Primero debés completar tu primera evaluación presencial.",
           })),
         });
       }
@@ -1259,7 +1330,7 @@ router.get("/availability", async (req, res) => {
 
       if (requesterId && requesterRole !== "admin") {
         const me = await User.findById(requesterId)
-          .select("credits creditLots")
+          .select("credits creditLots firstEvaluationCompleted")
           .lean();
 
         if (!hasValidCreditsForServiceAndSlot(me, service, basic.slotDate)) {
@@ -1383,6 +1454,8 @@ router.get("/", async (req, res) => {
     }
 
     {
+      await syncPastAppointmentsForUserId(tokenUserId);
+
       const q = { user: tokenUserId, status: { $ne: "cancelled" } };
 
       if (hasFrom && hasTo) q.date = { $gte: from, $lt: to };
@@ -1402,6 +1475,7 @@ router.get("/", async (req, res) => {
           status: a?.status || "reserved",
           coach: a?.coach || "",
           creditExpiresAt: a?.creditExpiresAt || null,
+          completedAt: a?.completedAt || null,
           userId: String(a?.user || ""),
         }))
       );
@@ -1601,11 +1675,16 @@ router.post("/", async (req, res) => {
     let out = null;
 
     await session.withTransaction(async () => {
-      const user = await User.findById(userId).session(session);
+      let user = await User.findById(userId).session(session);
       if (!user) throw new Error("USER_NOT_FOUND");
+
+      user = (await syncPastAppointmentsForUserId(userId, session)) || user;
 
       if (user.suspended) throw new Error("USER_SUSPENDED");
       if (requiresApto(user)) throw new Error("APTO_REQUIRED");
+      if (!user.firstEvaluationCompleted && !isFirstEvaluationService(service)) {
+        throw new Error("FIRST_EVALUATION_REQUIRED");
+      }
 
       recalcUserCredits(user);
       if ((user.credits || 0) <= 0) throw new Error("NO_CREDITS");
@@ -1702,6 +1781,8 @@ router.post("/", async (req, res) => {
           createdAt: createdWaitlist.createdAt || new Date(),
           userCredits: Number(user.credits || 0),
           userCreditLots: serializeUserCreditLots(user),
+          firstEvaluationCompleted: !!user.firstEvaluationCompleted,
+          firstEvaluationCompletedAt: user.firstEvaluationCompletedAt || null,
         };
         return;
       }
@@ -1751,6 +1832,8 @@ router.post("/", async (req, res) => {
         ...serializeAppointment(populated),
         userCredits: Number(effectiveUser.credits || 0),
         userCreditLots: serializeUserCreditLots(effectiveUser),
+        firstEvaluationCompleted: !!effectiveUser.firstEvaluationCompleted,
+        firstEvaluationCompletedAt: effectiveUser.firstEvaluationCompletedAt || null,
       };
 
       mailUser = { ...effectiveUser.toObject(), _id: effectiveUser._id };
@@ -1815,53 +1898,284 @@ router.post("/", async (req, res) => {
     console.error("Error en POST /appointments:", err);
     const msg = String(err?.message || "");
 
-    if (err?.code === 11000) {
-      return res.status(409).json({
-        error: "Conflicto: ese turno o ese servicio ya fue reservado. Actualizá y probá de nuevo.",
-      });
+    if (msg === "USER_NOT_FOUND") {
+      return res.status(404).json({ error: "Usuario no encontrado." });
     }
-
-    if (msg === "USER_NOT_FOUND") return res.status(403).json({ error: "Usuario no encontrado." });
-    if (msg === "USER_SUSPENDED") return res.status(403).json({ error: "Cuenta suspendida." });
-    if (msg === "APTO_REQUIRED")
-      return res.status(403).json({ error: "Cuenta suspendida por falta de apto médico." });
-    if (msg === "NO_CREDITS") return res.status(403).json({ error: "Sin créditos disponibles." });
-    if (msg === "CREDIT_CONSUME_FAILED")
-      return res.status(409).json({ error: "No se pudo debitar la sesión. Actualizá y probá de nuevo." });
-
-    if (msg === "ALREADY_HAVE_SLOT")
-      return res.status(409).json({ error: "Ya tenés un turno reservado en ese horario." });
-
-    if (msg === "ALREADY_IN_WAITLIST")
-      return res.status(409).json({ error: "Ya estás en lista de espera para ese horario." });
-
-    if (msg === "WAITLIST_CLOSED")
-      return res.status(409).json({
-        error:
-          "La lista de espera para ese horario ya está cerrada por anticipación.",
-      });
-
-    if (msg === "TOTAL_CAP_REACHED")
-      return res.status(409).json({ error: "Se alcanzó el cupo total disponible para este horario." });
-
-    if (msg === "SERVICE_CAP_REACHED")
-      return res.status(409).json({ error: "Ese servicio ya alcanzó su cupo para ese horario." });
-
-    if (msg.startsWith("NO_CREDITS_FOR_SLOT_")) {
-      const sk = msg.replace("NO_CREDITS_FOR_SLOT_", "");
+    if (msg === "USER_SUSPENDED") {
+      return res.status(403).json({ error: "Cuenta suspendida." });
+    }
+    if (msg === "APTO_REQUIRED") {
+      return res.status(403).json({ error: "Falta apto médico." });
+    }
+    if (msg === "NO_CREDITS") {
+      return res.status(403).json({ error: "Sin créditos disponibles." });
+    }
+    if (msg === "FIRST_EVALUATION_REQUIRED") {
       return res.status(403).json({
-        error: `No tenés créditos válidos para reservar ese día y horario (${sk}).`,
+        error: "Primero debés completar tu primera evaluación presencial.",
       });
     }
-
-    if (msg.startsWith("NO_CREDITS_FOR_")) {
-      const sk = msg.replace("NO_CREDITS_FOR_", "");
-      return res.status(403).json({ error: `No tenés créditos válidos para este servicio (${sk}).` });
+    if (msg.startsWith("NO_CREDITS_FOR_SLOT_")) {
+      return res.status(403).json({
+        error: "No tenés sesiones válidas para ese día y horario.",
+      });
+    }
+    if (msg === "ALREADY_HAVE_SLOT") {
+      return res.status(409).json({ error: "Ya tenés un turno reservado en ese horario." });
+    }
+    if (msg === "WAITLIST_CLOSED") {
+      return res.status(409).json({ error: "La lista de espera ya está cerrada para ese horario." });
+    }
+    if (msg === "ALREADY_IN_WAITLIST") {
+      return res.status(409).json({ error: "Ya estás en la lista de espera para ese horario." });
+    }
+    if (msg === "SERVICE_CAP_REACHED") {
+      return res.status(409).json({ error: "Ese servicio ya alcanzó su cupo para ese horario." });
+    }
+    if (msg === "TOTAL_CAP_REACHED") {
+      return res.status(409).json({ error: "Se alcanzó el cupo total disponible para ese horario." });
     }
 
-    return res.status(500).json({ error: "Error al crear el turno." });
+    return res.status(500).json({ error: "No se pudo reservar el turno." });
   } finally {
-    session.endSession();
+    await session.endSession();
+  }
+});
+
+/* =========================
+   DELETE /appointments/:id
+========================= */
+router.delete("/:id", async (req, res) => {
+  const session = await mongoose.startSession();
+
+  try {
+    const userId = req.user._id || req.user.id;
+    const role = String(req.user?.role || "").toLowerCase();
+    const isStaff = ["admin", "profesor", "staff"].includes(role);
+
+    let ap;
+    await session.withTransaction(async () => {
+      ap = await Appointment.findById(req.params.id).session(session);
+      if (!ap) throw new Error("NOT_FOUND");
+
+      if (!isStaff && String(ap.user) !== String(userId)) {
+        throw new Error("FORBIDDEN");
+      }
+
+      if (String(ap.status) === "cancelled") {
+        throw new Error("ALREADY_CANCELLED");
+      }
+
+      const user = await User.findById(ap.user).session(session);
+      if (!user) throw new Error("USER_NOT_FOUND");
+
+      const slotDate = buildSlotDate(ap.date, ap.time);
+      if (!slotDate) throw new Error("INVALID_SLOT");
+
+      const hoursToStart = (slotDate.getTime() - Date.now()) / (1000 * 60 * 60);
+      const decision = resolveCancellationPolicy({
+        user,
+        appointment: ap,
+        hoursToStart,
+      });
+
+      ap.status = "cancelled";
+      ap.cancelledAt = new Date();
+      ap.cancelledBy = req.user?._id || req.user?.id || null;
+      ap.cancelReason = decision.reason || "";
+      ap.refundApplied = !!decision.refund;
+      ap.refundMode = decision.refundMode || "";
+      ap.refundReason = decision.reason || "";
+
+      await ap.save({ session });
+
+      let updatedUser = user;
+
+      if (decision.refund) {
+        if (ap.creditLotId) {
+          updatedUser = await refundCreditAtomicToOriginalLot({
+            userId: user._id,
+            lotId: ap.creditLotId,
+            historyItem: {
+              action: decision.historyAction,
+              date: ap.date,
+              time: ap.time,
+              service: ap.service,
+              serviceName: ap.service,
+            },
+            session,
+          });
+        } else {
+          const refunded = await refundCreditAtomicNewLot({
+            userId: user._id,
+            apService: ap.service,
+            historyItem: {
+              action: decision.historyAction,
+              date: ap.date,
+              time: ap.time,
+              service: ap.service,
+              serviceName: ap.service,
+            },
+            session,
+          });
+          updatedUser = refunded.user;
+        }
+      } else {
+        user.history = Array.isArray(user.history) ? user.history : [];
+        user.history.push({
+          action: decision.historyAction,
+          date: ap.date,
+          time: ap.time,
+          service: ap.service,
+          serviceName: ap.service,
+          createdAt: new Date(),
+        });
+        recalcUserCredits(user);
+        await user.save({ session });
+        updatedUser = user;
+      }
+
+      if (ap.waitlistEntryId) {
+        const wl = await WaitlistEntry.findById(ap.waitlistEntryId).session(session);
+        if (wl && String(wl.status) !== "removed") {
+          wl.status = "removed";
+          wl.removedAt = new Date();
+          wl.closeReason = "TURN_CANCELLED";
+          await wl.save({ session });
+        }
+      }
+
+      const slotWaitlist = await WaitlistEntry.find({
+        date: ap.date,
+        time: ap.time,
+        service: EP_NAME,
+        status: { $in: ACTIVE_WAITLIST_STATUSES },
+      })
+        .sort({ priorityOrder: 1, createdAt: 1 })
+        .session(session);
+
+      const existingReserved = await Appointment.find({
+        date: ap.date,
+        time: ap.time,
+        status: "reserved",
+      })
+        .select("service")
+        .session(session)
+        .lean();
+
+      const stats = getSlotReservationStats(existingReserved, ap.date, ap.time);
+
+      const epCanTake =
+        stats.totalReserved < TOTAL_CAP && stats.epReserved < stats.epCap;
+
+      if (epCanTake && slotWaitlist.length) {
+        const wl = slotWaitlist[0];
+        const targetUser = await User.findById(wl.user).session(session);
+
+        if (targetUser && !targetUser.suspended && !requiresApto(targetUser)) {
+          recalcUserCredits(targetUser);
+
+          if (hasValidCreditsForServiceAndSlot(targetUser, EP_NAME, slotDate)) {
+            const consumed = await consumeCreditAtomic({
+              userId: targetUser._id,
+              serviceName: EP_NAME,
+              historyItem: {
+                action: "reservado_desde_lista_espera",
+                date: ap.date,
+                time: ap.time,
+                service: EP_NAME,
+                serviceName: EP_NAME,
+              },
+              slotDate,
+              session,
+            });
+
+            const createdWaitlistAp = await Appointment.create(
+              [{
+                date: ap.date,
+                time: ap.time,
+                service: EP_NAME,
+                user: targetUser._id,
+                status: "reserved",
+                creditLotId: consumed.usedLotId,
+                creditExpiresAt: consumed.usedLotExp,
+                createdByRole: "staff",
+                createdByUser: req.user?._id || req.user?.id || null,
+                assignedFromWaitlist: true,
+                waitlistEntryId: wl._id,
+              }],
+              { session }
+            );
+
+            wl.status = "claimed";
+            wl.claimedAt = new Date();
+            wl.assignedAppointmentId = createdWaitlistAp[0]._id;
+            await wl.save({ session });
+          } else {
+            wl.status = "closed";
+            wl.closeReason = "NO_VALID_CREDITS";
+            await wl.save({ session });
+          }
+        } else if (wl) {
+          wl.status = "closed";
+          wl.closeReason = "USER_NOT_ELIGIBLE";
+          await wl.save({ session });
+        }
+      }
+
+      recalcUserCredits(updatedUser);
+      await updatedUser.save({ session });
+    });
+
+    const populated = await Appointment.findById(req.params.id)
+      .populate("user", "name lastName email")
+      .lean();
+
+    await logActivity({
+      req,
+      category: "appointments",
+      action: "appointment_cancelled",
+      entity: "appointment",
+      entityId: String(req.params.id),
+      title: "Turno cancelado",
+      description: "Se canceló un turno.",
+      subject: buildUserSubject(req.user),
+      meta: {
+        date: populated?.date,
+        time: populated?.time,
+        serviceName: populated?.service,
+      },
+    });
+
+    res.json({ ok: true });
+
+    if (populated?.user) {
+      fireAndForget(async () => {
+        try {
+          await sendAppointmentCancelledEmail(populated.user, populated);
+        } catch (e) {
+          console.log("[MAIL] cancelled error:", e?.message || e);
+          await sendAdminCopy({ kind: "cancelled", user: populated.user, ap: populated });
+        }
+      }, "MAIL_CANCELLED");
+    }
+  } catch (err) {
+    console.error("Error en DELETE /appointments/:id:", err);
+    const msg = String(err?.message || "");
+
+    if (msg === "NOT_FOUND") {
+      return res.status(404).json({ error: "Turno no encontrado." });
+    }
+    if (msg === "FORBIDDEN") {
+      return res.status(403).json({ error: "No autorizado." });
+    }
+    if (msg === "ALREADY_CANCELLED") {
+      return res.status(409).json({ error: "El turno ya estaba cancelado." });
+    }
+
+    return res.status(500).json({ error: "No se pudo cancelar el turno." });
+  } finally {
+    await session.endSession();
   }
 });
 
@@ -1876,24 +2190,29 @@ router.post("/batch", async (req, res) => {
 
   try {
     const items = Array.isArray(req.body?.items) ? req.body.items : [];
-    if (!items.length) return res.status(400).json({ error: "Faltan items: [{date,time,service}]." });
-    if (items.length > 12) return res.status(400).json({ error: "Máximo 12 turnos por operación." });
+    if (!items.length) {
+      return res.status(400).json({ error: "Faltan items." });
+    }
 
     const seen = new Set();
-    const normalized = items.map((it, idx) => {
-      const date = String(it?.date || "").trim();
-      const time = String(it?.time || "").trim();
-      const service = String(it?.service || "").trim();
+    const normalized = items.map((raw, idx) => {
+      const date = String(raw?.date || "").slice(0, 10);
+      const timeNorm = String(raw?.time || "").slice(0, 5);
+      const service = String(raw?.service || "").trim();
 
-      const basic = validateBasicSlotRules({ date, time, service });
+      const basic = validateBasicSlotRules({
+        date,
+        time: timeNorm,
+        service,
+      });
+
       if (!basic.ok) {
         const e = new Error(`ITEM_${idx}_INVALID:${basic.error}`);
         e.http = 400;
         throw e;
       }
 
-      const timeNorm = String(time).slice(0, 5);
-      const key = `${date}__${timeNorm}__${service}`;
+      const key = `${date}__${timeNorm}`;
       if (seen.has(key)) {
         const e = new Error(`ITEM_${idx}_DUP`);
         e.http = 409;
@@ -1909,10 +2228,14 @@ router.post("/batch", async (req, res) => {
     let waitlistedItems = [];
     let userCreditsAfter = null;
     let userCreditLotsAfter = [];
+    let firstEvaluationCompletedAfter = false;
+    let firstEvaluationCompletedAtAfter = null;
 
     await session.withTransaction(async () => {
-      const user = await User.findById(userId).session(session);
+      let user = await User.findById(userId).session(session);
       if (!user) throw new Error("USER_NOT_FOUND");
+
+      user = (await syncPastAppointmentsForUserId(userId, session)) || user;
 
       if (user.suspended) throw new Error("USER_SUSPENDED");
       if (requiresApto(user)) throw new Error("APTO_REQUIRED");
@@ -1992,10 +2315,17 @@ router.post("/batch", async (req, res) => {
         throw e;
       }
 
-      const needByService = { EP: 0, RF: 0, RA: 0, NUT: 0 };
+      const needByService = { PE: 0, EP: 0, RF: 0, RA: 0, NUT: 0 };
 
       for (const it of normalized) {
         const requestedSk = serviceToKey(it.service);
+
+        if (!user.firstEvaluationCompleted && !isFirstEvaluationService(it.service)) {
+          const e = new Error("FIRST_EVALUATION_REQUIRED");
+          e.http = 403;
+          throw e;
+        }
+
         if (!it.waitlist && !hasValidCreditsForServiceAndSlot(user, requestedSk, it.slotDate)) {
           const e = new Error(`NO_CREDITS_FOR_SLOT_${requestedSk}`);
           e.http = 403;
@@ -2138,6 +2468,8 @@ router.post("/batch", async (req, res) => {
 
       userCreditsAfter = Number(finalUser.credits || 0);
       userCreditLotsAfter = serializeUserCreditLots(finalUser);
+      firstEvaluationCompletedAfter = !!finalUser.firstEvaluationCompleted;
+      firstEvaluationCompletedAtAfter = finalUser.firstEvaluationCompletedAt || null;
       mailUser = { ...finalUser.toObject(), _id: finalUser._id };
       mailItems = createdItems.map((x) => ({ date: x.date, time: x.time, service: x.service }));
     });
@@ -2170,6 +2502,8 @@ router.post("/batch", async (req, res) => {
       waitlisted: waitlistedItems,
       userCredits: userCreditsAfter,
       userCreditLots: userCreditLotsAfter,
+      firstEvaluationCompleted: firstEvaluationCompletedAfter,
+      firstEvaluationCompletedAt: firstEvaluationCompletedAtAfter,
     });
 
     if (mailUser && mailItems?.length) {
@@ -2204,390 +2538,92 @@ router.post("/batch", async (req, res) => {
       if (msg === "NO_CREDITS") {
         return res.status(403).json({ error: "Sin créditos disponibles." });
       }
-      if (msg === "CREDIT_CONSUME_FAILED") {
-        return res.status(409).json({ error: "No se pudo debitar una sesión. Actualizá y probá de nuevo." });
+      if (msg === "FIRST_EVALUATION_REQUIRED") {
+        return res.status(403).json({
+          error: "Primero debés completar tu primera evaluación presencial.",
+        });
+      }
+      if (msg.startsWith("NO_CREDITS_FOR_SLOT_") || msg.startsWith("NO_CREDITS_FOR_")) {
+        return res.status(403).json({
+          error: "No tenés suficientes sesiones válidas para los servicios seleccionados.",
+        });
+      }
+      if (msg === "ALREADY_HAVE_SLOT") {
+        return res.status(409).json({ error: "Ya tenés un turno reservado en uno de esos horarios." });
+      }
+      if (msg === "DUP_SLOT_IN_BATCH") {
+        return res.status(409).json({ error: "Hay horarios duplicados dentro del batch." });
       }
       if (msg === "WAITLIST_CLOSED") {
-        return res.status(409).json({
-          error: "La lista de espera para uno de los horarios ya está cerrada por anticipación.",
-        });
+        return res.status(409).json({ error: "La lista de espera ya está cerrada para alguno de los horarios." });
       }
-      if (msg.startsWith("NO_CREDITS_FOR_SLOT_")) {
-        const sk = msg.replace("NO_CREDITS_FOR_SLOT_", "");
-        return res.status(403).json({
-          error: `No tenés créditos válidos para reservar uno de esos días/horarios (${sk}).`,
-        });
-      }
-      if (msg.startsWith("NO_CREDITS_FOR_")) {
-        const sk = msg.replace("NO_CREDITS_FOR_", "");
-        return res.status(403).json({ error: `No tenés créditos válidos para este servicio (${sk}).` });
-      }
-      return res.status(http).json({ error: "No se pudo reservar el batch." });
     }
 
-    if (err?.code === 11000) {
-      return res.status(409).json({
-        error: "Conflicto: alguno de los turnos/servicios ya fue reservado. Actualizá y probá de nuevo.",
-      });
-    }
-
-    if (msg === "USER_NOT_FOUND") return res.status(403).json({ error: "Usuario no encontrado." });
-    if (msg === "USER_SUSPENDED") return res.status(403).json({ error: "Cuenta suspendida." });
-    if (msg === "APTO_REQUIRED")
-      return res.status(403).json({ error: "Cuenta suspendida por falta de apto médico." });
-    if (msg === "NO_CREDITS") return res.status(403).json({ error: "Sin créditos disponibles." });
-
-    if (msg === "DUP_SLOT_IN_BATCH")
-      return res.status(409).json({ error: "No podés reservar 2 turnos en el mismo horario en un solo batch." });
-
-    if (msg === "ALREADY_HAVE_SLOT")
-      return res.status(409).json({ error: "Ya tenés un turno reservado en alguno de esos horarios." });
-
-    if (msg === "TOTAL_CAP_REACHED")
-      return res.status(409).json({ error: "Se alcanzó el cupo total disponible para alguno de los horarios." });
-
-    if (msg === "WAITLIST_CLOSED") {
-      return res.status(409).json({
-        error: "La lista de espera para uno de los horarios ya está cerrada por anticipación.",
-      });
-    }
-
-    if (msg.startsWith("NO_CREDITS_FOR_SLOT_")) {
-      const sk = msg.replace("NO_CREDITS_FOR_SLOT_", "");
-      return res.status(403).json({
-        error: `No tenés créditos válidos para reservar uno de esos días/horarios (${sk}).`,
-      });
-    }
-
-    if (msg.startsWith("NO_CREDITS_FOR_")) {
-      const sk = msg.replace("NO_CREDITS_FOR_", "");
-      return res.status(403).json({ error: `No tenés créditos válidos para este servicio (${sk}).` });
-    }
-
-    return res.status(500).json({ error: "Error al reservar el batch." });
+    return res.status(500).json({ error: "No se pudieron reservar los turnos." });
   } finally {
-    session.endSession();
+    await session.endSession();
   }
 });
 
 /* =========================
-   POST /appointments/waitlist/claim
-   Deshabilitado: la asignación desde waitlist ahora es manual
+   GET /appointments/fixed-schedules
 ========================= */
-router.post("/waitlist/claim", async (req, res) => {
-  return res.status(410).json({
-    error:
-      "La confirmación automática desde lista de espera ya no está disponible. La asignación es manual por parte del staff/admin.",
-  });
-});
-
-/* =========================
-   POST /appointments/waitlist/:id/assign-manual
-========================= */
-router.post("/waitlist/:id/assign-manual", async (req, res) => {
-  const session = await mongoose.startSession();
-
+router.get("/fixed-schedules", ensureStaff, async (req, res) => {
   try {
-    const role = String(req.user?.role || "").toLowerCase();
-    if (!["admin", "profesor", "staff"].includes(role)) {
-      return res.status(403).json({
-        error: "Solo staff, profesor o admin pueden asignar manualmente desde la lista de espera.",
-      });
-    }
+    const userId = String(req.query?.userId || "").trim();
 
-    const waitlistId = String(req.params?.id || "").trim();
-    if (!waitlistId) {
-      return res.status(400).json({ error: "Falta id de lista de espera." });
-    }
+    const q = { active: true };
+    if (userId) q.user = userId;
 
-    let payload = null;
+    const list = await FixedSchedule.find(q)
+      .populate("user", "name lastName email")
+      .sort({ createdAt: -1 })
+      .lean();
 
-    await session.withTransaction(async () => {
-      const wl = await WaitlistEntry.findById(waitlistId).session(session);
-      if (!wl) {
-        const e = new Error("WAITLIST_NOT_FOUND");
-        e.http = 404;
-        throw e;
-      }
-
-      if (!ACTIVE_WAITLIST_STATUSES.includes(String(wl.status || ""))) {
-        const e = new Error("WAITLIST_NOT_ACTIVE");
-        e.http = 409;
-        throw e;
-      }
-
-      const ap = await createAppointmentForTargetUser({
-        userId: String(wl.user),
-        actorReq: req,
-        date: wl.date,
-        time: wl.time,
-        service: wl.service || EP_NAME,
-        notes: String(wl.notes || "").trim(),
-        bypassWindow: true,
-      });
-
-      wl.status = "claimed";
-      wl.claimedAt = new Date();
-      wl.claimedBy = req.user?._id || req.user?.id || null;
-      wl.assignedAppointmentId = ap?.id || null;
-      await wl.save({ session });
-
-      payload = {
-        ok: true,
-        waitlistId: String(wl._id),
-        appointment: ap,
-      };
-    });
-
-    return res.status(201).json(payload);
+    return res.json(list || []);
   } catch (err) {
-    console.error("Error en POST /appointments/waitlist/:id/assign-manual:", err);
-    const msg = String(err?.message || "");
-    const http = err?.http || 500;
-
-    if (msg === "WAITLIST_NOT_FOUND") {
-      return res.status(404).json({ error: "Entrada de lista de espera no encontrada." });
-    }
-    if (msg === "WAITLIST_NOT_ACTIVE") {
-      return res.status(409).json({ error: "La entrada de lista de espera ya no está activa." });
-    }
-    if (msg === "USER_NOT_FOUND") {
-      return res.status(404).json({ error: "Usuario no encontrado." });
-    }
-    if (msg === "USER_SUSPENDED") {
-      return res.status(403).json({ error: "Cuenta suspendida." });
-    }
-    if (msg === "APTO_REQUIRED") {
-      return res.status(403).json({ error: "Cuenta suspendida por falta de apto médico." });
-    }
-    if (msg === "NO_CREDITS") {
-      return res.status(403).json({ error: "Sin créditos disponibles." });
-    }
-    if (msg.startsWith("NO_CREDITS_FOR_SLOT_")) {
-      const sk = msg.replace("NO_CREDITS_FOR_SLOT_", "");
-      return res.status(403).json({
-        error: `No tenés créditos válidos para reservar ese día y horario (${sk}).`,
-      });
-    }
-    if (msg.startsWith("NO_CREDITS_FOR_")) {
-      const sk = msg.replace("NO_CREDITS_FOR_", "");
-      return res.status(403).json({ error: `No tenés créditos válidos para este servicio (${sk}).` });
-    }
-    if (msg === "ALREADY_HAVE_SLOT") {
-      return res.status(409).json({ error: "El usuario ya tiene un turno reservado en ese horario." });
-    }
-    if (msg === "TOTAL_CAP_REACHED") {
-      return res.status(409).json({ error: "Se alcanzó el cupo total disponible para este horario." });
-    }
-    if (msg === "SERVICE_CAP_REACHED") {
-      return res.status(409).json({ error: "Ese servicio ya alcanzó su cupo para ese horario." });
-    }
-
-    return res.status(http).json({ error: "No se pudo asignar manualmente desde la lista de espera." });
-  } finally {
-    session.endSession();
+    console.error("Error en GET /appointments/fixed-schedules:", err);
+    return res.status(500).json({ error: "No se pudieron cargar los turnos fijos." });
   }
 });
 
 /* =========================
-   PATCH /appointments/:id/cancel
+   DELETE /appointments/fixed-schedules/:id
 ========================= */
-router.patch("/:id/cancel", async (req, res) => {
-  const session = await mongoose.startSession();
-
-  let mailUser = null;
-  let mailAp = null;
-  let shouldMail = false;
-
+router.delete("/fixed-schedules/:id", ensureStaff, async (req, res) => {
   try {
-    const apId = req.params.id;
-    const role = String(req.user?.role || "").toLowerCase();
-    const isAdmin = role === "admin";
-    const cancelReasonRaw = String(req.body?.reason || "").trim();
-    const cancelReason = cancelReasonRaw.slice(0, 300);
-
-    let payload = null;
-    let activityMeta = null;
-
-    await session.withTransaction(async () => {
-      const ap = await Appointment.findById(apId).session(session);
-      if (!ap) throw new Error("NOT_FOUND");
-      if (String(ap.status) === "cancelled") throw new Error("ALREADY_CANCELLED");
-
-      if (!isAdmin && String(ap.user) !== String(req.user._id || req.user.id)) {
-        const e = new Error("FORBIDDEN");
-        e.http = 403;
-        throw e;
-      }
-
-      const user = await User.findById(ap.user).session(session);
-      if (!user) throw new Error("USER_NOT_FOUND");
-
-      const slotDate = buildSlotDate(ap.date, ap.time);
-      if (!slotDate) throw new Error("INVALID_SLOT_DATE");
-
-      const now = new Date();
-      const diffMs = slotDate.getTime() - now.getTime();
-      const hoursToStart = diffMs / (1000 * 60 * 60);
-
-      const policy = resolveCancellationPolicy({
-        user,
-        appointment: ap,
-        hoursToStart,
-      });
-
-      let effectiveUser = user;
-      let refundInfo = null;
-
-      if (policy.refund) {
-        const historyItem = {
-          action: policy.historyAction,
-          date: ap.date,
-          time: ap.time,
-          service: ap.service,
-          serviceName: ap.service,
-          serviceKey: serviceToKey(ap.service),
-          refundMode: policy.refundMode,
-          refundReason: policy.reason,
-          cancelReason,
-        };
-
-        if (ap.creditLotId) {
-          effectiveUser = await refundCreditAtomicToOriginalLot({
-            userId: user._id,
-            lotId: ap.creditLotId,
-            historyItem,
-            session,
-          });
-
-          refundInfo = {
-            mode: "original-lot",
-            refundMode: policy.refundMode,
-          };
-        } else {
-          const refunded = await refundCreditAtomicNewLot({
-            userId: user._id,
-            apService: ap.service,
-            historyItem,
-            session,
-          });
-
-          effectiveUser = refunded.user;
-          refundInfo = {
-            mode: "new-lot",
-            refundMode: policy.refundMode,
-            serviceKey: refunded.sk,
-            expiresAt: refunded.expiresAt,
-          };
-        }
-      } else {
-        user.history = user.history || [];
-        user.history.push({
-          action: policy.historyAction,
-          date: ap.date,
-          time: ap.time,
-          service: ap.service,
-          serviceName: ap.service,
-          serviceKey: serviceToKey(ap.service),
-          refundMode: "none",
-          refundReason: policy.reason,
-          cancelReason,
-          createdAt: new Date(),
-        });
-        recalcUserCredits(user);
-        await user.save({ session });
-        effectiveUser = user;
-      }
-
-      ap.status = "cancelled";
-      ap.cancelledAt = new Date();
-      ap.cancelledBy = req.user?._id || req.user?.id || null;
-      ap.cancelReason = cancelReason || "";
-      ap.refundApplied = !!policy.refund;
-      ap.refundMode = policy.refundMode;
-      ap.refundReason = policy.reason;
-      await ap.save({ session });
-
-      // La asignación desde lista de espera es manual.
-      // No se envían confirmaciones automáticas ni claims automáticos.
-
-      payload = {
-        ok: true,
-        appointmentId: String(ap._id),
-        refundApplied: !!policy.refund,
-        refundMode: policy.refundMode,
-        refundReason: policy.reason,
-        refundCutoffHours: policy.refundCutoffHours,
-        userCredits: Number(effectiveUser.credits || 0),
-        userCreditLots: serializeUserCreditLots(effectiveUser),
-        refundInfo,
-      };
-
-      activityMeta = {
-        date: ap.date,
-        time: ap.time,
-        serviceName: ap.service,
-        refundApplied: !!policy.refund,
-        refundMode: policy.refundMode,
-        refundReason: policy.reason,
-        cancelReason,
-      };
-
-      mailUser = { ...effectiveUser.toObject(), _id: effectiveUser._id };
-      mailAp = {
-        date: ap.date,
-        time: ap.time,
-        service: ap.service,
-      };
-      shouldMail = true;
-    });
-
-    await logActivity({
-      req,
-      category: "appointments",
-      action: "appointment_cancelled",
-      entity: "appointment",
-      entityId: String(req.params.id),
-      title: "Turno cancelado",
-      description: "Se canceló un turno existente.",
-      subject: buildUserSubject(req.user),
-      meta: activityMeta || {},
-    });
-
-    res.json(payload);
-
-    if (shouldMail && mailUser && mailAp) {
-      fireAndForget(async () => {
-        try {
-          await sendAppointmentCancelledEmail(mailUser, mailAp, {
-            refundApplied: payload?.refundApplied,
-            refundMode: payload?.refundMode,
-            refundReason: payload?.refundReason,
-            refundCutoffHours: payload?.refundCutoffHours,
-          });
-        } catch (e) {
-          console.log("[MAIL] cancelled error:", e?.message || e);
-          await sendAdminCopy({ kind: "cancelled", user: mailUser, ap: mailAp });
-        }
-      }, "MAIL_CANCELLED");
+    const fixed = await FixedSchedule.findById(req.params.id);
+    if (!fixed) {
+      return res.status(404).json({ error: "Turno fijo no encontrado." });
     }
+
+    fixed.active = false;
+    fixed.closedAt = new Date();
+    fixed.closedBy = req.user?._id || req.user?.id || null;
+    await fixed.save();
+
+    return res.json({ ok: true });
   } catch (err) {
-    console.error("Error en PATCH /appointments/:id/cancel:", err);
-    const msg = String(err?.message || "");
-    const http = err?.http || 500;
+    console.error("Error en DELETE /appointments/fixed-schedules/:id:", err);
+    return res.status(500).json({ error: "No se pudo desactivar el turno fijo." });
+  }
+});
 
-    if (msg === "NOT_FOUND") return res.status(404).json({ error: "Turno no encontrado." });
-    if (msg === "ALREADY_CANCELLED") return res.status(409).json({ error: "El turno ya estaba cancelado." });
-    if (msg === "FORBIDDEN") return res.status(403).json({ error: "No autorizado para cancelar este turno." });
-    if (msg === "USER_NOT_FOUND") return res.status(404).json({ error: "Usuario no encontrado." });
-    if (msg === "INVALID_SLOT_DATE") return res.status(500).json({ error: "Fecha/hora inválida en el turno." });
-    if (msg === "REFUND_FAILED") {
-      return res.status(409).json({ error: "No se pudo reintegrar la sesión al lote original." });
-    }
+/* =========================
+   GET /appointments/debug/credits
+========================= */
+router.get("/debug/credits", async (req, res) => {
+  try {
+    const user = await User.findById(req.user._id || req.user.id).lean();
+    if (!user) return res.status(404).json({ error: "Usuario no encontrado." });
 
-    return res.status(http).json({ error: "No se pudo cancelar el turno." });
-  } finally {
-    session.endSession();
+    return res.json({
+      credits: Number(user.credits || 0),
+      lots: lotsDebug(user),
+    });
+  } catch (err) {
+    console.error("Error en GET /appointments/debug/credits:", err);
+    return res.status(500).json({ error: "No se pudo obtener debug de créditos." });
   }
 });
 

@@ -10,7 +10,6 @@ import {
   fireAndForget,
   sendAdminNewOrderEmail,
   sendUserOrderCashCreatedEmail,
-  // ✅ NUEVO: mails cuando se marca pagado
   sendAdminOrderPaidEmail,
   sendUserOrderPaidEmail,
 } from "../mail.js";
@@ -18,11 +17,8 @@ import { logActivity, buildUserSubject } from "../lib/activityLogger.js";
 
 const router = express.Router();
 
-// ✅ DUO+ mensual (server authority)
 const PLUS_PRICE = Number(process.env.PLUS_PRICE || 20000);
 const PLUS_DISCOUNT_PCT = 15;
-
-// ✅ VENCIMIENTO DE CRÉDITOS: 30 días SI O SI
 const CREDITS_EXPIRE_DAYS = 30;
 
 /* =======================
@@ -49,8 +45,6 @@ function ensureBasicIfExpired(user) {
     user.membership.activeUntil = null;
     user.membership.cancelHours = 24;
     user.membership.cancelsLeft = 1;
-
-    // ✅ SI O SI 30
     user.membership.creditsExpireDays = CREDITS_EXPIRE_DAYS;
   }
 
@@ -58,13 +52,10 @@ function ensureBasicIfExpired(user) {
     user.membership.tier = "basic";
     user.membership.cancelHours = 24;
     user.membership.cancelsLeft = 1;
-
-    // ✅ SI O SI 30
     user.membership.creditsExpireDays = CREDITS_EXPIRE_DAYS;
   }
 }
 
-// ✅ suma 30 días sobre activeUntil si todavía está activo, sino sobre hoy
 function addPlusMonths(user, months = 1) {
   const now = new Date();
   user.membership = user.membership || {};
@@ -79,12 +70,8 @@ function addPlusMonths(user, months = 1) {
 
   user.membership.tier = "plus";
   user.membership.activeUntil = until;
-
-  // ✅ reglas Plus (se mantienen)
   user.membership.cancelHours = 12;
   user.membership.cancelsLeft = 2;
-
-  // ✅ PERO vencimientos SI O SI 30 (no 40)
   user.membership.creditsExpireDays = CREDITS_EXPIRE_DAYS;
 }
 
@@ -107,7 +94,6 @@ function addCreditLot(user, { amount, source, orderId, serviceKey }) {
   const now = new Date();
   ensureBasicIfExpired(user);
 
-  // ✅ SI O SI 30 (aunque sea Plus)
   const expireDays = CREDITS_EXPIRE_DAYS;
 
   const exp = new Date(now);
@@ -144,8 +130,9 @@ function safeServiceFromOrder(order) {
       .map((it) => String(it?.kind || "").toUpperCase())
       .filter(Boolean);
 
-    if (kinds.includes("MEMBERSHIP") && kinds.includes("CREDITS"))
+    if (kinds.includes("MEMBERSHIP") && kinds.includes("CREDITS")) {
       return "MEMBERSHIP+CREDITS";
+    }
     if (kinds.includes("MEMBERSHIP")) return "MEMBERSHIP";
 
     if (kinds.includes("CREDITS")) {
@@ -158,15 +145,16 @@ function safeServiceFromOrder(order) {
       if (uniq.length > 1) return uniq.join("+");
       return "CREDITS";
     }
+
     return "ITEMS";
   }
 
   return String(order?.serviceKey || "ORDER").toUpperCase().trim() || "ORDER";
 }
 
-
 function prettyServiceNameFromKey(sk) {
   const up = String(sk || "").toUpperCase().trim();
+  if (up === "PE") return "Primera evaluación presencial";
   if (up === "EP") return "Entrenamiento Personal";
   if (up === "RA") return "Rehabilitación Activa";
   if (up === "RF") return "Reeducación Funcional";
@@ -243,13 +231,11 @@ function buildOrderHistoryTitle(order) {
   return "Realizó una orden.";
 }
 
-
 /* =======================
-   ✅ Notificar admin (idempotente)
+   Notificar admin
 ======================= */
 async function notifyAdminIfNeeded(order) {
-  if (!order) return;
-  if (order.adminNotifiedAt) return;
+  if (!order || order.adminNotifiedAt) return;
 
   try {
     const u = await User.findById(order.user).lean().catch(() => null);
@@ -262,12 +248,10 @@ async function notifyAdminIfNeeded(order) {
 }
 
 /* =======================
-   ✅ NUEVO: Notificar pago (idempotente)
+   Notificar pago
 ======================= */
 async function notifyOrderPaidIfNeeded(order) {
-  if (!order) return;
-
-  if (order.userPaidNotifiedAt) return;
+  if (!order || order.userPaidNotifiedAt) return;
 
   try {
     const u = await User.findById(order.user).lean().catch(() => null);
@@ -283,7 +267,7 @@ async function notifyOrderPaidIfNeeded(order) {
 }
 
 /* =======================
-   Aplicar créditos SOLO (idempotente)
+   Aplicar créditos SOLO
 ======================= */
 async function applyCreditsOnlyIfNeeded(order) {
   if (!order) return { ok: false, error: "Orden inválida." };
@@ -338,7 +322,7 @@ async function applyCreditsOnlyIfNeeded(order) {
 }
 
 /* =======================
-   Aplicar una orden completa (idempotente)
+   Aplicar una orden completa
 ======================= */
 async function applyOrderIfNeeded(order) {
   if (!order) return { ok: false, error: "Orden inválida." };
@@ -352,7 +336,6 @@ async function applyOrderIfNeeded(order) {
 
   const hasItems = Array.isArray(order.items) && order.items.length > 0;
 
-  // 1) membership primero
   if (hasItems) {
     const membershipItems = order.items.filter(
       (it) => String(it.kind || "").toUpperCase() === "MEMBERSHIP"
@@ -363,9 +346,7 @@ async function applyOrderIfNeeded(order) {
 
       for (const it of membershipItems) {
         const qty = Math.max(1, Number(it.qty) || 1);
-        const action = String(it.action || "BUY").toUpperCase();
-        if (action === "EXTEND") monthsToAdd += qty;
-        else monthsToAdd += qty;
+        monthsToAdd += qty;
       }
 
       if (monthsToAdd > 0) addPlusMonths(user, monthsToAdd);
@@ -377,7 +358,6 @@ async function applyOrderIfNeeded(order) {
     else ensureBasicIfExpired(user);
   }
 
-  // 2) créditos (solo si todavía NO fueron aplicados)
   if (!order.creditsApplied) {
     if (hasItems) {
       for (const it of order.items) {
@@ -580,7 +560,6 @@ router.post("/checkout", protect, async (req, res) => {
 
     const total = items.reduce((acc, x) => acc + Number(x.price || 0), 0);
 
-    // ✅ DESCUENTO: SOLO SHOP (hoy no existe => 0)
     const shopSubtotal = items
       .filter((x) => String(x.kind || "").toUpperCase() === "SHOP")
       .reduce((acc, x) => acc + Number(x.price || 0), 0);
@@ -631,7 +610,11 @@ router.post("/checkout", protect, async (req, res) => {
       title: "Orden generada",
       description: "Se generó una nueva orden desde checkout.",
       subject: buildUserSubject(req.user),
-      meta: { total: Number(order.totalFinal || order.total || 0), payMethod: order.payMethod, status: order.status },
+      meta: {
+        total: Number(order.totalFinal || order.total || 0),
+        payMethod: order.payMethod,
+        status: order.status,
+      },
     });
 
     if (pm === "CASH") {
@@ -690,9 +673,12 @@ router.post("/", protect, async (req, res) => {
     const cr = Number(credits);
     const wantsPlus = Boolean(plus);
 
-    if (!sk || !pm || !cr) return res.status(400).json({ error: "Datos incompletos." });
-    if (!["CASH", "MP"].includes(pm))
+    if (!sk || !pm || !cr) {
+      return res.status(400).json({ error: "Datos incompletos." });
+    }
+    if (!["CASH", "MP"].includes(pm)) {
       return res.status(400).json({ error: "Medio de pago inválido." });
+    }
 
     const plan = await PricingPlan.findOne({
       serviceKey: sk,
@@ -746,7 +732,11 @@ router.post("/", protect, async (req, res) => {
       title: "Orden generada",
       description: "Se creó una orden manual/tradicional.",
       subject: buildUserSubject(req.user),
-      meta: { total: Number(order.totalFinal || order.total || order.price || 0), payMethod: order.payMethod, status: order.status },
+      meta: {
+        total: Number(order.totalFinal || order.total || order.price || 0),
+        payMethod: order.payMethod,
+        status: order.status,
+      },
     });
 
     if (pm === "CASH") {
@@ -783,7 +773,6 @@ router.post("/", protect, async (req, res) => {
   }
 });
 
-// GET /orders/me
 router.get("/me", protect, async (req, res) => {
   const list = await Order.find({ user: req.user._id }).sort({ createdAt: -1 }).lean();
   res.json(list);
@@ -793,7 +782,6 @@ router.get("/me", protect, async (req, res) => {
    ADMIN
 ======================= */
 router.get("/", protect, adminOnly, async (req, res) => {
-  // ✅ AHORA trae nombre completo también (name + lastName + fullName si existe)
   const list = await Order.find()
     .populate("user", "name lastName fullName email")
     .sort({ createdAt: -1 })
@@ -802,7 +790,6 @@ router.get("/", protect, adminOnly, async (req, res) => {
   res.json(list);
 });
 
-// ✅ PATCH /orders/:id/enable-credits (solo CASH, mantiene pending)
 router.patch("/:id/enable-credits", protect, adminOnly, async (req, res) => {
   try {
     const { id } = req.params;
@@ -827,8 +814,9 @@ router.patch("/:id/enable-credits", protect, adminOnly, async (req, res) => {
     }
 
     const r = await applyCreditsOnlyIfNeeded(order);
-    if (!r.ok)
+    if (!r.ok) {
       return res.status(500).json({ error: r.error || "No se pudo habilitar créditos." });
+    }
 
     await logActivity({
       req,
@@ -852,7 +840,6 @@ router.patch("/:id/enable-credits", protect, adminOnly, async (req, res) => {
   }
 });
 
-// ✅ PATCH /orders/:id/mark-paid (solo CASH)
 router.patch("/:id/mark-paid", protect, adminOnly, async (req, res) => {
   try {
     const { id } = req.params;
@@ -911,7 +898,10 @@ router.patch("/:id/mark-paid", protect, adminOnly, async (req, res) => {
       title: "Orden marcada como pagada",
       description: "Un admin marcó manualmente una orden como pagada.",
       subject: buildUserSubject(req.user),
-      meta: { total: Number(order.totalFinal || order.total || 0), wasAlreadyPaid: wasPaid },
+      meta: {
+        total: Number(order.totalFinal || order.total || 0),
+        wasAlreadyPaid: wasPaid,
+      },
     });
 
     return res.json({ ok: true });
@@ -924,9 +914,6 @@ router.patch("/:id/mark-paid", protect, adminOnly, async (req, res) => {
   }
 });
 
-/* =========================================================
-   DELETE /orders/:id  (ADMIN) — BORRAR VENTA
-========================================================= */
 router.delete("/:id", protect, adminOnly, async (req, res) => {
   try {
     const { id } = req.params;
@@ -964,7 +951,9 @@ router.delete("/:id", protect, adminOnly, async (req, res) => {
       entity: "order",
       entityId: order._id,
       title: "Orden eliminada",
-      description: impacted ? "Se eliminó una orden que ya había impactado créditos/sesiones." : "Se eliminó una orden.",
+      description: impacted
+        ? "Se eliminó una orden que ya había impactado créditos/sesiones."
+        : "Se eliminó una orden.",
       subject: buildUserSubject(req.user),
       meta: { impacted, total: Number(order.totalFinal || order.total || 0) },
       deletedSnapshot: order.toObject(),

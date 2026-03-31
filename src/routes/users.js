@@ -12,7 +12,7 @@ import { protect, adminOnly, adminOrProfessor } from "../middleware/auth.js";
 
 import multer from "multer";
 
-// ✅ MAIL
+// MAIL
 import {
   fireAndForget,
   sendUserApprovedEmail,
@@ -30,7 +30,7 @@ import {
 const router = express.Router();
 
 /* ============================================
-   ✅ CONFIG GLOBAL: VENCIMIENTO CRÉDITOS
+   CONFIG GLOBAL: VENCIMIENTO CRÉDITOS
 ============================================ */
 const CREDITS_EXPIRE_DAYS = 30;
 
@@ -40,8 +40,6 @@ const CREDITS_EXPIRE_DAYS = 30;
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-// ✅ uploads root: backend/uploads
-// backend/src/routes  -> backend/src -> backend/uploads
 const uploadRoot = path.join(__dirname, "..", "..", "uploads");
 const aptosDir = path.join(uploadRoot, "aptos");
 
@@ -56,9 +54,6 @@ function safeUnlink(absPath) {
   }
 }
 
-/**
- * ✅ Convierte un publicPath a una ruta absoluta real dentro de backend/uploads
- */
 function absFromPublicUploadsPath(publicPath) {
   const raw = String(publicPath || "").trim();
   if (!raw) return "";
@@ -82,7 +77,7 @@ function absFromPublicUploadsPath(publicPath) {
 }
 
 /* ============================================
-   ✅ VALIDACIÓN ID
+   VALIDACIÓN ID
 ============================================ */
 function validateObjectIdParam(req, res, next) {
   const { id } = req.params;
@@ -99,6 +94,9 @@ function prettyServiceName(value) {
     .toLowerCase()
     .trim();
 
+  if (s.includes("primera") && s.includes("evaluacion")) {
+    return "Primera evaluación presencial";
+  }
   if (s.includes("entrenamiento") && s.includes("personal")) {
     return "Entrenamiento Personal";
   }
@@ -113,6 +111,7 @@ function prettyServiceName(value) {
   }
 
   const up = String(value || "").toUpperCase().trim();
+  if (up === "PE") return "Primera evaluación presencial";
   if (up === "EP") return "Entrenamiento Personal";
   if (up === "RA") return "Rehabilitación Activa";
   if (up === "RF") return "Reeducación Funcional";
@@ -317,9 +316,10 @@ function normalizeLotServiceKey(lot) {
   return sk || "EP";
 }
 
-const ALLOWED_SERVICE_KEYS = new Set(["EP", "RF", "RA", "NUT"]);
+const ALLOWED_SERVICE_KEYS = new Set(["PE", "EP", "RF", "RA", "NUT"]);
 
 const SERVICE_KEY_TO_NAME = {
+  PE: "Primera evaluación presencial",
   EP: "Entrenamiento Personal",
   RF: "Reeducacion Funcional",
   RA: "Rehabilitacion Activa",
@@ -329,7 +329,7 @@ const SERVICE_KEY_TO_NAME = {
 function computeServiceAccessFromLots(u) {
   const now = new Date();
   const lots = Array.isArray(u?.creditLots) ? u.creditLots : [];
-  const byKey = { EP: 0, RF: 0, RA: 0, NUT: 0 };
+  const byKey = { PE: 0, EP: 0, RF: 0, RA: 0, NUT: 0 };
 
   for (const lot of lots) {
     const remaining = Number(lot?.remaining || 0);
@@ -342,13 +342,24 @@ function computeServiceAccessFromLots(u) {
     if (byKey[sk] !== undefined) byKey[sk] += remaining;
   }
 
+  if (!u?.firstEvaluationCompleted) {
+    const peCredits = Number(byKey.PE || 0);
+
+    return {
+      allowedServices: peCredits > 0 ? ["Primera evaluación presencial"] : [],
+      serviceCredits:
+        peCredits > 0 ? { "Primera evaluación presencial": peCredits } : {},
+    };
+  }
+
   const allowedServices = Object.entries(byKey)
-    .filter(([, v]) => v > 0)
+    .filter(([k, v]) => k !== "PE" && v > 0)
     .map(([k]) => SERVICE_KEY_TO_NAME[k])
     .filter(Boolean);
 
   const serviceCredits = {};
   for (const [k, v] of Object.entries(byKey)) {
+    if (k === "PE") continue;
     if (v > 0) serviceCredits[SERVICE_KEY_TO_NAME[k]] = v;
   }
 
@@ -429,6 +440,7 @@ function addCreditLot(
 
 function buildCreditsByService(user) {
   return {
+    PE: sumCreditsForService(user, "PE"),
     EP: sumCreditsForService(user, "EP"),
     RF: sumCreditsForService(user, "RF"),
     RA: sumCreditsForService(user, "RA"),
@@ -461,13 +473,14 @@ function decorateUserForResponse(rawUser, { includeClinicalNotes = true } = {}) 
   const safe = stripSensitive(u);
 
   if (!includeClinicalNotes) {
-    // eslint-disable-next-line no-unused-vars
     const { clinicalNotes, ...withoutClinical } = safe;
     return {
       ...withoutClinical,
       ...svc,
       membership,
       creditsByService,
+      firstEvaluationCompleted: !!u.firstEvaluationCompleted,
+      firstEvaluationCompletedAt: u.firstEvaluationCompletedAt || null,
     };
   }
 
@@ -476,6 +489,8 @@ function decorateUserForResponse(rawUser, { includeClinicalNotes = true } = {}) 
     ...svc,
     membership,
     creditsByService,
+    firstEvaluationCompleted: !!u.firstEvaluationCompleted,
+    firstEvaluationCompletedAt: u.firstEvaluationCompletedAt || null,
   };
 }
 
@@ -549,8 +564,9 @@ function queueCreditsEmails({ req, updatedUser, items }) {
     }
   }, "USER_CREDITS_MAIL");
 }
+
 /* ============================================
-   ✅ HELPERS: PLAN MENSUAL
+   HELPERS: PLAN MENSUAL
 ============================================ */
 function createDefaultMonthlyPlan() {
   const makeWeek = (weekNumber) => ({
@@ -718,12 +734,12 @@ function ensureMonthlyPlan(user) {
 }
 
 /* ============================================
-   ✅ TODAS LAS RUTAS REQUIEREN LOGIN
+   TODAS LAS RUTAS REQUIEREN LOGIN
 ============================================ */
 router.use(protect);
 
 /* ============================================
-   ✅ TEST SMTP
+   TEST SMTP
 ============================================ */
 router.post("/test-mail", adminOnly, async (req, res) => {
   try {
@@ -791,7 +807,7 @@ router.post("/test-mail", adminOnly, async (req, res) => {
 });
 
 /* ============================================
-   ✅ ADMIN - REGISTRACIONES
+   ADMIN - REGISTRACIONES
 ============================================ */
 router.get("/registrations/list", adminOnly, async (req, res) => {
   try {
@@ -864,6 +880,8 @@ router.post("/", adminOnly, async (req, res) => {
       aptoPath: "",
       aptoStatus: "",
       welcomeApprovedEmailSentAt: new Date(),
+      firstEvaluationCompleted: false,
+      firstEvaluationCompletedAt: null,
     });
 
     const initialCredits = Number(credits ?? 0);
@@ -1359,7 +1377,7 @@ router.post(
 );
 
 /* ============================================
-   ✅ CRÉDITOS
+   CRÉDITOS
 ============================================ */
 async function updateCredits(req, res) {
   try {
@@ -1567,7 +1585,7 @@ router.patch("/:id/suspend", adminOnly, validateObjectIdParam, async (req, res) 
 });
 
 /* ============================================
-   ✅ APTO
+   APTO
 ============================================ */
 router.post("/:id/apto", validateObjectIdParam, uploadAptoSingle, async (req, res) => {
   try {
@@ -1679,7 +1697,7 @@ router.delete("/:id/apto", validateObjectIdParam, async (req, res) => {
 });
 
 /* ============================================
-   ✅ FOTO (AVATAR)
+   FOTO (AVATAR)
 ============================================ */
 router.post("/:id/photo", validateObjectIdParam, avatarUploadSingle, async (req, res) => {
   try {
@@ -1717,8 +1735,9 @@ router.post("/:id/photo", validateObjectIdParam, avatarUploadSingle, async (req,
     });
   }
 });
+
 /* ============================================
-   ✅ PLAN MENSUAL
+   PLAN MENSUAL
 ============================================ */
 router.get(
   "/:id/monthly-plan",

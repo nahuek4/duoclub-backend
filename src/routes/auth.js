@@ -42,7 +42,6 @@ function normPhone(v) {
     .replace(/[^\d+\s()-]/g, "");
 }
 
-// ✅ base URL del backend para armar links de aprobar/rechazar
 function getBackendBase(req) {
   const env = String(process.env.BACKEND_URL || "").trim();
   if (env) return env.replace(/\/+$/, "");
@@ -61,23 +60,24 @@ function getBackendBase(req) {
 }
 
 /* ============================================
-   ✅ Servicios disponibles (UI) desde creditLots
+   SERVICIOS DISPONIBLES (UI) DESDE creditLots
 ============================================ */
 
 const SERVICE_KEY_TO_NAME = {
+  PE: "Primera evaluación presencial",
   EP: "Entrenamiento Personal",
   RF: "Reeducacion Funcional",
   RA: "Rehabilitacion Activa",
   NUT: "Nutricion",
 };
 
-const SERVICE_KEYS = ["EP", "RF", "RA", "NUT"];
+const SERVICE_KEYS = ["PE", "EP", "RF", "RA", "NUT"];
 
 function computeServiceAccessFromLots(u) {
   const now = new Date();
   const lots = Array.isArray(u?.creditLots) ? u.creditLots : [];
 
-  const byKey = { EP: 0, RF: 0, RA: 0, NUT: 0 };
+  const byKey = { PE: 0, EP: 0, RF: 0, RA: 0, NUT: 0 };
 
   for (const lot of lots) {
     const remaining = Number(lot?.remaining || 0);
@@ -90,24 +90,40 @@ function computeServiceAccessFromLots(u) {
     if (byKey[sk] !== undefined) byKey[sk] += remaining;
   }
 
+  const creditsByServiceKey = { PE: 0, EP: 0, RF: 0, RA: 0, NUT: 0 };
+  for (const k of SERVICE_KEYS) creditsByServiceKey[k] = Number(byKey[k] || 0);
+
+  if (!u?.firstEvaluationCompleted) {
+    const peCredits = Number(byKey.PE || 0);
+
+    return {
+      allowedServices: peCredits > 0 ? ["Primera evaluación presencial"] : [],
+      serviceCredits:
+        peCredits > 0 ? { "Primera evaluación presencial": peCredits } : {},
+      creditsByServiceKey: {
+        PE: peCredits,
+        EP: 0,
+        RF: 0,
+        RA: 0,
+        NUT: 0,
+      },
+    };
+  }
+
   const allowedServices = Object.entries(byKey)
-    .filter(([, v]) => v > 0)
+    .filter(([k, v]) => k !== "PE" && v > 0)
     .map(([k]) => SERVICE_KEY_TO_NAME[k])
     .filter(Boolean);
 
   const serviceCredits = {};
   for (const [k, v] of Object.entries(byKey)) {
+    if (k === "PE") continue;
     if (v > 0) serviceCredits[SERVICE_KEY_TO_NAME[k]] = v;
   }
-
-  // ✅ útil para UI / debug (por serviceKey)
-  const creditsByServiceKey = { EP: 0, RF: 0, RA: 0, NUT: 0 };
-  for (const k of SERVICE_KEYS) creditsByServiceKey[k] = Number(byKey[k] || 0);
 
   return { allowedServices, serviceCredits, creditsByServiceKey };
 }
 
-// ✅ recalcular cache credits desde lots (evita desync)
 function recalcCreditsCache(u) {
   const now = new Date();
   const lots = Array.isArray(u?.creditLots) ? u.creditLots : [];
@@ -120,7 +136,7 @@ function recalcCreditsCache(u) {
 }
 
 /* ============================================
-   ✅ Membership helpers
+   MEMBERSHIP HELPERS
 ============================================ */
 
 function isPlusActive(u) {
@@ -138,14 +154,76 @@ function clamp(n, min, max) {
 }
 
 /* ============================================
+   HELPERS PRIMERA EVALUACIÓN / COMPLETADO AUTO
+============================================ */
+
+function stripAccents(s) {
+  return String(s || "")
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "");
+}
+
+function isFirstEvaluationService(service = "") {
+  const s = stripAccents(service).toLowerCase().trim();
+  return s === "pe" || (s.includes("primera") && s.includes("evaluacion"));
+}
+
+function buildSlotDate(dateStr, timeStr) {
+  if (!dateStr || !timeStr) return null;
+  const [y, m, d] = String(dateStr).split("-").map(Number);
+  const [hh, mm] = String(timeStr).split(":").map(Number);
+  if (!y || !m || !d) return null;
+  return new Date(y, m - 1, d, hh || 0, mm || 0, 0, 0);
+}
+
+async function syncPastAppointmentsForUser(user) {
+  if (!user?._id) return user;
+
+  const now = new Date();
+
+  const pendingPast = await Appointment.find({
+    user: user._id,
+    status: "reserved",
+  });
+
+  let changed = false;
+  let completedFirstEvaluation = false;
+
+  for (const ap of pendingPast) {
+    const slot = buildSlotDate(ap.date, ap.time);
+    if (!slot) continue;
+    if (slot.getTime() > now.getTime()) continue;
+
+    ap.status = "completed";
+    ap.completedAt = now;
+    await ap.save();
+    changed = true;
+
+    if (isFirstEvaluationService(ap.service)) {
+      completedFirstEvaluation = true;
+    }
+  }
+
+  if (completedFirstEvaluation && !user.firstEvaluationCompleted) {
+    user.firstEvaluationCompleted = true;
+    user.firstEvaluationCompletedAt = user.firstEvaluationCompletedAt || now;
+    changed = true;
+  }
+
+  if (changed) {
+    await user.save();
+  }
+
+  return user;
+}
+
+/* ============================================
    serializeUser
-   ✅ IMPORTANTE: ahora incluye creditLots
 ============================================ */
 
 function serializeUser(u) {
   if (!u) return null;
 
-  // ✅ mantener credits coherente
   recalcCreditsCache(u);
 
   const m = u.membership || {};
@@ -158,17 +236,18 @@ function serializeUser(u) {
     .toLowerCase()
     .trim();
 
-  // ✅ sanitizar creditLots para UI (solo campos útiles)
-  const creditLotsSafe = (Array.isArray(u.creditLots) ? u.creditLots : []).map((lot) => ({
-    _id: lot?._id?.toString?.() || String(lot?._id || ""),
-    serviceKey: String(lot?.serviceKey || "EP").toUpperCase().trim(),
-    amount: Number(lot?.amount || 0),
-    remaining: Number(lot?.remaining || 0),
-    expiresAt: lot?.expiresAt || null,
-    source: String(lot?.source || ""),
-    orderId: lot?.orderId || null,
-    createdAt: lot?.createdAt || null,
-  }));
+  const creditLotsSafe = (Array.isArray(u.creditLots) ? u.creditLots : []).map(
+    (lot) => ({
+      _id: lot?._id?.toString?.() || String(lot?._id || ""),
+      serviceKey: String(lot?.serviceKey || "EP").toUpperCase().trim(),
+      amount: Number(lot?.amount || 0),
+      remaining: Number(lot?.remaining || 0),
+      expiresAt: lot?.expiresAt || null,
+      source: String(lot?.source || ""),
+      orderId: lot?.orderId || null,
+      createdAt: lot?.createdAt || null,
+    })
+  );
 
   return {
     id: u._id.toString(),
@@ -184,7 +263,6 @@ function serializeUser(u) {
     suspended: !!u.suspended,
     mustChangePassword: !!u.mustChangePassword,
 
-    // ✅ apto / foto
     aptoStatus: u.aptoStatus || "",
     aptoPath: u.aptoPath || "",
     photoPath: u.photoPath || "",
@@ -193,10 +271,8 @@ function serializeUser(u) {
     approvalStatus: u.approvalStatus || "pending",
     createdAt: u.createdAt || null,
 
-    // ✅ LO QUE USA EL FRONT PARA HABILITAR SERVICIOS
     creditLots: creditLotsSafe,
 
-    // ✅ conveniencia para UI
     allowedServices: svc.allowedServices,
     serviceCredits: svc.serviceCredits,
     creditsByServiceKey: svc.creditsByServiceKey,
@@ -204,8 +280,15 @@ function serializeUser(u) {
     membership: {
       tier: tierNorm || "basic",
       activeUntil: m.activeUntil || null,
-      creditsExpireDays: clamp(m.creditsExpireDays ?? creditsExpireDaysDefault, 1, 999),
+      creditsExpireDays: clamp(
+        m.creditsExpireDays ?? creditsExpireDaysDefault,
+        1,
+        999
+      ),
     },
+
+    firstEvaluationCompleted: !!u.firstEvaluationCompleted,
+    firstEvaluationCompletedAt: u.firstEvaluationCompletedAt || null,
   };
 }
 
@@ -216,33 +299,53 @@ router.post("/login", async (req, res) => {
   try {
     const { email, password } = req.body || {};
     if (!email || !password) {
-      return res.status(400).json({ error: "Email y password son obligatorios." });
+      return res
+        .status(400)
+        .json({ error: "Email y password son obligatorios." });
     }
 
     const user = await User.findOne({ email: String(email).toLowerCase() });
-    if (!user) return res.status(401).json({ error: "Email o contraseña incorrectos." });
+    if (!user) {
+      return res
+        .status(401)
+        .json({ error: "Email o contraseña incorrectos." });
+    }
 
     if (String(user.role || "").toLowerCase() === "guest") {
-      return res.status(403).json({ error: "Usuario invitado. Acceso no permitido." });
+      return res
+        .status(403)
+        .json({ error: "Usuario invitado. Acceso no permitido." });
     }
 
     const match = await bcrypt.compare(password, user.password);
-    if (!match) return res.status(401).json({ error: "Email o contraseña incorrectos." });
+    if (!match) {
+      return res
+        .status(401)
+        .json({ error: "Email o contraseña incorrectos." });
+    }
 
     if (!user.emailVerified) {
-      return res.status(403).json({ error: "Tenés que verificar tu email antes de iniciar sesión." });
+      return res.status(403).json({
+        error: "Tenés que verificar tu email antes de iniciar sesión.",
+      });
     }
 
     if (user.approvalStatus === "pending") {
-      return res.status(403).json({ error: "Tu cuenta está pendiente de aprobación por el administrador." });
+      return res.status(403).json({
+        error: "Tu cuenta está pendiente de aprobación por el administrador.",
+      });
     }
 
     if (user.approvalStatus === "rejected") {
-      return res.status(403).json({ error: "Tu cuenta fue rechazada. Contactá al administrador." });
+      return res.status(403).json({
+        error: "Tu cuenta fue rechazada. Contactá al administrador.",
+      });
     }
 
     if (user.suspended) {
-      return res.status(403).json({ error: "Cuenta suspendida. Contactá al administrador." });
+      return res
+        .status(403)
+        .json({ error: "Cuenta suspendida. Contactá al administrador." });
     }
 
     const token = signToken(user);
@@ -267,16 +370,23 @@ router.post("/register", async (req, res) => {
 
     if (!n || !ln || !ph || !em || !password) {
       return res.status(400).json({
-        error: "Nombre, apellido, teléfono, email y contraseña son obligatorios.",
+        error:
+          "Nombre, apellido, teléfono, email y contraseña son obligatorios.",
       });
     }
 
     if (String(password).length < 8) {
-      return res.status(400).json({ error: "La contraseña debe tener al menos 8 caracteres." });
+      return res.status(400).json({
+        error: "La contraseña debe tener al menos 8 caracteres.",
+      });
     }
 
     const exists = await User.findOne({ email: em });
-    if (exists) return res.status(409).json({ error: "Ya existe una cuenta con ese email." });
+    if (exists) {
+      return res
+        .status(409)
+        .json({ error: "Ya existe una cuenta con ese email." });
+    }
 
     const hashedPass = await bcrypt.hash(password, 10);
 
@@ -303,6 +413,9 @@ router.post("/register", async (req, res) => {
 
       emailVerificationToken: tokenHash,
       emailVerificationExpires: new Date(Date.now() + 24 * 60 * 60 * 1000),
+
+      firstEvaluationCompleted: false,
+      firstEvaluationCompletedAt: null,
     });
 
     const frontend = process.env.FRONTEND_URL || "https://duoclub.ar";
@@ -310,7 +423,10 @@ router.post("/register", async (req, res) => {
 
     await sendVerifyEmail(user, verifyUrl);
 
-    fireAndForget(() => sendUserRegistrationReceivedEmail(user), "MAIL_REGISTER_RECEIVED");
+    fireAndForget(
+      () => sendUserRegistrationReceivedEmail(user),
+      "MAIL_REGISTER_RECEIVED"
+    );
 
     const backendBase = getBackendBase(req);
     const secret = process.env.JWT_SECRET || "dev_secret";
@@ -327,8 +443,12 @@ router.post("/register", async (req, res) => {
       { expiresIn: "14d" }
     );
 
-    const approveUrl = `${backendBase}/auth/admin-approval?t=${encodeURIComponent(approveToken)}`;
-    const rejectUrl = `${backendBase}/auth/admin-approval?t=${encodeURIComponent(rejectToken)}`;
+    const approveUrl = `${backendBase}/auth/admin-approval?t=${encodeURIComponent(
+      approveToken
+    )}`;
+    const rejectUrl = `${backendBase}/auth/admin-approval?t=${encodeURIComponent(
+      rejectToken
+    )}`;
 
     fireAndForget(
       () => sendAdminNewRegistrationEmail({ user, approveUrl, rejectUrl }),
@@ -337,12 +457,15 @@ router.post("/register", async (req, res) => {
 
     return res.status(201).json({
       ok: true,
-      message: "Registro exitoso. Te enviamos un email para verificar tu cuenta.",
+      message:
+        "Registro exitoso. Te enviamos un email para verificar tu cuenta.",
     });
   } catch (err) {
     console.error("Error en /auth/register:", err);
     if (err?.code === 11000 && err?.keyPattern?.email) {
-      return res.status(409).json({ error: "Ya existe una cuenta con ese email." });
+      return res
+        .status(409)
+        .json({ error: "Ya existe una cuenta con ese email." });
     }
     return res.status(500).json({ error: "Error al registrarse." });
   }
@@ -356,21 +479,33 @@ router.post("/force-change-password", protect, async (req, res) => {
     const { newPassword } = req.body || {};
     const np = String(newPassword || "").trim();
 
-    if (!np) return res.status(400).json({ error: "Ingresá una contraseña nueva." });
+    if (!np) {
+      return res
+        .status(400)
+        .json({ error: "Ingresá una contraseña nueva." });
+    }
     if (np.length < 8) {
-      return res.status(400).json({ error: "La contraseña debe tener al menos 8 caracteres." });
+      return res.status(400).json({
+        error: "La contraseña debe tener al menos 8 caracteres.",
+      });
     }
 
     const user = await User.findById(req.user._id);
-    if (!user) return res.status(404).json({ error: "Usuario no encontrado." });
+    if (!user) {
+      return res.status(404).json({ error: "Usuario no encontrado." });
+    }
 
     if (String(user.role || "").toLowerCase() === "guest") {
-      return res.status(403).json({ error: "Acción no permitida para invitados." });
+      return res
+        .status(403)
+        .json({ error: "Acción no permitida para invitados." });
     }
 
     const same = await bcrypt.compare(np, user.password || "");
     if (same) {
-      return res.status(400).json({ error: "La nueva contraseña no puede ser igual a la actual." });
+      return res.status(400).json({
+        error: "La nueva contraseña no puede ser igual a la actual.",
+      });
     }
 
     user.password = await bcrypt.hash(np, 10);
@@ -380,7 +515,9 @@ router.post("/force-change-password", protect, async (req, res) => {
     return res.json({ ok: true });
   } catch (err) {
     console.error("Error en POST /auth/force-change-password:", err);
-    return res.status(500).json({ error: "No se pudo actualizar la contraseña." });
+    return res
+      .status(500)
+      .json({ error: "No se pudo actualizar la contraseña." });
   }
 });
 
@@ -401,12 +538,15 @@ router.get("/verify-email", async (req, res) => {
 
     if (!user) {
       return res.status(400).json({
-        error: "Token inválido o expirado. Pedí un nuevo correo de verificación.",
+        error:
+          "Token inválido o expirado. Pedí un nuevo correo de verificación.",
       });
     }
 
     if (String(user.role || "").toLowerCase() === "guest") {
-      return res.status(400).json({ error: "Usuario invitado inválido para verificación." });
+      return res
+        .status(400)
+        .json({ error: "Usuario invitado inválido para verificación." });
     }
 
     user.emailVerified = true;
@@ -417,7 +557,8 @@ router.get("/verify-email", async (req, res) => {
 
     return res.json({
       ok: true,
-      message: "Email verificado correctamente. Tu cuenta será revisada por un administrador.",
+      message:
+        "Email verificado correctamente. Tu cuenta será revisada por un administrador.",
     });
   } catch (err) {
     console.error("Error verify-email:", err);
@@ -432,17 +573,29 @@ router.post("/resend-verification", async (req, res) => {
   try {
     const { email } = req.body || {};
     const emailLower = String(email || "").toLowerCase().trim();
-    if (!emailLower) return res.status(400).json({ error: "Email requerido." });
+    if (!emailLower) {
+      return res.status(400).json({ error: "Email requerido." });
+    }
 
     const user = await User.findOne({ email: emailLower });
 
-    if (!user) return res.json({ ok: true, message: "Si el email existe, te enviamos un correo." });
-
-    if (String(user.role || "").toLowerCase() === "guest") {
-      return res.json({ ok: true, message: "Si el email existe, te enviamos un correo." });
+    if (!user) {
+      return res.json({
+        ok: true,
+        message: "Si el email existe, te enviamos un correo.",
+      });
     }
 
-    if (user.emailVerified) return res.json({ ok: true, message: "Tu email ya está verificado." });
+    if (String(user.role || "").toLowerCase() === "guest") {
+      return res.json({
+        ok: true,
+        message: "Si el email existe, te enviamos un correo.",
+      });
+    }
+
+    if (user.emailVerified) {
+      return res.json({ ok: true, message: "Tu email ya está verificado." });
+    }
 
     const rawToken = crypto.randomBytes(32).toString("hex");
     const tokenHash = sha256(rawToken);
@@ -456,21 +609,27 @@ router.post("/resend-verification", async (req, res) => {
 
     await sendVerifyEmail(user, verifyUrl);
 
-    return res.json({ ok: true, message: "Te reenviamos el correo de verificación." });
+    return res.json({
+      ok: true,
+      message: "Te reenviamos el correo de verificación.",
+    });
   } catch (err) {
     console.error("Error resend-verification:", err);
-    return res.status(500).json({ error: "No se pudo reenviar el correo." });
+    return res
+      .status(500)
+      .json({ error: "No se pudo reenviar el correo." });
   }
 });
 
 /* ============================================
    GET /auth/me
-   ✅ ahora devuelve creditLots + creditsByServiceKey
 ============================================ */
 router.get("/me", protect, async (req, res) => {
   try {
-    const user = await User.findById(req.user._id);
+    let user = await User.findById(req.user._id);
     if (!user) return res.status(401).json({ error: "Usuario no encontrado." });
+
+    user = await syncPastAppointmentsForUser(user);
 
     return res.json(serializeUser(user));
   } catch (err) {
@@ -480,7 +639,7 @@ router.get("/me", protect, async (req, res) => {
 });
 
 /* ============================================
-   ✅ GET /auth/admin-approval?t=TOKEN
+   GET /auth/admin-approval?t=TOKEN
 ============================================ */
 router.get("/admin-approval", async (req, res) => {
   try {
@@ -495,10 +654,14 @@ router.get("/admin-approval", async (req, res) => {
       return res.status(400).send("Token inválido o expirado.");
     }
 
-    if (payload?.kind !== "admin_approval") return res.status(400).send("Token inválido.");
+    if (payload?.kind !== "admin_approval") {
+      return res.status(400).send("Token inválido.");
+    }
 
     const uid = String(payload?.uid || "").trim();
-    const action = String(payload?.action || "").toLowerCase().trim();
+    const action = String(payload?.action || "")
+      .toLowerCase()
+      .trim();
 
     if (!uid || !["approved", "rejected"].includes(action)) {
       return res.status(400).send("Token inválido.");
@@ -508,7 +671,9 @@ router.get("/admin-approval", async (req, res) => {
     if (!user) return res.status(404).send("Usuario no encontrado.");
 
     if (action === "approved" && !user.emailVerified) {
-      return res.status(400).send("No se puede aprobar: el email no está verificado.");
+      return res
+        .status(400)
+        .send("No se puede aprobar: el email no está verificado.");
     }
 
     const prev = String(user.approvalStatus || "pending");
@@ -518,13 +683,18 @@ router.get("/admin-approval", async (req, res) => {
       const shouldSend = !!to && prev !== "rejected";
 
       if (shouldSend) {
-        fireAndForget(() => sendUserApprovalResultEmail(user, "rejected"), "MAIL_REJECT_FROM_LINK");
+        fireAndForget(
+          () => sendUserApprovalResultEmail(user, "rejected"),
+          "MAIL_REJECT_FROM_LINK"
+        );
       }
 
       await Appointment.deleteMany({ user: user._id });
       await user.deleteOne();
 
-      return res.send("✅ Usuario rechazado y eliminado. Puede registrarse nuevamente.");
+      return res.send(
+        "✅ Usuario rechazado y eliminado. Puede registrarse nuevamente."
+      );
     }
 
     user.approvalStatus = "approved";
@@ -532,14 +702,19 @@ router.get("/admin-approval", async (req, res) => {
 
     const changed = prev !== "approved";
     const shouldSendApprovalMail =
-      changed && !!String(user.email || "").trim() && !user.welcomeApprovedEmailSentAt;
+      changed &&
+      !!String(user.email || "").trim() &&
+      !user.welcomeApprovedEmailSentAt;
 
     if (shouldSendApprovalMail) user.welcomeApprovedEmailSentAt = new Date();
 
     await user.save();
 
     if (shouldSendApprovalMail) {
-      fireAndForget(() => sendUserApprovalResultEmail(user, "approved"), "MAIL_APPROVE_FROM_LINK");
+      fireAndForget(
+        () => sendUserApprovalResultEmail(user, "approved"),
+        "MAIL_APPROVE_FROM_LINK"
+      );
     }
 
     return res.send("✅ Usuario aprobado correctamente.");
