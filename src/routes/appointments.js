@@ -1189,6 +1189,127 @@ async function createAppointmentForTargetUser({
 ========================= */
 router.use(protect);
 
+
+/* =========================
+   POST /appointments/admin/:userId/complete-first-evaluation
+========================= */
+router.post("/admin/:userId/complete-first-evaluation", ensureStaff, async (req, res) => {
+  try {
+    const userId = String(req.params?.userId || "").trim();
+    if (!userId) {
+      return res.status(400).json({ error: "Falta userId." });
+    }
+
+    const user = await User.findById(userId);
+    if (!user) {
+      return res.status(404).json({ error: "Usuario no encontrado." });
+    }
+
+    if (!user.firstEvaluationCompleted) {
+      user.firstEvaluationCompleted = true;
+      user.firstEvaluationCompletedAt = new Date();
+
+      user.history = Array.isArray(user.history) ? user.history : [];
+      user.history.push({
+        action: "evaluacion_obligatoria_completada_por_admin",
+        service: PE_NAME,
+        serviceName: PE_NAME,
+        createdAt: new Date(),
+      });
+
+      await user.save();
+    }
+
+    await logActivity({
+      req,
+      category: "users",
+      action: "first_evaluation_completed_by_admin",
+      entity: "user",
+      entityId: String(user._id),
+      title: "Evaluación obligatoria completada",
+      description: "Se marcó manualmente la evaluación obligatoria como completada.",
+      subject: buildUserSubject(user),
+      meta: {
+        firstEvaluationCompleted: true,
+        firstEvaluationCompletedAt: user.firstEvaluationCompletedAt || null,
+      },
+    });
+
+    return res.json({
+      ok: true,
+      user: {
+        _id: user._id,
+        firstEvaluationCompleted: !!user.firstEvaluationCompleted,
+        firstEvaluationCompletedAt: user.firstEvaluationCompletedAt || null,
+      },
+    });
+  } catch (err) {
+    console.error("Error en POST /appointments/admin/:userId/complete-first-evaluation:", err);
+    return res.status(500).json({
+      error: "No se pudo completar la evaluación obligatoria.",
+    });
+  }
+});
+
+/* =========================
+   POST /appointments/admin/:userId/complete-apto
+========================= */
+router.post("/admin/:userId/complete-apto", ensureStaff, async (req, res) => {
+  try {
+    const userId = String(req.params?.userId || "").trim();
+    if (!userId) {
+      return res.status(400).json({ error: "Falta userId." });
+    }
+
+    const user = await User.findById(userId);
+    if (!user) {
+      return res.status(404).json({ error: "Usuario no encontrado." });
+    }
+
+    if (!user.aptoPath) {
+      user.aptoPath = "ADMIN_COMPLETED_APTO";
+      user.aptoCompletedAt = new Date();
+
+      user.history = Array.isArray(user.history) ? user.history : [];
+      user.history.push({
+        action: "apto_completado_por_admin",
+        createdAt: new Date(),
+      });
+
+      await user.save();
+    }
+
+    await logActivity({
+      req,
+      category: "users",
+      action: "apto_completed_by_admin",
+      entity: "user",
+      entityId: String(user._id),
+      title: "Apto completado",
+      description: "Se marcó manualmente el apto como completado.",
+      subject: buildUserSubject(user),
+      meta: {
+        aptoPath: user.aptoPath || null,
+        aptoCompletedAt: user.aptoCompletedAt || null,
+      },
+    });
+
+    return res.json({
+      ok: true,
+      user: {
+        _id: user._id,
+        aptoPath: user.aptoPath || null,
+        aptoCompletedAt: user.aptoCompletedAt || null,
+      },
+    });
+  } catch (err) {
+    console.error("Error en POST /appointments/admin/:userId/complete-apto:", err);
+    return res.status(500).json({
+      error: "No se pudo completar el apto.",
+    });
+  }
+});
+
 /* =========================
    GET /appointments/me/status
 ========================= */
@@ -2236,7 +2357,7 @@ router.post("/batch", async (req, res) => {
         throw e;
       }
 
-      const key = `${date}__${timeNorm}`;
+      const key = slotKey(date, timeNorm);
       if (seen.has(key)) {
         const e = new Error(`ITEM_${idx}_DUP`);
         e.http = 409;
@@ -2244,16 +2365,17 @@ router.post("/batch", async (req, res) => {
       }
       seen.add(key);
 
-      return { date, time: timeNorm, service, ...basic };
+      return {
+        date,
+        time: timeNorm,
+        service,
+        slotDate: basic.slotDate,
+        isEpService: basic.isEpService,
+      };
     });
 
     const userId = req.user._id || req.user.id;
-    let createdItems = [];
-    let waitlistedItems = [];
-    let userCreditsAfter = null;
-    let userCreditLotsAfter = [];
-    let firstEvaluationCompletedAfter = false;
-    let firstEvaluationCompletedAtAfter = null;
+    let outItems = [];
 
     await session.withTransaction(async () => {
       let user = await User.findById(userId).session(session);
@@ -2265,12 +2387,9 @@ router.post("/batch", async (req, res) => {
       if (requiresApto(user)) throw new Error("APTO_REQUIRED");
 
       for (let i = 0; i < normalized.length; i += 1) {
-        const item = normalized[i];
+        const it = normalized[i];
 
-        if (
-          !user.firstEvaluationCompleted &&
-          !isFirstEvaluationService(item.service)
-        ) {
+        if (!user.firstEvaluationCompleted && !isFirstEvaluationService(it.service)) {
           throw new Error(`ITEM_${i}_FIRST_EVALUATION_REQUIRED`);
         }
 
@@ -2279,42 +2398,36 @@ router.post("/batch", async (req, res) => {
           throw new Error(`ITEM_${i}_NO_CREDITS`);
         }
 
-        const requestedSk = serviceToKey(item.service);
-        if (!hasValidCreditsForServiceAndSlot(user, requestedSk, item.slotDate)) {
+        const requestedSk = serviceToKey(it.service);
+        if (!hasValidCreditsForServiceAndSlot(user, requestedSk, it.slotDate)) {
           throw new Error(`ITEM_${i}_NO_CREDITS_FOR_SLOT_${requestedSk}`);
         }
 
         const alreadyByUser = await Appointment.findOne({
-          date: item.date,
-          time: item.time,
+          date: it.date,
+          time: it.time,
           user: user._id,
           status: "reserved",
         }).session(session).lean();
 
-        if (alreadyByUser) throw new Error(`ITEM_${i}_ALREADY_HAVE_SLOT`);
+        if (alreadyByUser) {
+          throw new Error(`ITEM_${i}_ALREADY_HAVE_SLOT`);
+        }
 
         const existingAtSlot = await Appointment.find({
-          date: item.date,
-          time: item.time,
+          date: it.date,
+          time: it.time,
           status: "reserved",
         }).session(session).lean();
 
-        const stats = getSlotReservationStats(
-          existingAtSlot,
-          item.date,
-          item.time
-        );
-
+        const stats = getSlotReservationStats(existingAtSlot, it.date, it.time);
         let willWaitlist = false;
 
-        if (item.isEpService) {
-          if (
-            stats.totalReserved >= TOTAL_CAP ||
-            stats.epReserved >= stats.epCap
-          ) {
+        if (it.isEpService) {
+          if (stats.totalReserved >= TOTAL_CAP || stats.epReserved >= stats.epCap) {
             willWaitlist = true;
           }
-        } else if (isTherapyService(item.service)) {
+        } else if (isTherapyService(it.service)) {
           if (stats.totalReserved >= TOTAL_CAP) {
             throw new Error(`ITEM_${i}_TOTAL_CAP_REACHED`);
           }
@@ -2325,14 +2438,14 @@ router.post("/batch", async (req, res) => {
           throw new Error(`ITEM_${i}_TOTAL_CAP_REACHED`);
         }
 
-        if (willWaitlist && item.isEpService) {
-          const wlWindow = validateWaitlistOpen(item.slotDate, item.service);
+        if (willWaitlist && it.isEpService) {
+          const wlWindow = validateWaitlistOpen(it.slotDate, it.service);
           if (!wlWindow.ok) throw new Error(`ITEM_${i}_WAITLIST_CLOSED`);
 
           const wlExists = await WaitlistEntry.findOne({
             user: user._id,
-            date: item.date,
-            time: item.time,
+            date: it.date,
+            time: it.time,
             service: EP_NAME,
             status: { $in: ACTIVE_WAITLIST_STATUSES },
           }).session(session);
@@ -2340,8 +2453,8 @@ router.post("/batch", async (req, res) => {
           if (wlExists) throw new Error(`ITEM_${i}_ALREADY_IN_WAITLIST`);
 
           const lastPriority = await WaitlistEntry.findOne({
-            date: item.date,
-            time: item.time,
+            date: it.date,
+            time: it.time,
             service: EP_NAME,
             status: { $in: ACTIVE_WAITLIST_STATUSES },
           })
@@ -2352,67 +2465,67 @@ router.post("/batch", async (req, res) => {
           const nextPriority = Number(lastPriority?.priorityOrder || 0) + 1;
 
           const [createdWaitlist] = await WaitlistEntry.create(
-            [
-              {
-                user: user._id,
-                date: item.date,
-                time: item.time,
-                service: EP_NAME,
-                status: "waiting",
-                notes: "",
-                priorityOrder: nextPriority,
-                createdByUser: user._id,
-                createdByRole: String(req.user?.role || "client").toLowerCase(),
-              },
-            ],
+            [{
+              user: user._id,
+              date: it.date,
+              time: it.time,
+              service: EP_NAME,
+              status: "waiting",
+              priorityOrder: nextPriority,
+              createdByUser: user._id,
+              createdByRole: String(req.user?.role || "client").toLowerCase(),
+            }],
             { session }
           );
 
-          waitlistedItems.push({
+          recalcUserCredits(user);
+
+          outItems.push({
             kind: "waitlist",
             id: String(createdWaitlist._id),
-            date: item.date,
-            time: item.time,
+            date: it.date,
+            time: it.time,
             service: EP_NAME,
             status: "waiting",
             priorityOrder: nextPriority,
             createdAt: createdWaitlist.createdAt || new Date(),
+            userCredits: Number(user.credits || 0),
+            userCreditLots: serializeUserCreditLots(user),
+            firstEvaluationCompleted: !!user.firstEvaluationCompleted,
+            firstEvaluationCompletedAt: user.firstEvaluationCompletedAt || null,
           });
 
-          recalcUserCredits(user);
           continue;
         }
 
         const consumed = await consumeCreditAtomic({
           userId: user._id,
-          serviceName: item.service,
+          serviceName: it.service,
           historyItem: {
             action: "reservado",
-            date: item.date,
-            time: item.time,
-            service: item.service,
-            serviceName: item.service,
+            date: it.date,
+            time: it.time,
+            service: it.service,
+            serviceName: it.service,
           },
-          slotDate: item.slotDate,
+          slotDate: it.slotDate,
           session,
         });
 
         user = consumed.user;
 
         const created = await Appointment.create(
-          [
-            {
-              date: item.date,
-              time: item.time,
-              service: item.service,
-              user: user._id,
-              status: "reserved",
-              creditLotId: consumed.usedLotId,
-              creditExpiresAt: consumed.usedLotExp,
-              createdByRole: String(req.user?.role || "").toLowerCase(),
-              createdByUser: req.user?._id || req.user?.id || null,
-            },
-          ],
+          [{
+            date: it.date,
+            time: it.time,
+            service: it.service,
+            user: user._id,
+            status: "reserved",
+            creditLotId: consumed.usedLotId,
+            creditExpiresAt: consumed.usedLotExp,
+            createdByRole: String(req.user?.role || "").toLowerCase(),
+            createdByUser: req.user?._id || req.user?.id || null,
+          }],
           { session }
         );
 
@@ -2420,25 +2533,44 @@ router.post("/batch", async (req, res) => {
           .populate("user", "name lastName email")
           .session(session);
 
-        createdItems.push(serializeAppointment(populated));
+        outItems.push({
+          ...serializeAppointment(populated),
+          userCredits: Number(user.credits || 0),
+          userCreditLots: serializeUserCreditLots(user),
+          firstEvaluationCompleted: !!user.firstEvaluationCompleted,
+          firstEvaluationCompletedAt: user.firstEvaluationCompletedAt || null,
+        });
       }
 
-      recalcUserCredits(user);
-      userCreditsAfter = Number(user.credits || 0);
-      userCreditLotsAfter = serializeUserCreditLots(user);
-      firstEvaluationCompletedAfter = !!user.firstEvaluationCompleted;
-      firstEvaluationCompletedAtAfter = user.firstEvaluationCompletedAt || null;
       mailUser = { ...user.toObject(), _id: user._id };
-      mailItems = createdItems.map((x) => ({
-        date: x.date,
-        time: x.time,
-        service: x.service,
-      }));
+      mailItems = outItems.filter((x) => x?.kind !== "waitlist");
     });
 
-    await Promise.all(
-      createdItems.map((item) =>
-        logActivity({
+    for (const item of outItems) {
+      if (item?.kind === "waitlist") {
+        await logActivity({
+          req,
+          category: "appointments",
+          action: "waitlist_joined",
+          entity: "waitlist",
+          entityId:
+            String(item?.date || "") +
+            "-" +
+            String(item?.time || "") +
+            "-" +
+            String(req.user?._id || ""),
+          title: "Lista de espera",
+          description: "Se agregó a lista de espera de turnos.",
+          subject: buildUserSubject(req.user),
+          meta: {
+            date: item?.date,
+            time: item?.time,
+            serviceName: item?.service,
+            priorityOrder: item?.priorityOrder || null,
+          },
+        });
+      } else if (item?.id) {
+        await logActivity({
           req,
           category: "appointments",
           action: "appointment_reserved",
@@ -2448,53 +2580,15 @@ router.post("/batch", async (req, res) => {
           description: "Se registró una nueva reserva.",
           subject: buildUserSubject(req.user),
           meta: {
-            date: item.date,
-            time: item.time,
-            serviceName: item.service,
+            date: item?.date,
+            time: item?.time,
+            serviceName: item?.service,
           },
-        })
-      )
-    );
+        });
+      }
+    }
 
-    await Promise.all(
-      waitlistedItems.map((item) =>
-        logActivity({
-          req,
-          category: "appointments",
-          action: "waitlist_joined",
-          entity: "waitlist",
-          entityId:
-            String(item.date || "") +
-            "-" +
-            String(item.time || "") +
-            "-" +
-            String(req.user?._id || ""),
-          title: "Lista de espera",
-          description: "Se agregó a lista de espera de turnos.",
-          subject: buildUserSubject(req.user),
-          meta: {
-            date: item.date,
-            time: item.time,
-            serviceName: item.service,
-            priorityOrder: item.priorityOrder || null,
-          },
-        })
-      )
-    );
-
-    const out = {
-      ok: true,
-      createdCount: createdItems.length,
-      waitlistedCount: waitlistedItems.length,
-      items: createdItems,
-      waitlistItems: waitlistedItems,
-      userCredits: userCreditsAfter,
-      userCreditLots: userCreditLotsAfter,
-      firstEvaluationCompleted: firstEvaluationCompletedAfter,
-      firstEvaluationCompletedAt: firstEvaluationCompletedAtAfter,
-    };
-
-    res.status(201).json(out);
+    res.status(201).json({ ok: true, items: outItems });
 
     if (mailUser && mailItems?.length) {
       fireAndForget(async () => {
@@ -2502,6 +2596,7 @@ router.post("/batch", async (req, res) => {
           await sendAppointmentBookedBatchEmail(mailUser, mailItems);
         } catch (e) {
           console.log("[MAIL] booked batch error:", e?.message || e);
+          await sendAdminCopy({ kind: "booked_batch", user: mailUser, ap: mailItems });
         }
       }, "MAIL_BOOKED_BATCH");
     }
