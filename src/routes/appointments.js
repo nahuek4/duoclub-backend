@@ -467,6 +467,7 @@ async function consumeCreditAtomic({
 async function refundCreditAtomicToOriginalLot({
   userId,
   lotId,
+  apService,
   historyItem,
   session,
 }) {
@@ -478,6 +479,7 @@ async function refundCreditAtomicToOriginalLot({
   console.log("[REFUND LOT DEBUG - BEFORE]", {
     userId: String(userId),
     lotId: String(lotId || ""),
+    apService: String(apService || ""),
     lotFound: !!lot,
     lotAmount: lot?.amount,
     lotRemaining: lot?.remaining,
@@ -497,14 +499,53 @@ async function refundCreditAtomicToOriginalLot({
   const currentRemaining = Number(lot.remaining || 0);
   const maxAmount = Number(lot.amount || 0);
 
-  lot.remaining = Math.min(currentRemaining + 1, maxAmount);
+  if (currentRemaining < maxAmount) {
+    lot.remaining = currentRemaining + 1;
+  } else {
+    const now = nowDate();
+    const fallbackExp = lot.expiresAt
+      ? new Date(lot.expiresAt)
+      : new Date(now.getTime() + Number(getCreditsExpireDays(freshUser) || 30) * 24 * 60 * 60 * 1000);
+
+    console.warn("[REFUND INCONSISTENCY]", {
+      userId: String(userId),
+      lotId: String(lotId || ""),
+      apService: String(apService || ""),
+      currentRemaining,
+      maxAmount,
+      fallbackExp,
+      reason: "ORIGINAL_LOT_ALREADY_FULL_ON_REFUND",
+    });
+
+    freshUser.creditLots = Array.isArray(freshUser.creditLots)
+      ? freshUser.creditLots
+      : [];
+
+    freshUser.creditLots.push({
+      serviceKey: serviceToKey(apService || lot.serviceKey || "EP"),
+      amount: 1,
+      remaining: 1,
+      expiresAt: fallbackExp,
+      source: "refund-recovery",
+      orderId: null,
+      createdAt: now,
+    });
+  }
 
   console.log("[REFUND LOT DEBUG - AFTER CALC]", {
     userId: String(userId),
     lotId: String(lotId || ""),
+    apService: String(apService || ""),
     currentRemaining,
     maxAmount,
-    newRemaining: lot.remaining,
+    resultingLots: (Array.isArray(freshUser?.creditLots) ? freshUser.creditLots : []).map((x) => ({
+      id: String(x?._id || ""),
+      serviceKey: String(x?.serviceKey || ""),
+      amount: Number(x?.amount || 0),
+      remaining: Number(x?.remaining || 0),
+      expiresAt: x?.expiresAt || null,
+      source: String(x?.source || ""),
+    })),
   });
 
   freshUser.history = freshUser.history || [];
@@ -1300,6 +1341,15 @@ async function createAppointmentForTargetUser({
   const effectiveUser = consumed.user;
   const usedLotId = consumed.usedLotId;
   const usedLotExp = consumed.usedLotExp;
+
+  console.log("[BOOKING DEBUG AFTER CONSUME]", {
+    userId: String(effectiveUser?._id || targetUser?._id || ""),
+    service: service,
+    usedLotId: String(usedLotId || ""),
+    usedLotExp: usedLotExp || null,
+    userCredits: Number(effectiveUser?.credits || 0),
+    lots: serializeUserCreditLots(effectiveUser),
+  });
 
   const created = await Appointment.create({
     date,
@@ -2110,6 +2160,15 @@ router.post("/", async (req, res) => {
       usedLotId = consumed.usedLotId;
       usedLotExp = consumed.usedLotExp;
 
+      console.log("[BOOKING DEBUG AFTER CONSUME]", {
+        userId: String(effectiveUser?._id || user?._id || ""),
+        service,
+        usedLotId: String(usedLotId || ""),
+        usedLotExp: usedLotExp || null,
+        userCredits: Number(effectiveUser?.credits || 0),
+        lots: serializeUserCreditLots(effectiveUser),
+      });
+
       const created = await Appointment.create(
         [{
           date,
@@ -2208,13 +2267,13 @@ router.post("/", async (req, res) => {
     if (msg === "APTO_REQUIRED") {
       return res.status(403).json({ error: "Falta apto médico." });
     }
-    if (msg === "NO_CREDITS") {
-      return res.status(403).json({ error: "Sin créditos disponibles." });
-    }
     if (msg === "FIRST_EVALUATION_REQUIRED") {
       return res.status(403).json({
         error: "Primero debés completar tu primera evaluación presencial.",
       });
+    }
+    if (msg === "NO_CREDITS") {
+      return res.status(403).json({ error: "Sin créditos disponibles." });
     }
     if (msg.startsWith("NO_CREDITS_FOR_SLOT_")) {
       return res.status(403).json({
@@ -2225,10 +2284,12 @@ router.post("/", async (req, res) => {
       return res.status(409).json({ error: "Ya tenés un turno reservado en ese horario." });
     }
     if (msg === "WAITLIST_CLOSED") {
-      return res.status(409).json({ error: "La lista de espera ya está cerrada para ese horario." });
+      return res.status(409).json({
+        error: "La lista de espera para ese servicio y horario ya está cerrada.",
+      });
     }
     if (msg === "ALREADY_IN_WAITLIST") {
-      return res.status(409).json({ error: "Ya estás en la lista de espera para ese horario." });
+      return res.status(409).json({ error: "Ya estás anotado/a en la lista de espera de ese horario." });
     }
     if (msg === "SERVICE_CAP_REACHED") {
       return res.status(409).json({ error: "Ese servicio ya alcanzó su cupo para ese horario." });
@@ -2250,14 +2311,16 @@ router.post("/batch", async (req, res) => {
   const session = await mongoose.startSession();
 
   let mailUser = null;
-  let mailItems = [];
+  let mailItems = null;
+  let responseItems = [];
 
   try {
-    const userId = req.user._id || req.user.id;
     const items = Array.isArray(req.body?.items) ? req.body.items : [];
-    if (!items.length) return res.status(400).json({ error: "Faltan items." });
+    if (!items.length) {
+      return res.status(400).json({ error: "Faltan items para reservar." });
+    }
 
-    const createdOut = [];
+    const userId = req.user?._id || req.user?.id;
 
     await session.withTransaction(async () => {
       let user = await User.findById(userId).session(session);
@@ -2359,6 +2422,15 @@ router.post("/batch", async (req, res) => {
 
         user = consumed.user;
 
+        console.log("[BOOKING DEBUG AFTER CONSUME]", {
+          userId: String(user?._id || ""),
+          service: it.service,
+          usedLotId: String(consumed.usedLotId || ""),
+          usedLotExp: consumed.usedLotExp || null,
+          userCredits: Number(user?.credits || 0),
+          lots: serializeUserCreditLots(user),
+        });
+
         const created = await Appointment.create(
           [{
             date: it.date,
@@ -2378,7 +2450,7 @@ router.post("/batch", async (req, res) => {
           .populate("user", "name lastName email")
           .session(session);
 
-        createdOut.push({
+        responseItems.push({
           ...serializeAppointment(populated),
           userCredits: Number(user.credits || 0),
           userCreditLots: serializeUserCreditLots(user),
@@ -2388,35 +2460,36 @@ router.post("/batch", async (req, res) => {
       }
 
       mailUser = { ...user.toObject(), _id: user._id };
-      mailItems = basicItems.map((it) => ({
-        date: it.date,
-        time: it.time,
-        service: it.service,
+      mailItems = responseItems.map((x) => ({
+        date: x.date,
+        time: x.time,
+        service: x.service,
       }));
     });
 
-    await logActivity({
-      req,
-      category: "appointments",
-      action: "appointment_batch_reserved",
-      entity: "appointment",
-      entityId: "batch",
-      title: "Turnos reservados",
-      description: "Se registró una reserva múltiple.",
-      subject: buildUserSubject(req.user),
-      meta: {
-        count: createdOut.length,
-        items: createdOut.map((it) => ({
-          date: it.date,
-          time: it.time,
-          serviceName: it.service,
-        })),
-      },
-    });
+    if (responseItems.length) {
+      await logActivity({
+        req,
+        category: "appointments",
+        action: "appointments_reserved_batch",
+        entity: "appointment",
+        entityId: responseItems.map((x) => x.id).join(","),
+        title: "Turnos reservados",
+        description: "Se registraron múltiples reservas.",
+        subject: buildUserSubject(req.user),
+        meta: {
+          items: responseItems.map((x) => ({
+            date: x.date,
+            time: x.time,
+            serviceName: x.service,
+          })),
+        },
+      });
+    }
 
-    res.status(201).json({ items: createdOut });
+    res.status(201).json({ items: responseItems });
 
-    if (mailUser && mailItems.length) {
+    if (mailUser && mailItems?.length) {
       fireAndForget(async () => {
         try {
           await sendAppointmentBookedBatchEmail(mailUser, mailItems);
@@ -2552,6 +2625,7 @@ router.delete("/:id", async (req, res) => {
           updatedUser = await refundCreditAtomicToOriginalLot({
             userId: user._id,
             lotId: ap.creditLotId,
+            apService: ap.service,
             historyItem: {
               action: decision.historyAction,
               date: ap.date,
@@ -2636,8 +2710,10 @@ router.delete("/:id", async (req, res) => {
         date: ap.date,
         time: ap.time,
         service: ap.service,
+        refund: !!decision.refund,
         refundApplied: !!decision.refund,
         refundMode: decision.refundMode || "none",
+        refundCutoffHours: Number(decision.refundCutoffHours || 0),
       };
     });
 
