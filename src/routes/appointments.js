@@ -1391,6 +1391,118 @@ async function createAppointmentForTargetUser({
   return serialized;
 }
 
+async function autoResolveFirstEvaluationCompletion({
+  user,
+  req,
+  session,
+  allowStandaloneCreditConsume = true,
+}) {
+  if (!user?._id) {
+    return {
+      cancelledAppointments: [],
+      updatedUser: user,
+      hadReservedFirstEvaluation: false,
+      consumedStandaloneCredit: false,
+    };
+  }
+
+  let updatedUser = user;
+  const now = new Date();
+  const actorRole = String(req.user?.role || "admin").toLowerCase() || "admin";
+  const actorUserId = req.user?._id || req.user?.id || null;
+
+  const reservedFirstEvaluations = await Appointment.find({
+    user: user._id,
+    status: "reserved",
+    $or: [
+      { service: PE_NAME },
+      { service: "PE" },
+      { service: /primera evaluaci/i },
+    ],
+  }).session(session);
+
+  const cancelledAppointments = [];
+
+  for (const ap of reservedFirstEvaluations) {
+    ap.status = "cancelled";
+    ap.cancelledAt = now;
+    ap.cancelledByRole = actorRole;
+    ap.cancelledByUser = actorUserId;
+    ap.cancelReason = "FIRST_EVALUATION_COMPLETED_BY_ADMIN";
+    ap.refundApplied = false;
+    ap.refundMode = "none";
+    await ap.save({ session });
+
+    updatedUser.history = Array.isArray(updatedUser.history) ? updatedUser.history : [];
+    updatedUser.history.push({
+      action: "cancelado_por_primera_evaluacion_completada_por_admin",
+      date: ap.date,
+      time: ap.time,
+      service: ap.service,
+      serviceName: ap.service,
+      createdAt: now,
+    });
+
+    cancelledAppointments.push({
+      id: String(ap._id),
+      date: ap.date,
+      time: ap.time,
+      service: ap.service,
+    });
+  }
+
+  const hadReservedFirstEvaluation = cancelledAppointments.length > 0;
+  let consumedStandaloneCredit = false;
+
+  if (!hadReservedFirstEvaluation && allowStandaloneCreditConsume) {
+    recalcUserCredits(updatedUser);
+
+    const standalonePeLot = pickLotToConsume(updatedUser, "PE");
+
+    if (standalonePeLot && Number(updatedUser.credits || 0) > 0) {
+      const upd = await User.updateOne(
+        {
+          _id: updatedUser._id,
+          "creditLots._id": standalonePeLot._id,
+          "creditLots.remaining": { $gt: 0 },
+        },
+        {
+          $inc: { "creditLots.$.remaining": -1 },
+        },
+        { session }
+      );
+
+      if (!upd.modifiedCount) {
+        throw new Error("FIRST_EVALUATION_CREDIT_CONSUME_FAILED");
+      }
+
+      updatedUser = await User.findById(updatedUser._id).session(session);
+      if (!updatedUser) throw new Error("USER_NOT_FOUND");
+
+      updatedUser.history = Array.isArray(updatedUser.history) ? updatedUser.history : [];
+      updatedUser.history.push({
+        action: "consumo_credito_primera_evaluacion_por_completar_admin",
+        service: PE_NAME,
+        serviceName: PE_NAME,
+        serviceKey: "PE",
+        createdAt: now,
+      });
+
+      consumedStandaloneCredit = true;
+    }
+  }
+
+  recalcUserCredits(updatedUser);
+  await updatedUser.save({ session });
+
+  return {
+    cancelledAppointments,
+    updatedUser,
+    hadReservedFirstEvaluation,
+    consumedStandaloneCredit,
+  };
+}
+
 /* =========================
    AUTH required
 ========================= */
@@ -1400,60 +1512,102 @@ router.use(protect);
    POST /appointments/admin/:userId/complete-first-evaluation
 ========================= */
 router.post("/admin/:userId/complete-first-evaluation", ensureStaff, async (req, res) => {
+  const session = await mongoose.startSession();
+
   try {
     const userId = String(req.params?.userId || "").trim();
     if (!userId) {
       return res.status(400).json({ error: "Falta userId." });
     }
 
-    const user = await User.findById(userId);
-    if (!user) {
-      return res.status(404).json({ error: "Usuario no encontrado." });
-    }
+    let responsePayload = null;
+    let activityUser = null;
 
-    if (!user.firstEvaluationCompleted) {
-      user.firstEvaluationCompleted = true;
-      user.firstEvaluationCompletedAt = new Date();
+    await session.withTransaction(async () => {
+      let user = await User.findById(userId).session(session);
+      if (!user) {
+        throw new Error("USER_NOT_FOUND");
+      }
 
-      user.history = Array.isArray(user.history) ? user.history : [];
-      user.history.push({
-        action: "evaluacion_obligatoria_completada_por_admin",
-        service: PE_NAME,
-        serviceName: PE_NAME,
-        createdAt: new Date(),
+      const alreadyCompleted = !!user.firstEvaluationCompleted;
+      const resolution = await autoResolveFirstEvaluationCompletion({
+        user,
+        req,
+        session,
+        allowStandaloneCreditConsume: !alreadyCompleted,
       });
 
-      await user.save();
-    }
+      user = resolution.updatedUser || user;
+
+      if (!alreadyCompleted) {
+        user.firstEvaluationCompleted = true;
+        user.firstEvaluationCompletedAt = user.firstEvaluationCompletedAt || new Date();
+
+        user.history = Array.isArray(user.history) ? user.history : [];
+        user.history.push({
+          action: "evaluacion_obligatoria_completada_por_admin",
+          service: PE_NAME,
+          serviceName: PE_NAME,
+          createdAt: new Date(),
+        });
+      }
+
+      recalcUserCredits(user);
+      await user.save({ session });
+
+      activityUser = user;
+      responsePayload = {
+        ok: true,
+        user: {
+          _id: user._id,
+          firstEvaluationCompleted: !!user.firstEvaluationCompleted,
+          firstEvaluationCompletedAt: user.firstEvaluationCompletedAt || null,
+          credits: Number(user.credits || 0),
+          creditLots: serializeUserCreditLots(user),
+        },
+        cancelledReservedFirstEvaluations: resolution.cancelledAppointments,
+        consumedStandaloneFirstEvaluationCredit: !!resolution.consumedStandaloneCredit,
+      };
+    });
 
     await logActivity({
       req,
       category: "users",
       action: "first_evaluation_completed_by_admin",
       entity: "user",
-      entityId: String(user._id),
+      entityId: String(activityUser?._id || userId),
       title: "Evaluación obligatoria completada",
       description: "Se marcó manualmente la evaluación obligatoria como completada.",
-      subject: buildUserSubject(user),
+      subject: buildUserSubject(activityUser || { _id: userId }),
       meta: {
         firstEvaluationCompleted: true,
-        firstEvaluationCompletedAt: user.firstEvaluationCompletedAt || null,
+        firstEvaluationCompletedAt: responsePayload?.user?.firstEvaluationCompletedAt || null,
+        cancelledReservedFirstEvaluationsCount: Array.isArray(responsePayload?.cancelledReservedFirstEvaluations)
+          ? responsePayload.cancelledReservedFirstEvaluations.length
+          : 0,
+        consumedStandaloneFirstEvaluationCredit: !!responsePayload?.consumedStandaloneFirstEvaluationCredit,
       },
     });
 
-    return res.json({
-      ok: true,
-      user: {
-        _id: user._id,
-        firstEvaluationCompleted: !!user.firstEvaluationCompleted,
-        firstEvaluationCompletedAt: user.firstEvaluationCompletedAt || null,
-      },
-    });
+    return res.json(responsePayload);
   } catch (err) {
     console.error("Error en POST /appointments/admin/:userId/complete-first-evaluation:", err);
+
+    if (String(err?.message || "") === "USER_NOT_FOUND") {
+      return res.status(404).json({ error: "Usuario no encontrado." });
+    }
+
+    if (String(err?.message || "") === "FIRST_EVALUATION_CREDIT_CONSUME_FAILED") {
+      return res.status(409).json({
+        error: "No se pudo descontar el crédito de primera evaluación.",
+      });
+    }
+
     return res.status(500).json({
       error: "No se pudo completar la evaluación obligatoria.",
     });
+  } finally {
+    await session.endSession();
   }
 });
 
