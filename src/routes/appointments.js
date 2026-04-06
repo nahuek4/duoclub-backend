@@ -2543,126 +2543,230 @@ router.post("/batch", async (req, res) => {
 /* =========================
    DELETE /appointments/:id
 ========================= */
-const decision = resolveCancellationPolicy({
-  user,
-  appointment: ap,
-  hoursToStart,
-});
+router.delete("/:id", async (req, res) => {
+  const session = await mongoose.startSession();
 
-console.log("[CANCEL DEBUG]", {
-  appointmentId: String(ap._id),
-  service: ap.service,
-  serviceKey: serviceToKey(ap.service),
-  hoursToStart,
-  decision,
-  timelyUsed: countMonthlyRefundsByType(user, {
-    serviceKey: serviceToKey(ap.service),
-    refundType: "timely",
-  }),
-  lateUsed: countMonthlyRefundsByType(user, {
-    serviceKey: serviceToKey(ap.service),
-    refundType: "late",
-  }),
-  creditLotId: ap.creditLotId || null,
-  lots: lotsDebug(user),
-});
+  let decision = null;
 
-const historyMeta = buildCancellationHistoryMeta({
-  appointment: ap,
-  decision,
-  now: new Date(),
-});
+  try {
+    const userId = req.user._id || req.user.id;
+    const role = String(req.user?.role || "").toLowerCase();
+    const isStaff = ["admin", "profesor", "staff"].includes(role);
 
-let updatedUser = user;
+    let ap;
+    let updatedUser = null;
 
-if (decision.refund) {
-  if (ap.creditLotId) {
-    updatedUser = await refundCreditAtomicToOriginalLot({
-      userId: user._id,
-      lotId: ap.creditLotId,
-      historyItem: {
-        action: decision.historyAction,
-        date: ap.date,
-        time: ap.time,
-        service: ap.service,
-        serviceName: ap.service,
-        ...historyMeta,
-      },
-      session,
+    await session.withTransaction(async () => {
+      ap = await Appointment.findById(req.params.id).session(session);
+      if (!ap) throw new Error("NOT_FOUND");
+
+      if (!isStaff && String(ap.user) !== String(userId)) {
+        throw new Error("FORBIDDEN");
+      }
+
+      if (String(ap.status) === "cancelled") {
+        throw new Error("ALREADY_CANCELLED");
+      }
+
+      const user = await User.findById(ap.user).session(session);
+      if (!user) throw new Error("USER_NOT_FOUND");
+
+      const slotDate = buildSlotDate(ap.date, ap.time);
+      if (!slotDate) throw new Error("INVALID_SLOT");
+
+      const hoursToStart = (slotDate.getTime() - Date.now()) / (1000 * 60 * 60);
+      decision = resolveCancellationPolicy({
+        user,
+        appointment: ap,
+        hoursToStart,
+      });
+
+      const historyMeta = buildCancellationHistoryMeta({
+        appointment: ap,
+        decision,
+        now: new Date(),
+      });
+
+      ap.status = "cancelled";
+      ap.cancelledAt = new Date();
+      ap.cancelledBy = req.user?._id || req.user?.id || null;
+      ap.cancelReason = decision.reason || "";
+      ap.refundApplied = !!decision.refund;
+      ap.refundMode = decision.refundMode || "";
+      ap.refundReason = decision.reason || "";
+
+      await ap.save({ session });
+
+      if (decision.refund) {
+        if (ap.creditLotId) {
+          updatedUser = await refundCreditAtomicToOriginalLot({
+            userId: user._id,
+            lotId: ap.creditLotId,
+            historyItem: {
+              action: decision.historyAction,
+              date: ap.date,
+              time: ap.time,
+              service: ap.service,
+              serviceName: ap.service,
+              ...historyMeta,
+            },
+            session,
+          });
+        } else {
+          const refunded = await refundCreditAtomicNewLot({
+            userId: user._id,
+            apService: ap.service,
+            historyItem: {
+              action: decision.historyAction,
+              date: ap.date,
+              time: ap.time,
+              service: ap.service,
+              serviceName: ap.service,
+              ...historyMeta,
+            },
+            session,
+          });
+          updatedUser = refunded.user;
+        }
+      } else {
+        user.history = Array.isArray(user.history) ? user.history : [];
+        user.history.push({
+          action: decision.historyAction,
+          date: ap.date,
+          time: ap.time,
+          service: ap.service,
+          serviceName: ap.service,
+          ...historyMeta,
+          createdAt: new Date(),
+        });
+        recalcUserCredits(user);
+        await user.save({ session });
+        updatedUser = user;
+      }
+
+      if (ap.waitlistEntryId) {
+        const wl = await WaitlistEntry.findById(ap.waitlistEntryId).session(session);
+        if (wl && String(wl.status) !== "removed") {
+          wl.status = "removed";
+          wl.removedAt = new Date();
+          wl.removedBy = req.user?._id || req.user?.id || null;
+          wl.closeReason = "APPOINTMENT_CANCELLED";
+          await wl.save({ session });
+        }
+      }
     });
-  } else {
-    const refunded = await refundCreditAtomicNewLot({
-      userId: user._id,
-      apService: ap.service,
-      historyItem: {
-        action: decision.historyAction,
-        date: ap.date,
-        time: ap.time,
-        service: ap.service,
-        serviceName: ap.service,
-        ...historyMeta,
-      },
-      session,
+
+    const populatedAp = await Appointment.findById(ap._id)
+      .populate("user", "name lastName email")
+      .lean();
+
+    const cancellationCounters = getMonthlyCancellationCounters(
+      updatedUser,
+      ap.service,
+      new Date()
+    );
+
+    const cancellationMessage = buildCancellationClientMessage({
+      appointment: ap,
+      decision,
+      counters: cancellationCounters,
     });
-    updatedUser = refunded.user;
+
+    await logActivity({
+      req,
+      category: "appointments",
+      action: "appointment_cancelled",
+      entity: "appointment",
+      entityId: String(ap._id),
+      title: "Turno cancelado",
+      description: "Se canceló un turno existente.",
+      subject: buildUserSubject(populatedAp?.user || req.user),
+      meta: {
+        date: populatedAp?.date || ap.date,
+        time: populatedAp?.time || ap.time,
+        serviceName: populatedAp?.service || ap.service,
+        refundApplied: !!ap.refundApplied,
+        refundMode: ap.refundMode || "",
+        refundReason: ap.refundReason || "",
+      },
+    });
+
+    res.json({
+      ok: true,
+      refundApplied: !!ap.refundApplied,
+      refundMode: ap.refundMode || "none",
+      refundReason: ap.refundReason || "",
+      cancelReason: ap.cancelReason || "",
+
+      cancellationMessage,
+      cancellationPolicy: {
+        serviceKey: cancellationCounters.serviceKey,
+        monthKey: cancellationCounters.monthKey,
+        timelyLimit: cancellationCounters.timelyLimit,
+        timelyUsed: cancellationCounters.timelyUsed,
+        timelyRemaining: cancellationCounters.timelyRemaining,
+        lateLimit: cancellationCounters.lateLimit,
+        lateUsed: cancellationCounters.lateUsed,
+        lateRemaining: cancellationCounters.lateRemaining,
+      },
+
+      userCredits: Number(updatedUser?.credits || 0),
+      userCreditLots: serializeUserCreditLots(updatedUser),
+      appointment: {
+        id: String(populatedAp?._id || ap._id),
+        date: populatedAp?.date || ap.date,
+        time: populatedAp?.time || ap.time,
+        service: populatedAp?.service || ap.service,
+        status: populatedAp?.status || ap.status,
+      },
+    });
+
+    fireAndForget(async () => {
+      try {
+        const userForMail = populatedAp?.user || updatedUser;
+        const apForMail = {
+          date: populatedAp?.date || ap.date,
+          time: populatedAp?.time || ap.time,
+          service: populatedAp?.service || ap.service,
+        };
+        await sendAppointmentCancelledEmail(userForMail, apForMail);
+      } catch (e) {
+        console.log("[MAIL] cancel error:", e?.message || e);
+        await sendAdminCopy({
+          kind: "cancelled",
+          user: populatedAp?.user || updatedUser,
+          ap: {
+            date: populatedAp?.date || ap.date,
+            time: populatedAp?.time || ap.time,
+            service: populatedAp?.service || ap.service,
+          },
+        });
+      }
+    }, "MAIL_CANCELLED");
+  } catch (err) {
+    console.error("Error en DELETE /appointments/:id:", err);
+    const msg = String(err?.message || "");
+
+    if (msg === "NOT_FOUND") {
+      return res.status(404).json({ error: "Turno no encontrado." });
+    }
+    if (msg === "FORBIDDEN") {
+      return res.status(403).json({ error: "No autorizado para cancelar este turno." });
+    }
+    if (msg === "ALREADY_CANCELLED") {
+      return res.status(409).json({ error: "El turno ya estaba cancelado." });
+    }
+    if (msg === "USER_NOT_FOUND") {
+      return res.status(404).json({ error: "Usuario no encontrado." });
+    }
+    if (msg === "INVALID_SLOT") {
+      return res.status(400).json({ error: "Fecha u horario inválido." });
+    }
+
+    return res.status(500).json({ error: "No se pudo cancelar el turno." });
+  } finally {
+    await session.endSession();
   }
-} else {
-  user.history = Array.isArray(user.history) ? user.history : [];
-  user.history.push({
-    action: decision.historyAction,
-    date: ap.date,
-    time: ap.time,
-    service: ap.service,
-    serviceName: ap.service,
-    ...historyMeta,
-    createdAt: new Date(),
-  });
-  recalcUserCredits(user);
-  await user.save({ session });
-  updatedUser = user;
-}
-
-ap.status = "cancelled";
-ap.cancelledAt = new Date();
-ap.cancelledByRole = role || "client";
-ap.cancelledByUser = tokenUserId || null;
-ap.cancelReason = decision.reason || "";
-ap.refundApplied = !!decision.refund;
-ap.refundMode = decision.refundMode || "none";
-await ap.save({ session });
-
-const cancellationCounters = getMonthlyCancellationCounters(
-  updatedUser,
-  ap.service,
-  new Date()
-);
-
-const cancellationMessage = buildCancellationClientMessage({
-  appointment: ap,
-  decision,
-  counters: cancellationCounters,
 });
-
-responsePayload = {
-  ok: true,
-  id: String(ap._id),
-  refundApplied: !!decision.refund,
-  refundMode: decision.refundMode || "none",
-  refundReason: decision.reason || "",
-  cancelReason: decision.reason || "",
-  cancellationMessage,
-  cancellationPolicy: cancellationCounters,
-  userCredits: Number(updatedUser.credits || 0),
-  userCreditLots: serializeUserCreditLots(updatedUser),
-};
-
-mailUser = { ...updatedUser.toObject(), _id: updatedUser._id };
-mailAp = {
-  date: ap.date,
-  time: ap.time,
-  service: ap.service,
-  refundApplied: !!decision.refund,
-  refundMode: decision.refundMode || "none",
-};
 
 export default router;
