@@ -474,12 +474,38 @@ async function refundCreditAtomicToOriginalLot({
   if (!freshUser) throw new Error("USER_NOT_FOUND");
 
   const lot = findLotById(freshUser, lotId);
+
+  console.log("[REFUND LOT DEBUG - BEFORE]", {
+    userId: String(userId),
+    lotId: String(lotId || ""),
+    lotFound: !!lot,
+    lotAmount: lot?.amount,
+    lotRemaining: lot?.remaining,
+    lotExpiresAt: lot?.expiresAt || null,
+    allLots: (Array.isArray(freshUser?.creditLots) ? freshUser.creditLots : []).map((x) => ({
+      id: String(x?._id || ""),
+      serviceKey: String(x?.serviceKey || ""),
+      amount: Number(x?.amount || 0),
+      remaining: Number(x?.remaining || 0),
+      expiresAt: x?.expiresAt || null,
+      source: String(x?.source || ""),
+    })),
+  });
+
   if (!lot) throw new Error("REFUND_FAILED");
 
   const currentRemaining = Number(lot.remaining || 0);
   const maxAmount = Number(lot.amount || 0);
 
   lot.remaining = Math.min(currentRemaining + 1, maxAmount);
+
+  console.log("[REFUND LOT DEBUG - AFTER CALC]", {
+    userId: String(userId),
+    lotId: String(lotId || ""),
+    currentRemaining,
+    maxAmount,
+    newRemaining: lot.remaining,
+  });
 
   freshUser.history = freshUser.history || [];
   freshUser.history.push({
@@ -488,7 +514,19 @@ async function refundCreditAtomicToOriginalLot({
   });
 
   recalcUserCredits(freshUser);
+
+  console.log("[REFUND USER DEBUG - BEFORE SAVE]", {
+    userId: String(userId),
+    creditsAfterRecalc: Number(freshUser.credits || 0),
+    historyLastItem: freshUser.history?.[freshUser.history.length - 1] || null,
+  });
+
   await freshUser.save({ session });
+
+  console.log("[REFUND USER DEBUG - SAVED]", {
+    userId: String(userId),
+    creditsSaved: Number(freshUser.credits || 0),
+  });
 
   return freshUser;
 }
@@ -503,6 +541,13 @@ async function refundCreditAtomicNewLot({
   const sk = serviceToKey(apService);
   const exp = new Date(now);
   exp.setDate(exp.getDate() + Number(getCreditsExpireDays() || 30));
+
+  console.log("[REFUND NEW LOT DEBUG - BEFORE PUSH]", {
+    userId: String(userId),
+    apService,
+    serviceKey: sk,
+    expiresAt: exp,
+  });
 
   await User.updateOne(
     { _id: userId },
@@ -532,7 +577,22 @@ async function refundCreditAtomicNewLot({
   });
 
   recalcUserCredits(freshUser);
+
+  console.log("[REFUND NEW LOT DEBUG - BEFORE SAVE]", {
+    userId: String(userId),
+    creditsAfterRecalc: Number(freshUser.credits || 0),
+    lastLot:
+      Array.isArray(freshUser.creditLots) && freshUser.creditLots.length
+        ? freshUser.creditLots[freshUser.creditLots.length - 1]
+        : null,
+  });
+
   await freshUser.save({ session });
+
+  console.log("[REFUND NEW LOT DEBUG - SAVED]", {
+    userId: String(userId),
+    creditsSaved: Number(freshUser.credits || 0),
+  });
 
   return { user: freshUser, sk, expiresAt: exp };
 }
@@ -2422,6 +2482,12 @@ router.delete("/:id", async (req, res) => {
   let responsePayload = null;
 
   try {
+    console.log("[DELETE APPOINTMENT HIT]", {
+      appointmentId: String(req.params?.id || ""),
+      userId: String(req.user?._id || req.user?.id || ""),
+      role: String(req.user?.role || ""),
+    });
+
     const tokenUserId = req.user?._id || req.user?.id;
     const role = String(req.user?.role || "").toLowerCase();
 
@@ -2620,6 +2686,9 @@ router.delete("/:id", async (req, res) => {
     }
     if (msg === "INVALID_SLOT_DATE") {
       return res.status(400).json({ error: "Fecha u horario inválido en el turno." });
+    }
+    if (msg === "REFUND_FAILED") {
+      return res.status(500).json({ error: "No se pudo devolver el crédito al lote original." });
     }
 
     return res.status(500).json({ error: "No se pudo cancelar el turno." });
