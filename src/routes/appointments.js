@@ -2177,7 +2177,7 @@ router.post("/", async (req, res) => {
       return res.status(409).json({ error: "Se alcanzó el cupo total disponible para ese horario." });
     }
 
-    return res.status(500).json({ error: "Error al reservar turno." });
+    return res.status(500).json({ error: "No se pudo reservar el turno." });
   } finally {
     await session.endSession();
   }
@@ -2189,19 +2189,66 @@ router.post("/", async (req, res) => {
 router.post("/batch", async (req, res) => {
   const session = await mongoose.startSession();
 
-  let mailUser = null;
-  let mailItems = [];
+  let bookedMailUser = null;
+  let bookedMailItems = [];
+  let bookedMailServiceName = null;
 
   try {
-    const items = Array.isArray(req.body?.items) ? req.body.items : [];
-    if (!items.length) {
+    const rawItems = Array.isArray(req.body?.items) ? req.body.items : [];
+    if (!rawItems.length) {
       return res.status(400).json({ error: "Faltan items para reservar." });
     }
 
+    if (rawItems.length > 31) {
+      return res.status(400).json({
+        error: "No podés reservar más de 31 turnos en una sola operación.",
+      });
+    }
+
+    const normalized = rawItems.map((it) => ({
+      date: String(it?.date || "").slice(0, 10),
+      time: String(it?.time || "").slice(0, 5),
+      service: String(it?.service || "").trim(),
+      notes: String(it?.notes || req.body?.notes || "").trim(),
+    }));
+
+    const serviceSet = new Set(normalized.map((x) => serviceToKey(x.service)));
+    if (serviceSet.size > 1) {
+      return res.status(400).json({
+        error: "Todos los turnos del lote deben ser del mismo servicio.",
+      });
+    }
+
+    const dupSet = new Set();
+    for (const it of normalized) {
+      const key = `${it.date}__${it.time}`;
+      if (dupSet.has(key)) {
+        return res.status(400).json({
+          error: `No se puede repetir el mismo horario dentro del lote (${it.date} ${it.time}).`,
+        });
+      }
+      dupSet.add(key);
+    }
+
+    const basicChecked = normalized.map((it) => {
+      const basic = validateBasicSlotRules({
+        date: it.date,
+        time: it.time,
+        service: it.service,
+      });
+      return { ...it, basic };
+    });
+
+    for (const it of basicChecked) {
+      if (!it.basic.ok) {
+        return res.status(400).json({
+          error: `No se pudo reservar ${it.date} ${it.time}: ${it.basic.error}`,
+        });
+      }
+    }
+
     const userId = req.user._id || req.user.id;
-    let responseItems = [];
-    let waitlisted = [];
-    let conflicts = [];
+    let responsePayload = null;
 
     await session.withTransaction(async () => {
       let user = await User.findById(userId).session(session);
@@ -2212,115 +2259,73 @@ router.post("/batch", async (req, res) => {
       if (user.suspended) throw new Error("USER_SUSPENDED");
       if (requiresApto(user)) throw new Error("APTO_REQUIRED");
 
-      const seen = new Set();
+      const firstService = basicChecked[0]?.service || "";
+      if (!user.firstEvaluationCompleted && !isFirstEvaluationService(firstService)) {
+        throw new Error("FIRST_EVALUATION_REQUIRED");
+      }
 
-      for (const raw of items) {
-        const date = String(raw?.date || "").slice(0, 10);
-        const time = String(raw?.time || "").slice(0, 5);
-        const service = String(raw?.service || "").trim();
+      recalcUserCredits(user);
 
-        const dupKey = `${date}__${time}`;
-        if (seen.has(dupKey)) {
-          conflicts.push({ date, time, service, error: "Horario duplicado en la misma operación." });
-          continue;
-        }
-        seen.add(dupKey);
+      const createdItems = [];
+      const waitlistedItems = [];
 
-        const basic = validateBasicSlotRules({ date, time, service });
-        if (!basic.ok) {
-          conflicts.push({ date, time, service, error: basic.error });
-          continue;
-        }
-
-        if (!user.firstEvaluationCompleted && !isFirstEvaluationService(service)) {
-          conflicts.push({
-            date,
-            time,
-            service,
-            error: "Primero debés completar tu primera evaluación presencial.",
-          });
-          continue;
-        }
-
-        recalcUserCredits(user);
-        if ((user.credits || 0) <= 0) {
-          conflicts.push({ date, time, service, error: "Sin créditos disponibles." });
-          continue;
-        }
+      for (const it of basicChecked) {
+        const { date, time, service, notes, basic } = it;
+        const t = String(time).slice(0, 5);
 
         const requestedSk = serviceToKey(service);
         if (!hasValidCreditsForServiceAndSlot(user, requestedSk, basic.slotDate)) {
-          conflicts.push({
-            date,
-            time,
-            service,
-            error: "No tenés sesiones válidas para ese día y horario.",
-          });
-          continue;
+          throw new Error(`NO_CREDITS_FOR_SLOT_${requestedSk}`);
         }
 
         const alreadyByUser = await Appointment.findOne({
           date,
-          time,
+          time: t,
           user: user._id,
           status: "reserved",
         }).session(session).lean();
 
-        if (alreadyByUser) {
-          conflicts.push({ date, time, service, error: "Ya tenés un turno reservado en ese horario." });
-          continue;
-        }
+        if (alreadyByUser) throw new Error("ALREADY_HAVE_SLOT");
 
         const existingAtSlot = await Appointment.find({
           date,
-          time,
+          time: t,
           status: "reserved",
         }).session(session).lean();
 
-        const stats = getSlotReservationStats(existingAtSlot, date, time);
         let willWaitlist = false;
+        const stats = getSlotReservationStats(existingAtSlot, date, t);
 
         if (basic.isEpService) {
           if (stats.totalReserved >= TOTAL_CAP || stats.epReserved >= stats.epCap) {
             willWaitlist = true;
           }
         } else if (isTherapyService(service)) {
-          if (stats.totalReserved >= TOTAL_CAP) {
-            conflicts.push({ date, time, service, error: "Se alcanzó el cupo total disponible para ese horario." });
-            continue;
-          }
+          if (stats.totalReserved >= TOTAL_CAP) throw new Error("TOTAL_CAP_REACHED");
           if (stats.therapyReserved >= stats.therapyCap) {
-            conflicts.push({ date, time, service, error: "Ese servicio ya alcanzó su cupo para ese horario." });
-            continue;
+            throw new Error("SERVICE_CAP_REACHED");
           }
         } else if (stats.totalReserved >= TOTAL_CAP) {
-          conflicts.push({ date, time, service, error: "Se alcanzó el cupo total disponible para ese horario." });
-          continue;
+          throw new Error("TOTAL_CAP_REACHED");
         }
 
         if (willWaitlist && basic.isEpService) {
           const wlWindow = validateWaitlistOpen(basic.slotDate, service);
-          if (!wlWindow.ok) {
-            conflicts.push({ date, time, service, error: wlWindow.error });
-            continue;
-          }
+          if (!wlWindow.ok) throw new Error("WAITLIST_CLOSED");
 
           const wlExists = await WaitlistEntry.findOne({
             user: user._id,
             date,
-            time,
+            time: t,
             service: EP_NAME,
             status: { $in: ACTIVE_WAITLIST_STATUSES },
           }).session(session);
 
-          if (wlExists) {
-            conflicts.push({ date, time, service, error: "Ya estás en la lista de espera para ese horario." });
-            continue;
-          }
+          if (wlExists) throw new Error("ALREADY_IN_WAITLIST");
 
           const lastPriority = await WaitlistEntry.findOne({
             date,
-            time,
+            time: t,
             service: EP_NAME,
             status: { $in: ACTIVE_WAITLIST_STATUSES },
           })
@@ -2334,10 +2339,10 @@ router.post("/batch", async (req, res) => {
             [{
               user: user._id,
               date,
-              time,
+              time: t,
               service: EP_NAME,
               status: "waiting",
-              notes: "",
+              notes: String(notes || "").trim(),
               priorityOrder: nextPriority,
               createdByUser: user._id,
               createdByRole: String(req.user?.role || "client").toLowerCase(),
@@ -2345,13 +2350,15 @@ router.post("/batch", async (req, res) => {
             { session }
           );
 
-          waitlisted.push({
+          waitlistedItems.push({
+            kind: "waitlist",
             id: String(createdWaitlist._id),
             date,
-            time,
+            time: t,
             service: EP_NAME,
             status: "waiting",
             priorityOrder: nextPriority,
+            createdAt: createdWaitlist.createdAt || new Date(),
           });
           continue;
         }
@@ -2362,7 +2369,7 @@ router.post("/batch", async (req, res) => {
           historyItem: {
             action: "reservado",
             date,
-            time,
+            time: t,
             service,
             serviceName: service,
           },
@@ -2375,7 +2382,7 @@ router.post("/batch", async (req, res) => {
         const created = await Appointment.create(
           [{
             date,
-            time,
+            time: t,
             service,
             user: user._id,
             status: "reserved",
@@ -2391,89 +2398,90 @@ router.post("/batch", async (req, res) => {
           .populate("user", "name lastName email")
           .session(session);
 
-        responseItems.push(serializeAppointment(populated));
+        createdItems.push(serializeAppointment(populated));
       }
 
-      const finalUser = await User.findById(userId).session(session);
-      if (!finalUser) throw new Error("USER_NOT_FOUND");
+      recalcUserCredits(user);
 
-      recalcUserCredits(finalUser);
-      await finalUser.save({ session });
+      responsePayload = {
+        ok: true,
+        items: createdItems,
+        waitlisted: waitlistedItems,
+        userCredits: Number(user.credits || 0),
+        userCreditLots: serializeUserCreditLots(user),
+        firstEvaluationCompleted: !!user.firstEvaluationCompleted,
+        firstEvaluationCompletedAt: user.firstEvaluationCompletedAt || null,
+      };
 
-      mailUser = { ...finalUser.toObject(), _id: finalUser._id };
-      mailItems = responseItems.map((x) => ({
+      bookedMailUser = { ...user.toObject(), _id: user._id };
+      bookedMailItems = createdItems.map((x) => ({
         date: x.date,
         time: x.time,
         service: x.service,
       }));
-
-      responseItems = responseItems.map((item) => ({
-        ...item,
-        userCredits: Number(finalUser.credits || 0),
-        userCreditLots: serializeUserCreditLots(finalUser),
-      }));
+      bookedMailServiceName = firstService;
     });
 
-    for (const item of responseItems) {
-      await logActivity({
-        req,
-        category: "appointments",
-        action: "appointment_reserved",
-        entity: "appointment",
-        entityId: item.id,
-        title: "Turno reservado",
-        description: "Se registró una nueva reserva.",
-        subject: buildUserSubject(req.user),
-        meta: {
-          date: item.date,
-          time: item.time,
-          serviceName: item.service,
-        },
-      });
+    if (Array.isArray(responsePayload?.items)) {
+      for (const item of responsePayload.items) {
+        await logActivity({
+          req,
+          category: "appointments",
+          action: "appointment_reserved",
+          entity: "appointment",
+          entityId: item.id,
+          title: "Turno reservado",
+          description: "Se registró una nueva reserva desde lote.",
+          subject: buildUserSubject(req.user),
+          meta: {
+            date: item?.date,
+            time: item?.time,
+            serviceName: item?.service,
+            batch: true,
+          },
+        });
+      }
     }
 
-    for (const item of waitlisted) {
-      await logActivity({
-        req,
-        category: "appointments",
-        action: "waitlist_joined",
-        entity: "waitlist",
-        entityId:
-          String(item?.date || "") +
-          "-" +
-          String(item?.time || "") +
-          "-" +
-          String(req.user?._id || ""),
-        title: "Lista de espera",
-        description: "Se agregó a lista de espera de turnos.",
-        subject: buildUserSubject(req.user),
-        meta: {
-          date: item.date,
-          time: item.time,
-          serviceName: item.service,
-          priorityOrder: item.priorityOrder || null,
-        },
-      });
+    if (Array.isArray(responsePayload?.waitlisted)) {
+      for (const item of responsePayload.waitlisted) {
+        await logActivity({
+          req,
+          category: "appointments",
+          action: "waitlist_joined",
+          entity: "waitlist",
+          entityId:
+            String(item?.date || "") +
+            "-" +
+            String(item?.time || "") +
+            "-" +
+            String(req.user?._id || ""),
+          title: "Lista de espera",
+          description: "Se agregó a lista de espera desde lote.",
+          subject: buildUserSubject(req.user),
+          meta: {
+            date: item?.date,
+            time: item?.time,
+            serviceName: item?.service,
+            priorityOrder: item?.priorityOrder || null,
+            batch: true,
+          },
+        });
+      }
     }
 
-    res.status(201).json({
-      ok: true,
-      items: responseItems,
-      waitlisted,
-      conflicts,
-    });
+    res.status(201).json(responsePayload);
 
-    if (mailUser && mailItems.length) {
+    if (bookedMailUser && bookedMailItems.length) {
       fireAndForget(async () => {
         try {
-          await sendAppointmentBookedBatchEmail(mailUser, mailItems);
+          await sendAppointmentBookedBatchEmail(
+            bookedMailUser,
+            bookedMailItems,
+            bookedMailServiceName
+          );
         } catch (e) {
           console.log("[MAIL] booked batch error:", e?.message || e);
-          await sendAdminCopy({
-            kind: "booked_batch",
-            user: mailUser,
-            ap: { items: mailItems },
-          });
         }
       }, "MAIL_BOOKED_BATCH");
     }
@@ -2490,763 +2498,171 @@ router.post("/batch", async (req, res) => {
     if (msg === "APTO_REQUIRED") {
       return res.status(403).json({ error: "Falta apto médico." });
     }
-
-    return res.status(500).json({ error: "Error al reservar turnos." });
-  } finally {
-    await session.endSession();
-  }
-});
-
-/* =========================
-   POST /appointments/admin/assign-waitlist
-========================= */
-router.post("/admin/assign-waitlist/:id", ensureStaff, async (req, res) => {
-  const session = await mongoose.startSession();
-
-  try {
-    const waitlistId = String(req.params?.id || "").trim();
-    if (!waitlistId) {
-      return res.status(400).json({ error: "Falta id de lista de espera." });
-    }
-
-    let responseItem = null;
-
-    await session.withTransaction(async () => {
-      const entry = await WaitlistEntry.findById(waitlistId).session(session);
-      if (!entry) throw new Error("WAITLIST_NOT_FOUND");
-      if (!ACTIVE_WAITLIST_STATUSES.includes(String(entry.status || ""))) {
-        throw new Error("WAITLIST_NOT_ACTIVE");
-      }
-
-      const user = await User.findById(entry.user).session(session);
-      if (!user) throw new Error("USER_NOT_FOUND");
-      if (user.suspended) throw new Error("USER_SUSPENDED");
-      if (requiresApto(user)) throw new Error("APTO_REQUIRED");
-
-      recalcUserCredits(user);
-      if ((user.credits || 0) <= 0) throw new Error("NO_CREDITS");
-
-      const slotDate = buildSlotDate(entry.date, entry.time);
-      if (!slotDate) throw new Error("INVALID_SLOT");
-
-      if (!hasValidCreditsForServiceAndSlot(user, entry.service, slotDate)) {
-        throw new Error("NO_CREDITS_FOR_SLOT");
-      }
-
-      const existingAtSlot = await Appointment.find({
-        date: entry.date,
-        time: entry.time,
-        status: "reserved",
-      }).session(session).lean();
-
-      const stats = getSlotReservationStats(existingAtSlot, entry.date, entry.time);
-      if (stats.totalReserved >= TOTAL_CAP || stats.epReserved >= stats.epCap) {
-        throw new Error("SLOT_STILL_FULL");
-      }
-
-      const alreadyByUser = await Appointment.findOne({
-        date: entry.date,
-        time: entry.time,
-        user: user._id,
-        status: "reserved",
-      }).session(session).lean();
-
-      if (alreadyByUser) throw new Error("ALREADY_HAVE_SLOT");
-
-      const consumed = await consumeCreditAtomic({
-        userId: user._id,
-        serviceName: entry.service,
-        historyItem: {
-          action: "reservado_desde_waitlist",
-          date: entry.date,
-          time: entry.time,
-          service: entry.service,
-          serviceName: entry.service,
-        },
-        slotDate,
-        session,
+    if (msg === "FIRST_EVALUATION_REQUIRED") {
+      return res.status(403).json({
+        error: "Primero debés completar tu primera evaluación presencial.",
       });
-
-      const created = await Appointment.create(
-        [{
-          date: entry.date,
-          time: entry.time,
-          service: entry.service,
-          user: user._id,
-          status: "reserved",
-          creditLotId: consumed.usedLotId,
-          creditExpiresAt: consumed.usedLotExp,
-          createdByRole: String(req.user?.role || "").toLowerCase(),
-          createdByUser: req.user?._id || req.user?.id || null,
-          assignedFromWaitlist: true,
-        }],
-        { session }
-      );
-
-      entry.status = "claimed";
-      entry.claimedAt = new Date();
-      entry.claimedBy = req.user?._id || req.user?.id || null;
-      await entry.save({ session });
-
-      const populated = await Appointment.findById(created[0]._id)
-        .populate("user", "name lastName email")
-        .session(session);
-
-      responseItem = {
-        ...serializeAppointment(populated),
-        userCredits: Number(consumed.user.credits || 0),
-        userCreditLots: serializeUserCreditLots(consumed.user),
-      };
-    });
-
-    await logActivity({
-      req,
-      category: "appointments",
-      action: "waitlist_assigned",
-      entity: "appointment",
-      entityId: responseItem?.id || "",
-      title: "Turno asignado desde lista de espera",
-      description: "Se asignó un turno a partir de una lista de espera.",
-      subject: buildUserSubject(req.user),
-      meta: {
-        date: responseItem?.date,
-        time: responseItem?.time,
-        serviceName: responseItem?.service,
-      },
-    });
-
-    return res.status(201).json({
-      ok: true,
-      item: responseItem,
-    });
-  } catch (err) {
-    console.error("Error en POST /appointments/admin/assign-waitlist/:id:", err);
-    const msg = String(err?.message || "");
-
-    if (msg === "WAITLIST_NOT_FOUND") {
-      return res.status(404).json({ error: "Elemento de lista de espera no encontrado." });
     }
-    if (msg === "WAITLIST_NOT_ACTIVE") {
-      return res.status(409).json({ error: "La lista de espera ya no está activa." });
-    }
-    if (msg === "USER_NOT_FOUND") {
-      return res.status(404).json({ error: "Usuario no encontrado." });
-    }
-    if (msg === "USER_SUSPENDED") {
-      return res.status(403).json({ error: "Cuenta suspendida." });
-    }
-    if (msg === "APTO_REQUIRED") {
-      return res.status(403).json({ error: "Falta apto médico." });
-    }
-    if (msg === "NO_CREDITS") {
-      return res.status(403).json({ error: "Sin créditos disponibles." });
-    }
-    if (msg === "NO_CREDITS_FOR_SLOT") {
-      return res.status(403).json({ error: "No tenés sesiones válidas para ese día y horario." });
-    }
-    if (msg === "INVALID_SLOT") {
-      return res.status(400).json({ error: "Fecha/hora inválida." });
-    }
-    if (msg === "SLOT_STILL_FULL") {
-      return res.status(409).json({ error: "Ese horario sigue sin cupo disponible." });
+    if (msg.startsWith("NO_CREDITS_FOR_SLOT_")) {
+      return res.status(403).json({
+        error: "No tenés sesiones válidas para uno de los días y horarios elegidos.",
+      });
     }
     if (msg === "ALREADY_HAVE_SLOT") {
-      return res.status(409).json({ error: "El usuario ya tiene un turno en ese horario." });
+      return res.status(409).json({
+        error: "Ya tenés un turno reservado en uno de los horarios elegidos.",
+      });
+    }
+    if (msg === "WAITLIST_CLOSED") {
+      return res.status(409).json({
+        error: "La lista de espera ya está cerrada para uno de los horarios elegidos.",
+      });
+    }
+    if (msg === "ALREADY_IN_WAITLIST") {
+      return res.status(409).json({
+        error: "Ya estás en la lista de espera para uno de los horarios elegidos.",
+      });
+    }
+    if (msg === "SERVICE_CAP_REACHED") {
+      return res.status(409).json({
+        error: "Uno de los servicios ya alcanzó su cupo para ese horario.",
+      });
+    }
+    if (msg === "TOTAL_CAP_REACHED") {
+      return res.status(409).json({
+        error: "Se alcanzó el cupo total disponible para uno de los horarios elegidos.",
+      });
     }
 
-    return res.status(500).json({ error: "No se pudo asignar desde la lista de espera." });
+    return res.status(500).json({ error: "No se pudieron reservar los turnos." });
   } finally {
     await session.endSession();
-  }
-});
-
-/* =========================
-   GET /appointments/admin/fixed-schedules
-========================= */
-router.get("/admin/fixed-schedules", ensureStaff, async (req, res) => {
-  try {
-    const userId = String(req.query?.userId || "").trim();
-    const q = {};
-    if (userId) q.user = userId;
-
-    const list = await FixedSchedule.find(q)
-      .populate("user", "name lastName email")
-      .sort({ createdAt: -1 })
-      .lean();
-
-    return res.json(
-      (list || []).map((it) => ({
-        id: String(it?._id || ""),
-        user: it?.user
-          ? {
-              _id: String(it.user?._id || ""),
-              name: it.user?.name || "",
-              lastName: it.user?.lastName || "",
-              email: it.user?.email || "",
-            }
-          : null,
-        service: it?.service || "",
-        items: Array.isArray(it?.items) ? it.items : [],
-        months: Number(it?.months || 0),
-        startDate: it?.startDate || "",
-        endDate: it?.endDate || "",
-        notes: it?.notes || "",
-        active: !!it?.active,
-        createdAt: it?.createdAt || null,
-      }))
-    );
-  } catch (err) {
-    console.error("Error en GET /appointments/admin/fixed-schedules:", err);
-    return res.status(500).json({ error: "No se pudieron cargar los turnos fijos." });
-  }
-});
-
-/* =========================
-   DELETE /appointments/admin/fixed-schedules/:id
-========================= */
-router.delete("/admin/fixed-schedules/:id", ensureStaff, async (req, res) => {
-  try {
-    const item = await FixedSchedule.findById(req.params.id);
-    if (!item) {
-      return res.status(404).json({ error: "Turno fijo no encontrado." });
-    }
-
-    item.active = false;
-    await item.save();
-
-    return res.json({ ok: true });
-  } catch (err) {
-    console.error("Error en DELETE /appointments/admin/fixed-schedules/:id:", err);
-    return res.status(500).json({ error: "No se pudo desactivar el turno fijo." });
   }
 });
 
 /* =========================
    DELETE /appointments/:id
 ========================= */
-router.delete("/:id", async (req, res) => {
-  const session = await mongoose.startSession();
-
-  let mailUser = null;
-  let mailAp = null;
-
-  try {
-    const appointmentId = String(req.params?.id || "").trim();
-    if (!appointmentId) {
-      return res.status(400).json({ error: "Falta id del turno." });
-    }
-
-    let responsePayload = null;
-
-    await session.withTransaction(async () => {
-      const tokenUserId = req.user?._id || req.user?.id;
-      const role = String(req.user?.role || "").toLowerCase();
-      const isStaff = role === "admin" || role === "profesor" || role === "staff";
-
-      const ap = await Appointment.findById(appointmentId).session(session);
-      if (!ap) throw new Error("APPOINTMENT_NOT_FOUND");
-
-      if (!isStaff && String(ap.user) !== String(tokenUserId)) {
-        throw new Error("NOT_ALLOWED");
-      }
-
-      if (String(ap.status || "") !== "reserved") {
-        throw new Error("APPOINTMENT_NOT_ACTIVE");
-      }
-
-      const user = await User.findById(ap.user).session(session);
-      if (!user) throw new Error("USER_NOT_FOUND");
-
-      const slotDate = buildSlotDate(ap.date, ap.time);
-      if (!slotDate) throw new Error("INVALID_SLOT");
-
-      const hoursToStart = (slotDate.getTime() - Date.now()) / (1000 * 60 * 60);
-
-      const decision = resolveCancellationPolicy({
-        user,
-        appointment: ap,
-        hoursToStart,
-      });
-
-      console.log("[CANCEL DEBUG]", {
-        appointmentId: String(ap._id),
-        service: ap.service,
-        serviceKey: serviceToKey(ap.service),
-        hoursToStart,
-        decision,
-        timelyUsed: countMonthlyRefundsByType(user, {
-          serviceKey: serviceToKey(ap.service),
-          refundType: "timely",
-        }),
-        lateUsed: countMonthlyRefundsByType(user, {
-          serviceKey: serviceToKey(ap.service),
-          refundType: "late",
-        }),
-        creditLotId: ap.creditLotId || null,
-        lots: lotsDebug(user),
-      });
-
-      const historyMeta = buildCancellationHistoryMeta({
-        appointment: ap,
-        decision,
-        now: new Date(),
-      });
-
-      let updatedUser = user;
-
-      if (decision.refund) {
-        if (ap.creditLotId) {
-          updatedUser = await refundCreditAtomicToOriginalLot({
-            userId: user._id,
-            lotId: ap.creditLotId,
-            historyItem: {
-              action: decision.historyAction,
-              date: ap.date,
-              time: ap.time,
-              service: ap.service,
-              serviceName: ap.service,
-              ...historyMeta,
-            },
-            session,
-          });
-        } else {
-          const refunded = await refundCreditAtomicNewLot({
-            userId: user._id,
-            apService: ap.service,
-            historyItem: {
-              action: decision.historyAction,
-              date: ap.date,
-              time: ap.time,
-              service: ap.service,
-              serviceName: ap.service,
-              ...historyMeta,
-            },
-            session,
-          });
-          updatedUser = refunded.user;
-        }
-      } else {
-        user.history = Array.isArray(user.history) ? user.history : [];
-        user.history.push({
-          action: decision.historyAction,
-          date: ap.date,
-          time: ap.time,
-          service: ap.service,
-          serviceName: ap.service,
-          ...historyMeta,
-          createdAt: new Date(),
-        });
-        recalcUserCredits(user);
-        await user.save({ session });
-        updatedUser = user;
-      }
-
-      ap.status = "cancelled";
-      ap.cancelledAt = new Date();
-      ap.cancelledByRole = role || "client";
-      ap.cancelledByUser = tokenUserId || null;
-      ap.cancelReason = decision.reason || "";
-      ap.refundApplied = !!decision.refund;
-      ap.refundMode = decision.refundMode || "none";
-      await ap.save({ session });
-
-      const cancellationCounters = getMonthlyCancellationCounters(
-        updatedUser,
-        ap.service,
-        new Date()
-      );
-
-      const cancellationMessage = buildCancellationClientMessage({
-        appointment: ap,
-        decision,
-        counters: cancellationCounters,
-      });
-
-      responsePayload = {
-        ok: true,
-        id: String(ap._id),
-        refundApplied: !!decision.refund,
-        refundMode: decision.refundMode || "none",
-        refundReason: decision.reason || "",
-        cancelReason: decision.reason || "",
-        cancellationMessage,
-        cancellationPolicy: cancellationCounters,
-        userCredits: Number(updatedUser.credits || 0),
-        userCreditLots: serializeUserCreditLots(updatedUser),
-      };
-
-      mailUser = { ...updatedUser.toObject(), _id: updatedUser._id };
-      mailAp = {
-        date: ap.date,
-        time: ap.time,
-        service: ap.service,
-        refundApplied: !!decision.refund,
-        refundMode: decision.refundMode || "none",
-      };
-    });
-
-    await logActivity({
-      req,
-      category: "appointments",
-      action: "appointment_cancelled",
-      entity: "appointment",
-      entityId: appointmentId,
-      title: "Turno cancelado",
-      description: "Se canceló un turno existente.",
-      subject: buildUserSubject(req.user),
-      meta: {
-        refundApplied: !!responsePayload?.refundApplied,
-        refundMode: responsePayload?.refundMode || "none",
-        refundReason: responsePayload?.refundReason || "",
-      },
-    });
-
-    res.json(responsePayload);
-
-    if (mailUser && mailAp) {
-      fireAndForget(async () => {
-        try {
-          await sendAppointmentCancelledEmail(mailUser, mailAp);
-        } catch (e) {
-          console.log("[MAIL] cancelled error:", e?.message || e);
-          await sendAdminCopy({ kind: "cancelled", user: mailUser, ap: mailAp });
-        }
-      }, "MAIL_CANCELLED");
-    }
-  } catch (err) {
-    console.error("Error en DELETE /appointments/:id:", err);
-    const msg = String(err?.message || "");
-
-    if (msg === "APPOINTMENT_NOT_FOUND") {
-      return res.status(404).json({ error: "Turno no encontrado." });
-    }
-    if (msg === "NOT_ALLOWED") {
-      return res.status(403).json({ error: "No autorizado." });
-    }
-    if (msg === "APPOINTMENT_NOT_ACTIVE") {
-      return res.status(409).json({ error: "El turno ya no está activo." });
-    }
-    if (msg === "USER_NOT_FOUND") {
-      return res.status(404).json({ error: "Usuario no encontrado." });
-    }
-    if (msg === "INVALID_SLOT") {
-      return res.status(400).json({ error: "Fecha/hora inválida." });
-    }
-
-    return res.status(500).json({ error: "No se pudo cancelar el turno." });
-  } finally {
-    await session.endSession();
-  }
+const decision = resolveCancellationPolicy({
+  user,
+  appointment: ap,
+  hoursToStart,
 });
 
-/* =========================
-   GET /appointments/admin/debug-user/:userId
-========================= */
-router.get("/admin/debug-user/:userId", ensureStaff, async (req, res) => {
-  try {
-    const userId = String(req.params?.userId || "").trim();
-    if (!userId) {
-      return res.status(400).json({ error: "Falta userId." });
-    }
-
-    const user = await User.findById(userId).lean();
-    if (!user) {
-      return res.status(404).json({ error: "Usuario no encontrado." });
-    }
-
-    return res.json({
-      ok: true,
-      credits: Number(user?.credits || 0),
-      lots: lotsDebug(user),
-      history: Array.isArray(user?.history) ? user.history : [],
-    });
-  } catch (err) {
-    console.error("Error en GET /appointments/admin/debug-user/:userId:", err);
-    return res.status(500).json({ error: "No se pudo obtener debug del usuario." });
-  }
+console.log("[CANCEL DEBUG]", {
+  appointmentId: String(ap._id),
+  service: ap.service,
+  serviceKey: serviceToKey(ap.service),
+  hoursToStart,
+  decision,
+  timelyUsed: countMonthlyRefundsByType(user, {
+    serviceKey: serviceToKey(ap.service),
+    refundType: "timely",
+  }),
+  lateUsed: countMonthlyRefundsByType(user, {
+    serviceKey: serviceToKey(ap.service),
+    refundType: "late",
+  }),
+  creditLotId: ap.creditLotId || null,
+  lots: lotsDebug(user),
 });
 
-/* =========================
-   GET /appointments/admin/debug-cancel/:appointmentId
-========================= */
-router.get("/admin/debug-cancel/:appointmentId", ensureStaff, async (req, res) => {
-  try {
-    const appointmentId = String(req.params?.appointmentId || "").trim();
-    if (!appointmentId) {
-      return res.status(400).json({ error: "Falta appointmentId." });
-    }
-
-    const ap = await Appointment.findById(appointmentId).lean();
-    if (!ap) {
-      return res.status(404).json({ error: "Turno no encontrado." });
-    }
-
-    const user = await User.findById(ap.user).lean();
-    if (!user) {
-      return res.status(404).json({ error: "Usuario no encontrado." });
-    }
-
-    const slotDate = buildSlotDate(ap.date, ap.time);
-    if (!slotDate) {
-      return res.status(400).json({ error: "Fecha/hora inválida." });
-    }
-
-    const hoursToStart = (slotDate.getTime() - Date.now()) / (1000 * 60 * 60);
-    const decision = resolveCancellationPolicy({
-      user,
-      appointment: ap,
-      hoursToStart,
-    });
-
-    return res.json({
-      ok: true,
-      appointment: {
-        id: String(ap._id),
-        date: ap.date,
-        time: ap.time,
-        service: ap.service,
-        status: ap.status,
-        creditLotId: ap.creditLotId || null,
-      },
-      user: {
-        id: String(user._id),
-        credits: Number(user.credits || 0),
-        lots: lotsDebug(user),
-      },
-      debug: {
-        hoursToStart,
-        serviceKey: serviceToKey(ap.service),
-        decision,
-        timelyUsed: countMonthlyRefundsByType(user, {
-          serviceKey: serviceToKey(ap.service),
-          refundType: "timely",
-        }),
-        lateUsed: countMonthlyRefundsByType(user, {
-          serviceKey: serviceToKey(ap.service),
-          refundType: "late",
-        }),
-      },
-    });
-  } catch (err) {
-    console.error("Error en GET /appointments/admin/debug-cancel/:appointmentId:", err);
-    return res.status(500).json({ error: "No se pudo obtener debug de cancelación." });
-  }
+const historyMeta = buildCancellationHistoryMeta({
+  appointment: ap,
+  decision,
+  now: new Date(),
 });
 
-/* =========================
-   GET /appointments/admin/user-monthly-counters/:userId
-========================= */
-router.get("/admin/user-monthly-counters/:userId", ensureStaff, async (req, res) => {
-  try {
-    const userId = String(req.params?.userId || "").trim();
-    const service = String(req.query?.service || "").trim();
+let updatedUser = user;
 
-    if (!userId) {
-      return res.status(400).json({ error: "Falta userId." });
-    }
-
-    if (!service) {
-      return res.status(400).json({ error: "Falta service." });
-    }
-
-    const user = await User.findById(userId).lean();
-    if (!user) {
-      return res.status(404).json({ error: "Usuario no encontrado." });
-    }
-
-    const counters = getMonthlyCancellationCounters(user, service, new Date());
-
-    return res.json({
-      ok: true,
-      service,
-      serviceKey: serviceToKey(service),
-      counters,
-    });
-  } catch (err) {
-    console.error("Error en GET /appointments/admin/user-monthly-counters/:userId:", err);
-    return res.status(500).json({ error: "No se pudieron obtener los contadores mensuales." });
-  }
-});
-
-/* =========================
-   PATCH /appointments/admin/:id/mark-completed
-========================= */
-router.patch("/admin/:id/mark-completed", ensureStaff, async (req, res) => {
-  try {
-    const appointmentId = String(req.params?.id || "").trim();
-    if (!appointmentId) {
-      return res.status(400).json({ error: "Falta id del turno." });
-    }
-
-    const ap = await Appointment.findById(appointmentId);
-    if (!ap) {
-      return res.status(404).json({ error: "Turno no encontrado." });
-    }
-
-    if (String(ap.status || "") !== "reserved") {
-      return res.status(409).json({ error: "El turno ya no está reservado." });
-    }
-
-    ap.status = "completed";
-    ap.completedAt = new Date();
-    await ap.save();
-
-    const user = await User.findById(ap.user);
-    if (user) {
-      if (isFirstEvaluationService(ap.service) && !user.firstEvaluationCompleted) {
-        user.firstEvaluationCompleted = true;
-        user.firstEvaluationCompletedAt = user.firstEvaluationCompletedAt || new Date();
-      }
-
-      user.history = Array.isArray(user.history) ? user.history : [];
-      user.history.push({
-        action: "turno_completado_por_admin",
+if (decision.refund) {
+  if (ap.creditLotId) {
+    updatedUser = await refundCreditAtomicToOriginalLot({
+      userId: user._id,
+      lotId: ap.creditLotId,
+      historyItem: {
+        action: decision.historyAction,
         date: ap.date,
         time: ap.time,
         service: ap.service,
         serviceName: ap.service,
-        createdAt: new Date(),
-      });
-
-      recalcUserCredits(user);
-      await user.save();
-    }
-
-    await logActivity({
-      req,
-      category: "appointments",
-      action: "appointment_marked_completed",
-      entity: "appointment",
-      entityId: String(ap._id),
-      title: "Turno marcado como completado",
-      description: "Se marcó manualmente un turno como completado.",
-      subject: buildUserSubject(req.user),
-      meta: {
+        ...historyMeta,
+      },
+      session,
+    });
+  } else {
+    const refunded = await refundCreditAtomicNewLot({
+      userId: user._id,
+      apService: ap.service,
+      historyItem: {
+        action: decision.historyAction,
         date: ap.date,
         time: ap.time,
+        service: ap.service,
         serviceName: ap.service,
+        ...historyMeta,
       },
+      session,
     });
-
-    return res.json({
-      ok: true,
-      id: String(ap._id),
-      status: ap.status,
-      completedAt: ap.completedAt || null,
-    });
-  } catch (err) {
-    console.error("Error en PATCH /appointments/admin/:id/mark-completed:", err);
-    return res.status(500).json({ error: "No se pudo marcar el turno como completado." });
+    updatedUser = refunded.user;
   }
+} else {
+  user.history = Array.isArray(user.history) ? user.history : [];
+  user.history.push({
+    action: decision.historyAction,
+    date: ap.date,
+    time: ap.time,
+    service: ap.service,
+    serviceName: ap.service,
+    ...historyMeta,
+    createdAt: new Date(),
+  });
+  recalcUserCredits(user);
+  await user.save({ session });
+  updatedUser = user;
+}
+
+ap.status = "cancelled";
+ap.cancelledAt = new Date();
+ap.cancelledByRole = role || "client";
+ap.cancelledByUser = tokenUserId || null;
+ap.cancelReason = decision.reason || "";
+ap.refundApplied = !!decision.refund;
+ap.refundMode = decision.refundMode || "none";
+await ap.save({ session });
+
+const cancellationCounters = getMonthlyCancellationCounters(
+  updatedUser,
+  ap.service,
+  new Date()
+);
+
+const cancellationMessage = buildCancellationClientMessage({
+  appointment: ap,
+  decision,
+  counters: cancellationCounters,
 });
 
-/* =========================
-   PATCH /appointments/admin/:id/reactivate
-========================= */
-router.patch("/admin/:id/reactivate", ensureStaff, async (req, res) => {
-  try {
-    const appointmentId = String(req.params?.id || "").trim();
-    if (!appointmentId) {
-      return res.status(400).json({ error: "Falta id del turno." });
-    }
+responsePayload = {
+  ok: true,
+  id: String(ap._id),
+  refundApplied: !!decision.refund,
+  refundMode: decision.refundMode || "none",
+  refundReason: decision.reason || "",
+  cancelReason: decision.reason || "",
+  cancellationMessage,
+  cancellationPolicy: cancellationCounters,
+  userCredits: Number(updatedUser.credits || 0),
+  userCreditLots: serializeUserCreditLots(updatedUser),
+};
 
-    const ap = await Appointment.findById(appointmentId);
-    if (!ap) {
-      return res.status(404).json({ error: "Turno no encontrado." });
-    }
-
-    if (String(ap.status || "") !== "cancelled") {
-      return res.status(409).json({ error: "Solo se pueden reactivar turnos cancelados." });
-    }
-
-    ap.status = "reserved";
-    ap.cancelledAt = null;
-    ap.cancelledByRole = "";
-    ap.cancelledByUser = null;
-    ap.cancelReason = "";
-    ap.refundApplied = false;
-    ap.refundMode = "none";
-    await ap.save();
-
-    await logActivity({
-      req,
-      category: "appointments",
-      action: "appointment_reactivated",
-      entity: "appointment",
-      entityId: String(ap._id),
-      title: "Turno reactivado",
-      description: "Se reactivó manualmente un turno cancelado.",
-      subject: buildUserSubject(req.user),
-      meta: {
-        date: ap.date,
-        time: ap.time,
-        serviceName: ap.service,
-      },
-    });
-
-    return res.json({
-      ok: true,
-      id: String(ap._id),
-      status: ap.status,
-    });
-  } catch (err) {
-    console.error("Error en PATCH /appointments/admin/:id/reactivate:", err);
-    return res.status(500).json({ error: "No se pudo reactivar el turno." });
-  }
-});
-
-/* =========================
-   GET /appointments/admin/slot-stats
-========================= */
-router.get("/admin/slot-stats", ensureStaff, async (req, res) => {
-  try {
-    const date = String(req.query?.date || "").slice(0, 10);
-    const time = String(req.query?.time || "").slice(0, 5);
-
-    if (!date || !time) {
-      return res.status(400).json({ error: "Faltan date y time." });
-    }
-
-    const existing = await Appointment.find({
-      date,
-      time,
-      status: "reserved",
-    })
-      .select("service user")
-      .populate("user", "name lastName email")
-      .lean();
-
-    const stats = getSlotReservationStats(existing, date, time);
-
-    return res.json({
-      ok: true,
-      date,
-      time,
-      stats,
-      items: (existing || []).map((ap) => ({
-        id: String(ap?._id || ""),
-        service: ap?.service || "",
-        user: ap?.user
-          ? {
-              _id: String(ap.user?._id || ""),
-              name: ap.user?.name || "",
-              lastName: ap.user?.lastName || "",
-              email: ap.user?.email || "",
-            }
-          : null,
-      })),
-    });
-  } catch (err) {
-    console.error("Error en GET /appointments/admin/slot-stats:", err);
-    return res.status(500).json({ error: "No se pudieron obtener las estadísticas del horario." });
-  }
-});
-
-/* =========================
-   FALLBACK
-========================= */
-router.use((req, res) => {
-  return res.status(404).json({ error: "Ruta de appointments no encontrada." });
-});
+mailUser = { ...updatedUser.toObject(), _id: updatedUser._id };
+mailAp = {
+  date: ap.date,
+  time: ap.time,
+  service: ap.service,
+  refundApplied: !!decision.refund,
+  refundMode: decision.refundMode || "none",
+};
 
 export default router;
