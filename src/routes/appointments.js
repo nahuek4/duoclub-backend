@@ -2758,6 +2758,6 @@ router.delete("/:id", async (req, res) => {
   } finally {
     await session.endSession();
   }
-});t
+});
 
 export default router;
