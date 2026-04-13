@@ -82,7 +82,10 @@ export async function sendVerifyEmail(user, verifyUrl) {
   ].join("\n");
 
   const panel = buildPanel([
-    panelRow("Estado", `<span style="color:#ffffff;">Pendiente de verificación</span>`),
+    panelRow(
+      "Estado",
+      `<span style="color:#ffffff;">Pendiente de verificación</span>`
+    ),
     panelRow("Vence", `<span style="color:#ffffff;">24 horas</span>`),
   ]);
 
@@ -159,8 +162,12 @@ export async function sendUserRegistrationReceivedEmail(user) {
 
   const panel = buildPanel([
     panelRow(
-      "Antes de continuar",
-      `<span style="color:#ffffff;">Verificá tu correo electrónico, si todavía no lo hiciste.</span>`
+      "Estado",
+      `<span style="color:#ffffff;">Pendiente de aprobación</span>`
+    ),
+    panelRow(
+      "Importante",
+      `<span style="color:#ffffff;">Verificá tu correo electrónico si todavía no lo hiciste.</span>`
     ),
   ]);
 
@@ -182,7 +189,7 @@ export async function sendUserRegistrationReceivedEmail(user) {
 
     ${
       BRAND_URL
-        ? renderPrimaryButton("Verificar email", BRAND_URL)
+        ? renderPrimaryButton(`Ingresar a ${BRAND_NAME}`, BRAND_URL)
         : ""
     }
 
@@ -194,7 +201,7 @@ export async function sendUserRegistrationReceivedEmail(user) {
         weight: 700,
         maxWidth: 320,
         marginTop: 2,
-        marginBottom: 10,
+        marginBottom: 0,
       }
     )}
 
@@ -254,8 +261,8 @@ export async function sendAdminNewRegistrationEmail({
     user?._id ? `ID: ${user._id}` : "",
     `Email verificado: ${user?.emailVerified ? "SI" : "NO"}`,
     "",
-    `Aprobar: ${approveUrl}`,
-    `Rechazar: ${rejectUrl}`,
+    approveUrl ? `Aprobar: ${approveUrl}` : "",
+    rejectUrl ? `Rechazar: ${rejectUrl}` : "",
   ]
     .filter(Boolean)
     .join("\n");
@@ -286,12 +293,22 @@ export async function sendAdminNewRegistrationEmail({
 
     ${panel}
 
-    ${renderExactButtons([
-      { label: "Aprobar", href: approveUrl, variant: "primary" },
-      { label: "Rechazar", href: rejectUrl, variant: "danger" },
-    ])}
+    ${renderExactButtons(
+      [
+        approveUrl
+          ? { label: "Aprobar", href: approveUrl, variant: "primary" }
+          : null,
+        rejectUrl
+          ? { label: "Rechazar", href: rejectUrl, variant: "danger" }
+          : null,
+      ].filter(Boolean)
+    )}
 
-    ${renderLinksFallback([{ href: approveUrl }, { href: rejectUrl }])}
+    ${renderLinksFallback(
+      [approveUrl, rejectUrl]
+        .filter(Boolean)
+        .map((href) => ({ href }))
+    )}
   `;
 
   const html = buildAuthEmail({
