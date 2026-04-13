@@ -9,16 +9,16 @@ export * from "./mail/layout.js";
 export * from "./mail/creditsEmails.js";
 
 /* =========================================================
-   FIX COMPATIBILIDAD (NO ROMPER IMPORTS EXISTENTES)
+   FIX COMPATIBILIDAD
 ========================================================= */
 
-// 👉 CREDITOS
+// CREDITOS
 export {
   sendAdminCreditsChangedEmail as sendAdminCreditsAssignedEmail,
   sendCreditsChangedEmail as sendUserCreditsAssignedEmail,
 } from "./mail/creditsEmails.js";
 
-// 👉 ORDERS (ajustá si el nombre real es distinto)
+// ORDERS
 export {
-  sendAdminOrderEmail as sendAdminNewOrderEmail,
+  sendOrderPendingEmail as sendAdminNewOrderEmail,
 } from "./mail/orderEmails.js";
