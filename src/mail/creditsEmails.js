@@ -20,10 +20,14 @@ function cleanStr(v, fallback = "-") {
 }
 
 function fullNameOf(user = {}) {
+  const name = String(user?.name || "").trim();
+  const lastName = String(user?.lastName || "").trim();
+  const fullName = `${name} ${lastName}`.trim();
+
   return (
-    `${cleanStr(user?.name, "")} ${cleanStr(user?.lastName, "")}`.trim() ||
-    cleanStr(user?.fullName, "") ||
-    cleanStr(user?.email, "") ||
+    fullName ||
+    String(user?.fullName || "").trim() ||
+    String(user?.email || "").trim() ||
     "Usuario"
   );
 }
@@ -52,11 +56,14 @@ function normalizeItems(items = []) {
 }
 
 function serviceLabel(key) {
-  const k = String(key || "").toUpperCase();
+  const k = String(key || "").toUpperCase().trim();
+
   if (k === "EP") return "Entrenamiento Personal";
   if (k === "RF") return "Reeducación Funcional";
   if (k === "RA") return "Rehabilitación Activa";
   if (k === "NUT") return "Nutrición";
+  if (k === "PE") return "Primera evaluación presencial";
+
   return k || "-";
 }
 
@@ -69,13 +76,14 @@ function formatChange(it) {
     return `${sign}${n}`;
   }
 
-  return `Fijado en ${Number(it.value || 0)}`;
+  return `Saldo fijado en ${Number(it.value || 0)}`;
 }
 
 function itemsTextLines(items = []) {
   if (!items.length) return ["-"];
+
   return items.map(
-    (it) => `• ${it.serviceKey} (${serviceLabel(it.serviceKey)}): ${formatChange(it)}`
+    (it) => `• ${serviceLabel(it.serviceKey)} (${it.serviceKey}): ${formatChange(it)}`
   );
 }
 
@@ -85,7 +93,7 @@ function renderCreditsChangesPanel(items = []) {
   const rows = list.length
     ? list
         .map((it) => {
-          const left = `${it.serviceKey} · ${serviceLabel(it.serviceKey)}`;
+          const left = `${serviceLabel(it.serviceKey)} · ${it.serviceKey}`;
           const right = formatChange(it);
 
           return renderRowCard({
@@ -96,13 +104,15 @@ function renderCreditsChangesPanel(items = []) {
         })
         .join("")
     : `
-      <div style="
-        font-size:14px;
-        line-height:18px;
-        font-weight:700;
-        color:#ffffff;
-        text-align:left;
-      ">
+      <div
+        style="
+          font-size:14px;
+          line-height:18px;
+          font-weight:700;
+          color:#ffffff;
+          text-align:left;
+        "
+      >
         Sin cambios para mostrar.
       </div>
     `;
@@ -151,29 +161,31 @@ function buildCreditsEmail({
 ========================================================= */
 
 export async function sendCreditsChangedEmail(user = {}, items = [], meta = {}) {
-  const to = user?.email;
+  const to = String(user?.email || "").trim();
   if (!to) return;
 
   const normalized = normalizeItems(items);
   if (!normalized.length) return;
 
   const uName = fullNameOf(user);
-  const reason = cleanStr(meta?.reason, "");
-  const actorName = cleanStr(meta?.actorName, "");
+  const reason = String(meta?.reason || "").trim();
+  const actorName = String(meta?.actorName || "").trim();
   const actorLabel = actorName || "Staff DUO";
 
-  const subject = `Actualización de créditos - ${BRAND_NAME}`;
+  const subject = `Tus créditos fueron actualizados - ${BRAND_NAME}`;
 
   const text = [
     `Hola ${uName},`,
     "",
-    "Se actualizó tu saldo de créditos.",
+    "Actualizamos el saldo de créditos de tu cuenta.",
     "",
-    "Cambios:",
+    "Detalle de cambios:",
     ...itemsTextLines(normalized),
     "",
     reason ? `Motivo: ${reason}` : "",
     `Gestionado por: ${actorLabel}`,
+    "",
+    "Podés ingresar a tu cuenta para ver el saldo actualizado.",
   ]
     .filter(Boolean)
     .join("\n");
@@ -185,11 +197,11 @@ export async function sendCreditsChangedEmail(user = {}, items = [], meta = {}) 
 
   const html = buildCreditsEmail({
     title: "Créditos actualizados",
-    preheader: "Tu saldo de créditos fue actualizado",
+    preheader: "Actualizamos el saldo de créditos de tu cuenta",
     icon: "✓",
     innerHtml: `
       ${renderExactBodyText(
-        `Hola <b>${escapeHtml(uName)}</b>,<br/>Se actualizó tu saldo de créditos.`,
+        `Hola <b>${escapeHtml(uName)}</b>,<br/>Actualizamos el saldo de créditos de tu cuenta.`,
         {
           fontSize: 14,
           lineHeight: 19,
@@ -229,7 +241,7 @@ export async function sendAdminCreditsChangedEmail(
   items = [],
   meta = {}
 ) {
-  const to = ADMIN_EMAIL;
+  const to = String(ADMIN_EMAIL || "").trim();
   if (!to) return;
 
   const normalized = normalizeItems(items);
@@ -237,8 +249,8 @@ export async function sendAdminCreditsChangedEmail(
 
   const uName = fullNameOf(user);
   const uEmail = cleanStr(user?.email);
-  const reason = cleanStr(meta?.reason, "");
-  const actorName = cleanStr(meta?.actorName, "");
+  const reason = String(meta?.reason || "").trim();
+  const actorName = String(meta?.actorName || "").trim();
   const actorLabel = actorName || "Staff DUO";
 
   const subject = `Créditos actualizados — ${uName}`;
@@ -249,7 +261,7 @@ export async function sendAdminCreditsChangedEmail(
     `Usuario: ${uName}`,
     `Email: ${uEmail}`,
     "",
-    "Cambios:",
+    "Detalle de cambios:",
     ...itemsTextLines(normalized),
     "",
     reason ? `Motivo: ${reason}` : "",
@@ -260,7 +272,7 @@ export async function sendAdminCreditsChangedEmail(
 
   const html = buildCreditsEmail({
     title: "Créditos actualizados",
-    preheader: `Actualización de créditos de ${uName}`,
+    preheader: `Se actualizaron créditos de ${uName}`,
     icon: "✓",
     innerHtml: `
       ${renderAdminMetaPanel([
@@ -285,7 +297,7 @@ export async function sendAdminCreditsChangedEmail(
 ========================================================= */
 
 export async function sendCreditConsumedEmail(user = {}, payload = {}) {
-  const to = user?.email;
+  const to = String(user?.email || "").trim();
   if (!to) return;
 
   const uName = fullNameOf(user);
@@ -294,26 +306,28 @@ export async function sendCreditConsumedEmail(user = {}, payload = {}) {
   const remaining = Number(payload?.remaining);
   const hasRemaining = Number.isFinite(remaining);
 
-  const subject = `Se consumió un crédito - ${BRAND_NAME}`;
+  const subject = `Se descontó un crédito de tu cuenta - ${BRAND_NAME}`;
 
   const text = [
     `Hola ${uName},`,
     "",
-    "Se consumió un crédito de tu cuenta.",
+    "Se descontó un crédito de tu cuenta.",
     "",
     `Servicio: ${service}`,
     hasRemaining ? `Créditos restantes: ${remaining}` : "",
+    "",
+    "Podés ingresar a tu cuenta para revisar el saldo actualizado.",
   ]
     .filter(Boolean)
     .join("\n");
 
   const html = buildCreditsEmail({
     title: "Crédito consumido",
-    preheader: "Se consumió un crédito de tu cuenta",
+    preheader: "Se descontó un crédito de tu cuenta",
     icon: "✓",
     innerHtml: `
       ${renderExactBodyText(
-        `Hola <b>${escapeHtml(uName)}</b>,<br/>Se consumió un crédito de tu cuenta.`,
+        `Hola <b>${escapeHtml(uName)}</b>,<br/>Se descontó un crédito de tu cuenta.`,
         {
           fontSize: 14,
           lineHeight: 19,
