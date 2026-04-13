@@ -211,9 +211,19 @@ function buildAdminAppointmentEmail({
     ? "Se reservaron\nturnos"
     : "Se reservó\nun turno";
 
-  const refundFlag = typeof meta?.refund === "boolean" ? meta.refund : null;
+  const refundFlag =
+    typeof meta?.refund === "boolean"
+      ? meta.refund
+      : typeof list?.[0]?.refund === "boolean"
+      ? list[0].refund
+      : null;
+
   const cutoff =
-    typeof meta?.refundCutoffHours === "number" ? meta.refundCutoffHours : null;
+    typeof meta?.refundCutoffHours === "number"
+      ? meta.refundCutoffHours
+      : typeof list?.[0]?.refundCutoffHours === "number"
+      ? list[0].refundCutoffHours
+      : null;
 
   const refundDetail =
     refundFlag === null ? "" : refundFlag ? "Sí (1 sesión)" : "No";
@@ -337,8 +347,12 @@ export async function sendAppointmentCancelledEmail(
     date: ap?.date,
     time: ap?.time,
     serviceName: serviceName || ap?.service,
-    refund: meta?.refund,
-    refundCutoffHours: meta?.refundCutoffHours,
+    refund:
+      typeof meta?.refund === "boolean" ? meta.refund : ap?.refund,
+    refundCutoffHours:
+      typeof meta?.refundCutoffHours === "number"
+        ? meta.refundCutoffHours
+        : ap?.refundCutoffHours,
   });
 
   if (!user?.email) return;
@@ -346,9 +360,19 @@ export async function sendAppointmentCancelledEmail(
   const svc = getServiceName(ap, serviceName);
   const item = { ...ap, serviceName: svc };
 
-  const refundFlag = typeof meta?.refund === "boolean" ? meta.refund : null;
+  const refundFlag =
+    typeof meta?.refund === "boolean"
+      ? meta.refund
+      : typeof ap?.refund === "boolean"
+      ? ap.refund
+      : null;
+
   const cutoff =
-    typeof meta?.refundCutoffHours === "number" ? meta.refundCutoffHours : null;
+    typeof meta?.refundCutoffHours === "number"
+      ? meta.refundCutoffHours
+      : typeof ap?.refundCutoffHours === "number"
+      ? ap.refundCutoffHours
+      : null;
 
   const subject = `❌ Tu turno fue cancelado - ${BRAND_NAME}`;
 
@@ -511,9 +535,19 @@ export async function sendAdminAppointmentCancelledEmail(
   const uEmail = user?.email || "-";
   const svc = getServiceName(ap, serviceName);
 
-  const refundFlag = typeof meta?.refund === "boolean" ? meta.refund : null;
+  const refundFlag =
+    typeof meta?.refund === "boolean"
+      ? meta.refund
+      : typeof ap?.refund === "boolean"
+      ? ap.refund
+      : null;
+
   const cutoff =
-    typeof meta?.refundCutoffHours === "number" ? meta.refundCutoffHours : null;
+    typeof meta?.refundCutoffHours === "number"
+      ? meta.refundCutoffHours
+      : typeof ap?.refundCutoffHours === "number"
+      ? ap.refundCutoffHours
+      : null;
 
   const subject = `🧾 Turno cancelado — ${uName} · ${ap?.date || "-"} ${
     ap?.time || ""
@@ -554,7 +588,11 @@ export async function sendAdminAppointmentCancelledEmail(
     user,
     items: [{ ...ap, serviceName: svc }],
     kind: "cancelled",
-    meta,
+    meta: {
+      ...meta,
+      refund: refundFlag,
+      refundCutoffHours: cutoff,
+    },
   });
 
   await sendMail(to, subject, text, html);
