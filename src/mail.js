@@ -1,5 +1,4 @@
 // backend/src/mail.js
-// ✅ Entry-point único para imports tipo: import { ... } from "../mail.js"
 
 export * from "./mail/core.js";
 export * from "./mail/authEmails.js";
@@ -10,19 +9,16 @@ export * from "./mail/layout.js";
 export * from "./mail/creditsEmails.js";
 
 /* =========================================================
-   ALIASES DE COMPATIBILIDAD
-   users.js hoy importa:
-   - sendAdminCreditsAssignedEmail
-   - sendUserCreditsAssignedEmail
-
-   Pero creditsEmails.js expone:
-   - sendAdminCreditsChangedEmail
-   - sendCreditsChangedEmail
-
-   Entonces los reexportamos con alias para no romper el resto.
+   FIX COMPATIBILIDAD (NO ROMPER IMPORTS EXISTENTES)
 ========================================================= */
 
+// 👉 CREDITOS
 export {
   sendAdminCreditsChangedEmail as sendAdminCreditsAssignedEmail,
   sendCreditsChangedEmail as sendUserCreditsAssignedEmail,
 } from "./mail/creditsEmails.js";
+
+// 👉 ORDERS (ajustá si el nombre real es distinto)
+export {
+  sendAdminOrderEmail as sendAdminNewOrderEmail,
+} from "./mail/orderEmails.js";
