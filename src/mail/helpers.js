@@ -1,5 +1,11 @@
+// backend/src/mail/helpers.js
+
 export const EMAIL_FONT =
   "'Helvetica Now Display', 'Helvetica Neue', Helvetica, Arial, sans-serif";
+
+/* =========================================================
+   Base
+========================================================= */
 
 export function escapeHtml(v) {
   return String(v ?? "")
@@ -9,6 +15,15 @@ export function escapeHtml(v) {
     .replace(/"/g, "&quot;")
     .replace(/'/g, "&#039;");
 }
+
+export function cleanStr(v, fallback = "-") {
+  const s = String(v ?? "").trim();
+  return s ? s : fallback;
+}
+
+/* =========================================================
+   Fecha / hora
+========================================================= */
 
 export function prettyDateAR(dateStr) {
   try {
@@ -28,6 +43,36 @@ export function prettyDateAR(dateStr) {
   }
 }
 
+export function formatARDateTime(dateLike) {
+  try {
+    const d = dateLike ? new Date(dateLike) : null;
+    if (!d || Number.isNaN(d.getTime())) {
+      return { date: "-", time: "-" };
+    }
+
+    const date = d.toLocaleDateString("es-AR", {
+      timeZone: "America/Argentina/Buenos_Aires",
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+    });
+
+    const time = d.toLocaleTimeString("es-AR", {
+      timeZone: "America/Argentina/Buenos_Aires",
+      hour: "2-digit",
+      minute: "2-digit",
+    });
+
+    return { date, time };
+  } catch {
+    return { date: "-", time: "-" };
+  }
+}
+
+/* =========================================================
+   Dinero
+========================================================= */
+
 export function moneyARS(v) {
   const n = Number(v);
   if (!Number.isFinite(n)) return String(v ?? "-");
@@ -41,6 +86,12 @@ export function moneyARS(v) {
     return `$${n}`;
   }
 }
+
+/* =========================================================
+   Legacy rows (compatibilidad)
+   Ojo: estos helpers quedan para mails viejos o fallback.
+   El look principal nuevo vive en ui.js
+========================================================= */
 
 export function kvRow(label, value, opts = {}) {
   const isLast = !!opts?.isLast;
@@ -112,6 +163,10 @@ export function kvRowRaw(label, htmlValue, opts = {}) {
   `;
 }
 
+/* =========================================================
+   Pills / estados
+========================================================= */
+
 export function pill(status) {
   const s = String(status || "").toLowerCase();
 
@@ -132,4 +187,19 @@ export function pill(status) {
     tx: "#334155",
     label: String(status || "ESTADO").toUpperCase(),
   };
+}
+
+/* =========================================================
+   Utils chicos reutilizables
+========================================================= */
+
+export function boolLabel(v) {
+  if (v === true) return "SI";
+  if (v === false) return "NO";
+  return cleanStr(v);
+}
+
+export function safeUpper(v, fallback = "-") {
+  const s = cleanStr(v, fallback);
+  return s === "-" ? s : s.toUpperCase();
 }

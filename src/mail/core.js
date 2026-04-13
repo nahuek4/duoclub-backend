@@ -1,3 +1,4 @@
+// backend/src/mail/core.js
 import nodemailer from "nodemailer";
 
 let transporter = null;
@@ -5,6 +6,7 @@ let transporter = null;
 /* =========================================================
    Config
 ========================================================= */
+
 export const ADMIN_EMAIL = String(
   process.env.ADMIN_EMAIL || "duoclub.ar@gmail.com"
 ).trim();
@@ -16,8 +18,9 @@ export const BRAND_URL = String(
 ).trim();
 
 /* =========================================================
-   Helpers
+   Helpers ENV
 ========================================================= */
+
 function stripOuterQuotes(s) {
   return String(s ?? "")
     .trim()
@@ -37,6 +40,7 @@ function envBool(key, fallback = "false") {
 /* =========================================================
    Boot log
 ========================================================= */
+
 console.log("[MAIL] core loaded", {
   NODE_ENV: process.env.NODE_ENV,
   SMTP_HOST: process.env.SMTP_HOST,
@@ -56,6 +60,7 @@ console.log("[MAIL] core loaded", {
 /* =========================================================
    Util: fire-and-forget
 ========================================================= */
+
 export function fireAndForget(fn, label = "MAIL") {
   try {
     setImmediate(() => {
@@ -71,6 +76,7 @@ export function fireAndForget(fn, label = "MAIL") {
 /* =========================================================
    Transporter
 ========================================================= */
+
 function getTransporter() {
   if (transporter) return transporter;
 
@@ -104,7 +110,10 @@ function getTransporter() {
     host: SMTP_HOST,
     port: SMTP_PORT,
     secure: SMTP_SECURE,
-    auth: { user: SMTP_USER, pass: SMTP_PASS },
+    auth: {
+      user: SMTP_USER,
+      pass: SMTP_PASS,
+    },
     connectionTimeout: 15000,
     greetingTimeout: 15000,
     socketTimeout: 30000,
@@ -124,6 +133,7 @@ function getTransporter() {
 /* =========================================================
    Send base
 ========================================================= */
+
 export async function sendMail(to, subject, text, html) {
   console.log("[MAIL] sendMail called", { to, subject });
 
@@ -137,39 +147,40 @@ export async function sendMail(to, subject, text, html) {
   }
 
   if (!tx) {
-    console.log("[MAIL MOCK] not sent", { to: cleanTo, subject: cleanSubject });
+    console.log("[MAIL MOCK] not sent", {
+      to: cleanTo,
+      subject: cleanSubject,
+    });
     throw new Error("SMTP no configurado");
   }
 
   const from = envTrim("MAIL_FROM") || envTrim("SMTP_USER");
 
-  const payload = { from, to: cleanTo, subject: cleanSubject };
+  const payload = {
+    from,
+    to: cleanTo,
+    subject: cleanSubject,
+  };
+
   if (text) payload.text = String(text);
   if (html) payload.html = String(html);
 
-  try {
-    const info = await tx.sendMail(payload);
+  console.log("[MAIL] sending...", {
+    from,
+    to: payload.to,
+    subject: payload.subject,
+    hasText: !!payload.text,
+    hasHtml: !!payload.html,
+  });
 
-    console.log("[MAIL] SENT OK", {
-      to: cleanTo,
-      subject: cleanSubject,
-      messageId: info?.messageId,
-      accepted: info?.accepted,
-      rejected: info?.rejected,
-      response: info?.response,
-    });
+  const info = await tx.sendMail(payload);
 
-    return info;
-  } catch (e) {
-    console.log("[MAIL] SEND FAILED", {
-      to: cleanTo,
-      subject: cleanSubject,
-      code: e?.code,
-      command: e?.command,
-      response: e?.response,
-      responseCode: e?.responseCode,
-    });
-    console.log("[MAIL] ERROR FULL:", e);
-    throw e;
-  }
+  console.log("[MAIL] sent OK", {
+    messageId: info?.messageId,
+    accepted: info?.accepted,
+    rejected: info?.rejected,
+    response: info?.response,
+  });
+
+  return info;
 }

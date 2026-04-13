@@ -1,7 +1,14 @@
 // backend/src/mail/creditsEmails.js
 import { ADMIN_EMAIL, BRAND_NAME, sendMail } from "./core.js";
-import { EMAIL_FONT, escapeHtml } from "./helpers.js";
+import { escapeHtml } from "./helpers.js";
 import { buildEmailLayout } from "./layout.js";
+import {
+  buildExactMail,
+  renderExactBodyText,
+  renderAdminMetaPanel,
+  renderAdminDetailPanel,
+  renderRowCard,
+} from "./ui.js";
 
 /* =========================================================
    HELPERS
@@ -13,13 +20,12 @@ function cleanStr(v, fallback = "-") {
 }
 
 function fullNameOf(user = {}) {
-  const full =
+  return (
     `${cleanStr(user?.name, "")} ${cleanStr(user?.lastName, "")}`.trim() ||
     cleanStr(user?.fullName, "") ||
     cleanStr(user?.email, "") ||
-    "Usuario";
-
-  return full;
+    "Usuario"
+  );
 }
 
 function normalizeItems(items = []) {
@@ -73,118 +79,34 @@ function itemsTextLines(items = []) {
   );
 }
 
-/* =========================================================
-   UI (MISMO LOOK QUE TURNOS)
-========================================================= */
+function renderCreditsChangesPanel(items = []) {
+  const list = Array.isArray(items) ? items : [];
 
-function renderExactUserShell(innerHtml) {
-  return `
-    <style>
-      @media only screen and (max-width: 560px) {
-        .mail-shell { padding:16px 8px 22px !important; }
-        .mail-title { font-size:18px !important; line-height:19px !important; margin:0 auto 16px !important; }
-        .panel { padding:12px !important; }
-        .row-card { padding:9px 10px !important; }
-        .row-k { font-size:14px !important; line-height:16px !important; }
-        .row-v { font-size:13px !important; line-height:15px !important; }
-        .status-icon { width:54px !important; height:54px !important; line-height:54px !important; font-size:34px !important; }
-      }
-    </style>
+  const rows = list.length
+    ? list
+        .map((it) => {
+          const left = `${it.serviceKey} · ${serviceLabel(it.serviceKey)}`;
+          const right = formatChange(it);
 
-    <table role="presentation" cellpadding="0" cellspacing="0" width="100%" style="border-collapse:collapse; font-family:${EMAIL_FONT};">
-      <tr>
-        <td align="center" style="padding:0;">
-          <table role="presentation" cellpadding="0" cellspacing="0" width="100%" style="max-width:430px; border-collapse:separate;">
-            <tr>
-              <td
-                class="mail-shell"
-                bgcolor="#ffffff"
-                style="
-                  background:#ffffff;
-                  border-radius:14px;
-                  padding:18px 10px 26px;
-                  text-align:center;
-                  font-family:${EMAIL_FONT};
-                  color:#111111;
-                "
-              >
-                ${innerHtml}
-              </td>
-            </tr>
-          </table>
-        </td>
-      </tr>
-    </table>
-  `;
-}
-
-function renderExactStatusIcon(symbol = "✓") {
-  return `
-    <div
-      class="status-icon"
-      style="
-        width:58px;
-        height:58px;
-        margin:0 auto 0;
-        border-radius:999px;
-        background:#0a0a0a;
+          return renderRowCard({
+            titleLeft: left,
+            titleRight: right,
+            subtitle: "",
+          });
+        })
+        .join("")
+    : `
+      <div style="
+        font-size:14px;
+        line-height:18px;
+        font-weight:700;
         color:#ffffff;
-        font-size:38px;
-        line-height:58px;
-        font-weight:900;
-        font-family:${EMAIL_FONT};
-        text-align:center;
-      "
-    >${escapeHtml(symbol)}</div>
-  `;
-}
+        text-align:left;
+      ">
+        Sin cambios para mostrar.
+      </div>
+    `;
 
-function renderExactTitle(text, maxWidth = 300) {
-  return `
-    <div
-      class="mail-title"
-      style="
-        font-size:19px;
-        line-height:20px;
-        font-weight:900;
-        margin:0 auto 18px;
-        max-width:${maxWidth}px;
-        font-family:${EMAIL_FONT};
-        color:#111111;
-        white-space:pre-line;
-        letter-spacing:-0.2px;
-      "
-    >
-      ${escapeHtml(text)}
-    </div>
-  `;
-}
-
-function renderExactBodyText(html, opts = {}) {
-  const fontSize = opts?.fontSize || 14;
-  const lineHeight = opts?.lineHeight || 19;
-  const weight = opts?.weight || 700;
-  const maxWidth = opts?.maxWidth || 320;
-  const marginTop = opts?.marginTop ?? 0;
-  const marginBottom = opts?.marginBottom ?? 0;
-
-  return `
-    <div style="
-      font-size:${fontSize}px;
-      line-height:${lineHeight}px;
-      font-weight:${weight};
-      max-width:${maxWidth}px;
-      margin:${marginTop}px auto ${marginBottom}px;
-      font-family:${EMAIL_FONT};
-      color:#111111;
-      white-space:pre-line;
-    ">
-      ${html}
-    </div>
-  `;
-}
-
-function renderPanelOpen() {
   return `
     <div
       class="panel"
@@ -197,288 +119,225 @@ function renderPanelOpen() {
         text-align:left;
       "
     >
-  `;
-}
-function renderPanelClose() {
-  return `</div>`;
-}
-
-function renderRowCard({ titleLeft, titleRight = "", subtitle = "" }) {
-  return `
-    <div
-      class="row-card"
-      style="
-        border:1px solid #e4ff00;
-        border-radius:8px;
-        padding:10px 12px;
-        margin:0 0 11px;
-        text-align:left;
-        background:#0b0b0b;
-      "
-    >
-      <table role="presentation" cellpadding="0" cellspacing="0" width="100%" style="border-collapse:collapse;">
-        <tr>
-          <td
-            class="row-k"
-            style="
-              font-family:${EMAIL_FONT};
-              font-size:15px;
-              line-height:17px;
-              font-weight:900;
-              color:#e4ff00;
-              padding:0;
-            "
-          >
-            ${escapeHtml(titleLeft)}
-          </td>
-          <td
-            align="right"
-            class="row-k"
-            style="
-              font-family:${EMAIL_FONT};
-              font-size:15px;
-              line-height:17px;
-              font-weight:900;
-              color:#e4ff00;
-              padding:0;
-              white-space:nowrap;
-            "
-          >
-            ${escapeHtml(titleRight)}
-          </td>
-        </tr>
-        ${
-          subtitle
-            ? `
-          <tr>
-            <td
-              colspan="2"
-              class="row-v"
-              style="
-                padding-top:4px;
-                font-family:${EMAIL_FONT};
-                font-size:14px;
-                line-height:16px;
-                font-weight:700;
-                color:#ffffff;
-              "
-            >
-              ${subtitle}
-            </td>
-          </tr>`
-            : ""
-        }
-      </table>
+      ${rows}
     </div>
   `;
 }
 
-function renderCreditsChangesPanel(items = []) {
-  const list = Array.isArray(items) ? items : [];
-  const rows = list.length
-    ? list
-        .map((it) => {
-          const left = `${it.serviceKey} · ${serviceLabel(it.serviceKey)}`;
-          const right = formatChange(it);
-          return renderRowCard({
-            titleLeft: left,
-            titleRight: right,
-            subtitle: "", // opcional
-          });
-        })
-        .join("")
-    : renderExactBodyText("Sin cambios para mostrar.", {
-        fontSize: 14,
-        lineHeight: 18,
-        weight: 700,
-        maxWidth: 320,
-        marginBottom: 0,
-      });
-
-  return `${renderPanelOpen()}${rows}${renderPanelClose()}`;
-}
-
-function renderAdminMetaPanel({ fullName, email, phone, actorName }) {
-  const parts = [
-    renderExactBodyText(
-      `
-      <div style="text-align:left;">
-        <div style="font-family:${EMAIL_FONT}; font-size:12px; line-height:14px; font-weight:900; color:#e4ff00; text-transform:uppercase; letter-spacing:0.2px; margin-bottom:6px;">
-          Usuario
-        </div>
-        <div style="font-family:${EMAIL_FONT}; font-size:14px; line-height:18px; font-weight:700; color:#ffffff; word-break:break-word;">
-          ${escapeHtml(fullName)}
-        </div>
-
-        <div style="height:10px;"></div>
-
-        <div style="font-family:${EMAIL_FONT}; font-size:12px; line-height:14px; font-weight:900; color:#e4ff00; text-transform:uppercase; letter-spacing:0.2px; margin-bottom:6px;">
-          Email
-        </div>
-        <div style="font-family:${EMAIL_FONT}; font-size:14px; line-height:18px; font-weight:700; color:#ffffff; word-break:break-word;">
-          ${escapeHtml(email)}
-        </div>
-
-        <div style="height:10px;"></div>
-
-        <div style="font-family:${EMAIL_FONT}; font-size:12px; line-height:14px; font-weight:900; color:#e4ff00; text-transform:uppercase; letter-spacing:0.2px; margin-bottom:6px;">
-          Teléfono
-        </div>
-        <div style="font-family:${EMAIL_FONT}; font-size:14px; line-height:18px; font-weight:700; color:#ffffff; word-break:break-word;">
-          ${escapeHtml(phone)}
-        </div>
-
-        ${
-          actorName
-            ? `
-          <div style="height:10px;"></div>
-
-          <div style="font-family:${EMAIL_FONT}; font-size:12px; line-height:14px; font-weight:900; color:#e4ff00; text-transform:uppercase; letter-spacing:0.2px; margin-bottom:6px;">
-            Gestionado por
-          </div>
-          <div style="font-family:${EMAIL_FONT}; font-size:14px; line-height:18px; font-weight:700; color:#ffffff; word-break:break-word;">
-            ${escapeHtml(actorName)}
-          </div>
-          `
-            : ""
-        }
-      </div>
-      `,
-      { fontSize: 14, lineHeight: 18, weight: 700, maxWidth: 999, marginBottom: 0 }
-    ),
-  ].join("");
-
-  return `${renderPanelOpen()}${parts}${renderPanelClose()}`;
-}
-
-function buildExactCreditsUserHtml({ fullName, items = [], actorName = "" }) {
-  const innerHtml = `
-    ${renderExactStatusIcon("✓")}
-    ${renderExactTitle("Sesiones actualizadas", 285)}
-    ${renderExactBodyText(
-      `Hola <b>${escapeHtml(fullName)}</b>, se actualizaron tus sesiones/créditos.`,
-      { fontSize: 14, lineHeight: 19, weight: 700, maxWidth: 320, marginBottom: 16 }
-    )}
-    ${renderCreditsChangesPanel(items)}
-    ${
-      actorName
-        ? renderExactBodyText(
-            `Gestionado por: <b>${escapeHtml(actorName)}</b>`,
-            { fontSize: 12, lineHeight: 17, weight: 700, maxWidth: 320, marginTop: 0, marginBottom: 0 }
-          )
-        : ""
-    }
-  `;
-
-  return buildEmailLayout({
-    title: `${BRAND_NAME} · Sesiones actualizadas`,
-    preheader: "Actualizamos tus sesiones",
-    bodyHtml: renderExactUserShell(innerHtml),
-    footerNote: "",
-  });
-}
-
-function buildExactCreditsAdminHtml({
-  fullName,
-  email,
-  phone,
-  items = [],
-  actorName = "",
+function buildCreditsEmail({
+  title,
+  preheader,
+  icon = "✓",
+  innerHtml,
 }) {
-  const innerHtml = `
-    ${renderExactStatusIcon("✓")}
-    ${renderExactTitle("Créditos actualizados", 285)}
-    ${renderAdminMetaPanel({ fullName, email, phone, actorName })}
-    ${renderCreditsChangesPanel(items)}
-  `;
+  const exact = buildExactMail({
+    brandName: BRAND_NAME,
+    title,
+    preheader,
+    icon,
+    innerHtml,
+  });
 
   return buildEmailLayout({
-    title: `${BRAND_NAME} · Créditos actualizados`,
-    preheader: `Se actualizaron créditos de ${fullName}`,
-    bodyHtml: renderExactUserShell(innerHtml),
+    title: exact.title,
+    preheader: exact.preheader,
+    bodyHtml: exact.bodyHtml,
     footerNote: "",
   });
 }
 
 /* =========================================================
-   USER MAIL
+   USER — CAMBIO DE CRÉDITOS
 ========================================================= */
 
-export async function sendUserCreditsAssignedEmail({
-  user = null,
-  items = [],
-  actorName = "",
-} = {}) {
-  const to = cleanStr(user?.email, "").trim();
+export async function sendCreditsChangedEmail(user = {}, items = [], meta = {}) {
+  const to = user?.email;
   if (!to) return;
 
-  const fullName = fullNameOf(user);
-  const safeItems = normalizeItems(items);
-  if (!safeItems.length) return;
+  const normalized = normalizeItems(items);
+  if (!normalized.length) return;
 
-  const subject = `🎟️ Actualizamos tus sesiones - ${BRAND_NAME}`;
+  const uName = fullNameOf(user);
+  const reason = cleanStr(meta?.reason, "");
+  const actorName = cleanStr(meta?.actorName, "");
+  const actorLabel = actorName || "Staff DUO";
+
+  const subject = `Actualización de créditos - ${BRAND_NAME}`;
 
   const text = [
-    `Hola ${fullName},`,
+    `Hola ${uName},`,
     "",
-    "Te informamos que se actualizaron tus sesiones/créditos.",
+    "Se actualizó tu saldo de créditos.",
     "",
-    ...itemsTextLines(safeItems),
+    "Cambios:",
+    ...itemsTextLines(normalized),
     "",
-    actorName ? `Gestionado por: ${actorName}` : "",
+    reason ? `Motivo: ${reason}` : "",
+    `Gestionado por: ${actorLabel}`,
   ]
     .filter(Boolean)
     .join("\n");
 
-  const html = buildExactCreditsUserHtml({
-    fullName,
-    items: safeItems,
-    actorName,
+  const detailRows = [
+    { label: "Gestionado por", value: actorLabel },
+    ...(reason ? [{ label: "Motivo", value: reason }] : []),
+  ];
+
+  const html = buildCreditsEmail({
+    title: "Créditos actualizados",
+    preheader: "Tu saldo de créditos fue actualizado",
+    icon: "✓",
+    innerHtml: `
+      ${renderExactBodyText(
+        `Hola <b>${escapeHtml(uName)}</b>,<br/>Se actualizó tu saldo de créditos.`,
+        {
+          fontSize: 14,
+          lineHeight: 19,
+          weight: 700,
+          maxWidth: 320,
+          marginBottom: 14,
+        }
+      )}
+
+      ${renderCreditsChangesPanel(normalized)}
+
+      ${renderAdminDetailPanel(detailRows)}
+
+      ${renderExactBodyText(
+        "Ingresá a DUO para revisar el detalle actualizado en tu cuenta.",
+        {
+          fontSize: 12,
+          lineHeight: 17,
+          weight: 600,
+          maxWidth: 320,
+          marginTop: 8,
+          marginBottom: 0,
+        }
+      )}
+    `,
   });
 
   await sendMail(to, subject, text, html);
 }
 
 /* =========================================================
-   ADMIN MAIL
+   ADMIN — CAMBIO DE CRÉDITOS
 ========================================================= */
 
-export async function sendAdminCreditsAssignedEmail({
-  user = null,
+export async function sendAdminCreditsChangedEmail(
+  user = {},
   items = [],
-  actorName = "",
-} = {}) {
-  const to = cleanStr(ADMIN_EMAIL, "").trim();
+  meta = {}
+) {
+  const to = ADMIN_EMAIL;
   if (!to) return;
 
-  const fullName = fullNameOf(user);
-  const userEmail = cleanStr(user?.email);
-  const userPhone = cleanStr(user?.phone);
-  const safeItems = normalizeItems(items);
-  if (!safeItems.length) return;
+  const normalized = normalizeItems(items);
+  if (!normalized.length) return;
 
-  const subject = `🧾 Créditos actualizados — ${fullName}`;
+  const uName = fullNameOf(user);
+  const uEmail = cleanStr(user?.email);
+  const reason = cleanStr(meta?.reason, "");
+  const actorName = cleanStr(meta?.actorName, "");
+  const actorLabel = actorName || "Staff DUO";
+
+  const subject = `Créditos actualizados — ${uName}`;
 
   const text = [
-    "Se actualizaron sesiones/créditos de un usuario.",
+    "Se actualizó el saldo de créditos de un usuario.",
     "",
-    `Usuario: ${fullName}`,
-    `Email: ${userEmail}`,
-    `Teléfono: ${userPhone}`,
+    `Usuario: ${uName}`,
+    `Email: ${uEmail}`,
     "",
-    ...itemsTextLines(safeItems),
+    "Cambios:",
+    ...itemsTextLines(normalized),
     "",
-    actorName ? `Gestionado por: ${actorName}` : "",
+    reason ? `Motivo: ${reason}` : "",
+    `Gestionado por: ${actorLabel}`,
   ]
     .filter(Boolean)
     .join("\n");
 
-  const html = buildExactCreditsAdminHtml({
-    fullName,
-    email: userEmail,
-    phone: userPhone,
-    items: safeItems,
-    actorName,
+  const html = buildCreditsEmail({
+    title: "Créditos actualizados",
+    preheader: `Actualización de créditos de ${uName}`,
+    icon: "✓",
+    innerHtml: `
+      ${renderAdminMetaPanel([
+        { label: "Usuario", value: uName },
+        { label: "Email", value: uEmail },
+      ])}
+
+      ${renderCreditsChangesPanel(normalized)}
+
+      ${renderAdminDetailPanel([
+        { label: "Gestionado por", value: actorLabel },
+        ...(reason ? [{ label: "Motivo", value: reason }] : []),
+      ])}
+    `,
+  });
+
+  await sendMail(to, subject, text, html);
+}
+
+/* =========================================================
+   USER — CONSUMO DE CRÉDITO
+========================================================= */
+
+export async function sendCreditConsumedEmail(user = {}, payload = {}) {
+  const to = user?.email;
+  if (!to) return;
+
+  const uName = fullNameOf(user);
+  const serviceKey = cleanStr(payload?.serviceKey, "").toUpperCase();
+  const service = serviceLabel(serviceKey);
+  const remaining = Number(payload?.remaining);
+  const hasRemaining = Number.isFinite(remaining);
+
+  const subject = `Se consumió un crédito - ${BRAND_NAME}`;
+
+  const text = [
+    `Hola ${uName},`,
+    "",
+    "Se consumió un crédito de tu cuenta.",
+    "",
+    `Servicio: ${service}`,
+    hasRemaining ? `Créditos restantes: ${remaining}` : "",
+  ]
+    .filter(Boolean)
+    .join("\n");
+
+  const html = buildCreditsEmail({
+    title: "Crédito consumido",
+    preheader: "Se consumió un crédito de tu cuenta",
+    icon: "✓",
+    innerHtml: `
+      ${renderExactBodyText(
+        `Hola <b>${escapeHtml(uName)}</b>,<br/>Se consumió un crédito de tu cuenta.`,
+        {
+          fontSize: 14,
+          lineHeight: 19,
+          weight: 700,
+          maxWidth: 320,
+          marginBottom: 14,
+        }
+      )}
+
+      ${renderCreditsChangesPanel([
+        {
+          serviceKey,
+          mode: "delta",
+          value: -1,
+        },
+      ])}
+
+      ${renderAdminDetailPanel([
+        { label: "Servicio", value: service },
+        ...(hasRemaining
+          ? [{ label: "Créditos restantes", value: String(remaining) }]
+          : []),
+      ])}
+    `,
   });
 
   await sendMail(to, subject, text, html);

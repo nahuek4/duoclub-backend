@@ -1,9 +1,15 @@
-import { ADMIN_EMAIL, BRAND_NAME, sendMail, BRAND_URL } from "./core.js";
-import { escapeHtml, kvRow, kvRowRaw } from "./helpers.js";
+// backend/src/mail/admissionEmails.js
+import { ADMIN_EMAIL, BRAND_NAME, BRAND_URL, sendMail } from "./core.js";
+import { escapeHtml } from "./helpers.js";
 import { buildEmailLayout } from "./layout.js";
-
-const EMAIL_FONT =
-  "'Helvetica Now Display', 'Helvetica Neue', Helvetica, Arial, sans-serif";
+import {
+  buildExactMail,
+  renderExactBodyText,
+  renderPrimaryButton,
+  renderAdminMetaPanel,
+  renderAdminDetailPanel,
+  renderRowCard,
+} from "./ui.js";
 
 /* =========================================================
    Helpers
@@ -42,10 +48,6 @@ function formatARDateTime(dateLike) {
   } catch {
     return { createdDate: "-", createdTime: "-" };
   }
-}
-
-function qaRow(question, answer) {
-  return kvRow(question, cleanStr(answer));
 }
 
 function admissionSummary(adm = {}, user = null) {
@@ -239,9 +241,82 @@ function admissionSummary(adm = {}, user = null) {
   };
 }
 
+function renderSectionPanel(title, rows = []) {
+  const valid = (Array.isArray(rows) ? rows : []).filter(
+    (r) => r && r.label && r.value !== undefined && r.value !== null
+  );
+
+  const cards = valid.length
+    ? valid
+        .map((row) =>
+          renderRowCard({
+            titleLeft: row.label,
+            titleRight: "",
+            subtitle: `<span style="color:#ffffff;">${escapeHtml(
+              String(row.value)
+            )}</span>`,
+          })
+        )
+        .join("")
+    : `
+      <div style="
+        font-size:14px;
+        line-height:18px;
+        font-weight:700;
+        color:#ffffff;
+        text-align:left;
+      ">
+        Sin datos para mostrar.
+      </div>
+    `;
+
+  return `
+    ${renderExactBodyText(escapeHtml(title), {
+      fontSize: 13,
+      lineHeight: 18,
+      weight: 900,
+      maxWidth: 340,
+      marginTop: 2,
+      marginBottom: 10,
+      textAlign: "left",
+    })}
+    <div
+      class="panel"
+      style="
+        background:#0a0a0a;
+        border-radius:6px;
+        padding:14px;
+        margin:0 auto 18px;
+        max-width:100%;
+        text-align:left;
+      "
+    >
+      ${cards}
+    </div>
+  `;
+}
+
+function buildAdmissionEmail({ title, preheader, icon = "✓", innerHtml }) {
+  const exact = buildExactMail({
+    brandName: BRAND_NAME,
+    title,
+    preheader,
+    icon,
+    innerHtml,
+  });
+
+  return buildEmailLayout({
+    title: exact.title,
+    preheader: exact.preheader,
+    bodyHtml: exact.bodyHtml,
+    footerNote: "",
+  });
+}
+
 /* =========================================================
    ADMIN email
 ========================================================= */
+
 export async function sendAdminAdmissionCompletedEmail(
   admissionDoc = {},
   pseudoUser = null
@@ -325,113 +400,97 @@ export async function sendAdminAdmissionCompletedEmail(
     `Aceptó términos: ${s.acceptsConsent}`,
   ].join("\n");
 
-  const bodyHtml = `
-    <div style="font-family:${EMAIL_FONT}; display:flex; align-items:center; gap:10px; margin-bottom:12px;">
-      <div style="font-family:${EMAIL_FONT}; font-size:18px; font-weight:800;">Formulario completado</div>
-      <div style="font-family:${EMAIL_FONT}; margin-left:auto; background:#e9f7ef; color:#0b6b2a; padding:6px 10px; border-radius:999px; font-size:12px; font-weight:800;">
-        COMPLETO
-      </div>
-    </div>
+  const html = buildAdmissionEmail({
+    title: "Formulario completo",
+    preheader: `Admisión completa #${s.publicId}`,
+    icon: "✓",
+    innerHtml: `
+      ${renderAdminMetaPanel([
+        { label: "Código", value: `#${s.publicId}` },
+        { label: "AdmissionId", value: s.admissionId },
+      ])}
 
-    <div style="border:1px solid #eee; border-radius:14px; overflow:hidden;">
-      <table role="presentation" cellpadding="0" cellspacing="0" width="100%" style="border-collapse:collapse; font-family:${EMAIL_FONT};">
-        ${qaRow("Código", `#${s.publicId}`)}
-        ${qaRow("AdmissionId", s.admissionId)}
-        ${qaRow("Creado", `${s.createdDate} ${s.createdTime}`)}
-        ${qaRow("Nombre y apellido", s.fullName)}
-        ${qaRow("Mail", s.email)}
-        ${qaRow("Teléfono de contacto", s.phone)}
-        ${qaRow("Ciudad", s.city)}
-      </table>
-    </div>
+      ${renderAdminDetailPanel([
+        { label: "Creado", value: `${s.createdDate} ${s.createdTime}` },
+        { label: "Nombre", value: s.fullName },
+        { label: "Email", value: s.email },
+        { label: "Teléfono", value: s.phone },
+        { label: "Ciudad", value: s.city },
+      ])}
 
-    <div style="font-family:${EMAIL_FONT}; margin-top:14px; font-size:13px; font-weight:900;">STEP 1 · Datos personales</div>
-    <div style="border:1px solid #eee; border-radius:14px; overflow:hidden; margin-top:8px;">
-      <table role="presentation" cellpadding="0" cellspacing="0" width="100%" style="border-collapse:collapse; font-family:${EMAIL_FONT};">
-        ${qaRow("Fecha de nacimiento", s.birth)}
-        ${qaRow("Altura", s.height)}
-        ${qaRow("Peso aproximado", s.weight)}
-      </table>
-    </div>
+      ${renderSectionPanel("Step 1 · Datos personales / físico / salud", [
+        { label: "Fecha nacimiento", value: s.birth },
+        { label: "Altura", value: s.height },
+        { label: "Peso", value: s.weight },
+        { label: "Condición física actual", value: s.fitnessLevel },
+        { label: "Contraindicación médica", value: s.hasContraindication },
+        {
+          label: "Último entrenamiento supervisado",
+          value: s.lastSupervisedTraining,
+        },
+        { label: "Último examen médico", value: s.lastMedicalExam },
+        { label: "Dolor habitual", value: s.hasPain },
+        {
+          label: "Enfermedad que condicione rendimiento",
+          value: s.hasCondition,
+        },
+        { label: "Lesión último año", value: s.hadInjuryLastYear },
+        { label: "Diabetes", value: s.diabetes },
+        { label: "Presión arterial", value: s.bloodPressure },
+        { label: "Fumás", value: s.smokes },
+        { label: "Problemas cardíacos", value: s.heartProblems },
+        { label: "Tratamiento oncológico", value: s.oncologicTreatment },
+        { label: "Problema ortopédico", value: s.orthoProblem },
+        { label: "Embarazada", value: s.pregnant },
+        { label: "Último análisis de sangre", value: s.lastBloodTest },
+        { label: "Información relevante", value: s.relevantInfo },
+      ])}
 
-    <div style="font-family:${EMAIL_FONT}; margin-top:14px; font-size:13px; font-weight:900;">STEP 1 · Tu actualidad física</div>
-    <div style="border:1px solid #eee; border-radius:14px; overflow:hidden; margin-top:8px;">
-      <table role="presentation" cellpadding="0" cellspacing="0" width="100%" style="border-collapse:collapse; font-family:${EMAIL_FONT};">
-        ${qaRow("Cómo considerás tu condición física actual", s.fitnessLevel)}
-        ${qaRow("Tenés alguna contraindicación médica?", s.hasContraindication)}
-        ${qaRow("Cuándo fue la última vez que entrenaste supervisado/a?", s.lastSupervisedTraining)}
-        ${qaRow("Cuándo realizaste el último examen médico?", s.lastMedicalExam)}
-        ${qaRow("Sufrís algún dolor habitualmente?", s.hasPain)}
-        ${qaRow("Tenés diagnosticada alguna enfermedad que condicione tu rendimiento?", s.hasCondition)}
-        ${qaRow("Cursaste alguna lesión el último año?", s.hadInjuryLastYear)}
-      </table>
-    </div>
+      ${renderSectionPanel("Step 2 · Rehabilitación", [
+        { label: "Necesita rehabilitación", value: s.needsRehab },
+        {
+          label: "Diagnóstico y orden médica",
+          value: s.rehab_hasDiagnosisOrder,
+        },
+        { label: "Síntomas", value: s.rehab_symptoms },
+        {
+          label: "Fecha lesión/aparición síntomas",
+          value: s.rehab_symptomDate,
+        },
+        { label: "Consulta médica", value: s.rehab_medicalConsult },
+        {
+          label: "Estudios de diagnóstico",
+          value: s.rehab_diagnosticStudy,
+        },
+        { label: "Cómo sucedió", value: s.rehab_howHappened },
+        { label: "Malestar diario", value: s.rehab_dailyDiscomfort },
+        {
+          label: "Imposibilidad para desplazarte",
+          value: s.rehab_mobilityIssue,
+        },
+        { label: "Toma medicación", value: s.rehab_takesMedication },
+      ])}
 
-    <div style="font-family:${EMAIL_FONT}; margin-top:14px; font-size:13px; font-weight:900;">STEP 1 · Acerca de tu salud general</div>
-    <div style="border:1px solid #eee; border-radius:14px; overflow:hidden; margin-top:8px;">
-      <table role="presentation" cellpadding="0" cellspacing="0" width="100%" style="border-collapse:collapse; font-family:${EMAIL_FONT};">
-        ${qaRow("Diabetes", s.diabetes)}
-        ${qaRow("Presión arterial", s.bloodPressure)}
-        ${qaRow("Fumás?", s.smokes)}
-        ${qaRow("Problemas cardíacos", s.heartProblems)}
-        ${qaRow("Tratamiento oncológico", s.oncologicTreatment)}
-        ${qaRow("Problema ortopédico", s.orthoProblem)}
-        ${qaRow("Actualmente embarazada?", s.pregnant)}
-        ${qaRow("Cuando realizaste el último análisis de sangre", s.lastBloodTest)}
-        ${qaRow("Información relevante", s.relevantInfo)}
-      </table>
-    </div>
+      ${renderSectionPanel("Step 2 · Actualidad deportiva", [
+        {
+          label: "Deporte competitivo",
+          value: s.practicesCompetitiveSport,
+        },
+        { label: "Nivel", value: s.competitionLevel },
+        { label: "Deporte", value: s.sportName },
+        { label: "Puesto", value: s.sportPosition },
+      ])}
 
-    <div style="font-family:${EMAIL_FONT}; margin-top:14px; font-size:13px; font-weight:900;">STEP 2 · Rehabilitación</div>
-    <div style="border:1px solid #eee; border-radius:14px; overflow:hidden; margin-top:8px;">
-      <table role="presentation" cellpadding="0" cellspacing="0" width="100%" style="border-collapse:collapse; font-family:${EMAIL_FONT};">
-        ${qaRow("Necesita rehabilitación", s.needsRehab)}
-        ${qaRow("Tenés diagnóstico y órden médica para iniciar tu rehabilitación?", s.rehab_hasDiagnosisOrder)}
-        ${qaRow("Cuáles son tus síntomas", s.rehab_symptoms)}
-        ${qaRow("Recordás fecha de lesión o aparición de síntomas?", s.rehab_symptomDate)}
-        ${qaRow("Realizaste consulta médica?", s.rehab_medicalConsult)}
-        ${qaRow("Realizaste estudios de diagnóstico?", s.rehab_diagnosticStudy)}
-        ${qaRow("Cómo sucedió?", s.rehab_howHappened)}
-        ${qaRow("Cómo calificarías tu malestar diario?", s.rehab_dailyDiscomfort)}
-        ${qaRow("Tenés imposibilidad para desplazarte?", s.rehab_mobilityIssue)}
-        ${qaRow("Tomás medicación?", s.rehab_takesMedication)}
-      </table>
-    </div>
-
-    <div style="font-family:${EMAIL_FONT}; margin-top:14px; font-size:13px; font-weight:900;">STEP 2 · Tu actualidad deportiva</div>
-    <div style="border:1px solid #eee; border-radius:14px; overflow:hidden; margin-top:8px;">
-      <table role="presentation" cellpadding="0" cellspacing="0" width="100%" style="border-collapse:collapse; font-family:${EMAIL_FONT};">
-        ${qaRow("Practicás un deporte de forma competitiva?", s.practicesCompetitiveSport)}
-        ${qaRow("Competís a nivel", s.competitionLevel)}
-        ${qaRow("Cuál es tu deporte", s.sportName)}
-        ${qaRow("Cuál es tu puesto frecuente", s.sportPosition)}
-      </table>
-    </div>
-
-    <div style="font-family:${EMAIL_FONT}; margin-top:14px; font-size:13px; font-weight:900;">STEP 2 · Tu nuevo plan</div>
-    <div style="border:1px solid #eee; border-radius:14px; overflow:hidden; margin-top:8px;">
-      <table role="presentation" cellpadding="0" cellspacing="0" width="100%" style="border-collapse:collapse; font-family:${EMAIL_FONT};">
-        ${qaRow("Cuál es tu objetivo inmediato?", s.immediateGoal)}
-        ${qaRow("Entrenarías solo/a?", s.trainAlone)}
-        ${qaRow("Cuál es tu rango horario ideal?", s.idealSchedule)}
-        ${qaRow("Tenés días preferenciales?", s.preferredDays)}
-        ${qaRow("Qué frecuencia querés destinar? (sesiones semanales)", s.weeklySessions)}
-        ${qaRow("Qué modalidad te gustaría contratar?", s.modality)}
-      </table>
-    </div>
-
-    <div style="font-family:${EMAIL_FONT}; margin-top:14px; font-size:13px; font-weight:900;">Consentimiento</div>
-    <div style="border:1px solid #eee; border-radius:14px; overflow:hidden; margin-top:8px;">
-      <table role="presentation" cellpadding="0" cellspacing="0" width="100%" style="border-collapse:collapse; font-family:${EMAIL_FONT};">
-        ${qaRow("Aceptó términos", s.acceptsConsent)}
-      </table>
-    </div>
-  `;
-
-  const html = buildEmailLayout({
-    title: `${BRAND_NAME} · Admisión completada`,
-    preheader: `Admisión #${s.publicId} · ${s.fullName}`,
-    bodyHtml,
+      ${renderSectionPanel("Step 2 · Nuevo plan", [
+        { label: "Objetivo inmediato", value: s.immediateGoal },
+        { label: "Entrenaría solo/a", value: s.trainAlone },
+        { label: "Rango horario ideal", value: s.idealSchedule },
+        { label: "Días preferenciales", value: s.preferredDays },
+        { label: "Sesiones semanales", value: s.weeklySessions },
+        { label: "Modalidad", value: s.modality },
+        { label: "Aceptó términos", value: s.acceptsConsent },
+      ])}
+    `,
   });
 
   await sendMail(to, subject, text, html);
@@ -440,6 +499,7 @@ export async function sendAdminAdmissionCompletedEmail(
 /* =========================================================
    USER email
 ========================================================= */
+
 export async function sendUserAdmissionReceivedEmail(
   admissionDoc = {},
   pseudoUser = null
@@ -480,91 +540,57 @@ export async function sendUserAdmissionReceivedEmail(
     "Gracias por confiar en DUO.",
   ].join("\n");
 
-  const bodyHtml = `
-    <table role="presentation" cellpadding="0" cellspacing="0" width="100%" style="border-collapse:collapse; font-family:${EMAIL_FONT};">
-      <tr>
-        <td align="center" style="padding:0 0 8px;">
-          <table role="presentation" cellpadding="0" cellspacing="0" width="100%" style="max-width:430px; border-collapse:separate;">
-            <tr>
-              <td
-                bgcolor="#ffffff"
-                style="
-                  background:#ffffff;
-                  border-radius:18px;
-                  padding:22px 18px 20px;
-                  text-align:center;
-                  font-family:${EMAIL_FONT};
-                  color:#111111;
-                "
-              >
-                <div style="
-                  width:58px;
-                  height:58px;
-                  margin:0 auto 16px;
-                  border-radius:999px;
-                  background:#000;
-                  color:#fff;
-                  font-size:38px;
-                  line-height:58px;
-                  font-weight:900;
-                  font-family:${EMAIL_FONT};
-                ">✓</div>
+  const html = buildAdmissionEmail({
+    title: "Tu formulario fue\nenviado con éxito",
+    preheader: "Tu formulario fue enviado con éxito",
+    icon: "✓",
+    innerHtml: `
+      ${renderExactBodyText(
+        `Hola <b>${escapeHtml(helloName)}</b>,<br/>Gracias por completar el formulario.<br/><b>Tu solicitud fue enviada con éxito y se encuentra pendiente de admisión.</b><br/>Nuestro equipo la revisará y te avisaremos por este medio cuando tu acceso haya sido aprobado.`,
+        {
+          fontSize: 14,
+          lineHeight: 19,
+          weight: 700,
+          maxWidth: 330,
+          marginBottom: 16,
+        }
+      )}
 
-                <div style="
-                  font-size:20px;
-                  line-height:24px;
-                  font-weight:900;
-                  margin:0 auto 26px;
-                  max-width:280px;
-                  font-family:${EMAIL_FONT};
-                ">
-                  Tu formulario fue<br/>enviado con éxito
-                </div>
+      ${renderAdminDetailPanel([
+        { label: "Código", value: `#${s.publicId}` },
+        { label: "Estado", value: "Pendiente de admisión" },
+      ])}
 
-                <div style="
-                  font-size:16px;
-                  line-height:22px;
-                  font-weight:600;
-                  max-width:380px;
-                  margin:0 auto;
-                  font-family:${EMAIL_FONT};
-                ">
-                  <div style="margin-bottom:12px; font-family:${EMAIL_FONT};">
-                    Hola (${escapeHtml(helloName)}),
-                  </div>
+      ${renderExactBodyText("¿Qué sigue ahora?", {
+        fontSize: 14,
+        lineHeight: 18,
+        weight: 900,
+        maxWidth: 320,
+        marginTop: 4,
+        marginBottom: 10,
+      })}
 
-                  <div style="margin-bottom:14px; font-family:${EMAIL_FONT};">
-                    Gracias por completar el formulario.<br/>
-                    <span style="font-weight:800; font-family:${EMAIL_FONT};">
-                      Tu solicitud fue enviada con éxito y se encuentra pendiente de admisión.
-                    </span><br/>
-                    Nuestro equipo la revisará y te avisaremos por este medio cuando tu acceso haya sido aprobado.
-                  </div>
+      ${renderAdminDetailPanel([
+        { label: "Paso 1", value: "Revisaremos tu información" },
+        {
+          label: "Paso 2",
+          value: "Si falta algún dato, te lo solicitaremos",
+        },
+        {
+          label: "Paso 3",
+          value: "Si está todo OK, recibirás el mail de alta",
+        },
+      ])}
 
-                  <div style="margin-bottom:10px; font-weight:800; font-family:${EMAIL_FONT};">
-                    ▶ ¿Qué sigue ahora?
-                  </div>
-
-                  <div style="font-family:${EMAIL_FONT};">
-                    Revisaremos tu información<br/>
-                    Si falta algún dato, te lo solicitaremos<br/>
-                    Si está todo OK, recibirás el mail de alta<br/>
-                    Gracias por confiar en DUO.
-                  </div>
-                </div>
-              </td>
-            </tr>
-          </table>
-        </td>
-      </tr>
-    </table>
-  `;
-
-  const html = buildEmailLayout({
-    title: `${BRAND_NAME} · Formulario recibido`,
-    preheader: `Tu formulario fue enviado con éxito`,
-    bodyHtml,
-    footerNote: "",
+      ${renderExactBodyText("Gracias por confiar en DUO.", {
+        fontSize: 13,
+        lineHeight: 18,
+        weight: 700,
+        maxWidth: 320,
+        marginTop: 8,
+        marginBottom: 0,
+      })}
+    `,
   });
 
   await sendMail(email, subject, text, html);
@@ -573,6 +599,7 @@ export async function sendUserAdmissionReceivedEmail(
 /* =========================================================
    USER email: Alta aprobada
 ========================================================= */
+
 export async function sendUserApprovedEmail({
   to,
   user = null,
@@ -620,61 +647,51 @@ export async function sendUserApprovedEmail({
 
   const text = textLines.join("\n");
 
-  const bodyHtml = `
-    <div style="font-family:${EMAIL_FONT}; display:flex; align-items:center; gap:10px; margin-bottom:12px;">
-      <div style="font-family:${EMAIL_FONT}; font-size:18px; font-weight:800;">Alta aprobada</div>
-      <div style="font-family:${EMAIL_FONT}; margin-left:auto; background:#e9f7ef; color:#0b6b2a; padding:6px 10px; border-radius:999px; font-size:12px; font-weight:800;">
-        APROBADA
-      </div>
-    </div>
+  const detailRows = [{ label: "Email", value: email }];
 
-    <div style="font-family:${EMAIL_FONT}; color:#333; margin-bottom:12px;">
-      Hola <b>${escapeHtml(
-        fullName
-      )}</b>, tu alta fue <b>aprobada</b>. Ya podés ingresar a la plataforma.
-    </div>
+  if (hasPass) {
+    detailRows.push({
+      label: "Contraseña temporal",
+      value: String(password).trim(),
+    });
+  }
 
-    <div style="border:1px solid #eee; border-radius:14px; overflow:hidden;">
-      <table role="presentation" cellpadding="0" cellspacing="0" width="100%" style="border-collapse:collapse; font-family:${EMAIL_FONT};">
-        ${kvRow("Email", email)}
-        ${kvRowRaw(
-          "Ingreso",
-          `<a href="${escapeHtml(
-            url
-          )}" style="color:#111; font-weight:800; text-decoration:none; font-family:${EMAIL_FONT};">${escapeHtml(
-            url
-          )}</a>`
-        )}
-      </table>
-    </div>
+  const html = buildAdmissionEmail({
+    title: "Alta aprobada",
+    preheader: "Tu alta fue aprobada",
+    icon: "✓",
+    innerHtml: `
+      ${renderExactBodyText(
+        `Hola <b>${escapeHtml(fullName)}</b>,<br/>Tu alta fue <b>aprobada</b>. Ya podés ingresar a la plataforma.`,
+        {
+          fontSize: 14,
+          lineHeight: 19,
+          weight: 700,
+          maxWidth: 330,
+          marginBottom: 16,
+        }
+      )}
 
-    ${
-      hasPass
-        ? `
-      <div style="font-family:${EMAIL_FONT}; margin-top:14px; font-size:13px; font-weight:800;">Tu contraseña temporal</div>
-      <div style="margin-top:8px; border:1px solid #eee; border-radius:14px; overflow:hidden;">
-        <table role="presentation" cellpadding="0" cellspacing="0" width="100%" style="border-collapse:collapse; font-family:${EMAIL_FONT};">
-          ${kvRowRaw(
-            "Password",
-            `<span style="font-family:${EMAIL_FONT}; font-size:16px; letter-spacing:0.6px; font-weight:900;">${escapeHtml(
-              String(password).trim()
-            )}</span>`
-          )}
-          ${kvRow(
-            "Importante",
-            "En tu primer ingreso te vamos a pedir que la cambies."
-          )}
-        </table>
-      </div>
-    `
-        : ""
-    }
-  `;
+      ${renderAdminDetailPanel(detailRows)}
 
-  const html = buildEmailLayout({
-    title: `${BRAND_NAME} · Alta aprobada`,
-    preheader: `Tu alta fue aprobada · Ya podés ingresar`,
-    bodyHtml,
+      ${renderPrimaryButton("Ingresar", url)}
+
+      ${
+        hasPass
+          ? renderExactBodyText(
+              "En tu primer ingreso te vamos a pedir que cambies la contraseña temporal.",
+              {
+                fontSize: 12,
+                lineHeight: 17,
+                weight: 600,
+                maxWidth: 320,
+                marginTop: 10,
+                marginBottom: 0,
+              }
+            )
+          : ""
+      }
+    `,
   });
 
   await sendMail(email, subject, text, html);
