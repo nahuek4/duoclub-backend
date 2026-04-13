@@ -2861,14 +2861,28 @@ router.delete("/:id", async (req, res) => {
 
       mailUser = { ...updatedUser.toObject(), _id: updatedUser._id };
       mailAp = {
+        id: String(ap._id),
         date: ap.date,
         time: ap.time,
         service: ap.service,
+        serviceName: ap.service,
         refund: !!decision.refund,
         refundApplied: !!decision.refund,
         refundMode: decision.refundMode || "none",
         refundCutoffHours: Number(decision.refundCutoffHours || 0),
+        cancelReason: decision.reason || "",
       };
+
+      console.log("[CANCEL MAIL PAYLOAD]", {
+        appointmentId: String(ap._id),
+        to: updatedUser?.email || "",
+        refund: mailAp.refund,
+        refundApplied: mailAp.refundApplied,
+        refundMode: mailAp.refundMode,
+        refundCutoffHours: mailAp.refundCutoffHours,
+        service: mailAp.service,
+        serviceName: mailAp.serviceName,
+      });
     });
 
     await logActivity({
