@@ -22,4 +22,5 @@ export {
 export {
   sendAdminOrderPendingEmail as sendAdminNewOrderEmail,
   sendOrderPendingEmail as sendUserOrderCashCreatedEmail,
+  sendOrderPaidEmail as sendUserOrderPaidEmail,
 } from "./mail/orderEmails.js";
