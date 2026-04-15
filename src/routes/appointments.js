@@ -3104,7 +3104,7 @@ router.delete("/admin/fixed-schedules/:id", ensureStaff, async (req, res) => {
 
     return res.json({ ok: true });
   } catch (err) {
-    console.error("Error en DELETE /appointments/admin/fixed-schedules/:id:", err);
+    console.error("Error nn DELETE /appointments/admin/fixed-schedules/:id:", err);
     return res.status(500).json({ error: "No se pudo desactivar el turno fijo." });
   }
 });
