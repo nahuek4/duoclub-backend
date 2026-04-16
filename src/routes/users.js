@@ -439,13 +439,20 @@ function addCreditLot(
 }
 
 function buildCreditsByService(user) {
-  return {
-    PE: sumCreditsForService(user, "PE"),
+  const firstEvaluationCompleted = !!user?.firstEvaluationCompleted;
+
+  const result = {
     EP: sumCreditsForService(user, "EP"),
     RF: sumCreditsForService(user, "RF"),
     RA: sumCreditsForService(user, "RA"),
     NUT: sumCreditsForService(user, "NUT"),
   };
+
+  if (!firstEvaluationCompleted) {
+    result.PE = sumCreditsForService(user, "PE");
+  }
+
+  return result;
 }
 
 function stripSensitive(u) {
