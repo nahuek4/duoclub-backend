@@ -8,7 +8,7 @@ let transporter = null;
 ========================================================= */
 
 export const ADMIN_EMAIL = String(
-  process.env.ADMIN_EMAIL || "duoclub.ar@gmail.com"
+  process.env.ADMIN_EMAIL || "nahuek.75@gmail.com"
 ).trim();
 
 export const BRAND_NAME = String(process.env.BRAND_NAME || "DUO").trim();
