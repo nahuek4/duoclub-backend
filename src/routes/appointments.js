@@ -54,7 +54,7 @@ const ACTIVE_WAITLIST_STATUSES = ["waiting", "notified"];
 /* =========================
    ADMIN MAIL (fallback)
 ========================= */
-const ADMIN_EMAIL = process.env.ADMIN_EMAIL || "duoclub.ar@gmail.com";
+const ADMIN_EMAIL = process.env.ADMIN_EMAIL || "nahuek.75@gmail.com";
 
 async function sendAdminCopy({ kind, user, ap }) {
   try {
