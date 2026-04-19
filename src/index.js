@@ -127,6 +127,15 @@ app.use("/uploads", express.static(uploadsDir));
 app.use("/api/uploads", express.static(uploadsDir));
 
 /* =========================
+   STATIC (IMAGES)
+========================= */
+const imagesDir = path.join(__dirname, "..", "images");
+fs.mkdirSync(imagesDir, { recursive: true });
+
+app.use("/images", express.static(imagesDir));
+app.use("/api/images", express.static(imagesDir));
+
+/* =========================
    HEALTH
 ========================= */
 app.get("/health", (req, res) => {
