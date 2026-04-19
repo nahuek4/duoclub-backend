@@ -129,7 +129,7 @@ app.use("/api/uploads", express.static(uploadsDir));
 /* =========================
    STATIC (IMAGES)
 ========================= */
-const imagesDir = path.join(__dirname, "..", "images");
+const imagesDir = path.join(__dirname, "..", "public", "images");
 fs.mkdirSync(imagesDir, { recursive: true });
 
 app.use("/images", express.static(imagesDir));
