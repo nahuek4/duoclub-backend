@@ -66,14 +66,15 @@ function buildAppointmentCard(item = {}) {
         border-collapse:separate;
         border-spacing:0;
         width:100%;
-        margin:0 0 10px;
+        margin:0 0 14px;
         background:#ffffff;
-        border:1.5px solid #2a2a2a;
-        border-radius:10px;
+        border:2px solid #121212;
+        border-radius:18px;
         overflow:hidden;
       "
     >
       <tr>
+        <td style="width:14px; background:#000000; padding:0; font-size:0; line-height:0;">&nbsp;</td>
         <td style="padding:0;">
           <table
             role="presentation"
@@ -83,17 +84,7 @@ function buildAppointmentCard(item = {}) {
             style="border-collapse:collapse; width:100%;"
           >
             <tr>
-              <td
-                style="
-                  padding:12px 14px;
-                  border-bottom:1px solid #e7e7e7;
-                  font-family:Arial, Helvetica, sans-serif;
-                  font-size:12px;
-                  line-height:16px;
-                  font-weight:800;
-                  color:#111111;
-                "
-              >
+              <td style="padding:18px 18px 14px;">
                 <table
                   role="presentation"
                   cellpadding="0"
@@ -106,10 +97,12 @@ function buildAppointmentCard(item = {}) {
                       valign="middle"
                       style="
                         font-family:Arial, Helvetica, sans-serif;
-                        font-size:12px;
-                        line-height:16px;
-                        font-weight:800;
+                        font-size:15px;
+                        line-height:19px;
+                        font-weight:900;
+                        letter-spacing:-0.2px;
                         color:#111111;
+                        padding:0 12px 0 0;
                       "
                     >
                       ${escapeHtml(date)}
@@ -118,12 +111,16 @@ function buildAppointmentCard(item = {}) {
                       valign="middle"
                       align="right"
                       style="
+                        width:100px;
                         white-space:nowrap;
                         font-family:Arial, Helvetica, sans-serif;
-                        font-size:12px;
-                        line-height:16px;
-                        font-weight:800;
+                        font-size:15px;
+                        line-height:19px;
+                        font-weight:900;
+                        letter-spacing:-0.2px;
                         color:#111111;
+                        padding:0 0 0 14px;
+                        border-left:2px solid #d9d9d9;
                       "
                     >
                       ${escapeHtml(time)}
@@ -133,13 +130,19 @@ function buildAppointmentCard(item = {}) {
               </td>
             </tr>
             <tr>
+              <td style="padding:0 18px 0;">
+                <div style="height:1px; line-height:1px; font-size:1px; background:#d9d9d9;">&nbsp;</div>
+              </td>
+            </tr>
+            <tr>
               <td
                 style="
-                  padding:11px 14px 12px;
+                  padding:16px 18px 20px;
                   font-family:Arial, Helvetica, sans-serif;
-                  font-size:12px;
-                  line-height:16px;
-                  font-weight:500;
+                  font-size:15px;
+                  line-height:20px;
+                  font-weight:800;
+                  letter-spacing:-0.2px;
                   color:#111111;
                 "
               >
@@ -160,34 +163,7 @@ function buildAppointmentCards(items = []) {
 }
 
 function buildTopIcon(kind = "confirmed") {
-  const isCancelled = kind === "cancelled";
-
-  if (isCancelled) {
-    return `
-      <table role="presentation" cellpadding="0" cellspacing="0" style="border-collapse:collapse;">
-        <tr>
-          <td style="padding:0;">
-            <div
-              style="
-                width:14px;
-                height:14px;
-                border-radius:50%;
-                background:#e4ff00;
-                color:#111111;
-                font-family:Arial, Helvetica, sans-serif;
-                font-size:11px;
-                line-height:14px;
-                font-weight:900;
-                text-align:center;
-              "
-            >
-              ×
-            </div>
-          </td>
-        </tr>
-      </table>
-    `;
-  }
+  const symbol = kind === "cancelled" ? "×" : "✓";
 
   return `
     <table role="presentation" cellpadding="0" cellspacing="0" style="border-collapse:collapse;">
@@ -195,19 +171,19 @@ function buildTopIcon(kind = "confirmed") {
         <td style="padding:0;">
           <div
             style="
-              width:12px;
-              height:12px;
+              width:26px;
+              height:26px;
               border-radius:50%;
-              background:#e4ff00;
-              color:#111111;
+              background:#ecff00;
+              color:#000000;
               font-family:Arial, Helvetica, sans-serif;
-              font-size:9px;
-              line-height:12px;
+              font-size:${kind === "cancelled" ? "18px" : "16px"};
+              line-height:26px;
               font-weight:900;
               text-align:center;
             "
           >
-            ✓
+            ${symbol}
           </div>
         </td>
       </tr>
@@ -220,10 +196,10 @@ function buildDuoMark() {
     <div
       style="
         font-family:Arial, Helvetica, sans-serif;
-        font-size:34px;
-        line-height:34px;
+        font-size:48px;
+        line-height:48px;
         font-weight:900;
-        letter-spacing:-1px;
+        letter-spacing:-2px;
         color:#ffffff;
       "
     >
@@ -233,24 +209,14 @@ function buildDuoMark() {
 }
 
 function buildHeroHeader({ title, kind = "confirmed" }) {
-  const notchStyle =
-    kind === "cancelled"
-      ? "left:0; right:auto; border-top-left-radius:0; border-top-right-radius:14px;"
-      : "right:0; left:auto; border-top-right-radius:0; border-top-left-radius:14px;";
-
-  const lineStyle =
-    kind === "cancelled"
-      ? "left:34px; right:auto;"
-      : "right:34px; left:auto;";
-
   return `
     <tr>
       <td
         style="
-          background:#050505;
-          padding:16px 16px 40px;
-          border-top-left-radius:16px;
-          border-top-right-radius:16px;
+          background:#000000;
+          padding:26px 24px 78px;
+          border-top-left-radius:24px;
+          border-top-right-radius:24px;
           position:relative;
         "
       >
@@ -266,15 +232,16 @@ function buildHeroHeader({ title, kind = "confirmed" }) {
             <td valign="top" align="right">${buildDuoMark()}</td>
           </tr>
           <tr>
-            <td colspan="2" style="padding:18px 0 0;">
+            <td colspan="2" style="padding:26px 0 0;">
               <div
+                class="ap-title"
                 style="
-                  max-width:180px;
+                  max-width:260px;
                   font-family:Arial, Helvetica, sans-serif;
-                  font-size:28px;
-                  line-height:29px;
+                  font-size:34px;
+                  line-height:39px;
                   font-weight:900;
-                  letter-spacing:-0.7px;
+                  letter-spacing:-1.2px;
                   color:#ffffff;
                 "
               >
@@ -286,32 +253,15 @@ function buildHeroHeader({ title, kind = "confirmed" }) {
 
         <div
           style="
-            position:relative;
-            height:0;
+            position:absolute;
+            right:0;
+            bottom:0;
+            width:132px;
+            height:84px;
+            background:#f3f3f3;
+            border-top-left-radius:44px;
           "
-        >
-          <div
-            style="
-              position:absolute;
-              bottom:-40px;
-              ${notchStyle}
-              width:66px;
-              height:34px;
-              background:#f3f3f3;
-            "
-          ></div>
-          <div
-            style="
-              position:absolute;
-              bottom:-7px;
-              ${lineStyle}
-              width:68px;
-              height:0;
-              border-top:3px solid #19a1ff;
-              transform:skew(-36deg);
-            "
-          ></div>
-        </div>
+        ></div>
       </td>
     </tr>
   `;
@@ -321,9 +271,12 @@ function buildFooterBlock() {
   return `
     <tr>
       <td
+        class="ap-footer"
         style="
-          background:#0a0a0a;
-          padding:24px 24px 22px;
+          background:#000000;
+          padding:28px 28px 32px;
+          border-bottom-left-radius:24px;
+          border-bottom-right-radius:24px;
         "
       >
         <table
@@ -337,30 +290,31 @@ function buildFooterBlock() {
             <td
               valign="bottom"
               style="
-                width:50%;
+                width:44%;
                 font-family:Arial, Helvetica, sans-serif;
                 color:#ffffff;
+                padding-right:12px;
               "
             >
-              <div style="font-size:26px; line-height:26px; font-weight:900; letter-spacing:2px;">DUO</div>
-              <div style="font-size:7px; line-height:10px; opacity:0.8; letter-spacing:1.2px; margin-top:3px;">HEALTH CLUB</div>
+              <div style="font-size:58px; line-height:52px; font-weight:900; letter-spacing:1px;">DUO</div>
+              <div style="font-size:10px; line-height:12px; opacity:0.95; letter-spacing:2px; margin-top:2px;">HEALTH CLUB</div>
             </td>
             <td
               valign="bottom"
               align="right"
               style="
-                width:50%;
+                width:56%;
                 font-family:Arial, Helvetica, sans-serif;
                 color:#ffffff;
               "
             >
-              <div style="font-size:10px; line-height:14px; font-weight:700;">DUOCLUB.AR</div>
-              <div style="font-size:10px; line-height:14px; font-weight:500; opacity:0.95;">+54 9 249 123 7458</div>
-              <div style="font-size:10px; line-height:14px; font-weight:500; opacity:0.95;">Av. Santamarina 791, Tandil.</div>
-              <div style="margin-top:6px; font-size:0; line-height:0;">
-                <span style="display:inline-block; width:12px; height:12px; border-radius:50%; border:1px solid #ffffff; margin-left:4px;"></span>
-                <span style="display:inline-block; width:12px; height:12px; border-radius:50%; border:1px solid #ffffff; margin-left:4px;"></span>
-                <span style="display:inline-block; width:12px; height:12px; border-radius:50%; border:1px solid #ffffff; margin-left:4px;"></span>
+              <div style="font-size:12px; line-height:16px; font-weight:900; letter-spacing:2px; margin-bottom:6px;">DUOCLUB.AR</div>
+              <div style="font-size:11px; line-height:18px; font-weight:500; opacity:0.98;">+54 9 249 420 7343</div>
+              <div style="font-size:11px; line-height:18px; font-weight:500; opacity:0.98;">Av. Santamaría 54, Tandil.</div>
+              <div style="margin-top:12px; font-size:0; line-height:0;">
+                <span style="display:inline-block; width:28px; height:28px; line-height:28px; text-align:center; border-radius:50%; background:#ffffff; color:#000000; font-size:14px; font-weight:700; margin-left:8px;">ig</span>
+                <span style="display:inline-block; width:28px; height:28px; line-height:28px; text-align:center; border-radius:50%; background:#ffffff; color:#000000; font-size:13px; font-weight:700; margin-left:8px;">sp</span>
+                <span style="display:inline-block; width:28px; height:28px; line-height:28px; text-align:center; border-radius:50%; background:#ffffff; color:#000000; font-size:13px; font-weight:700; margin-left:8px;">in</span>
               </div>
             </td>
           </tr>
@@ -414,13 +368,13 @@ function buildAppointmentVisualEmail({
       <table role="presentation" cellpadding="0" cellspacing="0" width="100%" style="border-collapse:collapse; width:100%;">
         <tr>
           <td align="center" style="padding:0 10px;">
-            <table role="presentation" cellpadding="0" cellspacing="0" width="100%" style="max-width:360px; border-collapse:separate; border-spacing:0;">
+            <table role="presentation" cellpadding="0" cellspacing="0" width="100%" style="max-width:430px; border-collapse:separate; border-spacing:0;">
               <tr>
                 <td
                   class="ap-card"
                   style="
                     background:#f3f3f3;
-                    border-radius:16px;
+                    border-radius:24px;
                     overflow:hidden;
                   "
                 >
@@ -432,7 +386,7 @@ function buildAppointmentVisualEmail({
                         class="ap-body"
                         style="
                           background:#f3f3f3;
-                          padding:22px 26px 28px;
+                          padding:34px 42px 42px;
                           font-family:Arial, Helvetica, sans-serif;
                           color:#111111;
                         "
@@ -440,11 +394,11 @@ function buildAppointmentVisualEmail({
                         <div
                           class="ap-copy"
                           style="
-                            font-size:12px;
-                            line-height:17px;
+                            font-size:16px;
+                            line-height:24px;
                             font-weight:500;
                             color:#111111;
-                            margin:0 0 18px;
+                            margin:0 0 28px;
                           "
                         >
                           Hola <b>${escapeHtml(firstName)}</b>,<br />
@@ -453,7 +407,7 @@ function buildAppointmentVisualEmail({
 
                         ${cardsHtml}
 
-                        <div style="text-align:center; padding:16px 0 0;">
+                        <div style="text-align:center; padding:26px 0 0;">
                           <a
                             href="${escapeHtml(buttonHref || BRAND_URL || "#")}" 
                             style="
@@ -462,11 +416,13 @@ function buildAppointmentVisualEmail({
                               background:#e4ff00;
                               color:#111111;
                               font-family:Arial, Helvetica, sans-serif;
-                              font-size:12px;
-                              line-height:12px;
-                              font-weight:800;
-                              padding:12px 18px;
+                              font-size:22px;
+                              line-height:24px;
+                              font-weight:900;
+                              letter-spacing:-0.6px;
+                              padding:18px 34px;
                               border-radius:999px;
+                              box-shadow:0 12px 18px rgba(0,0,0,0.18);
                             "
                           >${escapeHtml(buttonLabel)}</a>
                         </div>
@@ -477,13 +433,13 @@ function buildAppointmentVisualEmail({
                           <div
                             class="ap-copy"
                             style="
-                              font-size:10px;
-                              line-height:15px;
-                              font-weight:600;
+                              font-size:14px;
+                              line-height:22px;
+                              font-weight:700;
                               color:#111111;
                               text-align:center;
-                              margin:18px auto 0;
-                              max-width:220px;
+                              margin:34px auto 0;
+                              max-width:320px;
                             "
                           >
                             ${noteHtml}
@@ -722,7 +678,7 @@ export async function sendAppointmentBookedEmail(user, ap, serviceName) {
     user,
     items: [item],
     introHtml:
-      "Tu turno fue confirmado correctamente.<br />Si no podés asistir, recordá cancelarlo con anticipación desde tu perfil.",
+      "Tu turno fue confirmado correctamente.<br /><span style=display:block; height:8px; line-height:8px;>&nbsp;</span><strong>Si no podés asistir, recordá cancelarlo con anticipación desde tu perfil.</strong>",
     noteHtml: `Ingresá a ${escapeHtml(BRAND_NAME)} para revisar el detalle.`,
     buttonLabel: `Ingresar a ${BRAND_NAME}`,
     buttonHref: BRAND_URL,
