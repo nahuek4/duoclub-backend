@@ -356,27 +356,295 @@ export async function sendUserApprovalResultEmail(user, status) {
     .filter(Boolean)
     .join("\n");
 
+  if (isApproved) {
+    const html = buildEmailLayout({
+      title: `${BRAND_NAME} · Cuenta aprobada`,
+      preheader,
+      footerNote: "",
+      bodyHtml: `
+        <style>
+          @media only screen and (max-width: 560px) {
+            .duo-mail-outer {
+              padding: 0 !important;
+            }
+            .duo-mail-card {
+              border-radius: 0 !important;
+            }
+            .duo-mail-content {
+              padding: 26px 26px 0 !important;
+            }
+            .duo-mail-logo {
+              padding-top: 4px !important;
+              padding-bottom: 18px !important;
+            }
+            .duo-mail-title {
+              font-size: 33px !important;
+              line-height: 34px !important;
+            }
+            .duo-mail-copy {
+              font-size: 15px !important;
+              line-height: 21px !important;
+            }
+            .duo-mail-button-cell {
+              padding-left: 26px !important;
+              padding-right: 26px !important;
+            }
+            .duo-mail-footer {
+              padding: 22px 26px !important;
+            }
+          }
+        </style>
+
+        <table
+          role="presentation"
+          cellpadding="0"
+          cellspacing="0"
+          width="100%"
+          class="duo-mail-outer"
+          style="border-collapse:collapse;"
+        >
+          <tr>
+            <td align="center" style="padding:0;">
+              <table
+                role="presentation"
+                cellpadding="0"
+                cellspacing="0"
+                width="100%"
+                style="max-width:560px; border-collapse:collapse;"
+              >
+                <tr>
+                  <td
+                    class="duo-mail-card"
+                    style="
+                      background:#f3f3f3;
+                      border-radius:0;
+                      overflow:hidden;
+                    "
+                  >
+                    <table
+                      role="presentation"
+                      cellpadding="0"
+                      cellspacing="0"
+                      width="100%"
+                      style="border-collapse:collapse;"
+                    >
+                      <tr>
+                        <td
+                          class="duo-mail-content"
+                          style="
+                            padding:24px 34px 0;
+                            background:#f3f3f3;
+                            font-family:Arial, Helvetica, sans-serif;
+                            color:#111111;
+                          "
+                        >
+                          <table
+                            role="presentation"
+                            cellpadding="0"
+                            cellspacing="0"
+                            width="100%"
+                            style="border-collapse:collapse;"
+                          >
+                            <tr>
+                              <td
+                                class="duo-mail-logo"
+                                align="center"
+                                style="padding:2px 0 20px;"
+                              >
+                                <div
+                                  style="
+                                    font-size:42px;
+                                    line-height:42px;
+                                    font-weight:900;
+                                    color:#111111;
+                                    letter-spacing:-2px;
+                                    font-family:Arial, Helvetica, sans-serif;
+                                  "
+                                >
+                                  ᗡ◖
+                                </div>
+                              </td>
+                            </tr>
+
+                            <tr>
+                              <td
+                                class="duo-mail-title"
+                                style="
+                                  font-size:35px;
+                                  line-height:36px;
+                                  font-weight:900;
+                                  color:#111111;
+                                  letter-spacing:-1px;
+                                  padding:0 0 14px;
+                                  font-family:Arial, Helvetica, sans-serif;
+                                "
+                              >
+                                Cuenta aprobada
+                              </td>
+                            </tr>
+
+                            <tr>
+                              <td style="padding:0 0 14px;">
+                                <div
+                                  style="
+                                    height:1px;
+                                    background:#cfcfcf;
+                                    width:100%;
+                                  "
+                                ></div>
+                              </td>
+                            </tr>
+
+                            <tr>
+                              <td
+                                class="duo-mail-copy"
+                                style="
+                                  font-size:14px;
+                                  line-height:20px;
+                                  font-weight:400;
+                                  color:#111111;
+                                  padding:0 0 22px;
+                                  font-family:Arial, Helvetica, sans-serif;
+                                "
+                              >
+                                Hola ${escapeHtml(uName)},<br /><br />
+                                Tu cuenta de ${escapeHtml(
+                                  BRAND_NAME
+                                )} ya fue aprobada!<br />
+                                Ya podés ingresar y comenzar a usar la plataforma.
+                              </td>
+                            </tr>
+                          </table>
+                        </td>
+                      </tr>
+
+                      <tr>
+                        <td
+                          class="duo-mail-button-cell"
+                          style="
+                            background:#f3f3f3;
+                            padding:0 34px 28px;
+                            font-family:Arial, Helvetica, sans-serif;
+                          "
+                        >
+                          <table
+                            role="presentation"
+                            cellpadding="0"
+                            cellspacing="0"
+                            style="border-collapse:collapse;"
+                          >
+                            <tr>
+                              <td
+                                align="center"
+                                style="
+                                  background:#dfff00;
+                                  border-radius:999px;
+                                "
+                              >
+                                <a
+                                  href="${escapeHtml(BRAND_URL || "#")}"
+                                  style="
+                                    display:inline-block;
+                                    padding:13px 24px;
+                                    font-size:14px;
+                                    line-height:14px;
+                                    font-weight:700;
+                                    color:#111111;
+                                    text-decoration:none;
+                                    font-family:Arial, Helvetica, sans-serif;
+                                  "
+                                >
+                                  Ingresar a ${escapeHtml(BRAND_NAME)}
+                                </a>
+                              </td>
+                            </tr>
+                          </table>
+                        </td>
+                      </tr>
+
+                      <tr>
+                        <td
+                          class="duo-mail-footer"
+                          style="
+                            background:#0a0a0a;
+                            padding:24px 34px;
+                            font-family:Arial, Helvetica, sans-serif;
+                          "
+                        >
+                          <table
+                            role="presentation"
+                            cellpadding="0"
+                            cellspacing="0"
+                            width="100%"
+                            style="border-collapse:collapse;"
+                          >
+                            <tr>
+                              <td
+                                valign="middle"
+                                style="
+                                  color:#ffffff;
+                                  font-size:28px;
+                                  line-height:28px;
+                                  font-weight:900;
+                                  letter-spacing:2px;
+                                  font-family:Arial, Helvetica, sans-serif;
+                                "
+                              >
+                                DUO
+                              </td>
+
+                              <td
+                                valign="middle"
+                                align="right"
+                                style="
+                                  color:#ffffff;
+                                  font-size:11px;
+                                  line-height:16px;
+                                  font-weight:500;
+                                  font-family:Arial, Helvetica, sans-serif;
+                                "
+                              >
+                                DUOCLUB.AR<br />
+                                INFO@DUOCLUB.AR<br />
+                                Av. Santa Fe 2567, Tandil<br />
+                                +54 9 249 123 4567
+                              </td>
+                            </tr>
+                          </table>
+                        </td>
+                      </tr>
+                    </table>
+                  </td>
+                </tr>
+              </table>
+            </td>
+          </tr>
+        </table>
+      `,
+    });
+
+    await sendMail(
+      user.email,
+      `${title} - ${BRAND_NAME}`,
+      text,
+      html
+    );
+
+    return;
+  }
+
   const panel = buildPanel([
     panelRow(
       "Estado",
-      `<span style="color:#ffffff;">${isApproved ? "Aprobada" : "Rechazada"}</span>`
+      `<span style="color:#ffffff;">Rechazada</span>`
     ),
-    isApproved && BRAND_URL
-      ? panelRow("Acceso", `<span style="color:#ffffff;">Disponible</span>`)
-      : "",
   ]);
 
   const innerHtml = `
     ${renderExactBodyText(
-      `Hola <b>${escapeHtml(uName)}</b>,<br/>${
-        isApproved
-          ? `Tu cuenta de <b>${escapeHtml(
-              BRAND_NAME
-            )}</b> fue aprobada.<br/>Ya podés ingresar y comenzar a usar la plataforma.`
-          : `Tu cuenta de <b>${escapeHtml(
-              BRAND_NAME
-            )}</b> no pudo ser aprobada.`
-      }`,
+      `Hola <b>${escapeHtml(uName)}</b>,<br/>Tu cuenta de <b>${escapeHtml(
+        BRAND_NAME
+      )}</b> no pudo ser aprobada.`,
       {
         fontSize: 14,
         lineHeight: 19,
@@ -388,32 +656,22 @@ export async function sendUserApprovalResultEmail(user, status) {
 
     ${panel}
 
-    ${
-      isApproved && BRAND_URL
-        ? renderPrimaryButton(`Ingresar a ${BRAND_NAME}`, BRAND_URL)
-        : ""
-    }
-
-    ${
-      !isApproved
-        ? renderExactBodyText(
-            "Si creés que esto es un error, respondé este mail o comunicate con el staff.",
-            {
-              fontSize: 12,
-              lineHeight: 17,
-              weight: 600,
-              maxWidth: 320,
-              marginTop: 8,
-              marginBottom: 0,
-            }
-          )
-        : ""
-    }
+    ${renderExactBodyText(
+      "Si creés que esto es un error, respondé este mail o comunicate con el staff.",
+      {
+        fontSize: 12,
+        lineHeight: 17,
+        weight: 600,
+        maxWidth: 320,
+        marginTop: 8,
+        marginBottom: 0,
+      }
+    )}
   `;
 
   const html = buildAuthEmail({
     title,
-    icon: isApproved ? "✓" : "✕",
+    icon: "✕",
     preheader,
     innerHtml,
   });

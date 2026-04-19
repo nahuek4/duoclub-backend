@@ -1,4 +1,4 @@
-// backend/src/mail/appointmentEmails.js
+// backend/src/mail/appointmentEmails.jsx
 import { ADMIN_EMAIL, BRAND_NAME, BRAND_URL, sendMail } from "./core.js";
 import { escapeHtml, prettyDateAR } from "./helpers.js";
 import { buildEmailLayout } from "./layout.js";
@@ -25,6 +25,10 @@ function getUserName(user = {}) {
   );
 }
 
+function getFirstName(user = {}) {
+  return String(user?.name || "").trim() || "Usuario";
+}
+
 function getServiceName(ap = {}, serviceName = "") {
   return (
     serviceName ||
@@ -41,77 +45,464 @@ function normalizeItems(items = []) {
   }));
 }
 
-function buildTurnsPanel(items = []) {
-  const list = normalizeItems(items);
+function safeTime(value) {
+  const raw = String(value || "-").trim();
+  if (!raw || raw === "-") return "-";
+  return /hs$/i.test(raw) ? raw : `${raw} hs`;
+}
 
-  const cards = list.length
-    ? list
-        .map((it) => {
-          const date = prettyDateAR(it?.date || "");
-          const time = `${it?.time || "-"} hs`;
-          const service = getServiceName(it, it?.serviceName);
-
-          return renderRowCard({
-            titleLeft: date,
-            titleRight: time,
-            subtitle: `<span style="color:#ffffff;">${escapeHtml(service)}</span>`,
-          });
-        })
-        .join("")
-    : `
-      <div style="
-        font-size:14px;
-        line-height:18px;
-        font-weight:700;
-        color:#ffffff;
-        text-align:left;
-      ">
-        Sin turnos para mostrar.
-      </div>
-    `;
+function buildAppointmentCard(item = {}) {
+  const date = prettyDateAR(item?.date || "-");
+  const time = safeTime(item?.time || "-");
+  const service = getServiceName(item, item?.serviceName);
 
   return `
-    <div
-      class="panel turns-panel"
+    <table
+      role="presentation"
+      cellpadding="0"
+      cellspacing="0"
+      width="100%"
       style="
-        background:#0a0a0a;
-        border-radius:6px;
-        padding:14px;
-        margin:0 auto 22px;
-        max-width:100%;
-        text-align:left;
+        border-collapse:separate;
+        border-spacing:0;
+        width:100%;
+        margin:0 0 10px;
+        background:#ffffff;
+        border:1.5px solid #2a2a2a;
+        border-radius:10px;
+        overflow:hidden;
       "
     >
-      ${cards}
+      <tr>
+        <td style="padding:0;">
+          <table
+            role="presentation"
+            cellpadding="0"
+            cellspacing="0"
+            width="100%"
+            style="border-collapse:collapse; width:100%;"
+          >
+            <tr>
+              <td
+                style="
+                  padding:12px 14px;
+                  border-bottom:1px solid #e7e7e7;
+                  font-family:Arial, Helvetica, sans-serif;
+                  font-size:12px;
+                  line-height:16px;
+                  font-weight:800;
+                  color:#111111;
+                "
+              >
+                <table
+                  role="presentation"
+                  cellpadding="0"
+                  cellspacing="0"
+                  width="100%"
+                  style="border-collapse:collapse; width:100%;"
+                >
+                  <tr>
+                    <td
+                      valign="middle"
+                      style="
+                        font-family:Arial, Helvetica, sans-serif;
+                        font-size:12px;
+                        line-height:16px;
+                        font-weight:800;
+                        color:#111111;
+                      "
+                    >
+                      ${escapeHtml(date)}
+                    </td>
+                    <td
+                      valign="middle"
+                      align="right"
+                      style="
+                        white-space:nowrap;
+                        font-family:Arial, Helvetica, sans-serif;
+                        font-size:12px;
+                        line-height:16px;
+                        font-weight:800;
+                        color:#111111;
+                      "
+                    >
+                      ${escapeHtml(time)}
+                    </td>
+                  </tr>
+                </table>
+              </td>
+            </tr>
+            <tr>
+              <td
+                style="
+                  padding:11px 14px 12px;
+                  font-family:Arial, Helvetica, sans-serif;
+                  font-size:12px;
+                  line-height:16px;
+                  font-weight:500;
+                  color:#111111;
+                "
+              >
+                ${escapeHtml(service)}
+              </td>
+            </tr>
+          </table>
+        </td>
+      </tr>
+    </table>
+  `;
+}
+
+function buildAppointmentCards(items = []) {
+  const list = normalizeItems(items);
+  if (!list.length) return "";
+  return list.map((item) => buildAppointmentCard(item)).join("");
+}
+
+function buildTopIcon(kind = "confirmed") {
+  const isCancelled = kind === "cancelled";
+
+  if (isCancelled) {
+    return `
+      <table role="presentation" cellpadding="0" cellspacing="0" style="border-collapse:collapse;">
+        <tr>
+          <td style="padding:0;">
+            <div
+              style="
+                width:14px;
+                height:14px;
+                border-radius:50%;
+                background:#e4ff00;
+                color:#111111;
+                font-family:Arial, Helvetica, sans-serif;
+                font-size:11px;
+                line-height:14px;
+                font-weight:900;
+                text-align:center;
+              "
+            >
+              ×
+            </div>
+          </td>
+        </tr>
+      </table>
+    `;
+  }
+
+  return `
+    <table role="presentation" cellpadding="0" cellspacing="0" style="border-collapse:collapse;">
+      <tr>
+        <td style="padding:0;">
+          <div
+            style="
+              width:12px;
+              height:12px;
+              border-radius:50%;
+              background:#e4ff00;
+              color:#111111;
+              font-family:Arial, Helvetica, sans-serif;
+              font-size:9px;
+              line-height:12px;
+              font-weight:900;
+              text-align:center;
+            "
+          >
+            ✓
+          </div>
+        </td>
+      </tr>
+    </table>
+  `;
+}
+
+function buildDuoMark() {
+  return `
+    <div
+      style="
+        font-family:Arial, Helvetica, sans-serif;
+        font-size:34px;
+        line-height:34px;
+        font-weight:900;
+        letter-spacing:-1px;
+        color:#ffffff;
+      "
+    >
+      ᗡ◖
     </div>
   `;
 }
 
-function buildAppointmentEmail({
+function buildHeroHeader({ title, kind = "confirmed" }) {
+  const notchStyle =
+    kind === "cancelled"
+      ? "left:0; right:auto; border-top-left-radius:0; border-top-right-radius:14px;"
+      : "right:0; left:auto; border-top-right-radius:0; border-top-left-radius:14px;";
+
+  const lineStyle =
+    kind === "cancelled"
+      ? "left:34px; right:auto;"
+      : "right:34px; left:auto;";
+
+  return `
+    <tr>
+      <td
+        style="
+          background:#050505;
+          padding:16px 16px 40px;
+          border-top-left-radius:16px;
+          border-top-right-radius:16px;
+          position:relative;
+        "
+      >
+        <table
+          role="presentation"
+          cellpadding="0"
+          cellspacing="0"
+          width="100%"
+          style="border-collapse:collapse; width:100%;"
+        >
+          <tr>
+            <td valign="top" align="left">${buildTopIcon(kind)}</td>
+            <td valign="top" align="right">${buildDuoMark()}</td>
+          </tr>
+          <tr>
+            <td colspan="2" style="padding:18px 0 0;">
+              <div
+                style="
+                  max-width:180px;
+                  font-family:Arial, Helvetica, sans-serif;
+                  font-size:28px;
+                  line-height:29px;
+                  font-weight:900;
+                  letter-spacing:-0.7px;
+                  color:#ffffff;
+                "
+              >
+                ${title}
+              </div>
+            </td>
+          </tr>
+        </table>
+
+        <div
+          style="
+            position:relative;
+            height:0;
+          "
+        >
+          <div
+            style="
+              position:absolute;
+              bottom:-40px;
+              ${notchStyle}
+              width:66px;
+              height:34px;
+              background:#f3f3f3;
+            "
+          ></div>
+          <div
+            style="
+              position:absolute;
+              bottom:-7px;
+              ${lineStyle}
+              width:68px;
+              height:0;
+              border-top:3px solid #19a1ff;
+              transform:skew(-36deg);
+            "
+          ></div>
+        </div>
+      </td>
+    </tr>
+  `;
+}
+
+function buildFooterBlock() {
+  return `
+    <tr>
+      <td
+        style="
+          background:#0a0a0a;
+          padding:24px 24px 22px;
+        "
+      >
+        <table
+          role="presentation"
+          cellpadding="0"
+          cellspacing="0"
+          width="100%"
+          style="border-collapse:collapse; width:100%;"
+        >
+          <tr>
+            <td
+              valign="bottom"
+              style="
+                width:50%;
+                font-family:Arial, Helvetica, sans-serif;
+                color:#ffffff;
+              "
+            >
+              <div style="font-size:26px; line-height:26px; font-weight:900; letter-spacing:2px;">DUO</div>
+              <div style="font-size:7px; line-height:10px; opacity:0.8; letter-spacing:1.2px; margin-top:3px;">HEALTH CLUB</div>
+            </td>
+            <td
+              valign="bottom"
+              align="right"
+              style="
+                width:50%;
+                font-family:Arial, Helvetica, sans-serif;
+                color:#ffffff;
+              "
+            >
+              <div style="font-size:10px; line-height:14px; font-weight:700;">DUOCLUB.AR</div>
+              <div style="font-size:10px; line-height:14px; font-weight:500; opacity:0.95;">+54 9 249 123 7458</div>
+              <div style="font-size:10px; line-height:14px; font-weight:500; opacity:0.95;">Av. Santamarina 791, Tandil.</div>
+              <div style="margin-top:6px; font-size:0; line-height:0;">
+                <span style="display:inline-block; width:12px; height:12px; border-radius:50%; border:1px solid #ffffff; margin-left:4px;"></span>
+                <span style="display:inline-block; width:12px; height:12px; border-radius:50%; border:1px solid #ffffff; margin-left:4px;"></span>
+                <span style="display:inline-block; width:12px; height:12px; border-radius:50%; border:1px solid #ffffff; margin-left:4px;"></span>
+              </div>
+            </td>
+          </tr>
+        </table>
+      </td>
+    </tr>
+  `;
+}
+
+function buildAppointmentVisualEmail({
   title,
   preheader,
-  icon = "✓",
+  kind = "confirmed",
+  user,
   items = [],
-  topTextHtml = "",
-  bottomTextHtml = "",
+  introHtml = "",
+  noteHtml = "",
+  buttonLabel = `Ingresar a ${BRAND_NAME}`,
+  buttonHref = BRAND_URL,
 }) {
-  const exact = buildExactMail({
-    brandName: BRAND_NAME,
-    title,
-    preheader,
-    icon,
-    innerHtml: `
-      ${topTextHtml || ""}
-      ${buildTurnsPanel(items)}
-      ${bottomTextHtml || ""}
-    `,
-  });
+  const firstName = getFirstName(user);
+  const cardsHtml = buildAppointmentCards(items);
 
   return buildEmailLayout({
-    title: exact.title,
-    preheader: exact.preheader,
-    bodyHtml: exact.bodyHtml,
+    title: `${BRAND_NAME} · ${title.replace(/<br\s*\/?>/gi, " ")}`,
+    preheader,
     footerNote: "",
+    bodyHtml: `
+      <style>
+        @media only screen and (max-width: 560px) {
+          .ap-card {
+            border-radius: 16px !important;
+          }
+          .ap-body {
+            padding: 22px 22px 26px !important;
+          }
+          .ap-title {
+            font-size: 27px !important;
+            line-height: 28px !important;
+          }
+          .ap-copy {
+            font-size: 13px !important;
+            line-height: 18px !important;
+          }
+          .ap-footer {
+            padding: 22px 20px 20px !important;
+          }
+        }
+      </style>
+
+      <table role="presentation" cellpadding="0" cellspacing="0" width="100%" style="border-collapse:collapse; width:100%;">
+        <tr>
+          <td align="center" style="padding:0 10px;">
+            <table role="presentation" cellpadding="0" cellspacing="0" width="100%" style="max-width:360px; border-collapse:separate; border-spacing:0;">
+              <tr>
+                <td
+                  class="ap-card"
+                  style="
+                    background:#f3f3f3;
+                    border-radius:16px;
+                    overflow:hidden;
+                  "
+                >
+                  <table role="presentation" cellpadding="0" cellspacing="0" width="100%" style="border-collapse:collapse; width:100%;">
+                    ${buildHeroHeader({ title, kind })}
+
+                    <tr>
+                      <td
+                        class="ap-body"
+                        style="
+                          background:#f3f3f3;
+                          padding:22px 26px 28px;
+                          font-family:Arial, Helvetica, sans-serif;
+                          color:#111111;
+                        "
+                      >
+                        <div
+                          class="ap-copy"
+                          style="
+                            font-size:12px;
+                            line-height:17px;
+                            font-weight:500;
+                            color:#111111;
+                            margin:0 0 18px;
+                          "
+                        >
+                          Hola <b>${escapeHtml(firstName)}</b>,<br />
+                          ${introHtml}
+                        </div>
+
+                        ${cardsHtml}
+
+                        <div style="text-align:center; padding:16px 0 0;">
+                          <a
+                            href="${escapeHtml(buttonHref || BRAND_URL || "#")}" 
+                            style="
+                              display:inline-block;
+                              text-decoration:none;
+                              background:#e4ff00;
+                              color:#111111;
+                              font-family:Arial, Helvetica, sans-serif;
+                              font-size:12px;
+                              line-height:12px;
+                              font-weight:800;
+                              padding:12px 18px;
+                              border-radius:999px;
+                            "
+                          >${escapeHtml(buttonLabel)}</a>
+                        </div>
+
+                        ${
+                          noteHtml
+                            ? `
+                          <div
+                            class="ap-copy"
+                            style="
+                              font-size:10px;
+                              line-height:15px;
+                              font-weight:600;
+                              color:#111111;
+                              text-align:center;
+                              margin:18px auto 0;
+                              max-width:220px;
+                            "
+                          >
+                            ${noteHtml}
+                          </div>
+                        `
+                            : ""
+                        }
+                      </td>
+                    </tr>
+
+                    ${buildFooterBlock()}
+                  </table>
+                </td>
+              </tr>
+            </table>
+          </td>
+        </tr>
+      </table>
+    `,
   });
 }
 
@@ -134,7 +525,19 @@ function buildReminderEmail({ items = [] }) {
       Recordatorio de turno
     </div>
 
-    ${buildTurnsPanel(items)}
+    ${normalizeItems(items)
+      .map((it) => {
+        const date = prettyDateAR(it?.date || "");
+        const time = `${it?.time || "-"} hs`;
+        const service = getServiceName(it, it?.serviceName);
+
+        return renderRowCard({
+          titleLeft: date,
+          titleRight: time,
+          subtitle: `<span style="color:#ffffff;">${escapeHtml(service)}</span>`,
+        });
+      })
+      .join("")}
 
     ${renderExactBodyText(
       "Si no podés asistir, recordá cancelarlo con anticipación desde tu perfil.",
@@ -208,22 +611,22 @@ function buildAdminAppointmentEmail({
       ? "Se cancelaron\nturnos"
       : "Se canceló\nun turno"
     : list.length > 1
-    ? "Se reservaron\nturnos"
-    : "Se reservó\nun turno";
+      ? "Se reservaron\nturnos"
+      : "Se reservó\nun turno";
 
   const refundFlag =
     typeof meta?.refund === "boolean"
       ? meta.refund
       : typeof list?.[0]?.refund === "boolean"
-      ? list[0].refund
-      : null;
+        ? list[0].refund
+        : null;
 
   const cutoff =
     typeof meta?.refundCutoffHours === "number"
       ? meta.refundCutoffHours
       : typeof list?.[0]?.refundCutoffHours === "number"
-      ? list[0].refundCutoffHours
-      : null;
+        ? list[0].refundCutoffHours
+        : null;
 
   const refundDetail =
     refundFlag === null ? "" : refundFlag ? "Sí (1 sesión)" : "No";
@@ -232,10 +635,10 @@ function buildAdminAppointmentEmail({
     refundFlag === null
       ? ""
       : refundFlag
-      ? "Se reintegró 1 sesión."
-      : cutoff
-      ? `Fuera del límite (${cutoff} hs).`
-      : "Fuera del límite.";
+        ? "Se reintegró 1 sesión."
+        : cutoff
+          ? `Fuera del límite (${cutoff} hs).`
+          : "Fuera del límite.";
 
   const exact = buildExactMail({
     brandName: BRAND_NAME,
@@ -259,7 +662,18 @@ function buildAdminAppointmentEmail({
           : ""
       }
 
-      ${buildTurnsPanel(list)}
+      ${list
+        .map((it) => {
+          const date = prettyDateAR(it?.date || "");
+          const time = `${it?.time || "-"} hs`;
+          const service = getServiceName(it, it?.serviceName);
+          return renderRowCard({
+            titleLeft: date,
+            titleRight: time,
+            subtitle: `<span style="color:#ffffff;">${escapeHtml(service)}</span>`,
+          });
+        })
+        .join("")}
     `,
   });
 
@@ -292,7 +706,7 @@ export async function sendAppointmentBookedEmail(user, ap, serviceName) {
   const text = [
     `Hola ${user?.name || ""}`.trim() + ",",
     "",
-    "Tu turno fue reservado con éxito.",
+    "Tu turno fue confirmado con éxito.",
     "",
     `Día: ${ap?.date || "-"}`,
     `Horario: ${ap?.time || "-"} hs`,
@@ -301,35 +715,17 @@ export async function sendAppointmentBookedEmail(user, ap, serviceName) {
     "Si no podés asistir, recordá cancelarlo con anticipación desde tu perfil.",
   ].join("\n");
 
-  const html = buildAppointmentEmail({
-    title: "Turno confirmado\ncon éxito.",
+  const html = buildAppointmentVisualEmail({
+    title: "Turno confirmado<br />con éxito.",
     preheader: "Tu turno fue confirmado",
-    icon: "✓",
+    kind: "confirmed",
+    user,
     items: [item],
-    topTextHtml: renderExactBodyText(
-      `Hola <b>${escapeHtml(user?.name || "Usuario")}</b>,<br/>Tu turno fue confirmado correctamente.`,
-      {
-        fontSize: 14,
-        lineHeight: 19,
-        weight: 700,
-        maxWidth: 320,
-        marginBottom: 14,
-      }
-    ),
-    bottomTextHtml: `
-      ${renderPrimaryButton(`Ingresar a ${BRAND_NAME}`, BRAND_URL)}
-      ${renderExactBodyText(
-        "Ingresá a DUO para revisar el detalle.",
-        {
-          fontSize: 12,
-          lineHeight: 17,
-          weight: 600,
-          maxWidth: 320,
-          marginTop: 8,
-          marginBottom: 0,
-        }
-      )}
-    `,
+    introHtml:
+      "Tu turno fue confirmado correctamente.<br />Si no podés asistir, recordá cancelarlo con anticipación desde tu perfil.",
+    noteHtml: `Ingresá a ${escapeHtml(BRAND_NAME)} para revisar el detalle.`,
+    buttonLabel: `Ingresar a ${BRAND_NAME}`,
+    buttonHref: BRAND_URL,
   });
 
   await sendMail(user.email, subject, text, html);
@@ -364,15 +760,15 @@ export async function sendAppointmentCancelledEmail(
     typeof meta?.refund === "boolean"
       ? meta.refund
       : typeof ap?.refund === "boolean"
-      ? ap.refund
-      : null;
+        ? ap.refund
+        : null;
 
   const cutoff =
     typeof meta?.refundCutoffHours === "number"
       ? meta.refundCutoffHours
       : typeof ap?.refundCutoffHours === "number"
-      ? ap.refundCutoffHours
-      : null;
+        ? ap.refundCutoffHours
+        : null;
 
   const subject = `❌ Tu turno fue cancelado - ${BRAND_NAME}`;
 
@@ -380,17 +776,17 @@ export async function sendAppointmentCancelledEmail(
     refundFlag === null
       ? ""
       : refundFlag
-      ? "Reintegro: Sí (1 sesión)"
-      : "Reintegro: No";
+        ? "Reintegro: Sí (1 sesión)"
+        : "Reintegro: No";
 
   const extraExplain =
     refundFlag === null
       ? ""
       : refundFlag
-      ? "Se reintegró 1 sesión a tu cuenta."
-      : cutoff
-      ? `No hubo reintegro porque la cancelación fue fuera del límite (${cutoff}hs).`
-      : "No hubo reintegro porque la cancelación fue fuera del límite.";
+        ? "Se reintegró 1 sesión a tu cuenta."
+        : cutoff
+          ? `No hubo reintegro porque la cancelación fue fuera del límite (${cutoff}hs).`
+          : "No hubo reintegro porque la cancelación fue fuera del límite.";
 
   const text = [
     `Hola ${user?.name || ""}`.trim() + ",",
@@ -408,42 +804,23 @@ export async function sendAppointmentCancelledEmail(
     .filter(Boolean)
     .join("\n");
 
-  const cancelExplain =
+  const introHtml =
     refundFlag === null
       ? "Tu turno fue cancelado correctamente."
       : refundFlag
-      ? "Tu turno fue cancelado correctamente.<br/>Si corresponde según la política de cancelación, el crédito ya fue reintegrado a tu cuenta."
-      : "Tu turno fue cancelado correctamente.";
+        ? "Tu turno fue cancelado correctamente.<br />Si correspondiera según la política de cancelación, el crédito ya fue reintegrado a tu cuenta."
+        : "Tu turno fue cancelado correctamente.<br />Si correspondiera según la política de cancelación, el crédito ya fue reintegrado a tu cuenta.";
 
-  const html = buildAppointmentEmail({
-    title: "Turno cancelado\ncon éxito.",
+  const html = buildAppointmentVisualEmail({
+    title: "Turno cancelado<br />con éxito.",
     preheader: "Tu turno fue cancelado",
-    icon: "✕",
+    kind: "cancelled",
+    user,
     items: [item],
-    topTextHtml: renderExactBodyText(
-      `Hola <b>${escapeHtml(user?.name || "Usuario")}</b>,<br/>${cancelExplain}`,
-      {
-        fontSize: 14,
-        lineHeight: 19,
-        weight: 700,
-        maxWidth: 320,
-        marginBottom: 14,
-      }
-    ),
-    bottomTextHtml: `
-      ${renderPrimaryButton(`Ingresar a ${BRAND_NAME}`, BRAND_URL)}
-      ${renderExactBodyText(
-        "Ingresá a DUO para revisar el detalle.",
-        {
-          fontSize: 12,
-          lineHeight: 17,
-          weight: 600,
-          maxWidth: 320,
-          marginTop: 8,
-          marginBottom: 0,
-        }
-      )}
-    `,
+    introHtml,
+    noteHtml: `Ingresá a ${escapeHtml(BRAND_NAME)} para revisar el detalle.`,
+    buttonLabel: `Ingresar a ${BRAND_NAME}`,
+    buttonHref: BRAND_URL,
   });
 
   await sendMail(user.email, subject, text, html);
@@ -539,15 +916,15 @@ export async function sendAdminAppointmentCancelledEmail(
     typeof meta?.refund === "boolean"
       ? meta.refund
       : typeof ap?.refund === "boolean"
-      ? ap.refund
-      : null;
+        ? ap.refund
+        : null;
 
   const cutoff =
     typeof meta?.refundCutoffHours === "number"
       ? meta.refundCutoffHours
       : typeof ap?.refundCutoffHours === "number"
-      ? ap.refundCutoffHours
-      : null;
+        ? ap.refundCutoffHours
+        : null;
 
   const subject = `🧾 Turno cancelado — ${uName} · ${ap?.date || "-"} ${
     ap?.time || ""
@@ -557,17 +934,17 @@ export async function sendAdminAppointmentCancelledEmail(
     refundFlag === null
       ? ""
       : refundFlag
-      ? "Reintegro: Sí (1 sesión)"
-      : "Reintegro: No";
+        ? "Reintegro: Sí (1 sesión)"
+        : "Reintegro: No";
 
   const extraExplain =
     refundFlag === null
       ? ""
       : refundFlag
-      ? "Se reintegró 1 sesión."
-      : cutoff
-      ? `No hubo reintegro (fuera del límite: ${cutoff}hs).`
-      : "No hubo reintegro (fuera del límite).";
+        ? "Se reintegró 1 sesión."
+        : cutoff
+          ? `No hubo reintegro (fuera del límite: ${cutoff}hs).`
+          : "No hubo reintegro (fuera del límite).";
 
   const text = [
     "Turno cancelado",
@@ -630,35 +1007,17 @@ export async function sendAppointmentBookedBatchEmail(user, items = []) {
     "Si no podés asistir, recordá cancelarlo con anticipación desde tu perfil.",
   ].join("\n");
 
-  const html = buildAppointmentEmail({
-    title: "Turnos confirmados\ncon éxito.",
+  const html = buildAppointmentVisualEmail({
+    title: "Turnos confirmados<br />con éxito.",
     preheader: "Tus turnos fueron confirmados",
-    icon: "✓",
+    kind: "confirmed",
+    user,
     items: list,
-    topTextHtml: renderExactBodyText(
-      `Hola <b>${escapeHtml(user?.name || "Usuario")}</b>,<br/>Tus turnos fueron confirmados correctamente.`,
-      {
-        fontSize: 14,
-        lineHeight: 19,
-        weight: 700,
-        maxWidth: 320,
-        marginBottom: 14,
-      }
-    ),
-    bottomTextHtml: `
-      ${renderPrimaryButton(`Ingresar a ${BRAND_NAME}`, BRAND_URL)}
-      ${renderExactBodyText(
-        "Ingresá a DUO para revisar el detalle.",
-        {
-          fontSize: 12,
-          lineHeight: 17,
-          weight: 600,
-          maxWidth: 320,
-          marginTop: 8,
-          marginBottom: 0,
-        }
-      )}
-    `,
+    introHtml:
+      "Tus turnos fueron confirmados correctamente.<br />Si no podés asistir, recordá cancelarlos con anticipación desde tu perfil.",
+    noteHtml: `Ingresá a ${escapeHtml(BRAND_NAME)} para revisar el detalle.`,
+    buttonLabel: `Ingresar a ${BRAND_NAME}`,
+    buttonHref: BRAND_URL,
   });
 
   await sendMail(
@@ -697,35 +1056,16 @@ export async function sendAppointmentCancelledBatchEmail(user, items = []) {
     "Si querés, podés volver a reservar desde tu perfil.",
   ].join("\n");
 
-  const html = buildAppointmentEmail({
-    title: "Turnos cancelados\ncon éxito.",
+  const html = buildAppointmentVisualEmail({
+    title: "Turnos cancelados<br />con éxito.",
     preheader: "Tus turnos fueron cancelados",
-    icon: "✕",
+    kind: "cancelled",
+    user,
     items: list,
-    topTextHtml: renderExactBodyText(
-      `Hola <b>${escapeHtml(user?.name || "Usuario")}</b>,<br/>Tus turnos fueron cancelados correctamente.`,
-      {
-        fontSize: 14,
-        lineHeight: 19,
-        weight: 700,
-        maxWidth: 320,
-        marginBottom: 14,
-      }
-    ),
-    bottomTextHtml: `
-      ${renderPrimaryButton(`Ingresar a ${BRAND_NAME}`, BRAND_URL)}
-      ${renderExactBodyText(
-        "Ingresá a DUO para revisar el detalle.",
-        {
-          fontSize: 12,
-          lineHeight: 17,
-          weight: 600,
-          maxWidth: 320,
-          marginTop: 8,
-          marginBottom: 0,
-        }
-      )}
-    `,
+    introHtml: "Tus turnos fueron cancelados correctamente.",
+    noteHtml: `Ingresá a ${escapeHtml(BRAND_NAME)} para revisar el detalle.`,
+    buttonLabel: `Ingresar a ${BRAND_NAME}`,
+    buttonHref: BRAND_URL,
   });
 
   await sendMail(
@@ -787,7 +1127,18 @@ export async function sendWaitlistSlotAvailableEmail(user, ap, meta = {}) {
         }
       )}
 
-      ${buildTurnsPanel([{ ...ap, serviceName: svc }])}
+      ${normalizeItems([{ ...ap, serviceName: svc }])
+        .map((it) => {
+          const date = prettyDateAR(it?.date || "");
+          const time = `${it?.time || "-"} hs`;
+          const service = getServiceName(it, it?.serviceName);
+          return renderRowCard({
+            titleLeft: date,
+            titleRight: time,
+            subtitle: `<span style="color:#ffffff;">${escapeHtml(service)}</span>`,
+          });
+        })
+        .join("")}
 
       ${renderExactBodyText(
         totalNotified > 1
