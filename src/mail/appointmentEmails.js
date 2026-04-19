@@ -12,6 +12,8 @@ import {
   renderRowCard,
 } from "./ui.js";
 
+const IMG_BASE = "https://api.duoclub.ar/images";
+
 /* =========================================================
    Helpers base
 ========================================================= */
@@ -67,14 +69,14 @@ function buildAppointmentCard(item = {}) {
         border-spacing:0;
         width:100%;
         margin:0 0 14px;
-        background:#ffffff;
-        border:2px solid #121212;
+        background:#f8f8f8;
+        border:2px solid #171717;
         border-radius:18px;
         overflow:hidden;
       "
     >
       <tr>
-        <td style="width:14px; background:#000000; padding:0; font-size:0; line-height:0;">&nbsp;</td>
+        <td style="width:10px; background:#000000; font-size:0; line-height:0;">&nbsp;</td>
         <td style="padding:0;">
           <table
             role="presentation"
@@ -84,7 +86,17 @@ function buildAppointmentCard(item = {}) {
             style="border-collapse:collapse; width:100%;"
           >
             <tr>
-              <td style="padding:18px 18px 14px;">
+              <td
+                style="
+                  padding:18px 20px 14px;
+                  border-bottom:1px solid #cfcfcf;
+                  font-family:Arial, Helvetica, sans-serif;
+                  font-size:14px;
+                  line-height:18px;
+                  font-weight:800;
+                  color:#111111;
+                "
+              >
                 <table
                   role="presentation"
                   cellpadding="0"
@@ -97,12 +109,11 @@ function buildAppointmentCard(item = {}) {
                       valign="middle"
                       style="
                         font-family:Arial, Helvetica, sans-serif;
-                        font-size:15px;
-                        line-height:19px;
-                        font-weight:900;
-                        letter-spacing:-0.2px;
+                        font-size:14px;
+                        line-height:18px;
+                        font-weight:800;
                         color:#111111;
-                        padding:0 12px 0 0;
+                        padding-right:14px;
                       "
                     >
                       ${escapeHtml(date)}
@@ -111,16 +122,14 @@ function buildAppointmentCard(item = {}) {
                       valign="middle"
                       align="right"
                       style="
-                        width:100px;
                         white-space:nowrap;
                         font-family:Arial, Helvetica, sans-serif;
-                        font-size:15px;
-                        line-height:19px;
-                        font-weight:900;
-                        letter-spacing:-0.2px;
+                        font-size:14px;
+                        line-height:18px;
+                        font-weight:800;
                         color:#111111;
-                        padding:0 0 0 14px;
-                        border-left:2px solid #d9d9d9;
+                        border-left:1px solid #cfcfcf;
+                        padding-left:16px;
                       "
                     >
                       ${escapeHtml(time)}
@@ -130,19 +139,13 @@ function buildAppointmentCard(item = {}) {
               </td>
             </tr>
             <tr>
-              <td style="padding:0 18px 0;">
-                <div style="height:1px; line-height:1px; font-size:1px; background:#d9d9d9;">&nbsp;</div>
-              </td>
-            </tr>
-            <tr>
               <td
                 style="
-                  padding:16px 18px 20px;
+                  padding:16px 20px 20px;
                   font-family:Arial, Helvetica, sans-serif;
-                  font-size:15px;
-                  line-height:20px;
-                  font-weight:800;
-                  letter-spacing:-0.2px;
+                  font-size:14px;
+                  line-height:18px;
+                  font-weight:500;
                   color:#111111;
                 "
               >
@@ -163,48 +166,41 @@ function buildAppointmentCards(items = []) {
 }
 
 function buildTopIcon(kind = "confirmed") {
-  const symbol = kind === "cancelled" ? "×" : "✓";
+  const iconFile = kind === "cancelled" ? "iconocheck.png" : "iconocheck.png";
 
   return `
-    <table role="presentation" cellpadding="0" cellspacing="0" style="border-collapse:collapse;">
-      <tr>
-        <td style="padding:0;">
-          <div
-            style="
-              width:26px;
-              height:26px;
-              border-radius:50%;
-              background:#ecff00;
-              color:#000000;
-              font-family:Arial, Helvetica, sans-serif;
-              font-size:${kind === "cancelled" ? "18px" : "16px"};
-              line-height:26px;
-              font-weight:900;
-              text-align:center;
-            "
-          >
-            ${symbol}
-          </div>
-        </td>
-      </tr>
-    </table>
+    <img
+      src="${IMG_BASE}/${iconFile}"
+      width="40"
+      height="40"
+      alt=""
+      style="
+        display:block;
+        width:40px;
+        height:40px;
+        border:0;
+        outline:none;
+        text-decoration:none;
+      "
+    />
   `;
 }
 
 function buildDuoMark() {
   return `
-    <div
+    <img
+      src="${IMG_BASE}/logo.png"
+      width="34"
+      alt="${escapeHtml(BRAND_NAME)}"
       style="
-        font-family:Arial, Helvetica, sans-serif;
-        font-size:48px;
-        line-height:48px;
-        font-weight:900;
-        letter-spacing:-2px;
-        color:#ffffff;
+        display:block;
+        width:34px;
+        height:auto;
+        border:0;
+        outline:none;
+        text-decoration:none;
       "
-    >
-      ᗡ◖
-    </div>
+    />
   `;
 }
 
@@ -213,10 +209,10 @@ function buildHeroHeader({ title, kind = "confirmed" }) {
     <tr>
       <td
         style="
-          background:#000000;
-          padding:26px 24px 78px;
-          border-top-left-radius:24px;
-          border-top-right-radius:24px;
+          background:#050505;
+          padding:28px 28px 54px;
+          border-top-left-radius:22px;
+          border-top-right-radius:22px;
           position:relative;
         "
       >
@@ -232,14 +228,14 @@ function buildHeroHeader({ title, kind = "confirmed" }) {
             <td valign="top" align="right">${buildDuoMark()}</td>
           </tr>
           <tr>
-            <td colspan="2" style="padding:26px 0 0;">
+            <td colspan="2" style="padding:28px 0 0;">
               <div
                 class="ap-title"
                 style="
-                  max-width:260px;
+                  max-width:250px;
                   font-family:Arial, Helvetica, sans-serif;
-                  font-size:34px;
-                  line-height:39px;
+                  font-size:38px;
+                  line-height:44px;
                   font-weight:900;
                   letter-spacing:-1.2px;
                   color:#ffffff;
@@ -255,10 +251,10 @@ function buildHeroHeader({ title, kind = "confirmed" }) {
           style="
             position:absolute;
             right:0;
-            bottom:0;
-            width:132px;
-            height:84px;
-            background:#f3f3f3;
+            bottom:-44px;
+            width:140px;
+            height:88px;
+            background:#f1f1f1;
             border-top-left-radius:44px;
           "
         ></div>
@@ -273,10 +269,8 @@ function buildFooterBlock() {
       <td
         class="ap-footer"
         style="
-          background:#000000;
-          padding:28px 28px 32px;
-          border-bottom-left-radius:24px;
-          border-bottom-right-radius:24px;
+          background:#050505;
+          padding:34px 26px 34px;
         "
       >
         <table
@@ -290,31 +284,30 @@ function buildFooterBlock() {
             <td
               valign="bottom"
               style="
-                width:44%;
+                width:46%;
                 font-family:Arial, Helvetica, sans-serif;
                 color:#ffffff;
-                padding-right:12px;
               "
             >
-              <div style="font-size:58px; line-height:52px; font-weight:900; letter-spacing:1px;">DUO</div>
-              <div style="font-size:10px; line-height:12px; opacity:0.95; letter-spacing:2px; margin-top:2px;">HEALTH CLUB</div>
+              <div style="font-size:56px; line-height:52px; font-weight:900; letter-spacing:2px;">DUO</div>
+              <div style="font-size:12px; line-height:14px; opacity:0.9; letter-spacing:2.2px; margin-top:6px;">HEALTH CLUB</div>
             </td>
             <td
               valign="bottom"
               align="right"
               style="
-                width:56%;
+                width:54%;
                 font-family:Arial, Helvetica, sans-serif;
                 color:#ffffff;
               "
             >
-              <div style="font-size:12px; line-height:16px; font-weight:900; letter-spacing:2px; margin-bottom:6px;">DUOCLUB.AR</div>
-              <div style="font-size:11px; line-height:18px; font-weight:500; opacity:0.98;">+54 9 249 420 7343</div>
-              <div style="font-size:11px; line-height:18px; font-weight:500; opacity:0.98;">Av. Santamaría 54, Tandil.</div>
+              <div style="font-size:16px; line-height:22px; font-weight:800; letter-spacing:3px;">DUOCLUB.AR</div>
+              <div style="font-size:14px; line-height:22px; font-weight:500; opacity:0.96;">+54 9 249 420 7343</div>
+              <div style="font-size:14px; line-height:22px; font-weight:500; opacity:0.96;">Av. Santamaría 54, Tandil.</div>
               <div style="margin-top:12px; font-size:0; line-height:0;">
-                <span style="display:inline-block; width:28px; height:28px; line-height:28px; text-align:center; border-radius:50%; background:#ffffff; color:#000000; font-size:14px; font-weight:700; margin-left:8px;">ig</span>
-                <span style="display:inline-block; width:28px; height:28px; line-height:28px; text-align:center; border-radius:50%; background:#ffffff; color:#000000; font-size:13px; font-weight:700; margin-left:8px;">sp</span>
-                <span style="display:inline-block; width:28px; height:28px; line-height:28px; text-align:center; border-radius:50%; background:#ffffff; color:#000000; font-size:13px; font-weight:700; margin-left:8px;">in</span>
+                <span style="display:inline-block; width:32px; height:32px; border-radius:50%; background:#ffffff; margin-left:8px;"></span>
+                <span style="display:inline-block; width:32px; height:32px; border-radius:50%; background:#ffffff; margin-left:8px;"></span>
+                <span style="display:inline-block; width:32px; height:32px; border-radius:50%; background:#ffffff; margin-left:8px;"></span>
               </div>
             </td>
           </tr>
@@ -346,35 +339,51 @@ function buildAppointmentVisualEmail({
       <style>
         @media only screen and (max-width: 560px) {
           .ap-card {
-            border-radius: 16px !important;
+            border-radius: 20px !important;
           }
-          .ap-body {
-            padding: 22px 22px 26px !important;
+          .ap-wrap {
+            width:100% !important;
           }
           .ap-title {
-            font-size: 27px !important;
-            line-height: 28px !important;
+            font-size: 32px !important;
+            line-height: 36px !important;
+          }
+          .ap-body {
+            padding: 26px 20px 28px !important;
           }
           .ap-copy {
-            font-size: 13px !important;
-            line-height: 18px !important;
+            font-size: 17px !important;
+            line-height: 26px !important;
+          }
+          .ap-note {
+            font-size: 15px !important;
+            line-height: 22px !important;
+          }
+          .ap-cta {
+            font-size: 18px !important;
+            line-height: 20px !important;
+            padding: 18px 34px !important;
           }
           .ap-footer {
-            padding: 22px 20px 20px !important;
+            padding: 28px 20px 30px !important;
           }
         }
       </style>
 
       <table role="presentation" cellpadding="0" cellspacing="0" width="100%" style="border-collapse:collapse; width:100%;">
         <tr>
-          <td align="center" style="padding:0 10px;">
-            <table role="presentation" cellpadding="0" cellspacing="0" width="100%" style="max-width:430px; border-collapse:separate; border-spacing:0;">
+          <td align="center" style="padding:0;">
+            <table role="presentation" cellpadding="0" cellspacing="0" width="100%" class="ap-wrap" style="max-width:600px; border-collapse:separate; border-spacing:0;">
               <tr>
                 <td
                   class="ap-card"
+                  background="${IMG_BASE}/fondoMailing.png"
                   style="
-                    background:#f3f3f3;
-                    border-radius:24px;
+                    background-color:#f1f1f1;
+                    background-image:url('${IMG_BASE}/fondoMailing.png');
+                    background-repeat:repeat;
+                    background-position:center top;
+                    border-radius:22px;
                     overflow:hidden;
                   "
                 >
@@ -385,8 +394,7 @@ function buildAppointmentVisualEmail({
                       <td
                         class="ap-body"
                         style="
-                          background:#f3f3f3;
-                          padding:34px 42px 42px;
+                          padding:48px 58px 40px;
                           font-family:Arial, Helvetica, sans-serif;
                           color:#111111;
                         "
@@ -394,11 +402,11 @@ function buildAppointmentVisualEmail({
                         <div
                           class="ap-copy"
                           style="
-                            font-size:16px;
-                            line-height:24px;
+                            font-size:18px;
+                            line-height:30px;
                             font-weight:500;
                             color:#111111;
-                            margin:0 0 28px;
+                            margin:0 0 30px;
                           "
                         >
                           Hola <b>${escapeHtml(firstName)}</b>,<br />
@@ -407,22 +415,22 @@ function buildAppointmentVisualEmail({
 
                         ${cardsHtml}
 
-                        <div style="text-align:center; padding:26px 0 0;">
+                        <div style="text-align:center; padding:20px 0 0;">
                           <a
-                            href="${escapeHtml(buttonHref || BRAND_URL || "#")}" 
+                            href="${escapeHtml(buttonHref || BRAND_URL || "#")}"
+                            class="ap-cta"
                             style="
                               display:inline-block;
                               text-decoration:none;
-                              background:#e4ff00;
+                              background:#efff00;
                               color:#111111;
                               font-family:Arial, Helvetica, sans-serif;
-                              font-size:22px;
-                              line-height:24px;
-                              font-weight:900;
-                              letter-spacing:-0.6px;
+                              font-size:18px;
+                              line-height:20px;
+                              font-weight:800;
                               padding:18px 34px;
                               border-radius:999px;
-                              box-shadow:0 12px 18px rgba(0,0,0,0.18);
+                              box-shadow:0 10px 18px rgba(0,0,0,0.18);
                             "
                           >${escapeHtml(buttonLabel)}</a>
                         </div>
@@ -431,15 +439,15 @@ function buildAppointmentVisualEmail({
                           noteHtml
                             ? `
                           <div
-                            class="ap-copy"
+                            class="ap-note"
                             style="
-                              font-size:14px;
-                              line-height:22px;
-                              font-weight:700;
+                              font-size:16px;
+                              line-height:24px;
+                              font-weight:600;
                               color:#111111;
                               text-align:center;
                               margin:34px auto 0;
-                              max-width:320px;
+                              max-width:360px;
                             "
                           >
                             ${noteHtml}
@@ -461,7 +469,6 @@ function buildAppointmentVisualEmail({
     `,
   });
 }
-
 function buildReminderEmail({ items = [] }) {
   const bodyHtml = `
     ${renderExactReminderBellIcon()}
@@ -678,7 +685,7 @@ export async function sendAppointmentBookedEmail(user, ap, serviceName) {
     user,
     items: [item],
     introHtml:
-      "Tu turno fue confirmado correctamente.<br /><span style=display:block; height:8px; line-height:8px;>&nbsp;</span><strong>Si no podés asistir, recordá cancelarlo con anticipación desde tu perfil.</strong>",
+      "Tu turno fue confirmado correctamente.<br /><b>Si no podés asistir, recordá cancelarlo con anticipación desde tu perfil.</b>",
     noteHtml: `Ingresá a ${escapeHtml(BRAND_NAME)} para revisar el detalle.`,
     buttonLabel: `Ingresar a ${BRAND_NAME}`,
     buttonHref: BRAND_URL,
