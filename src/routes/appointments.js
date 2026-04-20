@@ -540,34 +540,16 @@ async function refundCreditAtomicToOriginalLot({
   if (currentRemaining < maxAmount) {
     lot.remaining = currentRemaining + 1;
   } else {
-    const now = nowDate();
-    const fallbackExp = lot.expiresAt
-      ? new Date(lot.expiresAt)
-      : new Date(now.getTime() + Number(getCreditsExpireDays(freshUser) || 30) * 24 * 60 * 60 * 1000);
-
     console.warn("[REFUND INCONSISTENCY]", {
       userId: String(userId),
       lotId: String(lotId || ""),
       apService: String(apService || ""),
       currentRemaining,
       maxAmount,
-      fallbackExp,
       reason: "ORIGINAL_LOT_ALREADY_FULL_ON_REFUND",
     });
 
-    freshUser.creditLots = Array.isArray(freshUser.creditLots)
-      ? freshUser.creditLots
-      : [];
-
-    freshUser.creditLots.push({
-      serviceKey: serviceToKey(apService || lot.serviceKey || lot.service || lot.serviceName || "EP"),
-      amount: 1,
-      remaining: 1,
-      expiresAt: fallbackExp,
-      source: "refund-recovery",
-      orderId: null,
-      createdAt: now,
-    });
+    throw new Error("ORIGINAL_LOT_ALREADY_FULL_ON_REFUND");
   }
 
   console.log("[REFUND LOT DEBUG - AFTER CALC]", {
@@ -3035,6 +3017,11 @@ router.delete("/:id", async (req, res) => {
     }
     if (msg === "REFUND_FAILED") {
       return res.status(500).json({ error: "No se pudo devolver el crédito al lote original." });
+    }
+    if (msg === "ORIGINAL_LOT_ALREADY_FULL_ON_REFUND") {
+      return res.status(409).json({
+        error: "El lote original ya estaba completo. No se canceló el turno para evitar duplicar créditos.",
+      });
     }
 
     return res.status(500).json({ error: "No se pudo cancelar el turno." });
