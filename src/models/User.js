@@ -69,7 +69,7 @@ const historySchema = new mongoose.Schema(
   { _id: false }
 );
 
-historySchema.pre("validate", function (next) {
+historySchema.pre("validate", function () {
   const normalized = normalizeServiceKeyInput(this.serviceKey || this.serviceName || this.service);
 
   if (normalized) {
@@ -79,8 +79,6 @@ historySchema.pre("validate", function (next) {
     if (!String(this.serviceName || "").trim()) this.serviceName = displayName;
     if (!String(this.service || "").trim()) this.service = displayName;
   }
-
-  next();
 });
 
 const creditLotSchema = new mongoose.Schema(
@@ -107,11 +105,11 @@ const creditLotSchema = new mongoose.Schema(
   { _id: true }
 );
 
-creditLotSchema.pre("validate", function (next) {
+creditLotSchema.pre("validate", function () {
   const normalized = normalizeServiceKeyInput(this.serviceKey || this.serviceName);
 
   if (!normalized) {
-    return next(new Error("creditLot.serviceKey inválido o faltante."));
+    throw new Error("creditLot.serviceKey inválido o faltante.");
   }
 
   this.serviceKey = normalized;
@@ -122,8 +120,6 @@ creditLotSchema.pre("validate", function (next) {
 
   this.amount = Math.max(0, amount);
   this.remaining = Math.max(0, Math.min(this.amount, remaining));
-
-  next();
 });
 
 const clinicalNoteSchema = new mongoose.Schema(
@@ -354,7 +350,7 @@ const userSchema = new mongoose.Schema(
   { timestamps: true }
 );
 
-userSchema.pre("validate", function (next) {
+userSchema.pre("validate", function () {
   if (Array.isArray(this.history)) {
     this.history = this.history.map((item) => {
       if (!item) return item;
@@ -380,8 +376,6 @@ userSchema.pre("validate", function (next) {
       return lot;
     });
   }
-
-  next();
 });
 
 userSchema.index(
