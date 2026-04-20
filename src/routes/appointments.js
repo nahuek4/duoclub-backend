@@ -486,8 +486,13 @@ async function consumeCreditAtomic({
   const upd = await User.updateOne(
     {
       _id: userId,
-      "creditLots._id": lotId,
-      "creditLots.remaining": { $gt: 0 },
+      creditLots: {
+        $elemMatch: {
+          _id: lotId,
+          serviceKey: requestedSk,
+          remaining: { $gt: 0 },
+        },
+      },
     },
     {
       $inc: { "creditLots.$.remaining": -1 },
@@ -1595,8 +1600,13 @@ async function autoResolveFirstEvaluationCompletion({
       const upd = await User.updateOne(
         {
           _id: updatedUser._id,
-          "creditLots._id": standalonePeLot._id,
-          "creditLots.remaining": { $gt: 0 },
+          creditLots: {
+            $elemMatch: {
+              _id: standalonePeLot._id,
+              serviceKey: "PE",
+              remaining: { $gt: 0 },
+            },
+          },
         },
         {
           $inc: { "creditLots.$.remaining": -1 },
