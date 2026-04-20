@@ -466,6 +466,23 @@ async function consumeCreditAtomic({
   const lotId = lot._id;
   const lotExp = lot.expiresAt || null;
 
+  console.log("[CONSUME PICKED LOT]", {
+    userId: String(userId),
+    requestedSk,
+    serviceKey: String(serviceKey || ""),
+    serviceName: String(serviceName || ""),
+    lotId: String(lotId || ""),
+    lotExp: lotExp || null,
+    currentLots: (Array.isArray(currentUser?.creditLots) ? currentUser.creditLots : []).map((x) => ({
+      id: String(x?._id || ""),
+      serviceKey: String(x?.serviceKey || ""),
+      amount: Number(x?.amount || 0),
+      remaining: Number(x?.remaining || 0),
+      expiresAt: x?.expiresAt || null,
+      source: String(x?.source || ""),
+    })),
+  });
+
   const upd = await User.updateOne(
     {
       _id: userId,
@@ -478,12 +495,34 @@ async function consumeCreditAtomic({
     { session }
   );
 
+  console.log("[CONSUME UPDATE RESULT]", {
+    userId: String(userId),
+    requestedSk,
+    lotId: String(lotId || ""),
+    matchedCount: Number(upd?.matchedCount || 0),
+    modifiedCount: Number(upd?.modifiedCount || 0),
+  });
+
   if (!upd.modifiedCount) {
     throw new Error("CREDIT_CONSUME_FAILED");
   }
 
   const freshUser = await User.findById(userId).session(session);
   if (!freshUser) throw new Error("USER_NOT_FOUND");
+
+  console.log("[CONSUME USER AFTER UPDATEONE]", {
+    userId: String(userId),
+    requestedSk,
+    lotId: String(lotId || ""),
+    lots: (Array.isArray(freshUser?.creditLots) ? freshUser.creditLots : []).map((x) => ({
+      id: String(x?._id || ""),
+      serviceKey: String(x?.serviceKey || ""),
+      amount: Number(x?.amount || 0),
+      remaining: Number(x?.remaining || 0),
+      expiresAt: x?.expiresAt || null,
+      source: String(x?.source || ""),
+    })),
+  });
 
   freshUser.history = freshUser.history || [];
   freshUser.history.push({
@@ -492,7 +531,36 @@ async function consumeCreditAtomic({
   });
 
   recalcUserCredits(freshUser);
+
+  console.log("[CONSUME BEFORE SAVE]", {
+    userId: String(userId),
+    requestedSk,
+    lotId: String(lotId || ""),
+    lots: (Array.isArray(freshUser?.creditLots) ? freshUser.creditLots : []).map((x) => ({
+      id: String(x?._id || ""),
+      serviceKey: String(x?.serviceKey || ""),
+      amount: Number(x?.amount || 0),
+      remaining: Number(x?.remaining || 0),
+      expiresAt: x?.expiresAt || null,
+      source: String(x?.source || ""),
+    })),
+  });
+
   await freshUser.save({ session });
+
+  console.log("[CONSUME AFTER SAVE]", {
+    userId: String(userId),
+    requestedSk,
+    lotId: String(lotId || ""),
+    lots: (Array.isArray(freshUser?.creditLots) ? freshUser.creditLots : []).map((x) => ({
+      id: String(x?._id || ""),
+      serviceKey: String(x?.serviceKey || ""),
+      amount: Number(x?.amount || 0),
+      remaining: Number(x?.remaining || 0),
+      expiresAt: x?.expiresAt || null,
+      source: String(x?.source || ""),
+    })),
+  });
 
   return {
     user: freshUser,
