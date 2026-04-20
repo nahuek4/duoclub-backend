@@ -52,7 +52,7 @@ export async function protect(req, res, next) {
 
     const user = await User.findById(userId);
     if (!user) {
-      return res.status(401).json({ error: "Usuario no encontrado." });
+      return res.status(401).json({ error: "Usuario no encontrado" });
     }
 
     req.user = user;
