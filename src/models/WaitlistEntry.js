@@ -198,12 +198,13 @@ const WaitlistEntrySchema = new Schema(
   }
 );
 
-WaitlistEntrySchema.pre("validate", function normalizeCanonicalService(next) {
+WaitlistEntrySchema.pre("validate", function normalizeCanonicalService() {
   const resolvedServiceKey =
     normalizeServiceKey(this.serviceKey) || normalizeServiceKey(this.service);
 
   if (!resolvedServiceKey) {
-    return next(new Error("serviceKey inválido."));
+    this.invalidate("serviceKey", "serviceKey inválido.");
+    return;
   }
 
   this.serviceKey = resolvedServiceKey;
@@ -212,10 +213,9 @@ WaitlistEntrySchema.pre("validate", function normalizeCanonicalService(next) {
     this.service = getServiceNameFromKey(resolvedServiceKey);
   } else {
     this.service =
-      getServiceNameFromKey(resolvedServiceKey) || String(this.service || "").trim();
+      getServiceNameFromKey(resolvedServiceKey) ||
+      String(this.service || "").trim();
   }
-
-  return next();
 });
 
 WaitlistEntrySchema.index({
