@@ -113,18 +113,24 @@ function isPendingOrderStatus(status) {
   return normalizeOrderStatus(status) === "pending";
 }
 
-function translateServiceKey(serviceKey) {
+const SERVICE_KEY_TO_NAME = {
+  PE: "Primera evaluación presencial",
+  EP: "Entrenamiento Personal",
+  RA: "Rehabilitación activa",
+  RF: "Reeducación funcional",
+  NUT: "Nutrición",
+};
+
+function normalizeServiceKey(serviceKey) {
   const key = String(serviceKey || "").toUpperCase().trim();
+  if (!key) return "";
+  if (key === "AR") return "RA";
+  return SERVICE_KEY_TO_NAME[key] ? key : "";
+}
 
-  const map = {
-    EP: "Entrenamiento Personal",
-    RA: "Rehabilitación activa",
-    RF: "Reeducación funcional",
-    AR: "Rehabilitación activa",
-    NUT: "Nutrición",
-  };
-
-  return map[key] || key || "";
+function translateServiceKey(serviceKey) {
+  const key = normalizeServiceKey(serviceKey);
+  return SERVICE_KEY_TO_NAME[key] || String(serviceKey || "").toUpperCase().trim() || "";
 }
 
 function translateMembershipTier(tier) {

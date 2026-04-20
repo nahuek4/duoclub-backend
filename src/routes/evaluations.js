@@ -5,6 +5,16 @@ import { protect } from "../middleware/auth.js";
 
 const router = express.Router();
 
+const SERVICE_KEY_TO_NAME = {
+  PE: "Primera evaluación presencial",
+  EP: "Entrenamiento Personal",
+  RA: "Rehabilitación Activa",
+  RF: "Reeducación Funcional",
+  NUT: "Nutrición",
+};
+
+const ALLOWED_SERVICE_KEYS = new Set(Object.keys(SERVICE_KEY_TO_NAME));
+
 function toIdString(v) {
   try {
     return String(v);
@@ -13,15 +23,49 @@ function toIdString(v) {
   }
 }
 
+function stripAccents(s) {
+  return String(s || "")
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "");
+}
+
+function normalizeServiceKey(value) {
+  const raw = String(value || "").toUpperCase().trim();
+  if (raw === "AR") return "RA";
+  if (ALLOWED_SERVICE_KEYS.has(raw)) return raw;
+
+  const s = stripAccents(value).toLowerCase().trim();
+  if (s.includes("primera") && s.includes("evaluacion")) return "PE";
+  if (s.includes("entrenamiento") && s.includes("personal")) return "EP";
+  if (s.includes("rehabilitacion") && s.includes("activa")) return "RA";
+  if (s.includes("reeducacion") && s.includes("funcional")) return "RF";
+  if (s.includes("nutric")) return "NUT";
+
+  return "";
+}
+
+function serviceNameFromKey(serviceKey) {
+  const key = normalizeServiceKey(serviceKey);
+  return key ? SERVICE_KEY_TO_NAME[key] || "" : "";
+}
+
 function serializeEval(e) {
   if (!e) return null;
+
+  const serviceKey = normalizeServiceKey(
+    e.serviceKey || e.service || e.serviceName || e.type || ""
+  );
+
   return {
     id: toIdString(e._id),
-    _id: e._id, // lo dejamos por compatibilidad
+    _id: e._id, // compatibilidad con front existente
     type: e.type || "",
     title: e.title || "",
     notes: e.notes || "",
     scoring: e.scoring || {},
+    serviceKey: serviceKey || "",
+    serviceName:
+      serviceNameFromKey(serviceKey) || String(e.serviceName || e.service || ""),
     createdAt: e.createdAt || null,
     updatedAt: e.updatedAt || null,
   };
@@ -39,7 +83,9 @@ router.get("/me", protect, async (req, res) => {
     );
 
     const docs = await Evaluation.find({ user: req.user._id })
-      .select("type title notes createdAt updatedAt scoring")
+      .select(
+        "type title notes createdAt updatedAt scoring serviceKey service serviceName"
+      )
       .sort({ createdAt: -1 })
       .limit(limit)
       .lean();

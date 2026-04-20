@@ -201,6 +201,16 @@ function getTurnoFromTime(time) {
 /* =========================
    HELPERS: normalización servicios
 ========================= */
+const ALLOWED_SERVICE_KEYS = new Set(["PE", "EP", "RA", "RF", "NUT"]);
+
+const SERVICE_KEY_TO_NAME = {
+  PE: "Primera evaluación presencial",
+  EP: "Entrenamiento Personal",
+  RA: "Rehabilitación activa",
+  RF: "Reeducación funcional",
+  NUT: "Nutrición",
+};
+
 function normSvcName(s) {
   return String(s || "")
     .normalize("NFD")
@@ -209,7 +219,55 @@ function normSvcName(s) {
     .trim();
 }
 
+function stripAccents(s) {
+  return String(s || "")
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "");
+}
+
+function normalizeServiceKey(value) {
+  const up = String(value || "").toUpperCase().trim();
+  return ALLOWED_SERVICE_KEYS.has(up) ? up : "";
+}
+
+function serviceToKey(serviceNameOrKey) {
+  const explicit = normalizeServiceKey(serviceNameOrKey);
+  if (explicit) return explicit;
+
+  const s = stripAccents(serviceNameOrKey).toLowerCase().trim();
+
+  if (s.includes("primera") && s.includes("evaluacion")) return "PE";
+  if (s.includes("entrenamiento") && s.includes("personal")) return "EP";
+  if (s.includes("rehabilitacion") && s.includes("activa")) return "RA";
+  if (s.includes("reeducacion") && s.includes("funcional")) return "RF";
+  if (s.includes("nutricion")) return "NUT";
+
+  return "";
+}
+
+function serviceKeyToName(serviceKey) {
+  return SERVICE_KEY_TO_NAME[normalizeServiceKey(serviceKey)] || "";
+}
+
+function normalizeServiceIdentity({ service = "", serviceKey = "" } = {}) {
+  const key = normalizeServiceKey(serviceKey) || serviceToKey(service);
+  if (!key) return null;
+
+  return {
+    serviceKey: key,
+    serviceName: serviceKeyToName(key),
+  };
+}
+
+function appointmentServiceKey(ap) {
+  return serviceToKey(ap?.serviceKey || ap?.service || ap?.serviceName || "");
+}
+
 function sameService(a, b) {
+  const ak = serviceToKey(a);
+  const bk = serviceToKey(b);
+
+  if (ak && bk) return ak === bk;
   return normSvcName(a) === normSvcName(b);
 }
 
@@ -218,28 +276,6 @@ function sameService(a, b) {
 ========================= */
 function nowDate() {
   return new Date();
-}
-
-function stripAccents(s) {
-  return String(s || "")
-    .normalize("NFD")
-    .replace(/[\u0300-\u036f]/g, "");
-}
-
-function serviceToKey(serviceName) {
-  const s = stripAccents(serviceName).toLowerCase().trim();
-
-  if (s.includes("primera") && s.includes("evaluacion")) return "PE";
-  if (s.includes("entrenamiento") && s.includes("personal")) return "EP";
-  if (s.includes("rehabilitacion") && s.includes("activa")) return "RA";
-  if (s.includes("reeducacion") && s.includes("funcional")) return "RF";
-  if (s.includes("nutricion")) return "NUT";
-
-  const up = String(serviceName || "").toUpperCase().trim();
-  const allowed = new Set(["PE", "EP", "RA", "RF", "NUT"]);
-  if (allowed.has(up)) return up;
-
-  return "EP";
 }
 
 function getCreditsExpireDays(_user) {
@@ -260,9 +296,7 @@ function recalcUserCredits(user) {
 }
 
 function normalizeLotServiceKey(lot) {
-  const raw = lot?.serviceKey;
-  const sk = String(raw || "").toUpperCase().trim();
-  return sk || "EP";
+  return serviceToKey(lot?.serviceKey || lot?.service || lot?.serviceName || "");
 }
 
 function isFirstEvaluationService(serviceName) {
@@ -405,12 +439,16 @@ function findLotById(user, lotId) {
 
 async function consumeCreditAtomic({
   userId,
+  serviceKey,
   serviceName,
   historyItem,
   slotDate,
   session,
 }) {
-  const requestedSk = serviceToKey(serviceName);
+  const requestedSk = normalizeServiceKey(serviceKey) || serviceToKey(serviceName);
+  if (!requestedSk) {
+    throw new Error("INVALID_SERVICE");
+  }
 
   const currentUser = await User.findById(userId).session(session);
   if (!currentUser) throw new Error("USER_NOT_FOUND");
@@ -522,7 +560,7 @@ async function refundCreditAtomicToOriginalLot({
       : [];
 
     freshUser.creditLots.push({
-      serviceKey: serviceToKey(apService || lot.serviceKey || "EP"),
+      serviceKey: serviceToKey(apService || lot.serviceKey || lot.service || lot.serviceName || "EP"),
       amount: 1,
       remaining: 1,
       expiresAt: fallbackExp,
@@ -580,6 +618,7 @@ async function refundCreditAtomicNewLot({
 }) {
   const now = nowDate();
   const sk = serviceToKey(apService);
+  if (!sk) throw new Error("INVALID_SERVICE");
   const exp = new Date(now);
   exp.setDate(exp.getDate() + Number(getCreditsExpireDays() || 30));
 
@@ -664,12 +703,15 @@ function serializeAppointment(ap) {
   const userName = String(userObj?.name || "").trim();
   const userLastName = String(userObj?.lastName || "").trim();
   const userFullName = [userName, userLastName].filter(Boolean).join(" ").trim();
+  const serviceKey = appointmentServiceKey(json);
+  const serviceName = serviceKeyToName(serviceKey) || String(json?.service || "").trim();
 
   return {
     id: json?._id?.toString?.() || json?.id,
     date: json?.date,
     time: json?.time,
-    service: json?.service || "",
+    service: serviceName,
+    serviceKey,
     status: json?.status || "reserved",
     coach: json?.coach || "",
     userId,
@@ -749,8 +791,9 @@ const TIMES_DEFAULT = [
   "18:00", "19:00", "20:00",
 ];
 
-function isTherapyService(serviceName) {
-  return sameService(serviceName, RA_NAME) || sameService(serviceName, RF_NAME);
+function isTherapyService(serviceNameOrKey) {
+  const sk = serviceToKey(serviceNameOrKey);
+  return sk === "RA" || sk === "RF";
 }
 
 function getRehabTimesForDate(dateStr) {
@@ -760,20 +803,21 @@ function getRehabTimesForDate(dateStr) {
   return [];
 }
 
-function getAllowedTimesForService(serviceName, dateStr = "") {
+function getAllowedTimesForService(serviceNameOrKey, dateStr = "") {
   if (!dateStr || isSaturday(dateStr) || isSunday(dateStr)) return [];
 
-  if (sameService(serviceName, PE_NAME) || serviceToKey(serviceName) === "PE") {
-    return TIMES_EP_WEEKDAY;
-  }
-  if (sameService(serviceName, EP_NAME)) return TIMES_EP_WEEKDAY;
-  if (isTherapyService(serviceName)) return getRehabTimesForDate(dateStr);
-  return TIMES_DEFAULT;
+  const sk = serviceToKey(serviceNameOrKey);
+
+  if (sk === "PE" || sk === "EP") return TIMES_EP_WEEKDAY;
+  if (sk === "RA" || sk === "RF") return getRehabTimesForDate(dateStr);
+  if (sk === "NUT") return TIMES_DEFAULT;
+
+  return [];
 }
 
-function isAllowedTimeForService(serviceName, dateStr, time) {
+function isAllowedTimeForService(serviceNameOrKey, dateStr, time) {
   const t = String(time || "").slice(0, 5);
-  return getAllowedTimesForService(serviceName, dateStr).includes(t);
+  return getAllowedTimesForService(serviceNameOrKey, dateStr).includes(t);
 }
 
 function isTherapyAreaActiveAt(dateStr, time) {
@@ -794,8 +838,11 @@ function getEpCapForSlot(dateStr, time) {
 function getSlotReservationStats(existing, dateStr, time) {
   const list = Array.isArray(existing) ? existing : [];
 
-  const epReserved = list.filter((a) => sameService(a.service, EP_NAME)).length;
-  const therapyReserved = list.filter((a) => isTherapyService(a.service)).length;
+  const epReserved = list.filter((a) => appointmentServiceKey(a) === "EP").length;
+  const therapyReserved = list.filter((a) => {
+    const sk = appointmentServiceKey(a);
+    return sk === "RA" || sk === "RF";
+  }).length;
 
   return {
     totalReserved: list.length,
@@ -1073,10 +1120,15 @@ function lotsDebug(user) {
 /* =========================
    Helpers: validación de item
 ========================= */
-function validateBasicSlotRules({ date, time, service }) {
-  if (!date || !time || !service) {
+function validateBasicSlotRules({ date, time, service, serviceKey }) {
+  const identity = normalizeServiceIdentity({ service, serviceKey });
+
+  if (!date || !time || !identity?.serviceKey) {
     return { ok: false, error: "Faltan campos: date, time y service." };
   }
+
+  const normalizedServiceKey = identity.serviceKey;
+  const normalizedServiceName = identity.serviceName;
 
   if (isSaturday(date)) {
     return { ok: false, error: "Los sábados no hay turnos disponibles." };
@@ -1092,7 +1144,7 @@ function validateBasicSlotRules({ date, time, service }) {
     return { ok: false, error: "Horario inválido." };
   }
 
-  if (!isAllowedTimeForService(service, date, timeNorm)) {
+  if (!isAllowedTimeForService(normalizedServiceKey, date, timeNorm)) {
     return {
       ok: false,
       error: "Ese horario no está disponible para el servicio seleccionado.",
@@ -1110,18 +1162,31 @@ function validateBasicSlotRules({ date, time, service }) {
   const w = validateBookingWindow(slotDate);
   if (!w.ok) return w;
 
-  const adv = validateMinAdvance(slotDate, service);
+  const adv = validateMinAdvance(slotDate, normalizedServiceKey);
   if (!adv.ok) return adv;
 
-  const isEpService = sameService(service, EP_NAME);
+  const isEpService = normalizedServiceKey === "EP";
 
-  return { ok: true, turno, slotDate, isEpService };
+  return {
+    ok: true,
+    turno,
+    slotDate,
+    isEpService,
+    timeNorm,
+    serviceKey: normalizedServiceKey,
+    serviceName: normalizedServiceName,
+  };
 }
 
-function validateBasicSlotRulesAdmin({ date, time, service, bypassWindow = false }) {
-  if (!date || !time || !service) {
+function validateBasicSlotRulesAdmin({ date, time, service, serviceKey, bypassWindow = false }) {
+  const identity = normalizeServiceIdentity({ service, serviceKey });
+
+  if (!date || !time || !identity?.serviceKey) {
     return { ok: false, error: "Faltan campos: date, time y service." };
   }
+
+  const normalizedServiceKey = identity.serviceKey;
+  const normalizedServiceName = identity.serviceName;
 
   if (isSaturday(date)) {
     return { ok: false, error: "Los sábados no hay turnos disponibles." };
@@ -1137,7 +1202,7 @@ function validateBasicSlotRulesAdmin({ date, time, service, bypassWindow = false
     return { ok: false, error: "Horario inválido." };
   }
 
-  if (!isAllowedTimeForService(service, date, timeNorm)) {
+  if (!isAllowedTimeForService(normalizedServiceKey, date, timeNorm)) {
     return {
       ok: false,
       error: "Ese horario no está disponible para el servicio seleccionado.",
@@ -1156,13 +1221,21 @@ function validateBasicSlotRulesAdmin({ date, time, service, bypassWindow = false
     const w = validateBookingWindow(slotDate);
     if (!w.ok) return w;
 
-    const adv = validateMinAdvance(slotDate, service);
+    const adv = validateMinAdvance(slotDate, normalizedServiceKey);
     if (!adv.ok) return adv;
   }
 
-  const isEpService = sameService(service, EP_NAME);
+  const isEpService = normalizedServiceKey === "EP";
 
-  return { ok: true, turno, slotDate, isEpService, timeNorm };
+  return {
+    ok: true,
+    turno,
+    slotDate,
+    isEpService,
+    timeNorm,
+    serviceKey: normalizedServiceKey,
+    serviceName: normalizedServiceName,
+  };
 }
 
 function slotKey(date, time) {
@@ -1232,10 +1305,17 @@ async function createAppointmentForTargetUser({
   date,
   time,
   service,
+  serviceKey,
   notes = "",
   bypassWindow = false,
 }) {
-  const basic = validateBasicSlotRulesAdmin({ date, time, service, bypassWindow });
+  const basic = validateBasicSlotRulesAdmin({
+    date,
+    time,
+    service,
+    serviceKey,
+    bypassWindow,
+  });
   if (!basic.ok) {
     const e = new Error(basic.error);
     e.http = 400;
@@ -1268,7 +1348,7 @@ async function createAppointmentForTargetUser({
     throw e;
   }
 
-  const requestedSk = serviceToKey(service);
+  const requestedSk = basic.serviceKey;
   if (!hasValidCreditsForServiceAndSlot(targetUser, requestedSk, basic.slotDate)) {
     const e = new Error(`NO_CREDITS_FOR_SLOT_${requestedSk}`);
     e.http = 403;
@@ -1306,7 +1386,7 @@ async function createAppointmentForTargetUser({
       e.http = 409;
       throw e;
     }
-  } else if (isTherapyService(service)) {
+  } else if (isTherapyService(requestedSk)) {
     if (stats.totalReserved >= TOTAL_CAP) {
       const e = new Error("TOTAL_CAP_REACHED");
       e.http = 409;
@@ -1326,13 +1406,15 @@ async function createAppointmentForTargetUser({
 
   const consumed = await consumeCreditAtomic({
     userId: targetUser._id,
-    serviceName: service,
+    serviceKey: basic.serviceKey,
+    serviceName: basic.serviceName,
     historyItem: {
       action: "reservado_por_admin",
       date,
       time: t,
-      service,
-      serviceName: service,
+      service: basic.serviceName,
+      serviceName: basic.serviceName,
+      serviceKey: basic.serviceKey,
     },
     slotDate: basic.slotDate,
     session: null,
@@ -1354,7 +1436,7 @@ async function createAppointmentForTargetUser({
   const created = await Appointment.create({
     date,
     time: t,
-    service,
+    service: basic.serviceName,
     user: targetUser._id,
     status: "reserved",
     creditLotId: usedLotId,
@@ -1379,7 +1461,7 @@ async function createAppointmentForTargetUser({
     meta: {
       date,
       time: t,
-      serviceName: service,
+      serviceName: basic.serviceName,
       assignedByAdmin: true,
     },
   });
@@ -1745,12 +1827,17 @@ router.get("/availability", async (req, res) => {
   try {
     const date = String(req.query?.date || "").slice(0, 10);
     const service = String(req.query?.service || "").trim();
+    const serviceKey = String(req.query?.serviceKey || "").trim();
 
-    if (!date || !service) {
+    const identity = normalizeServiceIdentity({ service, serviceKey });
+
+    if (!date || !identity?.serviceKey) {
       return res.status(400).json({ error: "Faltan params: date y service." });
     }
 
-    const allowedTimes = getAllowedTimesForService(service, date);
+    const normalizedServiceKey = identity.serviceKey;
+    const normalizedServiceName = identity.serviceName;
+    const allowedTimes = getAllowedTimesForService(normalizedServiceKey, date);
 
     const times =
       Array.isArray(req.query?.times) && req.query.times.length
@@ -1776,7 +1863,8 @@ router.get("/availability", async (req, res) => {
       if (me.suspended) {
         return res.json({
           date,
-          service,
+          service: normalizedServiceName,
+          serviceKey: normalizedServiceKey,
           slots: times.map((t) => ({
             time: t,
             state: "closed",
@@ -1788,7 +1876,8 @@ router.get("/availability", async (req, res) => {
       if (requiresApto(me)) {
         return res.json({
           date,
-          service,
+          service: normalizedServiceName,
+          serviceKey: normalizedServiceKey,
           slots: times.map((t) => ({
             time: t,
             state: "closed",
@@ -1797,10 +1886,11 @@ router.get("/availability", async (req, res) => {
         });
       }
 
-      if (!me.firstEvaluationCompleted && !isFirstEvaluationService(service)) {
+      if (!me.firstEvaluationCompleted && normalizedServiceKey !== "PE") {
         return res.json({
           date,
-          service,
+          service: normalizedServiceName,
+          serviceKey: normalizedServiceKey,
           slots: times.map((t) => ({
             time: t,
             state: "closed",
@@ -1813,7 +1903,8 @@ router.get("/availability", async (req, res) => {
     if (isSaturday(date) || isSunday(date)) {
       return res.json({
         date,
-        service,
+        service: normalizedServiceName,
+        serviceKey: normalizedServiceKey,
         slots: times.map((t) => ({
           time: t,
           state: "closed",
@@ -1828,7 +1919,7 @@ router.get("/availability", async (req, res) => {
 
     for (const time of times) {
       const t = String(time).slice(0, 5);
-      const basic = validateBasicSlotRules({ date, time: t, service });
+      const basic = validateBasicSlotRules({ date, time: t, service: normalizedServiceName, serviceKey: normalizedServiceKey });
 
       if (!basic.ok) {
         out.push({ time: t, state: "closed", reason: basic.error });
@@ -1840,7 +1931,7 @@ router.get("/availability", async (req, res) => {
           .select("credits creditLots firstEvaluationCompleted")
           .lean();
 
-        if (!hasValidCreditsForServiceAndSlot(me, service, basic.slotDate)) {
+        if (!hasValidCreditsForServiceAndSlot(me, normalizedServiceKey, basic.slotDate)) {
           out.push({
             time: t,
             state: "closed",
@@ -1855,11 +1946,11 @@ router.get("/availability", async (req, res) => {
         .lean();
 
       const stats = getSlotReservationStats(existing, date, t);
-      const isTherapy = isTherapyService(service);
+      const isTherapy = isTherapyService(normalizedServiceKey);
 
       if (basic.isEpService) {
         if (stats.totalReserved >= TOTAL_CAP || stats.epReserved >= stats.epCap) {
-          const waitlistCheck = validateWaitlistOpen(basic.slotDate, service);
+          const waitlistCheck = validateWaitlistOpen(basic.slotDate, normalizedServiceKey);
 
           out.push({
             time: t,
@@ -1900,7 +1991,7 @@ router.get("/availability", async (req, res) => {
       });
     }
 
-    return res.json({ date, service, slots: out });
+    return res.json({ date, service: normalizedServiceName, serviceKey: normalizedServiceKey, slots: out });
   } catch (e) {
     console.error("Error en GET /appointments/availability:", e);
     return res.status(500).json({ error: "Error calculando disponibilidad." });
@@ -2014,7 +2105,7 @@ router.post("/admin/assign", async (req, res) => {
       Array.isArray(req.body?.items) && req.body.items.length
         ? req.body.items
         : req.body?.date && req.body?.time && req.body?.service
-          ? [{ date: req.body.date, time: req.body.time, service: req.body.service }]
+          ? [{ date: req.body.date, time: req.body.time, service: req.body.service, serviceKey: req.body.serviceKey }]
           : [];
 
     if (!items.length) {
@@ -2032,6 +2123,7 @@ router.post("/admin/assign", async (req, res) => {
           date: String(it?.date || "").slice(0, 10),
           time: String(it?.time || "").slice(0, 5),
           service: String(it?.service || "").trim(),
+          serviceKey: String(it?.serviceKey || "").trim(),
           notes,
           bypassWindow: true,
         });
@@ -2082,12 +2174,14 @@ router.post("/admin/fixed-schedules", async (req, res) => {
 
     const userId = String(req.body?.userId || "").trim();
     const service = String(req.body?.service || "").trim();
+    const serviceKey = String(req.body?.serviceKey || "").trim();
     const notes = String(req.body?.notes || "").trim();
     const months = Math.max(1, Math.min(12, Number(req.body?.months || 1)));
     const items = Array.isArray(req.body?.items) ? req.body.items : [];
 
     if (!userId) return res.status(400).json({ error: "Falta userId." });
-    if (!service) return res.status(400).json({ error: "Falta service." });
+    const serviceIdentity = normalizeServiceIdentity({ service, serviceKey });
+    if (!serviceIdentity?.serviceKey) return res.status(400).json({ error: "Falta service." });
     if (!items.length) return res.status(400).json({ error: "Faltan días fijos." });
 
     const cleanItems = items
@@ -2107,7 +2201,7 @@ router.post("/admin/fixed-schedules", async (req, res) => {
     const fixed = await FixedSchedule.create({
       user: userId,
       createdBy: req.user?._id || req.user?.id,
-      service,
+      service: serviceIdentity.serviceName,
       items: cleanItems,
       months,
       startDate,
@@ -2132,7 +2226,8 @@ router.post("/admin/fixed-schedules", async (req, res) => {
           actorReq: req,
           date: occ.date,
           time: occ.time,
-          service,
+          service: serviceIdentity.serviceName,
+          serviceKey: serviceIdentity.serviceKey,
           notes,
           bypassWindow: true,
         });
@@ -2141,7 +2236,8 @@ router.post("/admin/fixed-schedules", async (req, res) => {
         conflicts.push({
           date: occ.date,
           time: occ.time,
-          service,
+          service: serviceIdentity.serviceName,
+          serviceKey: serviceIdentity.serviceKey,
           error: e?.message || "No se pudo crear.",
         });
       }
@@ -2172,8 +2268,8 @@ router.post("/", async (req, res) => {
   let mailServiceName = null;
 
   try {
-    const { date, time, service, notes = "" } = req.body || {};
-    const basic = validateBasicSlotRules({ date, time, service });
+    const { date, time, service, serviceKey, notes = "" } = req.body || {};
+    const basic = validateBasicSlotRules({ date, time, service, serviceKey });
     if (!basic.ok) return res.status(400).json({ error: basic.error });
 
     const userId = req.user._id || req.user.id;
@@ -2187,14 +2283,14 @@ router.post("/", async (req, res) => {
 
       if (user.suspended) throw new Error("USER_SUSPENDED");
       if (requiresApto(user)) throw new Error("APTO_REQUIRED");
-      if (!user.firstEvaluationCompleted && !isFirstEvaluationService(service)) {
+      if (!user.firstEvaluationCompleted && basic.serviceKey !== "PE") {
         throw new Error("FIRST_EVALUATION_REQUIRED");
       }
 
       recalcUserCredits(user);
       if ((user.credits || 0) <= 0) throw new Error("NO_CREDITS");
 
-      const requestedSk = serviceToKey(service);
+      const requestedSk = basic.serviceKey;
       if (!hasValidCreditsForServiceAndSlot(user, requestedSk, basic.slotDate)) {
         throw new Error(`NO_CREDITS_FOR_SLOT_${requestedSk}`);
       }
@@ -2223,7 +2319,7 @@ router.post("/", async (req, res) => {
         if (stats.totalReserved >= TOTAL_CAP || stats.epReserved >= stats.epCap) {
           willWaitlist = true;
         }
-      } else if (isTherapyService(service)) {
+      } else if (isTherapyService(requestedSk)) {
         if (stats.totalReserved >= TOTAL_CAP) throw new Error("TOTAL_CAP_REACHED");
         if (stats.therapyReserved >= stats.therapyCap) {
           throw new Error("SERVICE_CAP_REACHED");
@@ -2233,7 +2329,7 @@ router.post("/", async (req, res) => {
       }
 
       if (willWaitlist && basic.isEpService) {
-        const wlWindow = validateWaitlistOpen(basic.slotDate, service);
+        const wlWindow = validateWaitlistOpen(basic.slotDate, requestedSk);
         if (!wlWindow.ok) throw new Error("WAITLIST_CLOSED");
 
         const wlExists = await WaitlistEntry.findOne({
@@ -2298,13 +2394,15 @@ router.post("/", async (req, res) => {
 
       const consumed = await consumeCreditAtomic({
         userId: user._id,
-        serviceName: service,
+        serviceKey: basic.serviceKey,
+        serviceName: basic.serviceName,
         historyItem: {
           action: "reservado",
           date,
           time: t,
-          service,
-          serviceName: service,
+          service: basic.serviceName,
+          serviceName: basic.serviceName,
+          serviceKey: basic.serviceKey,
         },
         slotDate: basic.slotDate,
         session,
@@ -2327,7 +2425,7 @@ router.post("/", async (req, res) => {
         [{
           date,
           time: t,
-          service,
+          service: basic.serviceName,
           user: user._id,
           status: "reserved",
           creditLotId: usedLotId,
@@ -2351,8 +2449,8 @@ router.post("/", async (req, res) => {
       };
 
       mailUser = { ...effectiveUser.toObject(), _id: effectiveUser._id };
-      mailAp = { date, time: t, service };
-      mailServiceName = service;
+      mailAp = { date, time: t, service: basic.serviceName };
+      mailServiceName = basic.serviceName;
     });
 
     if (out?.kind === "waitlist") {
@@ -2489,8 +2587,9 @@ router.post("/batch", async (req, res) => {
         const date = String(it?.date || "").slice(0, 10);
         const time = String(it?.time || "").slice(0, 5);
         const service = String(it?.service || "").trim();
+        const serviceKey = String(it?.serviceKey || "").trim();
 
-        const basic = validateBasicSlotRules({ date, time, service });
+        const basic = validateBasicSlotRules({ date, time, service, serviceKey });
         if (!basic.ok) {
           const e = new Error(basic.error);
           e.http = 400;
@@ -2500,13 +2599,14 @@ router.post("/batch", async (req, res) => {
         return {
           date,
           time,
-          service,
+          service: basic.serviceName,
+          serviceKey: basic.serviceKey,
           ...basic,
         };
       });
 
       for (const it of basicItems) {
-        if (!user.firstEvaluationCompleted && !isFirstEvaluationService(it.service)) {
+        if (!user.firstEvaluationCompleted && it.serviceKey !== "PE") {
           throw new Error("FIRST_EVALUATION_REQUIRED");
         }
       }
@@ -2523,7 +2623,7 @@ router.post("/batch", async (req, res) => {
       }
 
       for (const it of basicItems) {
-        const requestedSk = serviceToKey(it.service);
+        const requestedSk = it.serviceKey;
         if (!hasValidCreditsForServiceAndSlot(user, requestedSk, it.slotDate)) {
           throw new Error(`NO_CREDITS_FOR_SLOT_${requestedSk}`);
         }
@@ -2549,7 +2649,7 @@ router.post("/batch", async (req, res) => {
           if (stats.totalReserved >= TOTAL_CAP || stats.epReserved >= stats.epCap) {
             throw new Error("SERVICE_CAP_REACHED");
           }
-        } else if (isTherapyService(it.service)) {
+        } else if (isTherapyService(requestedSk)) {
           if (stats.totalReserved >= TOTAL_CAP) throw new Error("TOTAL_CAP_REACHED");
           if (stats.therapyReserved >= stats.therapyCap) {
             throw new Error("SERVICE_CAP_REACHED");
@@ -2562,6 +2662,7 @@ router.post("/batch", async (req, res) => {
       for (const it of basicItems) {
         const consumed = await consumeCreditAtomic({
           userId: user._id,
+          serviceKey: it.serviceKey,
           serviceName: it.service,
           historyItem: {
             action: "reservado",
@@ -2569,6 +2670,7 @@ router.post("/batch", async (req, res) => {
             time: it.time,
             service: it.service,
             serviceName: it.service,
+            serviceKey: it.serviceKey,
           },
           slotDate: it.slotDate,
           session,

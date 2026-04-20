@@ -87,36 +87,40 @@ function validateObjectIdParam(req, res, next) {
   next();
 }
 
-function prettyServiceName(value) {
-  const s = String(value || "")
+const ALLOWED_SERVICE_KEYS = new Set(["PE", "EP", "RF", "RA", "NUT"]);
+
+const SERVICE_KEY_TO_NAME = {
+  PE: "Primera evaluación presencial",
+  EP: "Entrenamiento Personal",
+  RF: "Reeducación Funcional",
+  RA: "Rehabilitación Activa",
+  NUT: "Nutrición",
+};
+
+function stripAccents(value) {
+  return String(value || "")
     .normalize("NFD")
-    .replace(/[\u0300-\u036f]/g, "")
-    .toLowerCase()
-    .trim();
+    .replace(/[\u0300-\u036f]/g, "");
+}
 
-  if (s.includes("primera") && s.includes("evaluacion")) {
-    return "Primera evaluación presencial";
-  }
-  if (s.includes("entrenamiento") && s.includes("personal")) {
-    return "Entrenamiento Personal";
-  }
-  if (s.includes("rehabilitacion") && s.includes("activa")) {
-    return "Rehabilitación Activa";
-  }
-  if (s.includes("reeducacion") && s.includes("funcional")) {
-    return "Reeducación Funcional";
-  }
-  if (s.includes("nutric")) {
-    return "Nutrición";
-  }
-
+function canonicalServiceKeyFromValue(value) {
   const up = String(value || "").toUpperCase().trim();
-  if (up === "PE") return "Primera evaluación presencial";
-  if (up === "EP") return "Entrenamiento Personal";
-  if (up === "RA") return "Rehabilitación Activa";
-  if (up === "RF") return "Reeducación Funcional";
-  if (up === "NUT") return "Nutrición";
+  if (ALLOWED_SERVICE_KEYS.has(up)) return up;
 
+  const s = stripAccents(value).toLowerCase().trim();
+
+  if (s.includes("primera") && s.includes("evaluacion")) return "PE";
+  if (s.includes("entrenamiento") && s.includes("personal")) return "EP";
+  if (s.includes("rehabilitacion") && s.includes("activa")) return "RA";
+  if (s.includes("reeducacion") && s.includes("funcional")) return "RF";
+  if (s.includes("nutric")) return "NUT";
+
+  return "";
+}
+
+function prettyServiceName(value) {
+  const key = canonicalServiceKeyFromValue(value);
+  if (key) return SERVICE_KEY_TO_NAME[key];
   return String(value || "Sesión").trim() || "Sesión";
 }
 
@@ -166,7 +170,7 @@ function pushUserHistory(user, item = {}) {
 }
 
 function buildLegacyAppointmentHistoryTitle(ap) {
-  const svc = prettyServiceName(ap?.service || ap?.serviceName || "");
+  const svc = prettyServiceName(ap?.serviceKey || ap?.service || ap?.serviceName || "");
   const when = formatHistoryHumanDate(ap?.date);
 
   if (String(ap?.status || "").toLowerCase() === "cancelled") {
@@ -312,19 +316,13 @@ function recalcUserCredits(user) {
 }
 
 function normalizeLotServiceKey(lot) {
-  const sk = String(lot?.serviceKey || "").toUpperCase().trim();
-  return sk || "EP";
+  return (
+    canonicalServiceKeyFromValue(lot?.serviceKey) ||
+    canonicalServiceKeyFromValue(lot?.service) ||
+    canonicalServiceKeyFromValue(lot?.serviceName) ||
+    ""
+  );
 }
-
-const ALLOWED_SERVICE_KEYS = new Set(["PE", "EP", "RF", "RA", "NUT"]);
-
-const SERVICE_KEY_TO_NAME = {
-  PE: "Primera evaluación presencial",
-  EP: "Entrenamiento Personal",
-  RF: "Reeducacion Funcional",
-  RA: "Rehabilitacion Activa",
-  NUT: "Nutricion",
-};
 
 function computeServiceAccessFromLots(u) {
   const now = new Date();
@@ -338,7 +336,7 @@ function computeServiceAccessFromLots(u) {
     const exp = lot?.expiresAt ? new Date(lot.expiresAt) : null;
     if (exp && exp <= now) continue;
 
-    const sk = String(lot?.serviceKey || "").toUpperCase().trim();
+    const sk = normalizeLotServiceKey(lot);
     if (byKey[sk] !== undefined) byKey[sk] += remaining;
   }
 
@@ -368,15 +366,17 @@ function computeServiceAccessFromLots(u) {
 
 function sumCreditsForService(user, serviceKey) {
   const now = nowDate();
-  const want = String(serviceKey || "EP").toUpperCase().trim() || "EP";
-  const lots = Array.isArray(user.creditLots) ? user.creditLots : [];
+  const want = canonicalServiceKeyFromValue(serviceKey);
+  if (!want) return 0;
+
+  const lots = Array.isArray(user?.creditLots) ? user.creditLots : [];
 
   return lots.reduce((acc, lot) => {
-    const exp = lot.expiresAt ? new Date(lot.expiresAt) : null;
+    const exp = lot?.expiresAt ? new Date(lot.expiresAt) : null;
     if (exp && exp <= now) return acc;
 
     const lk = normalizeLotServiceKey(lot);
-    const rem = Number(lot.remaining || 0);
+    const rem = Number(lot?.remaining || 0);
     if (rem <= 0) return acc;
 
     if (lk === want) return acc + rem;
@@ -388,27 +388,40 @@ function consumeCreditsForService(user, toRemove, serviceKey) {
   const now = nowDate();
   let left = Math.max(0, Number(toRemove || 0));
 
-  const want = String(serviceKey || "EP").toUpperCase().trim() || "EP";
-  const lots = Array.isArray(user.creditLots) ? user.creditLots : [];
+  const want = canonicalServiceKeyFromValue(serviceKey);
+  if (!want) {
+    const err = new Error("serviceKey inválido.");
+    err.status = 400;
+    throw err;
+  }
+
+  const lots = Array.isArray(user?.creditLots) ? user.creditLots : [];
 
   const sorted = lots
-    .filter((l) => Number(l.remaining || 0) > 0)
-    .filter((l) => !l.expiresAt || new Date(l.expiresAt) > now)
+    .filter((l) => Number(l?.remaining || 0) > 0)
+    .filter((l) => !l?.expiresAt || new Date(l.expiresAt) > now)
     .filter((l) => normalizeLotServiceKey(l) === want)
     .sort((a, b) => {
-      const ae = a.expiresAt ? new Date(a.expiresAt).getTime() : Infinity;
-      const be = b.expiresAt ? new Date(b.expiresAt).getTime() : Infinity;
+      const ae = a?.expiresAt ? new Date(a.expiresAt).getTime() : Infinity;
+      const be = b?.expiresAt ? new Date(b.expiresAt).getTime() : Infinity;
       if (ae !== be) return ae - be;
-      const ac = a.createdAt ? new Date(a.createdAt).getTime() : 0;
-      const bc = b.createdAt ? new Date(b.createdAt).getTime() : 0;
+
+      const ac = a?.createdAt ? new Date(a.createdAt).getTime() : 0;
+      const bc = b?.createdAt ? new Date(b.createdAt).getTime() : 0;
       return ac - bc;
     });
 
   for (const lot of sorted) {
     if (left <= 0) break;
-    const take = Math.min(Number(lot.remaining || 0), left);
-    lot.remaining = Number(lot.remaining || 0) - take;
+    const take = Math.min(Number(lot?.remaining || 0), left);
+    lot.remaining = Number(lot?.remaining || 0) - take;
     left -= take;
+  }
+
+  if (left > 0) {
+    const err = new Error("No hay créditos suficientes para ese servicio.");
+    err.status = 400;
+    throw err;
   }
 
   recalcUserCredits(user);
@@ -416,19 +429,27 @@ function consumeCreditsForService(user, toRemove, serviceKey) {
 
 function addCreditLot(
   user,
-  { amount, serviceKey = "EP", source = "admin-adjust" }
+  { amount, serviceKey, source = "admin-adjust" }
 ) {
+  const sk = canonicalServiceKeyFromValue(serviceKey);
+  if (!sk) {
+    const err = new Error("serviceKey inválido.");
+    err.status = 400;
+    throw err;
+  }
+
+  const qty = Math.max(0, Number(amount || 0));
+  if (!qty) return;
+
   const now = nowDate();
   const exp = new Date(now);
   exp.setDate(exp.getDate() + CREDITS_EXPIRE_DAYS);
 
-  const sk = String(serviceKey || "EP").toUpperCase().trim() || "EP";
-
   user.creditLots = user.creditLots || [];
   user.creditLots.push({
     serviceKey: sk,
-    amount: Number(amount || 0),
-    remaining: Number(amount || 0),
+    amount: qty,
+    remaining: qty,
     expiresAt: exp,
     source,
     orderId: null,
@@ -845,6 +866,7 @@ router.post("/", adminOnly, async (req, res) => {
       weight,
       notes,
       credits,
+      initialServiceKey,
       role,
       password,
     } = req.body || {};
@@ -895,7 +917,7 @@ router.post("/", adminOnly, async (req, res) => {
     if (initialCredits > 0) {
       addCreditLot(user, {
         amount: initialCredits,
-        serviceKey: "EP",
+        serviceKey: initialServiceKey,
         source: "admin-create",
       });
       await user.save();
@@ -1407,8 +1429,8 @@ async function updateCredits(req, res) {
       serviceKey: skRaw,
       source: src,
     }) => {
-      const sk = String(skRaw || "EP").toUpperCase().trim() || "EP";
-      if (!ALLOWED_SERVICE_KEYS.has(sk)) {
+      const sk = canonicalServiceKeyFromValue(skRaw);
+      if (!sk || !ALLOWED_SERVICE_KEYS.has(sk)) {
         const err = new Error("serviceKey inválido.");
         err.status = 400;
         throw err;

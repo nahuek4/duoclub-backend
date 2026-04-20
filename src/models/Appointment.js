@@ -1,6 +1,80 @@
 import mongoose from "mongoose";
 
-const EP_KEY = "Entrenamiento Personal";
+const SERVICE_KEY_TO_NAME = {
+  PE: "Primera evaluación presencial",
+  EP: "Entrenamiento Personal",
+  RA: "Rehabilitación Activa",
+  RF: "Reeducación Funcional",
+  NUT: "Nutrición",
+};
+
+const ALLOWED_SERVICE_KEYS = new Set(Object.keys(SERVICE_KEY_TO_NAME));
+
+function stripAccents(value) {
+  return String(value || "")
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "");
+}
+
+function normalizeServiceKey(value) {
+  const raw = String(value || "").trim();
+  if (!raw) return "";
+
+  const up = raw.toUpperCase().trim();
+  if (up === "AR") return "RA";
+  if (ALLOWED_SERVICE_KEYS.has(up)) return up;
+
+  const s = stripAccents(raw).toLowerCase().trim();
+
+  if (s.includes("primera") && s.includes("evaluacion")) return "PE";
+  if (s.includes("entrenamiento") && s.includes("personal")) return "EP";
+  if (s.includes("rehabilitacion") && s.includes("activa")) return "RA";
+  if (s.includes("reeducacion") && s.includes("funcional")) return "RF";
+  if (s.includes("nutric")) return "NUT";
+
+  return "";
+}
+
+function serviceKeyToName(serviceKey) {
+  return SERVICE_KEY_TO_NAME[normalizeServiceKey(serviceKey)] || "";
+}
+
+function applyNormalizedServiceFields(target) {
+  if (!target || typeof target !== "object") return target;
+
+  const normalizedKey = normalizeServiceKey(target.serviceKey || target.service);
+  if (!normalizedKey) return target;
+
+  target.serviceKey = normalizedKey;
+  target.service = serviceKeyToName(normalizedKey);
+  return target;
+}
+
+function normalizeUpdatePayload(update) {
+  if (!update || typeof update !== "object") return update;
+
+  const next = { ...update };
+
+  if (next.$set && typeof next.$set === "object") {
+    next.$set = { ...next.$set };
+    applyNormalizedServiceFields(next.$set);
+  }
+
+  if (next.$setOnInsert && typeof next.$setOnInsert === "object") {
+    next.$setOnInsert = { ...next.$setOnInsert };
+    applyNormalizedServiceFields(next.$setOnInsert);
+  }
+
+  const topLevelHasService =
+    Object.prototype.hasOwnProperty.call(next, "service") ||
+    Object.prototype.hasOwnProperty.call(next, "serviceKey");
+
+  if (topLevelHasService) {
+    applyNormalizedServiceFields(next);
+  }
+
+  return next;
+}
 
 const appointmentSchema = new mongoose.Schema(
   {
@@ -10,10 +84,36 @@ const appointmentSchema = new mongoose.Schema(
       required: true,
     },
 
-    date: { type: String, required: true }, // YYYY-MM-DD
-    time: { type: String, required: true }, // HH:mm
+    date: {
+      type: String,
+      required: true,
+      trim: true,
+      match: /^\d{4}-\d{2}-\d{2}$/,
+    },
 
-    service: { type: String, required: true },
+    time: {
+      type: String,
+      required: true,
+      trim: true,
+      match: /^\d{2}:\d{2}$/,
+    },
+
+    serviceKey: {
+      type: String,
+      required: true,
+      uppercase: true,
+      trim: true,
+      enum: [...ALLOWED_SERVICE_KEYS],
+      index: true,
+    },
+
+    // Se mantiene por compatibilidad y para mostrar en UI/mails.
+    // La fuente de verdad pasa a ser serviceKey.
+    service: {
+      type: String,
+      required: true,
+      trim: true,
+    },
 
     status: {
       type: String,
@@ -114,12 +214,37 @@ const appointmentSchema = new mongoose.Schema(
   { timestamps: true }
 );
 
+appointmentSchema.pre("validate", function appointmentPreValidate(next) {
+  const normalizedKey = normalizeServiceKey(this.serviceKey || this.service);
+
+  if (!normalizedKey) {
+    this.invalidate(
+      "serviceKey",
+      "serviceKey inválido. Debe ser uno de: PE, EP, RA, RF, NUT."
+    );
+    return next();
+  }
+
+  this.serviceKey = normalizedKey;
+  this.service = serviceKeyToName(normalizedKey);
+  return next();
+});
+
+for (const hook of ["updateOne", "updateMany", "findOneAndUpdate"]) {
+  appointmentSchema.pre(hook, function appointmentPreUpdate(next) {
+    const update = this.getUpdate?.();
+    const normalized = normalizeUpdatePayload(update);
+    if (normalized) this.setUpdate(normalized);
+    return next();
+  });
+}
+
 appointmentSchema.index(
-  { date: 1, time: 1, service: 1, status: 1 },
+  { date: 1, time: 1, serviceKey: 1, status: 1 },
   {
     partialFilterExpression: {
       status: "reserved",
-      service: { $ne: EP_KEY },
+      serviceKey: { $ne: "EP" },
     },
   }
 );

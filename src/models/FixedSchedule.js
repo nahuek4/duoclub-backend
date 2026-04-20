@@ -1,6 +1,46 @@
 // backend/src/models/FixedSchedule.js
 import mongoose from "mongoose";
 
+const ALLOWED_SERVICE_KEYS = ["PE", "EP", "RA", "RF", "NUT"];
+const ALLOWED_SERVICE_KEY_SET = new Set(ALLOWED_SERVICE_KEYS);
+
+const SERVICE_KEY_TO_NAME = {
+  PE: "Primera evaluación presencial",
+  EP: "Entrenamiento Personal",
+  RA: "Rehabilitación Activa",
+  RF: "Reeducación Funcional",
+  NUT: "Nutrición",
+};
+
+function stripAccents(value) {
+  return String(value || "")
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "");
+}
+
+function normalizeServiceKey(value) {
+  const raw = String(value || "").trim();
+  if (!raw) return "";
+
+  const upper = stripAccents(raw).toUpperCase().trim();
+  if (upper === "AR") return "RA";
+  if (ALLOWED_SERVICE_KEY_SET.has(upper)) return upper;
+
+  const text = stripAccents(raw).toLowerCase().trim();
+  if (text.includes("primera") && text.includes("evaluacion")) return "PE";
+  if (text.includes("entrenamiento") && text.includes("personal")) return "EP";
+  if (text.includes("rehabilitacion") && text.includes("activa")) return "RA";
+  if (text.includes("reeducacion") && text.includes("funcional")) return "RF";
+  if (text.includes("nutric")) return "NUT";
+
+  return "";
+}
+
+function getServiceNameFromKey(serviceKey) {
+  const key = normalizeServiceKey(serviceKey);
+  return SERVICE_KEY_TO_NAME[key] || "";
+}
+
 const fixedScheduleItemSchema = new mongoose.Schema(
   {
     // 1 = lunes, 2 = martes ... 5 = viernes
@@ -11,7 +51,7 @@ const fixedScheduleItemSchema = new mongoose.Schema(
       max: 5,
     },
 
-    // "HH:mm"
+    // HH:mm
     time: {
       type: String,
       required: true,
@@ -37,9 +77,19 @@ const fixedScheduleSchema = new mongoose.Schema(
       required: true,
     },
 
-    service: {
+    serviceKey: {
       type: String,
       required: true,
+      uppercase: true,
+      trim: true,
+      enum: ALLOWED_SERVICE_KEYS,
+      index: true,
+    },
+
+    // Compatibilidad / display
+    service: {
+      type: String,
+      default: "",
       trim: true,
     },
 
@@ -99,11 +149,34 @@ const fixedScheduleSchema = new mongoose.Schema(
   { timestamps: true }
 );
 
+fixedScheduleSchema.pre("validate", function normalizeFixedScheduleService(next) {
+  const normalizedKey = normalizeServiceKey(this.serviceKey || this.service);
+
+  if (!normalizedKey) {
+    this.invalidate(
+      "serviceKey",
+      "serviceKey inválido. Valores permitidos: PE, EP, RA, RF, NUT."
+    );
+    return next();
+  }
+
+  this.serviceKey = normalizedKey;
+
+  if (!String(this.service || "").trim()) {
+    this.service = getServiceNameFromKey(normalizedKey);
+  }
+
+  return next();
+});
+
 // para listar configuraciones activas de un usuario
-fixedScheduleSchema.index({ user: 1, active: 1, createdAt: -1 });
+fixedScheduleSchema.index({ user: 1, active: 1, serviceKey: 1, createdAt: -1 });
 
 // para filtrar por vigencia
-fixedScheduleSchema.index({ active: 1, startDate: 1, endDate: 1 });
+fixedScheduleSchema.index({ active: 1, serviceKey: 1, startDate: 1, endDate: 1 });
 
-const FixedSchedule = mongoose.model("FixedSchedule", fixedScheduleSchema);
+const FixedSchedule =
+  mongoose.models.FixedSchedule ||
+  mongoose.model("FixedSchedule", fixedScheduleSchema);
+
 export default FixedSchedule;

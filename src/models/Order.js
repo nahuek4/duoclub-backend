@@ -1,5 +1,19 @@
-// backend/src/models/Order.js
 import mongoose from "mongoose";
+
+const ALLOWED_SERVICE_KEYS = ["PE", "EP", "RA", "RF", "NUT"];
+const ALLOWED_SERVICE_KEY_SET = new Set(ALLOWED_SERVICE_KEYS);
+
+function normalizeServiceKey(value) {
+  const raw = String(value || "").trim().toUpperCase();
+  if (!raw) return "";
+  if (raw === "AR") return "RA";
+  return raw;
+}
+
+function isValidServiceKey(value) {
+  const key = normalizeServiceKey(value);
+  return ALLOWED_SERVICE_KEY_SET.has(key);
+}
 
 const orderItemSchema = new mongoose.Schema(
   {
@@ -12,12 +26,30 @@ const orderItemSchema = new mongoose.Schema(
     },
 
     // CREDITS
-    serviceKey: { type: String, default: "", uppercase: true, trim: true }, // EP/RF/AR/RA/NUT
+    serviceKey: {
+      type: String,
+      default: "",
+      uppercase: true,
+      trim: true,
+      validate: {
+        validator(value) {
+          const kind = String(this?.kind || "").toUpperCase().trim();
+          const normalized = normalizeServiceKey(value);
+
+          if (kind !== "CREDITS") {
+            return normalized === "";
+          }
+
+          return isValidServiceKey(normalized);
+        },
+        message: "serviceKey inválido para el item de orden.",
+      },
+    },
     credits: { type: Number, default: 0, min: 0 },
     label: { type: String, default: "" },
 
     // MEMBERSHIP
-    membershipTier: { type: String, default: "", lowercase: true, trim: true }, // plus
+    membershipTier: { type: String, default: "", lowercase: true, trim: true },
     action: {
       type: String,
       default: "BUY",
@@ -28,8 +60,8 @@ const orderItemSchema = new mongoose.Schema(
 
     // qty + precios por item (server authority)
     qty: { type: Number, default: 1, min: 1 },
-    basePrice: { type: Number, default: 0, min: 0 }, // precio unitario
-    price: { type: Number, default: 0, min: 0 }, // subtotal item
+    basePrice: { type: Number, default: 0, min: 0 },
+    price: { type: Number, default: 0, min: 0 },
   },
   { _id: false }
 );
@@ -52,11 +84,9 @@ const orderSchema = new mongoose.Schema(
     // ✅ totales (server authority)
     totalBase: { type: Number, default: 0, min: 0 },
 
-    // OJO: antes lo tenías required:true y te explota con órdenes legacy viejas.
-    // Lo dejamos con default y lo auto-completamos en pre('validate').
     total: { type: Number, default: 0, min: 0 },
 
-    // ✅ descuento DUO+ (hoy solo aplica a SHOP, si existiera)
+    // ✅ descuento DUO+
     discountPercent: { type: Number, default: 0, min: 0 },
     discountAmount: { type: Number, default: 0, min: 0 },
     totalFinal: { type: Number, default: 0, min: 0 },
@@ -69,10 +99,8 @@ const orderSchema = new mongoose.Schema(
 
     applied: { type: Boolean, default: false },
 
-    // ✅ evita mandar mail admin 2 veces (CASH + MP webhook reintentos)
+    // idempotencia mails
     adminNotifiedAt: { type: Date, default: null },
-
-    // ✅ NUEVO: idempotencia mails "pagado"
     adminPaidNotifiedAt: { type: Date, default: null },
     userPaidNotifiedAt: { type: Date, default: null },
 
@@ -81,8 +109,6 @@ const orderSchema = new mongoose.Schema(
     mpInitPoint: { type: String, default: "" },
     mpPaymentId: { type: String, default: "" },
     mpMerchantOrderId: { type: String, default: "" },
-
-    // ✅ NUEVO: tracking webhook MP
     mpStatus: { type: String, default: "" },
     mpPaidAmount: { type: Number, default: 0, min: 0 },
 
@@ -92,12 +118,24 @@ const orderSchema = new mongoose.Schema(
     // =========================
     // ✅ LEGACY (compatibilidad)
     // =========================
-    serviceKey: { type: String, default: "", uppercase: true, trim: true },
+    serviceKey: {
+      type: String,
+      default: "",
+      uppercase: true,
+      trim: true,
+      validate: {
+        validator(value) {
+          const normalized = normalizeServiceKey(value);
+          return normalized === "" || isValidServiceKey(normalized);
+        },
+        message: "serviceKey legacy inválido.",
+      },
+    },
     credits: { type: Number, default: 0, min: 0 },
     basePrice: { type: Number, default: 0, min: 0 },
     plusIncluded: { type: Boolean, default: false },
     plusPrice: { type: Number, default: 0, min: 0 },
-    price: { type: Number, default: 0, min: 0 }, // legacy total
+    price: { type: Number, default: 0, min: 0 },
     label: { type: String, default: "" },
     creditsApplied: { type: Boolean, default: false },
     mpInitPointLegacy: { type: String, default: "" },
@@ -105,57 +143,74 @@ const orderSchema = new mongoose.Schema(
   { timestamps: true }
 );
 
-/**
- * ✅ Arregla:
- * - órdenes viejas sin total (total required)
- * - asegura totalFinal coherente
- */
-orderSchema.pre("validate", function () {
-  // total (base) para legacy
-  if (this.total == null || Number.isFinite(this.total) === false) {
-    this.total = 0;
-  }
+orderSchema.pre("validate", function (next) {
+  try {
+    // Normalización serviceKey legacy
+    this.serviceKey = normalizeServiceKey(this.serviceKey);
 
-  // Si es legacy y no tiene total, usar price
-  if (
-    (this.total === 0 || this.total == null) &&
-    this.price > 0 &&
-    (!this.items || this.items.length === 0)
-  ) {
-    this.total = Number(this.price || 0);
-  }
+    // Normalización items
+    if (Array.isArray(this.items)) {
+      this.items = this.items.map((it) => {
+        const item = typeof it?.toObject === "function" ? it.toObject() : { ...it };
+        const kind = String(item?.kind || "").toUpperCase().trim();
 
-  // Si es checkout y total quedó 0 por alguna razón, recalcular desde items
-  if (
-    (this.total === 0 || this.total == null) &&
-    Array.isArray(this.items) &&
-    this.items.length > 0
-  ) {
-    const sum = this.items.reduce((acc, it) => acc + Number(it.price || 0), 0);
-    this.total = Math.round(sum);
-  }
+        if (kind === "CREDITS") {
+          item.serviceKey = normalizeServiceKey(item.serviceKey);
+        } else {
+          item.serviceKey = "";
+        }
 
-  // totalFinal
-  if (this.totalFinal == null || Number.isFinite(this.totalFinal) === false) {
-    this.totalFinal = 0;
-  }
+        return item;
+      });
+    }
 
-  // si totalFinal quedó 0 pero hay total, calcularlo
-  if ((this.totalFinal === 0 || this.totalFinal == null) && (this.total || 0) > 0) {
-    const disc = Math.max(0, Number(this.discountAmount || 0));
-    this.totalFinal = Math.max(0, Math.round(Number(this.total || 0) - disc));
-  }
+    // total legacy
+    if (this.total == null || Number.isFinite(this.total) === false) {
+      this.total = 0;
+    }
 
-  // normalizar numbers
-  this.discountPercent = Math.max(0, Number(this.discountPercent || 0));
-  this.discountAmount = Math.max(0, Number(this.discountAmount || 0));
-  this.totalBase = Math.max(0, Number(this.totalBase || 0));
-  this.total = Math.max(0, Number(this.total || 0));
-  this.totalFinal = Math.max(0, Number(this.totalFinal || 0));
+    if (
+      (this.total === 0 || this.total == null) &&
+      this.price > 0 &&
+      (!this.items || this.items.length === 0)
+    ) {
+      this.total = Number(this.price || 0);
+    }
+
+    if (
+      (this.total === 0 || this.total == null) &&
+      Array.isArray(this.items) &&
+      this.items.length > 0
+    ) {
+      const sum = this.items.reduce((acc, it) => acc + Number(it?.price || 0), 0);
+      this.total = Math.round(sum);
+    }
+
+    if (this.totalFinal == null || Number.isFinite(this.totalFinal) === false) {
+      this.totalFinal = 0;
+    }
+
+    if ((this.totalFinal === 0 || this.totalFinal == null) && (this.total || 0) > 0) {
+      const disc = Math.max(0, Number(this.discountAmount || 0));
+      this.totalFinal = Math.max(0, Math.round(Number(this.total || 0) - disc));
+    }
+
+    this.discountPercent = Math.max(0, Number(this.discountPercent || 0));
+    this.discountAmount = Math.max(0, Number(this.discountAmount || 0));
+    this.totalBase = Math.max(0, Number(this.totalBase || 0));
+    this.total = Math.max(0, Number(this.total || 0));
+    this.totalFinal = Math.max(0, Number(this.totalFinal || 0));
+
+    next();
+  } catch (err) {
+    next(err);
+  }
 });
 
 orderSchema.index({ user: 1, createdAt: -1 });
 orderSchema.index({ createdAt: -1 });
+orderSchema.index({ status: 1, createdAt: -1 });
+orderSchema.index({ serviceKey: 1, createdAt: -1 });
 
-const Order = mongoose.model("Order", orderSchema);
+const Order = mongoose.models.Order || mongoose.model("Order", orderSchema);
 export default Order;

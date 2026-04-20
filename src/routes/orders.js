@@ -21,6 +21,27 @@ const PLUS_PRICE = Number(process.env.PLUS_PRICE || 20000);
 const PLUS_DISCOUNT_PCT = 15;
 const CREDITS_EXPIRE_DAYS = 30;
 
+const ALLOWED_SERVICE_KEYS = new Set(["PE", "EP", "RA", "RF", "NUT"]);
+const SERVICE_KEY_TO_NAME = {
+  PE: "Primera evaluación presencial",
+  EP: "Entrenamiento Personal",
+  RA: "Rehabilitación Activa",
+  RF: "Reeducación Funcional",
+  NUT: "Nutrición",
+};
+
+function normalizeServiceKey(value, { allowEmpty = false } = {}) {
+  const sk = String(value || "").toUpperCase().trim();
+  if (!sk) return allowEmpty ? "" : null;
+  return ALLOWED_SERVICE_KEYS.has(sk) ? sk : null;
+}
+
+function assertServiceKey(value, label = "serviceKey") {
+  const sk = normalizeServiceKey(value);
+  if (!sk) throw new Error(`${label} inválido.`);
+  return sk;
+}
+
 /* =======================
    Helpers membresía / créditos
 ======================= */
@@ -95,13 +116,14 @@ function addCreditLot(user, { amount, source, orderId, serviceKey }) {
   ensureBasicIfExpired(user);
 
   const expireDays = CREDITS_EXPIRE_DAYS;
+  const sk = assertServiceKey(serviceKey);
 
   const exp = new Date(now);
   exp.setDate(exp.getDate() + expireDays);
 
   user.creditLots = user.creditLots || [];
   user.creditLots.push({
-    serviceKey: String(serviceKey || "EP").toUpperCase().trim(),
+    serviceKey: sk,
     amount: Number(amount || 0),
     remaining: Number(amount || 0),
     expiresAt: exp,
@@ -138,7 +160,7 @@ function safeServiceFromOrder(order) {
     if (kinds.includes("CREDITS")) {
       const sks = order.items
         .filter((it) => String(it?.kind || "").toUpperCase() === "CREDITS")
-        .map((it) => String(it?.serviceKey || "").toUpperCase().trim())
+        .map((it) => normalizeServiceKey(it?.serviceKey, { allowEmpty: true }))
         .filter(Boolean);
       const uniq = Array.from(new Set(sks));
       if (uniq.length === 1) return uniq[0];
@@ -149,17 +171,14 @@ function safeServiceFromOrder(order) {
     return "ITEMS";
   }
 
-  return String(order?.serviceKey || "ORDER").toUpperCase().trim() || "ORDER";
+  return normalizeServiceKey(order?.serviceKey, { allowEmpty: true }) || "ORDER";
 }
 
 function prettyServiceNameFromKey(sk) {
-  const up = String(sk || "").toUpperCase().trim();
-  if (up === "PE") return "Primera evaluación presencial";
-  if (up === "EP") return "Entrenamiento Personal";
-  if (up === "RA") return "Rehabilitación Activa";
-  if (up === "RF") return "Reeducación Funcional";
-  if (up === "NUT") return "Nutrición";
-  return up || "Sesiones";
+  const normalized = normalizeServiceKey(sk, { allowEmpty: true });
+  if (normalized) return SERVICE_KEY_TO_NAME[normalized] || normalized;
+  const raw = String(sk || "").trim();
+  return raw || "Sesiones";
 }
 
 function pluralizeSessions(n) {
@@ -297,7 +316,7 @@ async function applyCreditsOnlyIfNeeded(order) {
           amount: totalCredits,
           source: "order-credits-only",
           orderId: order._id,
-          serviceKey: it.serviceKey || "EP",
+          serviceKey: assertServiceKey(it.serviceKey),
         });
       }
     }
@@ -308,7 +327,7 @@ async function applyCreditsOnlyIfNeeded(order) {
         amount: totalCredits,
         source: "order-legacy-credits-only",
         orderId: order._id,
-        serviceKey: order.serviceKey || "EP",
+        serviceKey: assertServiceKey(order.serviceKey),
       });
     }
   }
@@ -373,7 +392,7 @@ async function applyOrderIfNeeded(order) {
             amount: totalCredits,
             source: "order",
             orderId: order._id,
-            serviceKey: it.serviceKey || "EP",
+            serviceKey: assertServiceKey(it.serviceKey),
           });
         }
       }
@@ -384,7 +403,7 @@ async function applyOrderIfNeeded(order) {
           amount: totalCredits,
           source: "order-legacy",
           orderId: order._id,
-          serviceKey: order.serviceKey || "EP",
+          serviceKey: assertServiceKey(order.serviceKey),
         });
       }
     }
@@ -461,7 +480,7 @@ async function createMpPreference({ order, user }) {
    Pricing resolvers
 ======================= */
 async function resolveCreditsItem({ serviceKey, credits, payMethod }) {
-  const sk = String(serviceKey || "").toUpperCase();
+  const sk = normalizeServiceKey(serviceKey);
   const pm = String(payMethod || "").toUpperCase();
   const cr = Number(credits);
 
@@ -668,13 +687,13 @@ router.post("/", protect, async (req, res) => {
   try {
     const { serviceKey, credits, payMethod, plus } = req.body || {};
 
-    const sk = String(serviceKey || "").toUpperCase();
+    const sk = normalizeServiceKey(serviceKey);
     const pm = String(payMethod || "").toUpperCase();
     const cr = Number(credits);
     const wantsPlus = Boolean(plus);
 
     if (!sk || !pm || !cr) {
-      return res.status(400).json({ error: "Datos incompletos." });
+      return res.status(400).json({ error: "Datos incompletos o serviceKey inválido." });
     }
     if (!["CASH", "MP"].includes(pm)) {
       return res.status(400).json({ error: "Medio de pago inválido." });

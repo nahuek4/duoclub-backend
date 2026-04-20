@@ -21,6 +21,17 @@ const router = express.Router();
    HELPERS
 ============================================ */
 
+const SERVICE_KEY_TO_NAME = {
+  PE: "Primera evaluación presencial",
+  EP: "Entrenamiento Personal",
+  RF: "Reeducación Funcional",
+  RA: "Rehabilitación Activa",
+  NUT: "Nutrición",
+};
+
+const SERVICE_KEYS = ["PE", "EP", "RF", "RA", "NUT"];
+const SERVICE_KEY_SET = new Set(SERVICE_KEYS);
+
 function signToken(user) {
   const secret = process.env.JWT_SECRET || "dev_secret";
   return jwt.sign({ id: user._id }, secret, {
@@ -59,19 +70,44 @@ function getBackendBase(req) {
   return `${proto}://${host}`;
 }
 
+function stripAccents(s) {
+  return String(s || "")
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "");
+}
+
+function normalizeServiceKey(input) {
+  const raw = String(input || "").trim();
+  if (!raw) return "";
+
+  const up = raw.toUpperCase().trim();
+  if (SERVICE_KEY_SET.has(up)) return up;
+
+  const s = stripAccents(raw).toLowerCase().trim();
+
+  if (s.includes("primera") && s.includes("evaluacion")) return "PE";
+  if (s.includes("entrenamiento") && s.includes("personal")) return "EP";
+  if (s.includes("reeducacion") && s.includes("funcional")) return "RF";
+  if (s.includes("rehabilitacion") && s.includes("activa")) return "RA";
+  if (s.includes("nutricion")) return "NUT";
+
+  return "";
+}
+
+function getServiceNameFromKey(serviceKey) {
+  const sk = normalizeServiceKey(serviceKey);
+  return SERVICE_KEY_TO_NAME[sk] || "";
+}
+
+function getLotServiceKey(lot) {
+  return normalizeServiceKey(
+    lot?.serviceKey || lot?.service || lot?.serviceName || ""
+  );
+}
+
 /* ============================================
    SERVICIOS DISPONIBLES (UI) DESDE creditLots
 ============================================ */
-
-const SERVICE_KEY_TO_NAME = {
-  PE: "Primera evaluación presencial",
-  EP: "Entrenamiento Personal",
-  RF: "Reeducacion Funcional",
-  RA: "Rehabilitacion Activa",
-  NUT: "Nutricion",
-};
-
-const SERVICE_KEYS = ["PE", "EP", "RF", "RA", "NUT"];
 
 function computeServiceAccessFromLots(u) {
   const now = new Date();
@@ -86,8 +122,10 @@ function computeServiceAccessFromLots(u) {
     const exp = lot?.expiresAt ? new Date(lot.expiresAt) : null;
     if (exp && exp <= now) continue;
 
-    const sk = String(lot?.serviceKey || "").toUpperCase().trim();
-    if (byKey[sk] !== undefined) byKey[sk] += remaining;
+    const sk = getLotServiceKey(lot);
+    if (!sk) continue;
+
+    byKey[sk] += remaining;
   }
 
   const creditsByServiceKey = { PE: 0, EP: 0, RF: 0, RA: 0, NUT: 0 };
@@ -97,9 +135,8 @@ function computeServiceAccessFromLots(u) {
     const peCredits = Number(byKey.PE || 0);
 
     return {
-      allowedServices: peCredits > 0 ? ["Primera evaluación presencial"] : [],
-      serviceCredits:
-        peCredits > 0 ? { "Primera evaluación presencial": peCredits } : {},
+      allowedServices: peCredits > 0 ? [SERVICE_KEY_TO_NAME.PE] : [],
+      serviceCredits: peCredits > 0 ? { [SERVICE_KEY_TO_NAME.PE]: peCredits } : {},
       creditsByServiceKey: {
         PE: peCredits,
         EP: 0,
@@ -157,15 +194,10 @@ function clamp(n, min, max) {
    HELPERS PRIMERA EVALUACIÓN / COMPLETADO AUTO
 ============================================ */
 
-function stripAccents(s) {
-  return String(s || "")
-    .normalize("NFD")
-    .replace(/[\u0300-\u036f]/g, "");
-}
-
-function isFirstEvaluationService(service = "") {
-  const s = stripAccents(service).toLowerCase().trim();
-  return s === "pe" || (s.includes("primera") && s.includes("evaluacion"));
+function isFirstEvaluationAppointment(ap = {}) {
+  return normalizeServiceKey(
+    ap?.serviceKey || ap?.service || ap?.serviceName || ""
+  ) === "PE";
 }
 
 function buildSlotDate(dateStr, timeStr) {
@@ -199,7 +231,7 @@ async function syncPastAppointmentsForUser(user) {
     await ap.save();
     changed = true;
 
-    if (isFirstEvaluationService(ap.service)) {
+    if (isFirstEvaluationAppointment(ap)) {
       completedFirstEvaluation = true;
     }
   }
@@ -237,16 +269,20 @@ function serializeUser(u) {
     .trim();
 
   const creditLotsSafe = (Array.isArray(u.creditLots) ? u.creditLots : []).map(
-    (lot) => ({
-      _id: lot?._id?.toString?.() || String(lot?._id || ""),
-      serviceKey: String(lot?.serviceKey || "EP").toUpperCase().trim(),
-      amount: Number(lot?.amount || 0),
-      remaining: Number(lot?.remaining || 0),
-      expiresAt: lot?.expiresAt || null,
-      source: String(lot?.source || ""),
-      orderId: lot?.orderId || null,
-      createdAt: lot?.createdAt || null,
-    })
+    (lot) => {
+      const serviceKey = getLotServiceKey(lot);
+      return {
+        _id: lot?._id?.toString?.() || String(lot?._id || ""),
+        serviceKey,
+        serviceName: getServiceNameFromKey(serviceKey),
+        amount: Number(lot?.amount || 0),
+        remaining: Number(lot?.remaining || 0),
+        expiresAt: lot?.expiresAt || null,
+        source: String(lot?.source || ""),
+        orderId: lot?.orderId || null,
+        createdAt: lot?.createdAt || null,
+      };
+    }
   );
 
   return {
@@ -304,7 +340,7 @@ router.post("/login", async (req, res) => {
         .json({ error: "Email y password son obligatorios." });
     }
 
-    const user = await User.findOne({ email: String(email).toLowerCase() });
+    let user = await User.findOne({ email: String(email).toLowerCase() });
     if (!user) {
       return res
         .status(401)
@@ -347,6 +383,8 @@ router.post("/login", async (req, res) => {
         .status(403)
         .json({ error: "Cuenta suspendida. Contactá al administrador." });
     }
+
+    user = await syncPastAppointmentsForUser(user);
 
     const token = signToken(user);
     return res.json({ token, user: serializeUser(user) });
