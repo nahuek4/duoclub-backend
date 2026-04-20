@@ -214,7 +214,7 @@ const appointmentSchema = new mongoose.Schema(
   { timestamps: true }
 );
 
-appointmentSchema.pre("validate", function appointmentPreValidate(next) {
+appointmentSchema.pre("validate", function appointmentPreValidate() {
   const normalizedKey = normalizeServiceKey(this.serviceKey || this.service);
 
   if (!normalizedKey) {
@@ -222,20 +222,18 @@ appointmentSchema.pre("validate", function appointmentPreValidate(next) {
       "serviceKey",
       "serviceKey inválido. Debe ser uno de: PE, EP, RA, RF, NUT."
     );
-    return next();
+    return;
   }
 
   this.serviceKey = normalizedKey;
   this.service = serviceKeyToName(normalizedKey);
-  return next();
 });
 
 for (const hook of ["updateOne", "updateMany", "findOneAndUpdate"]) {
-  appointmentSchema.pre(hook, function appointmentPreUpdate(next) {
+  appointmentSchema.pre(hook, function appointmentPreUpdate() {
     const update = this.getUpdate?.();
     const normalized = normalizeUpdatePayload(update);
     if (normalized) this.setUpdate(normalized);
-    return next();
   });
 }
 
