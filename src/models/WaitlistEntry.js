@@ -163,6 +163,8 @@ const WaitlistEntrySchema = new Schema(
         "MANUAL_CLOSE",
         "USER_CANCELLED",
         "SYSTEM_CLEANUP",
+        "CLAIMED_BY_CLIENT",
+        "CLAIMED_BY_STAFF",
       ],
       default: "",
       trim: true,

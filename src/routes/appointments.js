@@ -75,6 +75,14 @@ async function sendAdminCopy({ kind, user, ap }) {
   }
 }
 
+function normalizeCreatedByRole(value, fallback = "client") {
+  const role = String(value || "").toLowerCase().trim();
+  if (["admin", "profesor", "staff", "guest", "client"].includes(role)) {
+    return role;
+  }
+  return fallback;
+}
+
 function ensureStaff(req, res, next) {
   const role = String(req.user?.role || "").toLowerCase();
   if (!["admin", "profesor", "staff"].includes(role)) {
@@ -1646,6 +1654,118 @@ async function autoResolveFirstEvaluationCompletion({
 }
 
 /* =========================
+   POST /appointments/waitlist/claim (public token flow)
+========================= */
+router.post("/waitlist/claim", async (req, res, next) => {
+  const token = String(req.body?.token || "").trim();
+  if (!token) return next();
+
+  const session = await mongoose.startSession();
+
+  try {
+    let createdAppointment = null;
+
+    await session.withTransaction(async () => {
+      const entry = await WaitlistEntry.findOne({
+        notifyToken: token,
+        tokenExpiresAt: { $gt: new Date() },
+      }).session(session);
+
+      if (!entry) throw new Error("WAITLIST_TOKEN_INVALID");
+      if (String(entry.status || "") !== "notified") {
+        throw new Error("WAITLIST_NOT_ACTIVE");
+      }
+
+      createdAppointment = await createAppointmentForTargetUser({
+        userId: String(entry.user),
+        actorReq: {
+          user: {
+            _id: entry.user,
+            id: entry.user,
+            role: "client",
+          },
+        },
+        date: entry.date,
+        time: entry.time,
+        service: entry.service || EP_NAME,
+        serviceKey: entry.serviceKey || "EP",
+        notes: entry.notes || "",
+        bypassWindow: true,
+      });
+
+      entry.status = "claimed";
+      entry.claimedAt = new Date();
+      entry.claimedBy = entry.user || null;
+      entry.assignedAppointmentId = createdAppointment?.id || null;
+      entry.closeReason = "CLAIMED_BY_CLIENT";
+      entry.notifyToken = null;
+      entry.tokenExpiresAt = null;
+      await entry.save({ session });
+
+      await WaitlistEntry.updateMany(
+        {
+          _id: { $ne: entry._id },
+          date: entry.date,
+          time: entry.time,
+          serviceKey: entry.serviceKey || "EP",
+          status: { $in: ACTIVE_WAITLIST_STATUSES },
+        },
+        {
+          $set: {
+            status: "closed",
+            closeReason: "SLOT_FILLED",
+            closedAt: new Date(),
+          },
+        },
+        { session }
+      );
+    });
+
+    return res.status(201).json({
+      ok: true,
+      appointment: createdAppointment,
+    });
+  } catch (err) {
+    console.error("Error en POST /appointments/waitlist/claim (token):", err);
+    const msg = String(err?.message || "");
+
+    if (msg === "WAITLIST_TOKEN_INVALID") {
+      return res.status(404).json({ error: "El link de la lista de espera es inválido o venció." });
+    }
+    if (msg === "WAITLIST_NOT_ACTIVE") {
+      return res.status(409).json({ error: "La vacante ya no está disponible." });
+    }
+    if (msg === "USER_NOT_FOUND") {
+      return res.status(404).json({ error: "Usuario no encontrado." });
+    }
+    if (msg === "USER_SUSPENDED") {
+      return res.status(403).json({ error: "Cuenta suspendida." });
+    }
+    if (msg === "APTO_REQUIRED") {
+      return res.status(403).json({ error: "Falta apto médico." });
+    }
+    if (msg === "NO_CREDITS") {
+      return res.status(403).json({ error: "Sin créditos disponibles." });
+    }
+    if (msg.startsWith("NO_CREDITS_FOR_SLOT_")) {
+      return res.status(403).json({
+        error: "No tiene sesiones válidas para ese día y horario.",
+      });
+    }
+    if (msg === "ALREADY_HAVE_SLOT") {
+      return res.status(409).json({ error: "Ya tenías ese turno reservado." });
+    }
+    if (msg === "SERVICE_CAP_REACHED" || msg === "TOTAL_CAP_REACHED") {
+      return res.status(409).json({ error: "La vacante ya fue ocupada." });
+    }
+
+    return res.status(500).json({ error: "No se pudo confirmar el turno." });
+  } finally {
+    await session.endSession();
+  }
+});
+
+/* =========================
    AUTH required
 ========================= */
 router.use(protect);
@@ -2419,12 +2539,13 @@ router.post("/", async (req, res) => {
             user: user._id,
             date,
             time: t,
+            serviceKey: "EP",
             service: EP_NAME,
             status: "waiting",
             notes: String(notes || "").trim(),
             priorityOrder: nextPriority,
             createdByUser: user._id,
-            createdByRole: String(req.user?.role || "client").toLowerCase(),
+            createdByRole: normalizeCreatedByRole(req.user?.role, "client"),
           }],
           { session }
         );
@@ -3136,6 +3257,7 @@ router.post("/waitlist/claim", ensureStaff, async (req, res) => {
         date: entry.date,
         time: entry.time,
         service: entry.service || EP_NAME,
+        serviceKey: entry.serviceKey || "EP",
         notes: entry.notes || "",
         bypassWindow: true,
       });
@@ -3143,6 +3265,9 @@ router.post("/waitlist/claim", ensureStaff, async (req, res) => {
       entry.status = "claimed";
       entry.claimedAt = new Date();
       entry.claimedBy = req.user?._id || req.user?.id || null;
+      entry.assignedAppointmentId = createdAppointment?.id || null;
+      entry.notifyToken = null;
+      entry.tokenExpiresAt = null;
       entry.closeReason = "CLAIMED_BY_STAFF";
       await entry.save({ session });
 
@@ -3151,7 +3276,7 @@ router.post("/waitlist/claim", ensureStaff, async (req, res) => {
           _id: { $ne: entry._id },
           date: entry.date,
           time: entry.time,
-          service: entry.service || EP_NAME,
+          serviceKey: entry.serviceKey || "EP",
           status: { $in: ACTIVE_WAITLIST_STATUSES },
         },
         {
