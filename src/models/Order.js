@@ -78,15 +78,14 @@ const orderSchema = new mongoose.Schema(
       enum: ["CASH", "MP"],
     },
 
-    // ✅ items (checkout)
+    // items (checkout)
     items: { type: [orderItemSchema], default: [] },
 
-    // ✅ totales (server authority)
+    // totales (server authority)
     totalBase: { type: Number, default: 0, min: 0 },
-
     total: { type: Number, default: 0, min: 0 },
 
-    // ✅ descuento DUO+
+    // descuento DUO+
     discountPercent: { type: Number, default: 0, min: 0 },
     discountAmount: { type: Number, default: 0, min: 0 },
     totalFinal: { type: Number, default: 0, min: 0 },
@@ -115,9 +114,7 @@ const orderSchema = new mongoose.Schema(
     paidAt: { type: Date, default: null },
     notes: { type: String, default: "" },
 
-    // =========================
-    // ✅ LEGACY (compatibilidad)
-    // =========================
+    // LEGACY (compatibilidad)
     serviceKey: {
       type: String,
       default: "",
@@ -143,68 +140,62 @@ const orderSchema = new mongoose.Schema(
   { timestamps: true }
 );
 
-orderSchema.pre("validate", function (next) {
-  try {
-    // Normalización serviceKey legacy
-    this.serviceKey = normalizeServiceKey(this.serviceKey);
+orderSchema.pre("validate", function () {
+  // Normalización serviceKey legacy
+  this.serviceKey = normalizeServiceKey(this.serviceKey);
 
-    // Normalización items
-    if (Array.isArray(this.items)) {
-      this.items = this.items.map((it) => {
-        const item = typeof it?.toObject === "function" ? it.toObject() : { ...it };
-        const kind = String(item?.kind || "").toUpperCase().trim();
+  // Normalización items
+  if (Array.isArray(this.items)) {
+    this.items = this.items.map((it) => {
+      const item = typeof it?.toObject === "function" ? it.toObject() : { ...it };
+      const kind = String(item?.kind || "").toUpperCase().trim();
 
-        if (kind === "CREDITS") {
-          item.serviceKey = normalizeServiceKey(item.serviceKey);
-        } else {
-          item.serviceKey = "";
-        }
+      if (kind === "CREDITS") {
+        item.serviceKey = normalizeServiceKey(item.serviceKey);
+      } else {
+        item.serviceKey = "";
+      }
 
-        return item;
-      });
-    }
-
-    // total legacy
-    if (this.total == null || Number.isFinite(this.total) === false) {
-      this.total = 0;
-    }
-
-    if (
-      (this.total === 0 || this.total == null) &&
-      this.price > 0 &&
-      (!this.items || this.items.length === 0)
-    ) {
-      this.total = Number(this.price || 0);
-    }
-
-    if (
-      (this.total === 0 || this.total == null) &&
-      Array.isArray(this.items) &&
-      this.items.length > 0
-    ) {
-      const sum = this.items.reduce((acc, it) => acc + Number(it?.price || 0), 0);
-      this.total = Math.round(sum);
-    }
-
-    if (this.totalFinal == null || Number.isFinite(this.totalFinal) === false) {
-      this.totalFinal = 0;
-    }
-
-    if ((this.totalFinal === 0 || this.totalFinal == null) && (this.total || 0) > 0) {
-      const disc = Math.max(0, Number(this.discountAmount || 0));
-      this.totalFinal = Math.max(0, Math.round(Number(this.total || 0) - disc));
-    }
-
-    this.discountPercent = Math.max(0, Number(this.discountPercent || 0));
-    this.discountAmount = Math.max(0, Number(this.discountAmount || 0));
-    this.totalBase = Math.max(0, Number(this.totalBase || 0));
-    this.total = Math.max(0, Number(this.total || 0));
-    this.totalFinal = Math.max(0, Number(this.totalFinal || 0));
-
-    next();
-  } catch (err) {
-    next(err);
+      return item;
+    });
   }
+
+  // total legacy
+  if (this.total == null || Number.isFinite(this.total) === false) {
+    this.total = 0;
+  }
+
+  if (
+    (this.total === 0 || this.total == null) &&
+    this.price > 0 &&
+    (!this.items || this.items.length === 0)
+  ) {
+    this.total = Number(this.price || 0);
+  }
+
+  if (
+    (this.total === 0 || this.total == null) &&
+    Array.isArray(this.items) &&
+    this.items.length > 0
+  ) {
+    const sum = this.items.reduce((acc, it) => acc + Number(it?.price || 0), 0);
+    this.total = Math.round(sum);
+  }
+
+  if (this.totalFinal == null || Number.isFinite(this.totalFinal) === false) {
+    this.totalFinal = 0;
+  }
+
+  if ((this.totalFinal === 0 || this.totalFinal == null) && (this.total || 0) > 0) {
+    const disc = Math.max(0, Number(this.discountAmount || 0));
+    this.totalFinal = Math.max(0, Math.round(Number(this.total || 0) - disc));
+  }
+
+  this.discountPercent = Math.max(0, Number(this.discountPercent || 0));
+  this.discountAmount = Math.max(0, Number(this.discountAmount || 0));
+  this.totalBase = Math.max(0, Number(this.totalBase || 0));
+  this.total = Math.max(0, Number(this.total || 0));
+  this.totalFinal = Math.max(0, Number(this.totalFinal || 0));
 });
 
 orderSchema.index({ user: 1, createdAt: -1 });
