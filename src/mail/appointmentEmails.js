@@ -1,4 +1,3 @@
-// backend/src/mail/appointmentEmails.jsx
 import { ADMIN_EMAIL, BRAND_NAME, BRAND_URL, sendMail } from "./core.js";
 import { escapeHtml, prettyDateAR } from "./helpers.js";
 import { buildEmailLayout } from "./layout.js";
@@ -11,8 +10,6 @@ import {
   renderAdminDetailPanel,
   renderRowCard,
 } from "./ui.js";
-
-const IMG_BASE = "https://api.duoclub.ar/images";
 
 /* =========================================================
    Helpers base
@@ -53,6 +50,180 @@ function safeTime(value) {
   return /hs$/i.test(raw) ? raw : `${raw} hs`;
 }
 
+function duoFontStack() {
+  return `'Helvetica Neue', Helvetica, Arial, sans-serif`;
+}
+
+function renderStatusBadge(kind = "confirmed") {
+  const isCancelled = kind === "cancelled";
+
+  return isCancelled
+    ? `
+      <table role="presentation" cellpadding="0" cellspacing="0" style="border-collapse:collapse;">
+        <tr>
+          <td
+            width="22"
+            height="22"
+            style="
+              width:22px;
+              height:22px;
+              border-radius:999px;
+              background:#efff00;
+              text-align:center;
+              vertical-align:middle;
+              font-family:${duoFontStack()};
+              font-size:18px;
+              line-height:22px;
+              font-weight:900;
+              color:#111111;
+            "
+          >×</td>
+        </tr>
+      </table>
+    `
+    : `
+      <table role="presentation" cellpadding="0" cellspacing="0" style="border-collapse:collapse;">
+        <tr>
+          <td
+            width="22"
+            height="22"
+            style="
+              width:22px;
+              height:22px;
+              border-radius:999px;
+              background:#efff00;
+              text-align:center;
+              vertical-align:middle;
+              font-family:${duoFontStack()};
+              font-size:15px;
+              line-height:22px;
+              font-weight:900;
+              color:#111111;
+            "
+          >✓</td>
+        </tr>
+      </table>
+    `;
+}
+
+function renderDuoGlyph() {
+  return `
+    <table role="presentation" cellpadding="0" cellspacing="0" style="border-collapse:collapse;">
+      <tr>
+        <td style="font-size:0; line-height:0;">
+          <span
+            style="
+              display:inline-block;
+              width:10px;
+              height:22px;
+              border-radius:10px 0 0 10px;
+              background:#ffffff;
+              vertical-align:middle;
+              margin-right:4px;
+            "
+          ></span>
+          <span
+            style="
+              display:inline-block;
+              width:22px;
+              height:22px;
+              border-radius:50%;
+              border:7px solid #ffffff;
+              border-left:0;
+              box-sizing:border-box;
+              vertical-align:middle;
+            "
+          ></span>
+        </td>
+      </tr>
+    </table>
+  `;
+}
+
+function buildHeroHeader({ title, kind = "confirmed" }) {
+  return `
+    <tr>
+      <td style="padding:0;">
+        <table
+          role="presentation"
+          cellpadding="0"
+          cellspacing="0"
+          width="100%"
+          style="border-collapse:separate; border-spacing:0; width:100%;"
+        >
+          <tr>
+            <td
+              style="
+                background:#050505;
+                border-top-left-radius:28px;
+                border-top-right-radius:28px;
+                border-bottom-right-radius:0;
+                border-bottom-left-radius:0;
+                overflow:hidden;
+              "
+            >
+              <table
+                role="presentation"
+                cellpadding="0"
+                cellspacing="0"
+                width="100%"
+                style="border-collapse:collapse; width:100%;"
+              >
+                <tr>
+                  <td style="padding:18px 18px 0;">
+                    <table
+                      role="presentation"
+                      cellpadding="0"
+                      cellspacing="0"
+                      width="100%"
+                      style="border-collapse:collapse; width:100%;"
+                    >
+                      <tr>
+                        <td valign="top" align="left">${renderStatusBadge(kind)}</td>
+                        <td valign="top" align="right">${renderDuoGlyph()}</td>
+                      </tr>
+                    </table>
+                  </td>
+                </tr>
+                <tr>
+                  <td style="padding:14px 18px 18px;">
+                    <div
+                      class="ap-title"
+                      style="
+                        max-width:220px;
+                        font-family:${duoFontStack()};
+                        font-size:25px;
+                        line-height:31px;
+                        font-weight:900;
+                        letter-spacing:-0.8px;
+                        color:#ffffff;
+                      "
+                    >
+                      ${title}
+                    </div>
+                  </td>
+                </tr>
+              </table>
+            </td>
+          </tr>
+          <tr>
+            <td align="right" style="padding:0; font-size:0; line-height:0;">
+              <div
+                style="
+                  width:115px;
+                  height:36px;
+                  background:#f3f3f3;
+                  border-top-left-radius:28px;
+                "
+              ></div>
+            </td>
+          </tr>
+        </table>
+      </td>
+    </tr>
+  `;
+}
+
 function buildAppointmentCard(item = {}) {
   const date = prettyDateAR(item?.date || "-");
   const time = safeTime(item?.time || "-");
@@ -69,14 +240,14 @@ function buildAppointmentCard(item = {}) {
         border-spacing:0;
         width:100%;
         margin:0 0 14px;
-        background:#f8f8f8;
-        border:2px solid #171717;
-        border-radius:18px;
+        background:#f3f3f3;
+        border:1.5px solid #171717;
+        border-radius:14px;
         overflow:hidden;
       "
     >
       <tr>
-        <td style="width:10px; background:#000000; font-size:0; line-height:0;">&nbsp;</td>
+        <td style="width:11px; background:#050505; font-size:0; line-height:0;">&nbsp;</td>
         <td style="padding:0;">
           <table
             role="presentation"
@@ -88,11 +259,11 @@ function buildAppointmentCard(item = {}) {
             <tr>
               <td
                 style="
-                  padding:18px 20px 14px;
-                  border-bottom:1px solid #cfcfcf;
-                  font-family:Arial, Helvetica, sans-serif;
-                  font-size:14px;
-                  line-height:18px;
+                  padding:16px 16px 12px;
+                  border-bottom:1px solid #d3d3d3;
+                  font-family:${duoFontStack()};
+                  font-size:12px;
+                  line-height:16px;
                   font-weight:800;
                   color:#111111;
                 "
@@ -108,12 +279,12 @@ function buildAppointmentCard(item = {}) {
                     <td
                       valign="middle"
                       style="
-                        font-family:Arial, Helvetica, sans-serif;
-                        font-size:14px;
-                        line-height:18px;
+                        font-family:${duoFontStack()};
+                        font-size:12px;
+                        line-height:16px;
                         font-weight:800;
                         color:#111111;
-                        padding-right:14px;
+                        padding-right:12px;
                       "
                     >
                       ${escapeHtml(date)}
@@ -123,13 +294,13 @@ function buildAppointmentCard(item = {}) {
                       align="right"
                       style="
                         white-space:nowrap;
-                        font-family:Arial, Helvetica, sans-serif;
-                        font-size:14px;
-                        line-height:18px;
+                        font-family:${duoFontStack()};
+                        font-size:12px;
+                        line-height:16px;
                         font-weight:800;
                         color:#111111;
-                        border-left:1px solid #cfcfcf;
-                        padding-left:16px;
+                        border-left:1px solid #d3d3d3;
+                        padding-left:12px;
                       "
                     >
                       ${escapeHtml(time)}
@@ -141,10 +312,10 @@ function buildAppointmentCard(item = {}) {
             <tr>
               <td
                 style="
-                  padding:16px 20px 20px;
-                  font-family:Arial, Helvetica, sans-serif;
-                  font-size:14px;
-                  line-height:18px;
+                  padding:14px 16px 15px;
+                  font-family:${duoFontStack()};
+                  font-size:13px;
+                  line-height:17px;
                   font-weight:500;
                   color:#111111;
                 "
@@ -165,104 +336,6 @@ function buildAppointmentCards(items = []) {
   return list.map((item) => buildAppointmentCard(item)).join("");
 }
 
-function buildTopIcon(kind = "confirmed") {
-  const iconFile = kind === "cancelled" ? "iconocheck.png" : "iconocheck.png";
-
-  return `
-    <img
-      src="${IMG_BASE}/${iconFile}"
-      width="40"
-      height="40"
-      alt=""
-      style="
-        display:block;
-        width:40px;
-        height:40px;
-        border:0;
-        outline:none;
-        text-decoration:none;
-      "
-    />
-  `;
-}
-
-function buildDuoMark() {
-  return `
-    <img
-      src="${IMG_BASE}/logo.png"
-      width="34"
-      alt="${escapeHtml(BRAND_NAME)}"
-      style="
-        display:block;
-        width:34px;
-        height:auto;
-        border:0;
-        outline:none;
-        text-decoration:none;
-      "
-    />
-  `;
-}
-
-function buildHeroHeader({ title, kind = "confirmed" }) {
-  return `
-    <tr>
-      <td
-        style="
-          background:#050505;
-          padding:28px 28px 54px;
-          border-top-left-radius:22px;
-          border-top-right-radius:22px;
-          position:relative;
-        "
-      >
-        <table
-          role="presentation"
-          cellpadding="0"
-          cellspacing="0"
-          width="100%"
-          style="border-collapse:collapse; width:100%;"
-        >
-          <tr>
-            <td valign="top" align="left">${buildTopIcon(kind)}</td>
-            <td valign="top" align="right">${buildDuoMark()}</td>
-          </tr>
-          <tr>
-            <td colspan="2" style="padding:28px 0 0;">
-              <div
-                class="ap-title"
-                style="
-                  max-width:250px;
-                  font-family:Arial, Helvetica, sans-serif;
-                  font-size:38px;
-                  line-height:44px;
-                  font-weight:900;
-                  letter-spacing:-1.2px;
-                  color:#ffffff;
-                "
-              >
-                ${title}
-              </div>
-            </td>
-          </tr>
-        </table>
-
-        <div
-          style="
-            position:absolute;
-            right:0;
-            bottom:-44px;
-            width:140px;
-            height:88px;
-            background:#f1f1f1;
-            border-top-left-radius:44px;
-          "
-        ></div>
-      </td>
-    </tr>
-  `;
-}
-
 function buildFooterBlock() {
   return `
     <tr>
@@ -270,7 +343,9 @@ function buildFooterBlock() {
         class="ap-footer"
         style="
           background:#050505;
-          padding:34px 26px 34px;
+          padding:28px 24px 30px;
+          border-bottom-left-radius:28px;
+          border-bottom-right-radius:28px;
         "
       >
         <table
@@ -285,29 +360,71 @@ function buildFooterBlock() {
               valign="bottom"
               style="
                 width:46%;
-                font-family:Arial, Helvetica, sans-serif;
+                font-family:${duoFontStack()};
                 color:#ffffff;
               "
             >
-              <div style="font-size:56px; line-height:52px; font-weight:900; letter-spacing:2px;">DUO</div>
-              <div style="font-size:12px; line-height:14px; opacity:0.9; letter-spacing:2.2px; margin-top:6px;">HEALTH CLUB</div>
+              <div style="font-size:26px; line-height:24px; font-weight:900; letter-spacing:1px;">DUO</div>
+              <div style="font-size:5px; line-height:8px; opacity:0.95; letter-spacing:1.4px; margin-top:4px;">HEALTH CLUB</div>
             </td>
             <td
               valign="bottom"
               align="right"
               style="
                 width:54%;
-                font-family:Arial, Helvetica, sans-serif;
+                font-family:${duoFontStack()};
                 color:#ffffff;
               "
             >
-              <div style="font-size:16px; line-height:22px; font-weight:800; letter-spacing:3px;">DUOCLUB.AR</div>
-              <div style="font-size:14px; line-height:22px; font-weight:500; opacity:0.96;">+54 9 249 420 7343</div>
-              <div style="font-size:14px; line-height:22px; font-weight:500; opacity:0.96;">Av. Santamaría 54, Tandil.</div>
-              <div style="margin-top:12px; font-size:0; line-height:0;">
-                <span style="display:inline-block; width:32px; height:32px; border-radius:50%; background:#ffffff; margin-left:8px;"></span>
-                <span style="display:inline-block; width:32px; height:32px; border-radius:50%; background:#ffffff; margin-left:8px;"></span>
-                <span style="display:inline-block; width:32px; height:32px; border-radius:50%; background:#ffffff; margin-left:8px;"></span>
+              <div style="font-size:12px; line-height:16px; font-weight:800; letter-spacing:2px;">DUOCLUB.AR</div>
+              <div style="font-size:10px; line-height:15px; font-weight:400; opacity:0.96;">+549 249 420 7343</div>
+              <div style="font-size:10px; line-height:15px; font-weight:400; opacity:0.96;">Av. Santamaría 54, Tandil.</div>
+              <div style="margin-top:10px; font-size:0; line-height:0;">
+                <span
+                  style="
+                    display:inline-block;
+                    width:17px;
+                    height:17px;
+                    border-radius:50%;
+                    background:#ffffff;
+                    color:#050505;
+                    font-family:${duoFontStack()};
+                    font-size:9px;
+                    line-height:17px;
+                    text-align:center;
+                    margin-left:6px;
+                  "
+                >ig</span>
+                <span
+                  style="
+                    display:inline-block;
+                    width:17px;
+                    height:17px;
+                    border-radius:50%;
+                    background:#ffffff;
+                    color:#050505;
+                    font-family:${duoFontStack()};
+                    font-size:10px;
+                    line-height:17px;
+                    text-align:center;
+                    margin-left:6px;
+                  "
+                >f</span>
+                <span
+                  style="
+                    display:inline-block;
+                    width:17px;
+                    height:17px;
+                    border-radius:50%;
+                    background:#ffffff;
+                    color:#050505;
+                    font-family:${duoFontStack()};
+                    font-size:9px;
+                    line-height:17px;
+                    text-align:center;
+                    margin-left:6px;
+                  "
+                >in</span>
               </div>
             </td>
           </tr>
@@ -338,34 +455,32 @@ function buildAppointmentVisualEmail({
     bodyHtml: `
       <style>
         @media only screen and (max-width: 560px) {
-          .ap-card {
-            border-radius: 20px !important;
-          }
           .ap-wrap {
             width:100% !important;
+            max-width:370px !important;
           }
           .ap-title {
-            font-size: 32px !important;
-            line-height: 36px !important;
+            font-size:24px !important;
+            line-height:29px !important;
           }
           .ap-body {
-            padding: 26px 20px 28px !important;
+            padding:16px 22px 28px !important;
           }
           .ap-copy {
-            font-size: 17px !important;
-            line-height: 26px !important;
+            font-size:15px !important;
+            line-height:22px !important;
           }
           .ap-note {
-            font-size: 15px !important;
-            line-height: 22px !important;
+            font-size:13px !important;
+            line-height:20px !important;
           }
           .ap-cta {
-            font-size: 18px !important;
-            line-height: 20px !important;
-            padding: 18px 34px !important;
+            font-size:14px !important;
+            line-height:18px !important;
+            padding:14px 18px !important;
           }
           .ap-footer {
-            padding: 28px 20px 30px !important;
+            padding:28px 22px 30px !important;
           }
         }
       </style>
@@ -373,40 +488,56 @@ function buildAppointmentVisualEmail({
       <table role="presentation" cellpadding="0" cellspacing="0" width="100%" style="border-collapse:collapse; width:100%;">
         <tr>
           <td align="center" style="padding:0;">
-            <table role="presentation" cellpadding="0" cellspacing="0" width="100%" class="ap-wrap" style="max-width:600px; border-collapse:separate; border-spacing:0;">
+            <table
+              role="presentation"
+              cellpadding="0"
+              cellspacing="0"
+              width="100%"
+              class="ap-wrap"
+              style="max-width:372px; border-collapse:separate; border-spacing:0;"
+            >
               <tr>
                 <td
-                  class="ap-card"
-                  background="${IMG_BASE}/fondoMailing.png"
                   style="
-                    background-color:#f1f1f1;
-                    background-image:url('${IMG_BASE}/fondoMailing.png');
-                    background-repeat:repeat;
-                    background-position:center top;
-                    border-radius:22px;
+                    background-color:#f3f3f3;
+                    border-radius:28px;
                     overflow:hidden;
                   "
                 >
-                  <table role="presentation" cellpadding="0" cellspacing="0" width="100%" style="border-collapse:collapse; width:100%;">
+                  <table
+                    role="presentation"
+                    cellpadding="0"
+                    cellspacing="0"
+                    width="100%"
+                    background="https://api.duoclub.ar/images/fondoMailing.png"
+                    style="
+                      border-collapse:collapse;
+                      width:100%;
+                      background-color:#f3f3f3;
+                      background-image:url('https://api.duoclub.ar/images/fondoMailing.png');
+                      background-repeat:repeat;
+                      background-position:center top;
+                    "
+                  >
                     ${buildHeroHeader({ title, kind })}
 
                     <tr>
                       <td
                         class="ap-body"
                         style="
-                          padding:48px 58px 40px;
-                          font-family:Arial, Helvetica, sans-serif;
+                          padding:12px 34px 30px;
+                          font-family:${duoFontStack()};
                           color:#111111;
                         "
                       >
                         <div
                           class="ap-copy"
                           style="
-                            font-size:18px;
-                            line-height:30px;
+                            font-size:17px;
+                            line-height:28px;
                             font-weight:500;
                             color:#111111;
-                            margin:0 0 30px;
+                            margin:0 0 18px;
                           "
                         >
                           Hola <b>${escapeHtml(firstName)}</b>,<br />
@@ -415,22 +546,22 @@ function buildAppointmentVisualEmail({
 
                         ${cardsHtml}
 
-                        <div style="text-align:center; padding:20px 0 0;">
+                        <div style="text-align:center; padding:10px 0 0;">
                           <a
-                            href="${escapeHtml(buttonHref || BRAND_URL || "#")}"
+                            href="${escapeHtml(buttonHref || BRAND_URL || "#") }"
                             class="ap-cta"
                             style="
                               display:inline-block;
                               text-decoration:none;
                               background:#efff00;
                               color:#111111;
-                              font-family:Arial, Helvetica, sans-serif;
-                              font-size:18px;
-                              line-height:20px;
+                              font-family:${duoFontStack()};
+                              font-size:15px;
+                              line-height:19px;
                               font-weight:800;
-                              padding:18px 34px;
+                              padding:15px 20px;
                               border-radius:999px;
-                              box-shadow:0 10px 18px rgba(0,0,0,0.18);
+                              box-shadow:0 7px 14px rgba(0,0,0,0.18);
                             "
                           >${escapeHtml(buttonLabel)}</a>
                         </div>
@@ -441,13 +572,13 @@ function buildAppointmentVisualEmail({
                           <div
                             class="ap-note"
                             style="
-                              font-size:16px;
-                              line-height:24px;
+                              font-size:13px;
+                              line-height:21px;
                               font-weight:600;
                               color:#111111;
                               text-align:center;
-                              margin:34px auto 0;
-                              max-width:360px;
+                              margin:28px auto 0;
+                              max-width:255px;
                             "
                           >
                             ${noteHtml}
@@ -469,6 +600,7 @@ function buildAppointmentVisualEmail({
     `,
   });
 }
+
 function buildReminderEmail({ items = [] }) {
   const bodyHtml = `
     ${renderExactReminderBellIcon()}
@@ -771,8 +903,8 @@ export async function sendAppointmentCancelledEmail(
     refundFlag === null
       ? "Tu turno fue cancelado correctamente."
       : refundFlag
-        ? "Tu turno fue cancelado correctamente.<br />Si correspondiera según la política de cancelación, el crédito ya fue reintegrado a tu cuenta."
-        : "Tu turno fue cancelado correctamente.<br />Si correspondiera según la política de cancelación, el crédito ya fue reintegrado a tu cuenta.";
+        ? "Tu turno fue cancelado correctamente.<br /><b>Si correspondiera según la política de cancelación, el crédito ya fue reintegrado a tu cuenta.</b>"
+        : "Tu turno fue cancelado correctamente.<br /><b>Si correspondiera según la política de cancelación, el crédito ya fue reintegrado a tu cuenta.</b>";
 
   const html = buildAppointmentVisualEmail({
     title: "Turno cancelado<br />con éxito.",
