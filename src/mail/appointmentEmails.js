@@ -292,6 +292,209 @@ function buildAppointmentCards(items = []) {
   return list.map((item) => buildAppointmentCard(item)).join("");
 }
 
+
+function buildAdminDataCard({ label, value, valueHtml = "" } = {}) {
+  const content = valueHtml || escapeHtml(value || "-");
+  return `
+    <table
+      role="presentation"
+      cellpadding="0"
+      cellspacing="0"
+      width="100%"
+      style="
+        border-collapse:separate;
+        border-spacing:0;
+        width:100%;
+        margin:0 0 10px;
+        background:#f3f3f3;
+        border:1.5px solid #171717;
+        border-radius:14px;
+        overflow:hidden;
+      "
+    >
+      <tr>
+        <td style="width:11px; background:#050505; font-size:0; line-height:0;">&nbsp;</td>
+        <td
+          style="
+            padding:13px 16px 14px;
+            font-family:${duoFontStack()};
+            color:#111111;
+          "
+        >
+          <div
+            style="
+              font-size:10px;
+              line-height:13px;
+              font-weight:800;
+              text-transform:uppercase;
+              letter-spacing:0.9px;
+              margin:0 0 5px;
+              color:#6f6f6f;
+            "
+          >${escapeHtml(label || "Dato")}</div>
+
+          <div
+            style="
+              font-size:13px;
+              line-height:18px;
+              font-weight:700;
+              color:#111111;
+              word-break:break-word;
+            "
+          >${content}</div>
+        </td>
+      </tr>
+    </table>
+  `;
+}
+
+function buildAdminDataCards(rows = []) {
+  const validRows = (Array.isArray(rows) ? rows : []).filter(
+    (row) => row && row.label && (row.value || row.valueHtml)
+  );
+
+  if (!validRows.length) return "";
+
+  return validRows.map((row) => buildAdminDataCard(row)).join("");
+}
+
+function buildAdminAppointmentVisualEmail({
+  title,
+  preheader,
+  kind = "confirmed",
+  introHtml = "",
+  detailCardsHtml = "",
+  items = [],
+  noteHtml = "",
+}) {
+  const cardsHtml = buildAppointmentCards(items);
+
+  return buildEmailLayout({
+    title: `${BRAND_NAME} · ${title.replace(/<br\s*\/?>/gi, " ")}`,
+    preheader,
+    footerNote: "",
+    bodyHtml: `
+      <style>
+        @media only screen and (max-width: 560px) {
+          .ap-wrap {
+            width:100% !important;
+            max-width:370px !important;
+          }
+          .ap-title {
+            font-size:24px !important;
+            line-height:29px !important;
+          }
+          .ap-body {
+            padding:16px 22px 28px !important;
+          }
+          .ap-copy {
+            font-size:15px !important;
+            line-height:22px !important;
+          }
+          .ap-note {
+            font-size:13px !important;
+            line-height:20px !important;
+          }
+          .ap-footer {
+            padding:28px 22px 30px !important;
+          }
+        }
+      </style>
+
+      <table role="presentation" cellpadding="0" cellspacing="0" width="100%" style="border-collapse:collapse; width:100%;">
+        <tr>
+          <td align="center" style="padding:0;">
+            <table
+              role="presentation"
+              cellpadding="0"
+              cellspacing="0"
+              width="100%"
+              class="ap-wrap"
+              style="max-width:372px; border-collapse:separate; border-spacing:0;"
+            >
+              <tr>
+                <td
+                  style="
+                    background:#f3f3f3;
+                    border-radius:28px;
+                    overflow:hidden;
+                  "
+                >
+                  <table
+                    role="presentation"
+                    cellpadding="0"
+                    cellspacing="0"
+                    width="100%"
+                    style="
+                      border-collapse:collapse;
+                      width:100%;
+                      background-color:#f3f3f3;
+                    "
+                  >
+                    ${buildHeroHeader({ title, kind })}
+
+                    <tr>
+                      <td
+                        class="ap-body"
+                        style="
+                          padding:12px 34px 30px;
+                          font-family:${duoFontStack()};
+                          color:#111111;
+                        "
+                      >
+                        <div
+                          class="ap-copy"
+                          style="
+                            font-size:17px;
+                            line-height:28px;
+                            font-weight:500;
+                            color:#111111;
+                            margin:0 0 18px;
+                          "
+                        >
+                          ${introHtml}
+                        </div>
+
+                        ${detailCardsHtml}
+
+                        ${cardsHtml}
+
+                        ${
+                          noteHtml
+                            ? `
+                          <div
+                            class="ap-note"
+                            style="
+                              font-size:13px;
+                              line-height:21px;
+                              font-weight:600;
+                              color:#111111;
+                              text-align:center;
+                              margin:22px auto 0;
+                              max-width:255px;
+                            "
+                          >
+                            ${noteHtml}
+                          </div>
+                        `
+                            : ""
+                        }
+                      </td>
+                    </tr>
+
+                    ${buildFooterBlock()}
+                  </table>
+                </td>
+              </tr>
+            </table>
+          </td>
+        </tr>
+      </table>
+    `,
+  });
+}
+
+
 function buildFooterBlock() {
   return `
     <tr>
@@ -649,17 +852,16 @@ function buildAdminAppointmentEmail({
 }) {
   const list = normalizeItems(items);
   const isCancelled = kind === "cancelled";
-  const icon = isCancelled ? "✕" : "✓";
   const uName = getUserName(user);
   const uEmail = user?.email || "-";
 
   const title = isCancelled
     ? list.length > 1
-      ? "Se cancelaron\nturnos"
-      : "Se canceló\nun turno"
+      ? "Turnos cancelados<br />en admin."
+      : "Turno cancelado<br />en admin."
     : list.length > 1
-      ? "Se reservaron\nturnos"
-      : "Se reservó\nun turno";
+      ? "Turnos reservados<br />en admin."
+      : "Turno reservado<br />en admin.";
 
   const refundFlag =
     typeof meta?.refund === "boolean"
@@ -687,48 +889,29 @@ function buildAdminAppointmentEmail({
           ? `Fuera del límite (${cutoff} hs).`
           : "Fuera del límite.";
 
-  const exact = buildExactMail({
-    brandName: BRAND_NAME,
+  const introHtml = isCancelled
+    ? `<b>${escapeHtml(uName)}</b> canceló ${
+        list.length > 1 ? "sus turnos" : "un turno"
+      }.<br />Revisá abajo el detalle completo.`
+    : `<b>${escapeHtml(uName)}</b> reservó ${
+        list.length > 1 ? "nuevos turnos" : "un turno"
+      }.<br />Revisá abajo el detalle completo.`;
+
+  const detailCardsHtml = buildAdminDataCards([
+    { label: "Usuario", value: uName },
+    { label: "Email", value: uEmail },
+    refundDetail ? { label: "Reintegro", value: refundDetail } : null,
+    detailText ? { label: "Detalle", value: detailText } : null,
+  ]);
+
+  return buildAdminAppointmentVisualEmail({
     title,
     preheader: `${uName} · ${isCancelled ? "cancelación" : "reserva"} de turno`,
-    icon,
-    innerHtml: `
-      ${renderAdminMetaPanel([
-        { label: "Usuario", value: uName },
-        { label: "Email", value: uEmail },
-      ])}
-
-      ${
-        refundDetail || detailText
-          ? renderAdminDetailPanel(
-              [
-                refundDetail ? { label: "Reintegro", value: refundDetail } : null,
-                detailText ? { label: "Detalle", value: detailText } : null,
-              ].filter(Boolean)
-            )
-          : ""
-      }
-
-      ${list
-        .map((it) => {
-          const date = prettyDateAR(it?.date || "");
-          const time = `${it?.time || "-"} hs`;
-          const service = getServiceName(it, it?.serviceName);
-          return renderRowCard({
-            titleLeft: date,
-            titleRight: time,
-            subtitle: `<span style="color:#ffffff;">${escapeHtml(service)}</span>`,
-          });
-        })
-        .join("")}
-    `,
-  });
-
-  return buildEmailLayout({
-    title: exact.title,
-    preheader: exact.preheader,
-    bodyHtml: exact.bodyHtml,
-    footerNote: "",
+    kind: isCancelled ? "cancelled" : "confirmed",
+    introHtml,
+    detailCardsHtml,
+    items: list,
+    noteHtml: `Mail automático de ${escapeHtml(BRAND_NAME)} para administración.`,
   });
 }
 
@@ -1230,3 +1413,4 @@ export async function sendWaitlistSlotAvailableEmail(user, ap, meta = {}) {
     html
   );
 }
+t
