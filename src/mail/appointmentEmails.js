@@ -11,6 +11,8 @@ import {
   renderRowCard,
 } from "./ui.js";
 
+const IMG_BASE = "https://api.duoclub.ar/images";
+
 /* =========================================================
    Helpers base
 ========================================================= */
@@ -54,89 +56,43 @@ function duoFontStack() {
   return `'Helvetica Neue', Helvetica, Arial, sans-serif`;
 }
 
-function renderStatusBadge(kind = "confirmed") {
-  const isCancelled = kind === "cancelled";
 
-  return isCancelled
-    ? `
-      <table role="presentation" cellpadding="0" cellspacing="0" style="border-collapse:collapse;">
-        <tr>
-          <td
-            width="22"
-            height="22"
-            style="
-              width:22px;
-              height:22px;
-              border-radius:999px;
-              background:#efff00;
-              text-align:center;
-              vertical-align:middle;
-              font-family:${duoFontStack()};
-              font-size:18px;
-              line-height:22px;
-              font-weight:900;
-              color:#111111;
-            "
-          >×</td>
-        </tr>
-      </table>
-    `
-    : `
-      <table role="presentation" cellpadding="0" cellspacing="0" style="border-collapse:collapse;">
-        <tr>
-          <td
-            width="22"
-            height="22"
-            style="
-              width:22px;
-              height:22px;
-              border-radius:999px;
-              background:#efff00;
-              text-align:center;
-              vertical-align:middle;
-              font-family:${duoFontStack()};
-              font-size:15px;
-              line-height:22px;
-              font-weight:900;
-              color:#111111;
-            "
-          >✓</td>
-        </tr>
-      </table>
-    `;
+function buildTopIcon(kind = "confirmed") {
+  const iconFile = kind === "cancelled" ? "iconocheck.png" : "iconocheck.png";
+
+  return `
+    <img
+      src="${IMG_BASE}/${iconFile}"
+      width="40"
+      height="40"
+      alt=""
+      style="
+        display:block;
+        width:40px;
+        height:40px;
+        border:0;
+        outline:none;
+        text-decoration:none;
+      "
+    />
+  `;
 }
 
-function renderDuoGlyph() {
+function buildDuoMark() {
   return `
-    <table role="presentation" cellpadding="0" cellspacing="0" style="border-collapse:collapse;">
-      <tr>
-        <td style="font-size:0; line-height:0;">
-          <span
-            style="
-              display:inline-block;
-              width:10px;
-              height:22px;
-              border-radius:10px 0 0 10px;
-              background:#ffffff;
-              vertical-align:middle;
-              margin-right:4px;
-            "
-          ></span>
-          <span
-            style="
-              display:inline-block;
-              width:22px;
-              height:22px;
-              border-radius:50%;
-              border:7px solid #ffffff;
-              border-left:0;
-              box-sizing:border-box;
-              vertical-align:middle;
-            "
-          ></span>
-        </td>
-      </tr>
-    </table>
+    <img
+      src="${IMG_BASE}/logo.png"
+      width="34"
+      alt="${escapeHtml(BRAND_NAME)}"
+      style="
+        display:block;
+        width:34px;
+        height:auto;
+        border:0;
+        outline:none;
+        text-decoration:none;
+      "
+    />
   `;
 }
 
@@ -179,8 +135,8 @@ function buildHeroHeader({ title, kind = "confirmed" }) {
                       style="border-collapse:collapse; width:100%;"
                     >
                       <tr>
-                        <td valign="top" align="left">${renderStatusBadge(kind)}</td>
-                        <td valign="top" align="right">${renderDuoGlyph()}</td>
+                        <td valign="top" align="left">${buildTopIcon(kind)}</td>
+                        <td valign="top" align="right">${buildDuoMark()}</td>
                       </tr>
                     </table>
                   </td>
@@ -499,7 +455,7 @@ function buildAppointmentVisualEmail({
               <tr>
                 <td
                   style="
-                    background-color:#f3f3f3;
+                    background:#f3f3f3;
                     border-radius:28px;
                     overflow:hidden;
                   "
@@ -509,14 +465,10 @@ function buildAppointmentVisualEmail({
                     cellpadding="0"
                     cellspacing="0"
                     width="100%"
-                    background="https://api.duoclub.ar/images/fondoMailing.png"
                     style="
                       border-collapse:collapse;
                       width:100%;
                       background-color:#f3f3f3;
-                      background-image:url('https://api.duoclub.ar/images/fondoMailing.png');
-                      background-repeat:repeat;
-                      background-position:center top;
                     "
                   >
                     ${buildHeroHeader({ title, kind })}
