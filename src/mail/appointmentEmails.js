@@ -1413,4 +1413,3 @@ export async function sendWaitlistSlotAvailableEmail(user, ap, meta = {}) {
     html
   );
 }
-t
