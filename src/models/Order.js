@@ -1,12 +1,13 @@
 import mongoose from "mongoose";
 
-const ALLOWED_SERVICE_KEYS = ["PE", "EP", "RA", "RF", "NUT"];
+const ALLOWED_SERVICE_KEYS = ["PE", "EP", "RA", "RF", "KD", "NUT"];
 const ALLOWED_SERVICE_KEY_SET = new Set(ALLOWED_SERVICE_KEYS);
 
 function normalizeServiceKey(value) {
   const raw = String(value || "").trim().toUpperCase();
   if (!raw) return "";
   if (raw === "AR") return "RA";
+  if (raw === "KINEDEPO" || raw === "KINE-DEPO") return "KD";
   return raw;
 }
 

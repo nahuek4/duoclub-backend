@@ -87,13 +87,14 @@ function validateObjectIdParam(req, res, next) {
   next();
 }
 
-const ALLOWED_SERVICE_KEYS = new Set(["PE", "EP", "RF", "RA", "NUT"]);
+const ALLOWED_SERVICE_KEYS = new Set(["PE", "EP", "RF", "RA", "KD", "NUT"]);
 
 const SERVICE_KEY_TO_NAME = {
   PE: "Primera evaluación presencial",
   EP: "Entrenamiento Personal",
   RF: "Reeducación Funcional",
   RA: "Rehabilitación Activa",
+  KD: "Kinefilaxia Deportiva",
   NUT: "Nutrición",
 };
 
@@ -113,6 +114,7 @@ function canonicalServiceKeyFromValue(value) {
   if (s.includes("entrenamiento") && s.includes("personal")) return "EP";
   if (s.includes("rehabilitacion") && s.includes("activa")) return "RA";
   if (s.includes("reeducacion") && s.includes("funcional")) return "RF";
+  if (s.includes("kinefilaxia") || (s.includes("kine") && s.includes("deport"))) return "KD";
   if (s.includes("nutric")) return "NUT";
 
   return "";
@@ -327,7 +329,7 @@ function normalizeLotServiceKey(lot) {
 function computeServiceAccessFromLots(u) {
   const now = new Date();
   const lots = Array.isArray(u?.creditLots) ? u.creditLots : [];
-  const byKey = { PE: 0, EP: 0, RF: 0, RA: 0, NUT: 0 };
+  const byKey = { PE: 0, EP: 0, RF: 0, RA: 0, KD: 0, NUT: 0 };
 
   for (const lot of lots) {
     const remaining = Number(lot?.remaining || 0);

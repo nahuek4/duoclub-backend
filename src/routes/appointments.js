@@ -26,7 +26,7 @@ const MAX_ADVANCE_DAYS = 30;
 /**
  * Anticipación mínima por servicio
  * EP = 30 min fijo
- * RA/RF = 24 h fijas
+ * RA/RF/KD = 24 h fijas
  * resto = variable por env o fallback 60
  */
 const DEFAULT_MIN_BOOKING_MINUTES = Number(
@@ -37,6 +37,7 @@ const MIN_BOOKING_MINUTES_BY_SERVICE = {
   EP: 30,
   RA: 24 * 60,
   RF: 24 * 60,
+  KD: 24 * 60,
   NUT: DEFAULT_MIN_BOOKING_MINUTES,
   OTHER: DEFAULT_MIN_BOOKING_MINUTES,
 };
@@ -150,7 +151,7 @@ function getWaitlistCloseMinutesForService(serviceName) {
   const sk = serviceToKey(serviceName);
 
   if (sk === "EP") return 30;
-  if (sk === "RF" || sk === "RA") return 12 * 60;
+  if (["RA", "RF", "KD"].includes(sk)) return 12 * 60;
 
   return null;
 }
@@ -209,13 +210,14 @@ function getTurnoFromTime(time) {
 /* =========================
    HELPERS: normalización servicios
 ========================= */
-const ALLOWED_SERVICE_KEYS = new Set(["PE", "EP", "RA", "RF", "NUT"]);
+const ALLOWED_SERVICE_KEYS = new Set(["PE", "EP", "RA", "RF", "KD", "NUT"]);
 
 const SERVICE_KEY_TO_NAME = {
   PE: "Primera evaluación presencial",
   EP: "Entrenamiento Personal",
   RA: "Rehabilitación activa",
   RF: "Reeducación funcional",
+  KD: "Kinefilaxia Deportiva",
   NUT: "Nutrición",
 };
 
@@ -248,6 +250,7 @@ function serviceToKey(serviceNameOrKey) {
   if (s.includes("entrenamiento") && s.includes("personal")) return "EP";
   if (s.includes("rehabilitacion") && s.includes("activa")) return "RA";
   if (s.includes("reeducacion") && s.includes("funcional")) return "RF";
+  if (s.includes("kinefilaxia") || (s.includes("kine") && s.includes("deport"))) return "KD";
   if (s.includes("nutricion")) return "NUT";
 
   return "";
@@ -821,14 +824,16 @@ function requiresApto(user) {
 /* =========================
    Cupos + horarios por servicio
 ========================= */
-const TOTAL_CAP = 6;
-const EP_CAP_WHEN_THERAPY_ACTIVE = 4;
+const EP_CAP_PER_SLOT = 12;
 const THERAPY_CAP_WHEN_ACTIVE = 2;
+const TOTAL_CAP = EP_CAP_PER_SLOT + THERAPY_CAP_WHEN_ACTIVE;
+const EP_CAP_WHEN_THERAPY_ACTIVE = EP_CAP_PER_SLOT;
 
 const PE_NAME = "Primera evaluación presencial";
 const EP_NAME = "Entrenamiento Personal";
 const RA_NAME = "Rehabilitación activa";
 const RF_NAME = "Reeducación funcional";
+const KD_NAME = "Kinefilaxia Deportiva";
 
 const TIMES_EP_WEEKDAY = [
   "07:00", "08:00", "09:00", "10:00",
@@ -856,7 +861,7 @@ const TIMES_DEFAULT = [
 
 function isTherapyService(serviceNameOrKey) {
   const sk = serviceToKey(serviceNameOrKey);
-  return sk === "RA" || sk === "RF";
+  return ["RA", "RF", "KD"].includes(sk);
 }
 
 function getRehabTimesForDate(dateStr) {
@@ -872,7 +877,7 @@ function getAllowedTimesForService(serviceNameOrKey, dateStr = "") {
   const sk = serviceToKey(serviceNameOrKey);
 
   if (sk === "PE" || sk === "EP") return TIMES_EP_WEEKDAY;
-  if (sk === "RA" || sk === "RF") return getRehabTimesForDate(dateStr);
+  if (["RA", "RF", "KD"].includes(sk)) return getRehabTimesForDate(dateStr);
   if (sk === "NUT") return TIMES_DEFAULT;
 
   return [];
@@ -893,9 +898,7 @@ function getTherapyCapForSlot(dateStr, time) {
 }
 
 function getEpCapForSlot(dateStr, time) {
-  return getTherapyCapForSlot(dateStr, time) > 0
-    ? EP_CAP_WHEN_THERAPY_ACTIVE
-    : TOTAL_CAP;
+  return EP_CAP_PER_SLOT;
 }
 
 function getSlotReservationStats(existing, dateStr, time) {
@@ -904,7 +907,7 @@ function getSlotReservationStats(existing, dateStr, time) {
   const epReserved = list.filter((a) => appointmentServiceKey(a) === "EP").length;
   const therapyReserved = list.filter((a) => {
     const sk = appointmentServiceKey(a);
-    return sk === "RA" || sk === "RF";
+    return ["RA", "RF", "KD"].includes(sk);
   }).length;
 
   return {
@@ -927,12 +930,17 @@ const CANCELLATION_POLICY_BY_SERVICE = {
     lateRefundLimit: 1,
   },
   RA: {
-    refundCutoffHours: 3,
+    refundCutoffHours: 4,
     timelyRefundLimit: 2,
     lateRefundLimit: 1,
   },
   RF: {
-    refundCutoffHours: 3,
+    refundCutoffHours: 4,
+    timelyRefundLimit: 2,
+    lateRefundLimit: 1,
+  },
+  KD: {
+    refundCutoffHours: 4,
     timelyRefundLimit: 2,
     lateRefundLimit: 1,
   },
@@ -1065,7 +1073,7 @@ function buildCancellationClientMessage({ appointment, decision, counters }) {
   const sk = serviceToKey(appointment?.service || "");
 
   if (decision?.refundMode === "timely") {
-    if (sk === "RA" || sk === "RF") {
+    if (["RA", "RF", "KD"].includes(sk)) {
       if (counters.timelyRemaining > 0) {
         return `Cancelaste con el mínimo de anticipación. Te devolvimos el crédito. Te queda ${counters.timelyRemaining} cancelación en término disponible este mes.`;
       }
@@ -3024,6 +3032,12 @@ router.delete("/:id", async (req, res) => {
 
       const now = new Date();
       const hoursToStart = (slotDate.getTime() - now.getTime()) / (1000 * 60 * 60);
+      const cancelPolicy = getCancellationPolicyForService(ap.service);
+      const minCancelHours = Number(cancelPolicy?.refundCutoffHours || 0);
+
+      if (!isStaff && (!Number.isFinite(hoursToStart) || hoursToStart < minCancelHours)) {
+        throw new Error("CANCELLATION_WINDOW_CLOSED");
+      }
 
       const decision = resolveCancellationPolicy({
         user,
@@ -3213,6 +3227,11 @@ router.delete("/:id", async (req, res) => {
     }
     if (msg === "INVALID_SLOT_DATE") {
       return res.status(400).json({ error: "Fecha u horario inválido en el turno." });
+    }
+    if (msg === "CANCELLATION_WINDOW_CLOSED") {
+      return res.status(409).json({
+        error: "El turno ya no se puede cancelar desde el panel porque no cumple con la anticipación mínima del servicio.",
+      });
     }
     if (msg === "REFUND_FAILED") {
       return res.status(500).json({ error: "No se pudo devolver el crédito al lote original." });

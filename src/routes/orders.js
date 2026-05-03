@@ -21,12 +21,13 @@ const PLUS_PRICE = Number(process.env.PLUS_PRICE || 20000);
 const PLUS_DISCOUNT_PCT = 15;
 const CREDITS_EXPIRE_DAYS = 30;
 
-const ALLOWED_SERVICE_KEYS = new Set(["PE", "EP", "RA", "RF", "NUT"]);
+const ALLOWED_SERVICE_KEYS = new Set(["PE", "EP", "RA", "RF", "KD", "NUT"]);
 const SERVICE_KEY_TO_NAME = {
   PE: "Primera evaluación presencial",
   EP: "Entrenamiento Personal",
   RA: "Rehabilitación Activa",
   RF: "Reeducación Funcional",
+  KD: "Kinefilaxia Deportiva",
   NUT: "Nutrición",
 };
 

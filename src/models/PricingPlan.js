@@ -1,6 +1,6 @@
 import mongoose from "mongoose";
 
-const ALLOWED_SERVICE_KEYS = ["PE", "EP", "RA", "RF", "NUT"];
+const ALLOWED_SERVICE_KEYS = ["PE", "EP", "RA", "RF", "KD", "NUT"];
 const ALLOWED_SERVICE_KEY_SET = new Set(ALLOWED_SERVICE_KEYS);
 
 function stripAccents(value) {
@@ -16,6 +16,7 @@ function normalizeServiceKey(value) {
   const upper = stripAccents(raw).toUpperCase().trim();
 
   if (upper === "AR") return "RA";
+  if (upper === "KINEDEPO" || upper === "KINE-DEPO") return "KD";
   if (ALLOWED_SERVICE_KEY_SET.has(upper)) return upper;
 
   const normalizedText = stripAccents(raw).toLowerCase().trim();
@@ -32,6 +33,9 @@ function normalizeServiceKey(value) {
   if (normalizedText.includes("reeducacion") && normalizedText.includes("funcional")) {
     return "RF";
   }
+  if (normalizedText.includes("kinefilaxia") || (normalizedText.includes("kine") && normalizedText.includes("deport"))) {
+    return "KD";
+  }
   if (normalizedText.includes("nutric")) {
     return "NUT";
   }
@@ -41,7 +45,7 @@ function normalizeServiceKey(value) {
 
 const pricingPlanSchema = new mongoose.Schema(
   {
-    // PE, EP, RA, RF, NUT
+    // PE, EP, RA, RF, KD, NUT
     serviceKey: {
       type: String,
       required: true,

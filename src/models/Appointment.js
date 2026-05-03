@@ -5,6 +5,7 @@ const SERVICE_KEY_TO_NAME = {
   EP: "Entrenamiento Personal",
   RA: "Rehabilitación Activa",
   RF: "Reeducación Funcional",
+  KD: "Kinefilaxia Deportiva",
   NUT: "Nutrición",
 };
 
@@ -30,6 +31,7 @@ function normalizeServiceKey(value) {
   if (s.includes("entrenamiento") && s.includes("personal")) return "EP";
   if (s.includes("rehabilitacion") && s.includes("activa")) return "RA";
   if (s.includes("reeducacion") && s.includes("funcional")) return "RF";
+  if (s.includes("kinefilaxia") || (s.includes("kine") && s.includes("deport"))) return "KD";
   if (s.includes("nutric")) return "NUT";
 
   return "";
@@ -220,7 +222,7 @@ appointmentSchema.pre("validate", function appointmentPreValidate() {
   if (!normalizedKey) {
     this.invalidate(
       "serviceKey",
-      "serviceKey inválido. Debe ser uno de: PE, EP, RA, RF, NUT."
+      "serviceKey inválido. Debe ser uno de: PE, EP, RA, RF, KD, NUT."
     );
     return;
   }

@@ -1,12 +1,13 @@
 import mongoose from "mongoose";
 
-const ALLOWED_SERVICE_KEYS = ["PE", "EP", "RA", "RF", "NUT"];
+const ALLOWED_SERVICE_KEYS = ["PE", "EP", "RA", "RF", "KD", "NUT"];
 
 const SERVICE_KEY_TO_NAME = {
   PE: "Primera evaluación presencial",
   EP: "Entrenamiento Personal",
   RA: "Rehabilitación Activa",
   RF: "Reeducación Funcional",
+  KD: "Kinefilaxia Deportiva",
   NUT: "Nutrición",
 };
 
@@ -23,6 +24,7 @@ function normalizeServiceKey(value) {
   const upper = stripAccents(raw).toUpperCase().trim();
 
   if (upper === "AR") return "RA";
+  if (upper === "KINEDEPO" || upper === "KINE-DEPO") return "KD";
   if (ALLOWED_SERVICE_KEYS.includes(upper)) return upper;
 
   const normalized = stripAccents(raw).toLowerCase().trim();
@@ -38,6 +40,9 @@ function normalizeServiceKey(value) {
   }
   if (normalized.includes("reeducacion") && normalized.includes("funcional")) {
     return "RF";
+  }
+  if (normalized.includes("kinefilaxia") || (normalized.includes("kine") && normalized.includes("deport"))) {
+    return "KD";
   }
   if (normalized.includes("nutric")) {
     return "NUT";
@@ -109,7 +114,7 @@ serviceSchema.pre("validate", function normalizeBeforeValidate(next) {
   if (!resolvedKey) {
     this.invalidate(
       "serviceKey",
-      "serviceKey inválido. Usá PE, EP, RA, RF o NUT."
+      "serviceKey inválido. Usá PE, EP, RA, RF, KD o NUT."
     );
     return next();
   }

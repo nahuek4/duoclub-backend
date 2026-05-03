@@ -3,19 +3,22 @@ import crypto from "crypto";
 import Appointment from "../models/Appointment.js";
 import WaitlistEntry from "../models/WaitlistEntry.js";
 
-const TOTAL_CAP = 6;
-const EP_CAP_WHEN_THERAPY_ACTIVE = 4;
+const EP_CAP_PER_SLOT = 12;
 const THERAPY_CAP_WHEN_ACTIVE = 2;
+const TOTAL_CAP = EP_CAP_PER_SLOT + THERAPY_CAP_WHEN_ACTIVE;
+const EP_CAP_WHEN_THERAPY_ACTIVE = EP_CAP_PER_SLOT;
 
 const EP_KEY = "EP";
 const RA_KEY = "RA";
 const RF_KEY = "RF";
+const KD_KEY = "KD";
 
 const SERVICE_KEY_TO_NAME = {
   PE: "Primera evaluación presencial",
   EP: "Entrenamiento Personal",
   RA: "Rehabilitación activa",
   RF: "Reeducación funcional",
+  KD: "Kinefilaxia Deportiva",
   NUT: "Nutrición",
 };
 
@@ -61,6 +64,7 @@ function serviceToKey(serviceNameOrKey) {
   if (s.includes("entrenamiento") && s.includes("personal")) return "EP";
   if (s.includes("rehabilitacion") && s.includes("activa")) return "RA";
   if (s.includes("reeducacion") && s.includes("funcional")) return "RF";
+  if (s.includes("kinefilaxia") || (s.includes("kine") && s.includes("deport"))) return "KD";
   if (s.includes("nutricion")) return "NUT";
 
   return "";
@@ -98,7 +102,7 @@ function sameService(a, b) {
 
 function isTherapyService(serviceNameOrKey) {
   const sk = serviceToKey(serviceNameOrKey);
-  return sk === RA_KEY || sk === RF_KEY;
+  return [RA_KEY, RF_KEY, KD_KEY].includes(sk);
 }
 
 function getWeekdayMondayFirst(dateStr) {
@@ -124,9 +128,7 @@ function getTherapyCapForSlot(dateStr, time) {
 }
 
 function getEpCapForSlot(dateStr, time) {
-  return getTherapyCapForSlot(dateStr, time) > 0
-    ? EP_CAP_WHEN_THERAPY_ACTIVE
-    : TOTAL_CAP;
+  return EP_CAP_PER_SLOT;
 }
 
 function getSlotReservationStats(existing, dateStr, time) {

@@ -26,10 +26,11 @@ const SERVICE_KEY_TO_NAME = {
   EP: "Entrenamiento Personal",
   RF: "Reeducación Funcional",
   RA: "Rehabilitación Activa",
+  KD: "Kinefilaxia Deportiva",
   NUT: "Nutrición",
 };
 
-const SERVICE_KEYS = ["PE", "EP", "RF", "RA", "NUT"];
+const SERVICE_KEYS = ["PE", "EP", "RF", "RA", "KD", "NUT"];
 const SERVICE_KEY_SET = new Set(SERVICE_KEYS);
 
 function signToken(user) {
@@ -89,6 +90,7 @@ function normalizeServiceKey(input) {
   if (s.includes("entrenamiento") && s.includes("personal")) return "EP";
   if (s.includes("reeducacion") && s.includes("funcional")) return "RF";
   if (s.includes("rehabilitacion") && s.includes("activa")) return "RA";
+  if (s.includes("kinefilaxia") || (s.includes("kine") && s.includes("deport"))) return "KD";
   if (s.includes("nutricion")) return "NUT";
 
   return "";
@@ -113,7 +115,7 @@ function computeServiceAccessFromLots(u) {
   const now = new Date();
   const lots = Array.isArray(u?.creditLots) ? u.creditLots : [];
 
-  const byKey = { PE: 0, EP: 0, RF: 0, RA: 0, NUT: 0 };
+  const byKey = { PE: 0, EP: 0, RF: 0, RA: 0, KD: 0, NUT: 0 };
 
   for (const lot of lots) {
     const remaining = Number(lot?.remaining || 0);
@@ -128,7 +130,7 @@ function computeServiceAccessFromLots(u) {
     byKey[sk] += remaining;
   }
 
-  const creditsByServiceKey = { PE: 0, EP: 0, RF: 0, RA: 0, NUT: 0 };
+  const creditsByServiceKey = { PE: 0, EP: 0, RF: 0, RA: 0, KD: 0, NUT: 0 };
   for (const k of SERVICE_KEYS) creditsByServiceKey[k] = Number(byKey[k] || 0);
 
   if (!u?.firstEvaluationCompleted) {
@@ -142,6 +144,7 @@ function computeServiceAccessFromLots(u) {
         EP: 0,
         RF: 0,
         RA: 0,
+        KD: 0,
         NUT: 0,
       },
     };

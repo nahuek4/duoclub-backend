@@ -41,6 +41,15 @@ const SERVICES = [
     category: "therapy",
   },
   {
+    serviceKey: "KD",
+    name: "Kinefilaxia Deportiva",
+    description:
+      "Sesiones orientadas a prevención, cuidado físico y acompañamiento deportivo.",
+    duration: 60,
+    active: true,
+    category: "therapy",
+  },
+  {
     serviceKey: "NUT",
     name: "Nutrición",
     description:
