@@ -16,7 +16,6 @@ function normalizeServiceKey(value) {
   const upper = stripAccents(raw).toUpperCase().trim();
 
   if (upper === "AR") return "RA";
-  if (upper === "KINEDEPO" || upper === "KINE-DEPO") return "KD";
   if (ALLOWED_SERVICE_KEY_SET.has(upper)) return upper;
 
   const normalizedText = stripAccents(raw).toLowerCase().trim();
@@ -33,7 +32,11 @@ function normalizeServiceKey(value) {
   if (normalizedText.includes("reeducacion") && normalizedText.includes("funcional")) {
     return "RF";
   }
-  if (normalizedText.includes("kinefilaxia") || (normalizedText.includes("kine") && normalizedText.includes("deport"))) {
+  if (
+    normalizedText.includes("kinefilax") ||
+    normalizedText.includes("kine depo") ||
+    normalizedText.includes("deportiva")
+  ) {
     return "KD";
   }
   if (normalizedText.includes("nutric")) {
