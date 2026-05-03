@@ -23,9 +23,15 @@ function splitFullName(fullName) {
   const clean = String(fullName || "")
     .trim()
     .replace(/\s+/g, " ");
+
   if (!clean) return { name: "", lastName: "" };
+
   const parts = clean.split(" ");
-  if (parts.length === 1) return { name: parts[0], lastName: "-" };
+
+  if (parts.length === 1) {
+    return { name: parts[0], lastName: "-" };
+  }
+
   return {
     name: parts.slice(0, -1).join(" "),
     lastName: parts.slice(-1).join(" "),
@@ -34,8 +40,10 @@ function splitFullName(fullName) {
 
 function toNumberOrNull(v) {
   if (v === undefined || v === null) return null;
+
   const s = String(v).trim().replace(",", ".");
   if (!s) return null;
+
   const n = Number(s);
   return Number.isFinite(n) ? n : null;
 }
@@ -44,15 +52,20 @@ function computeAgeFromBirth(step1) {
   const d = Number(step1?.birthDay);
   const m = Number(step1?.birthMonth);
   const y = Number(step1?.birthYear);
+
   if (!d || !m || !y) return null;
 
   const birth = new Date(y, m - 1, d);
   if (Number.isNaN(birth.getTime())) return null;
 
   const now = new Date();
+
   let age = now.getFullYear() - birth.getFullYear();
   const mm = now.getMonth() - birth.getMonth();
-  if (mm < 0 || (mm === 0 && now.getDate() < birth.getDate())) age--;
+
+  if (mm < 0 || (mm === 0 && now.getDate() < birth.getDate())) {
+    age--;
+  }
 
   return age > 0 && age < 120 ? age : null;
 }
@@ -60,7 +73,9 @@ function computeAgeFromBirth(step1) {
 function buildNotesFromAdmission(step1 = {}, step2 = {}) {
   const lines = [];
 
-  if (step1.fitnessLevel) lines.push(`Fitness: ${step1.fitnessLevel}`);
+  if (step1.fitnessLevel) {
+    lines.push(`Fitness: ${step1.fitnessLevel}`);
+  }
 
   if (step1.hasContraindication) {
     lines.push(
@@ -130,14 +145,33 @@ function buildNotesFromAdmission(step1 = {}, step2 = {}) {
     );
   }
 
-  if (step1.lastBloodTest) lines.push(`Último análisis: ${step1.lastBloodTest}`);
-  if (step1.relevantInfo) lines.push(`Info relevante: ${step1.relevantInfo}`);
+  if (step1.lastBloodTest) {
+    lines.push(`Último análisis: ${step1.lastBloodTest}`);
+  }
 
-  if (step2?.needsRehab) lines.push(`Rehab: ${step2.needsRehab}`);
-  if (step2?.symptoms) lines.push(`Síntomas: ${step2.symptoms}`);
-  if (step2?.immediateGoal) lines.push(`Objetivo: ${step2.immediateGoal}`);
-  if (step2?.modality) lines.push(`Modalidad: ${step2.modality}`);
-  if (step2?.weeklySessions) lines.push(`Sesiones/sem: ${step2.weeklySessions}`);
+  if (step1.relevantInfo) {
+    lines.push(`Info relevante: ${step1.relevantInfo}`);
+  }
+
+  if (step2?.needsRehab) {
+    lines.push(`Rehab: ${step2.needsRehab}`);
+  }
+
+  if (step2?.symptoms) {
+    lines.push(`Síntomas: ${step2.symptoms}`);
+  }
+
+  if (step2?.immediateGoal) {
+    lines.push(`Objetivo: ${step2.immediateGoal}`);
+  }
+
+  if (step2?.modality) {
+    lines.push(`Modalidad: ${step2.modality}`);
+  }
+
+  if (step2?.weeklySessions) {
+    lines.push(`Sesiones/sem: ${step2.weeklySessions}`);
+  }
 
   return lines.filter(Boolean).join("\n");
 }
@@ -179,6 +213,27 @@ function normEmail(v) {
   return String(v || "").trim().toLowerCase();
 }
 
+function formatValidationErrors(err) {
+  if (!err?.errors || typeof err.errors !== "object") return "";
+
+  return Object.values(err.errors)
+    .map((e) => e?.message)
+    .filter(Boolean)
+    .join(" | ");
+}
+
+function buildServerErrorMessage(err, fallback = "Error interno.") {
+  if (err?.name === "ValidationError") {
+    return formatValidationErrors(err) || fallback;
+  }
+
+  if (err?.code === 11000) {
+    return "Ya existe un registro con esos datos.";
+  }
+
+  return err?.message || fallback;
+}
+
 /* =========================================================
    PUBLIC: guardar step1
 ========================================================= */
@@ -188,7 +243,10 @@ router.post("/step1", async (req, res) => {
     const email = normEmail(payload?.email);
 
     if (!email) {
-      return res.status(400).json({ ok: false, error: "Email requerido." });
+      return res.status(400).json({
+        ok: false,
+        error: "Email requerido.",
+      });
     }
 
     payload.email = email;
@@ -210,10 +268,23 @@ router.post("/step1", async (req, res) => {
       reused: false,
     });
   } catch (err) {
-    console.error("POST /admission/step1 error:", err);
-    return res
-      .status(500)
-      .json({ ok: false, error: "No se pudo guardar el formulario." });
+    console.error("POST /admission/step1 error:", {
+      name: err?.name,
+      message: err?.message,
+      code: err?.code,
+      keyValue: err?.keyValue,
+      errors: err?.errors,
+      stack: err?.stack,
+    });
+
+    return res.status(500).json({
+      ok: false,
+      error: buildServerErrorMessage(
+        err,
+        "No se pudo guardar el formulario."
+      ),
+      code: err?.name || "ADMISSION_STEP1_ERROR",
+    });
   }
 });
 
@@ -226,20 +297,36 @@ router.patch("/:id/step2", async (req, res) => {
     const { id } = req.params;
 
     if (!mongoose.isValidObjectId(id)) {
-      return res.status(400).json({ ok: false, error: "ID inválido." });
+      return res.status(400).json({
+        ok: false,
+        error: "ID inválido.",
+      });
     }
 
     const doc = await Admission.findOneAndUpdate(
-      { _id: id, step2Completed: { $ne: true } },
-      { $set: { step2Completed: true, step2: payload } },
-      { new: true }
+      {
+        _id: id,
+        step2Completed: { $ne: true },
+      },
+      {
+        $set: {
+          step2Completed: true,
+          step2: payload,
+        },
+      },
+      {
+        new: true,
+      }
     );
 
     if (!doc) {
       const exists = await Admission.findById(id).select("_id").lean();
 
       if (!exists) {
-        return res.status(404).json({ ok: false, error: "No encontrado." });
+        return res.status(404).json({
+          ok: false,
+          error: "No encontrado.",
+        });
       }
 
       return res.status(409).json({
@@ -284,8 +371,16 @@ router.patch("/:id/step2", async (req, res) => {
         await sendUserAdmissionReceivedEmail(doc, pseudoUser);
 
         await Admission.updateOne(
-          { _id: doc._id, step2EmailSent: false },
-          { $set: { step2EmailSent: true, step2EmailSentAt: new Date() } }
+          {
+            _id: doc._id,
+            step2EmailSent: false,
+          },
+          {
+            $set: {
+              step2EmailSent: true,
+              step2EmailSentAt: new Date(),
+            },
+          }
         );
 
         console.log("[MAIL][ADM] step2 mails SENT ok", {
@@ -294,8 +389,15 @@ router.patch("/:id/step2", async (req, res) => {
         });
       } catch (e) {
         await Admission.updateOne(
-          { _id: doc._id },
-          { $set: { step2EmailSent: false, step2EmailSentAt: null } }
+          {
+            _id: doc._id,
+          },
+          {
+            $set: {
+              step2EmailSent: false,
+              step2EmailSentAt: null,
+            },
+          }
         );
 
         console.log("[MAIL][ADM] step2 mails FAILED", {
@@ -313,10 +415,20 @@ router.patch("/:id/step2", async (req, res) => {
       mailsQueued: true,
     });
   } catch (err) {
-    console.error("PATCH /admission/:id/step2 error:", err);
-    return res
-      .status(500)
-      .json({ ok: false, error: "No se pudo guardar el paso 2." });
+    console.error("PATCH /admission/:id/step2 error:", {
+      name: err?.name,
+      message: err?.message,
+      code: err?.code,
+      keyValue: err?.keyValue,
+      errors: err?.errors,
+      stack: err?.stack,
+    });
+
+    return res.status(500).json({
+      ok: false,
+      error: buildServerErrorMessage(err, "No se pudo guardar el paso 2."),
+      code: err?.name || "ADMISSION_STEP2_ERROR",
+    });
   }
 });
 
@@ -347,10 +459,21 @@ router.get("/admin", protect, adminOrProfessor, async (req, res) => {
       )
       .lean();
 
-    return res.json({ ok: true, items });
+    return res.json({
+      ok: true,
+      items,
+    });
   } catch (err) {
-    console.error("GET /admission/admin error:", err);
-    return res.status(500).json({ ok: false, error: "No se pudo listar." });
+    console.error("GET /admission/admin error:", {
+      name: err?.name,
+      message: err?.message,
+      stack: err?.stack,
+    });
+
+    return res.status(500).json({
+      ok: false,
+      error: "No se pudo listar.",
+    });
   }
 });
 
@@ -360,12 +483,29 @@ router.get("/admin", protect, adminOrProfessor, async (req, res) => {
 router.get("/admin/:id", protect, adminOrProfessor, async (req, res) => {
   try {
     const doc = await Admission.findById(req.params.id).lean();
-    if (!doc) return res.status(404).json({ ok: false, error: "No encontrado." });
 
-    return res.json({ ok: true, item: doc });
+    if (!doc) {
+      return res.status(404).json({
+        ok: false,
+        error: "No encontrado.",
+      });
+    }
+
+    return res.json({
+      ok: true,
+      item: doc,
+    });
   } catch (err) {
-    console.error("GET /admission/admin/:id error:", err);
-    return res.status(500).json({ ok: false, error: "No se pudo abrir." });
+    console.error("GET /admission/admin/:id error:", {
+      name: err?.name,
+      message: err?.message,
+      stack: err?.stack,
+    });
+
+    return res.status(500).json({
+      ok: false,
+      error: "No se pudo abrir.",
+    });
   }
 });
 
@@ -377,8 +517,12 @@ router.post("/admin/:id/create-user", protect, adminOnly, async (req, res) => {
     const { id } = req.params;
 
     const adm = await Admission.findById(id);
+
     if (!adm) {
-      return res.status(404).json({ ok: false, error: "Admisión no encontrada." });
+      return res.status(404).json({
+        ok: false,
+        error: "Admisión no encontrada.",
+      });
     }
 
     const s1 = adm.step1 || {};
@@ -387,26 +531,35 @@ router.post("/admin/:id/create-user", protect, adminOnly, async (req, res) => {
     const phone = String(s1.phone || "").trim();
 
     if (!fullName) {
-      return res
-        .status(400)
-        .json({ ok: false, error: "La admisión no tiene nombre completo." });
+      return res.status(400).json({
+        ok: false,
+        error: "La admisión no tiene nombre completo.",
+      });
     }
 
     if (!email) {
-      return res
-        .status(400)
-        .json({ ok: false, error: "La admisión no tiene email." });
+      return res.status(400).json({
+        ok: false,
+        error: "La admisión no tiene email.",
+      });
     }
 
     if (!phone) {
-      return res
-        .status(400)
-        .json({ ok: false, error: "La admisión no tiene teléfono." });
+      return res.status(400).json({
+        ok: false,
+        error: "La admisión no tiene teléfono.",
+      });
     }
 
     let user = null;
-    if (adm.user) user = await User.findById(adm.user);
-    if (!user) user = await User.findOne({ email });
+
+    if (adm.user) {
+      user = await User.findById(adm.user);
+    }
+
+    if (!user) {
+      user = await User.findOne({ email });
+    }
 
     let created = false;
     let tempPassword = "";
@@ -454,6 +607,7 @@ router.post("/admin/:id/create-user", protect, adminOnly, async (req, res) => {
     adm.user = user._id;
     adm.syncedToUser = true;
     adm.syncedAt = new Date();
+
     await adm.save();
 
     await logActivity({
@@ -467,7 +621,10 @@ router.post("/admin/:id/create-user", protect, adminOnly, async (req, res) => {
         ? "Se creó un usuario desde una admisión."
         : "Se vinculó/sincronizó la admisión con un usuario existente.",
       subject: buildUserSubject(updatedUser),
-      meta: { admissionId: adm._id, userId: updatedUser?._id || user._id },
+      meta: {
+        admissionId: adm._id,
+        userId: updatedUser?._id || user._id,
+      },
     });
 
     return res.json({
@@ -478,8 +635,19 @@ router.post("/admin/:id/create-user", protect, adminOnly, async (req, res) => {
       admissionId: adm._id,
     });
   } catch (err) {
-    console.error("POST /admission/admin/:id/create-user error:", err);
-    return res.status(500).json({ ok: false, error: "Error interno." });
+    console.error("POST /admission/admin/:id/create-user error:", {
+      name: err?.name,
+      message: err?.message,
+      code: err?.code,
+      keyValue: err?.keyValue,
+      errors: err?.errors,
+      stack: err?.stack,
+    });
+
+    return res.status(500).json({
+      ok: false,
+      error: buildServerErrorMessage(err, "Error interno."),
+    });
   }
 });
 
@@ -492,22 +660,32 @@ router.post("/admin/:id/link-user", protect, adminOnly, async (req, res) => {
     const email = String(req.body?.email || "").trim().toLowerCase();
 
     if (!email) {
-      return res.status(400).json({ ok: false, error: "Email es requerido." });
+      return res.status(400).json({
+        ok: false,
+        error: "Email es requerido.",
+      });
     }
 
     const adm = await Admission.findById(id);
+
     if (!adm) {
-      return res.status(404).json({ ok: false, error: "Admisión no encontrada." });
+      return res.status(404).json({
+        ok: false,
+        error: "Admisión no encontrada.",
+      });
     }
 
     const user = await User.findOne({ email }).lean();
+
     if (!user) {
-      return res
-        .status(404)
-        .json({ ok: false, error: "No existe usuario con ese email." });
+      return res.status(404).json({
+        ok: false,
+        error: "No existe usuario con ese email.",
+      });
     }
 
     const update = mapAdmissionToUserUpdate(adm);
+
     const updatedUser = await User.findByIdAndUpdate(user._id, update, {
       new: true,
       runValidators: true,
@@ -516,6 +694,7 @@ router.post("/admin/:id/link-user", protect, adminOnly, async (req, res) => {
     adm.user = user._id;
     adm.syncedToUser = true;
     adm.syncedAt = new Date();
+
     await adm.save();
 
     await logActivity({
@@ -527,13 +706,31 @@ router.post("/admin/:id/link-user", protect, adminOnly, async (req, res) => {
       title: "Admisión vinculada",
       description: "Se vinculó una admisión a un usuario existente.",
       subject: buildUserSubject(updatedUser),
-      meta: { admissionId: adm._id, userId: updatedUser?._id || user._id },
+      meta: {
+        admissionId: adm._id,
+        userId: updatedUser?._id || user._id,
+      },
     });
 
-    return res.json({ ok: true, user: updatedUser, admissionId: adm._id });
+    return res.json({
+      ok: true,
+      user: updatedUser,
+      admissionId: adm._id,
+    });
   } catch (err) {
-    console.error("POST /admission/admin/:id/link-user error:", err);
-    return res.status(500).json({ ok: false, error: "Error interno." });
+    console.error("POST /admission/admin/:id/link-user error:", {
+      name: err?.name,
+      message: err?.message,
+      code: err?.code,
+      keyValue: err?.keyValue,
+      errors: err?.errors,
+      stack: err?.stack,
+    });
+
+    return res.status(500).json({
+      ok: false,
+      error: buildServerErrorMessage(err, "Error interno."),
+    });
   }
 });
 
@@ -543,7 +740,13 @@ router.post("/admin/:id/link-user", protect, adminOnly, async (req, res) => {
 router.delete("/admin/:id", protect, adminOnly, async (req, res) => {
   try {
     const doc = await Admission.findById(req.params.id);
-    if (!doc) return res.status(404).json({ ok: false, error: "No encontrado." });
+
+    if (!doc) {
+      return res.status(404).json({
+        ok: false,
+        error: "No encontrado.",
+      });
+    }
 
     await logActivity({
       req,
@@ -553,17 +756,29 @@ router.delete("/admin/:id", protect, adminOnly, async (req, res) => {
       entityId: doc._id,
       title: "Admisión eliminada",
       description: "Se eliminó una admisión desde admin.",
-      meta: { admissionId: doc._id, linkedUserId: doc.user || "" },
+      meta: {
+        admissionId: doc._id,
+        linkedUserId: doc.user || "",
+      },
       deletedSnapshot: doc.toObject(),
     });
 
     await doc.deleteOne();
-    return res.json({ ok: true });
+
+    return res.json({
+      ok: true,
+    });
   } catch (err) {
-    console.error("DELETE /admission/admin/:id error:", err);
-    return res
-      .status(500)
-      .json({ ok: false, error: "No se pudo eliminar la admisión." });
+    console.error("DELETE /admission/admin/:id error:", {
+      name: err?.name,
+      message: err?.message,
+      stack: err?.stack,
+    });
+
+    return res.status(500).json({
+      ok: false,
+      error: "No se pudo eliminar la admisión.",
+    });
   }
 });
 
