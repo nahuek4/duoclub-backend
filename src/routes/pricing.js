@@ -35,6 +35,136 @@ function normalizePrice(value) {
   return n;
 }
 
+
+/* =========================
+   AUTO-SEED KD PRICING
+   Crea/activa planes de Kinefilaxia Deportiva copiando RA o RF.
+   No inventa precios: toma los planes existentes de RA/RF.
+========================= */
+const KD_SERVICE_KEY = "KD";
+const KD_SEED_SOURCE_KEYS = ["RA", "RF"];
+
+function pricingIdentityKey(plan) {
+  return [
+    String(plan?.payMethod || "").toUpperCase().trim(),
+    Number(plan?.credits || 0),
+  ].join("__");
+}
+
+function planIsUsableForSeed(plan) {
+  const payMethod = normalizePayMethod(plan?.payMethod);
+  const credits = normalizeCredits(plan?.credits);
+  const price = normalizePrice(plan?.price);
+
+  return (
+    ["CASH", "MP"].includes(payMethod) &&
+    Number.isFinite(credits) &&
+    credits > 0 &&
+    Number.isFinite(price) &&
+    price >= 0
+  );
+}
+
+function labelForKDPlan(sourcePlan) {
+  const current = String(sourcePlan?.label || "").trim();
+  if (current) return current;
+
+  const credits = Number(sourcePlan?.credits || 0);
+  if (credits === 1) return "1 sesión";
+  if (credits > 1) return `${credits} sesiones`;
+  return "";
+}
+
+function pickSourcePlansForKD(allSourcePlans = []) {
+  const usable = allSourcePlans.filter(planIsUsableForSeed);
+
+  const activeRA = usable.filter(
+    (p) => String(p.serviceKey || "").toUpperCase() === "RA" && p.active !== false
+  );
+  if (activeRA.length) return activeRA;
+
+  const activeRF = usable.filter(
+    (p) => String(p.serviceKey || "").toUpperCase() === "RF" && p.active !== false
+  );
+  if (activeRF.length) return activeRF;
+
+  const anyRA = usable.filter((p) => String(p.serviceKey || "").toUpperCase() === "RA");
+  if (anyRA.length) return anyRA;
+
+  const anyRF = usable.filter((p) => String(p.serviceKey || "").toUpperCase() === "RF");
+  if (anyRF.length) return anyRF;
+
+  return [];
+}
+
+async function ensureKDPricingPlans() {
+  const existingKD = await PricingPlan.find({ serviceKey: KD_SERVICE_KEY }).lean();
+  const activeKD = existingKD.filter((p) => p.active !== false);
+
+  // Si ya hay al menos un plan activo de KD, no tocamos nada.
+  if (activeKD.length > 0) {
+    return { created: 0, activated: 0, skipped: true, reason: "KD_ALREADY_ACTIVE" };
+  }
+
+  const sourcePlans = await PricingPlan.find({
+    serviceKey: { $in: KD_SEED_SOURCE_KEYS },
+  })
+    .sort({ serviceKey: 1, payMethod: 1, credits: 1 })
+    .lean();
+
+  const selectedSources = pickSourcePlansForKD(sourcePlans);
+
+  // Si existían planes KD pero estaban inactivos, los activamos y no les cambiamos precio.
+  if (existingKD.length > 0) {
+    await PricingPlan.updateMany(
+      { serviceKey: KD_SERVICE_KEY },
+      { $set: { active: true } }
+    );
+    return {
+      created: 0,
+      activated: existingKD.length,
+      skipped: false,
+      reason: "KD_EXISTING_PLANS_ACTIVATED",
+    };
+  }
+
+  if (!selectedSources.length) {
+    console.warn(
+      "[PRICING][KD_SEED] No se encontraron planes RA/RF para copiar. Cargá al menos un plan RA o RF para crear KD automáticamente."
+    );
+    return { created: 0, activated: 0, skipped: true, reason: "NO_SOURCE_PLANS" };
+  }
+
+  const uniqueSources = new Map();
+  for (const source of selectedSources) {
+    const key = pricingIdentityKey(source);
+    if (!uniqueSources.has(key)) uniqueSources.set(key, source);
+  }
+
+  const docs = [...uniqueSources.values()].map((source) => ({
+    serviceKey: KD_SERVICE_KEY,
+    payMethod: normalizePayMethod(source.payMethod),
+    credits: normalizeCredits(source.credits),
+    price: normalizePrice(source.price),
+    label: labelForKDPlan(source),
+    active: true,
+  }));
+
+  if (!docs.length) {
+    return { created: 0, activated: 0, skipped: true, reason: "NO_VALID_SOURCE_DOCS" };
+  }
+
+  const result = await PricingPlan.insertMany(docs, { ordered: false });
+  console.log("[PRICING][KD_SEED] Planes KD creados automáticamente:", result.length);
+
+  return {
+    created: result.length,
+    activated: 0,
+    skipped: false,
+    reason: "KD_CREATED_FROM_RA_OR_RF",
+  };
+}
+
 /**
  * GET /pricing
  * Devuelve TODOS los planes activos (para el front).
@@ -48,6 +178,8 @@ router.use(protect);
 // GET /pricing?active=1
 router.get("/", async (req, res) => {
   try {
+    await ensureKDPricingPlans();
+
     const active = String(req.query.active ?? "1") === "1";
 
     const query = active ? { active: true } : {};
