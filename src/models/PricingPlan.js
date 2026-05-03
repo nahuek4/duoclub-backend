@@ -35,7 +35,7 @@ function normalizeServiceKey(value) {
   if (
     normalizedText.includes("kinefilax") ||
     normalizedText.includes("kine depo") ||
-    normalizedText.includes("deportiva")
+    normalizedText.includes("kinefilaxia deportiva")
   ) {
     return "KD";
   }

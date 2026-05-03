@@ -35,7 +35,6 @@ function normalizePrice(value) {
   return n;
 }
 
-
 /* =========================
    AUTO-SEED KD PRICING
    Crea/activa planes de Kinefilaxia Deportiva copiando RA o RF.
@@ -101,20 +100,12 @@ async function ensureKDPricingPlans() {
   const existingKD = await PricingPlan.find({ serviceKey: KD_SERVICE_KEY }).lean();
   const activeKD = existingKD.filter((p) => p.active !== false);
 
-  // Si ya hay al menos un plan activo de KD, no tocamos nada.
+  // Si ya hay al menos un plan activo de KD, no tocamos precios ni duplicamos nada.
   if (activeKD.length > 0) {
     return { created: 0, activated: 0, skipped: true, reason: "KD_ALREADY_ACTIVE" };
   }
 
-  const sourcePlans = await PricingPlan.find({
-    serviceKey: { $in: KD_SEED_SOURCE_KEYS },
-  })
-    .sort({ serviceKey: 1, payMethod: 1, credits: 1 })
-    .lean();
-
-  const selectedSources = pickSourcePlansForKD(sourcePlans);
-
-  // Si existían planes KD pero estaban inactivos, los activamos y no les cambiamos precio.
+  // Si existían planes KD pero estaban inactivos, los activamos y no cambiamos su precio.
   if (existingKD.length > 0) {
     await PricingPlan.updateMany(
       { serviceKey: KD_SERVICE_KEY },
@@ -127,6 +118,14 @@ async function ensureKDPricingPlans() {
       reason: "KD_EXISTING_PLANS_ACTIVATED",
     };
   }
+
+  const sourcePlans = await PricingPlan.find({
+    serviceKey: { $in: KD_SEED_SOURCE_KEYS },
+  })
+    .sort({ serviceKey: 1, payMethod: 1, credits: 1 })
+    .lean();
+
+  const selectedSources = pickSourcePlansForKD(sourcePlans);
 
   if (!selectedSources.length) {
     console.warn(
@@ -141,25 +140,45 @@ async function ensureKDPricingPlans() {
     if (!uniqueSources.has(key)) uniqueSources.set(key, source);
   }
 
-  const docs = [...uniqueSources.values()].map((source) => ({
-    serviceKey: KD_SERVICE_KEY,
-    payMethod: normalizePayMethod(source.payMethod),
-    credits: normalizeCredits(source.credits),
-    price: normalizePrice(source.price),
-    label: labelForKDPlan(source),
-    active: true,
-  }));
+  const operations = [...uniqueSources.values()].map((source) => {
+    const payMethod = normalizePayMethod(source.payMethod);
+    const credits = normalizeCredits(source.credits);
+    const price = normalizePrice(source.price);
 
-  if (!docs.length) {
+    return {
+      updateOne: {
+        filter: { serviceKey: KD_SERVICE_KEY, payMethod, credits },
+        update: {
+          $setOnInsert: {
+            serviceKey: KD_SERVICE_KEY,
+            payMethod,
+            credits,
+            price,
+            label: labelForKDPlan(source),
+          },
+          $set: { active: true },
+        },
+        upsert: true,
+      },
+    };
+  });
+
+  if (!operations.length) {
     return { created: 0, activated: 0, skipped: true, reason: "NO_VALID_SOURCE_DOCS" };
   }
 
-  const result = await PricingPlan.insertMany(docs, { ordered: false });
-  console.log("[PRICING][KD_SEED] Planes KD creados automáticamente:", result.length);
+  const result = await PricingPlan.bulkWrite(operations, { ordered: false });
+  const created = Number(result?.upsertedCount || 0);
+  const modified = Number(result?.modifiedCount || 0);
+
+  console.log("[PRICING][KD_SEED] Planes KD sincronizados automáticamente:", {
+    created,
+    modified,
+  });
 
   return {
-    created: result.length,
-    activated: 0,
+    created,
+    activated: modified,
     skipped: false,
     reason: "KD_CREATED_FROM_RA_OR_RF",
   };
