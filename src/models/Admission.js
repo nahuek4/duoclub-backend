@@ -91,7 +91,14 @@ const admissionSchema = new mongoose.Schema(
   { timestamps: true }
 );
 
-admissionSchema.pre("validate", function normalizeAdmission(next) {
+/* =========================================================
+   NORMALIZACIÓN
+   Importante:
+   NO usar next como parámetro.
+   NO llamar next().
+   En tu versión actual eso causa: "next is not a function".
+========================================================= */
+admissionSchema.pre("validate", function normalizeAdmission() {
   this.publicId = cleanString(this.publicId);
   this.ip = cleanString(this.ip);
   this.userAgent = cleanString(this.userAgent);
@@ -109,9 +116,15 @@ admissionSchema.pre("validate", function normalizeAdmission(next) {
     this.step1.email = cleanEmail(this.step1.email);
 
     this.step1.fitnessLevel = cleanString(this.step1.fitnessLevel);
-    this.step1.hasContraindication = cleanString(this.step1.hasContraindication);
-    this.step1.contraindicationDetail = cleanString(this.step1.contraindicationDetail);
-    this.step1.lastSupervisedTraining = cleanString(this.step1.lastSupervisedTraining);
+    this.step1.hasContraindication = cleanString(
+      this.step1.hasContraindication
+    );
+    this.step1.contraindicationDetail = cleanString(
+      this.step1.contraindicationDetail
+    );
+    this.step1.lastSupervisedTraining = cleanString(
+      this.step1.lastSupervisedTraining
+    );
     this.step1.lastMedicalExam = cleanString(this.step1.lastMedicalExam);
     this.step1.hasPain = cleanString(this.step1.hasPain);
     this.step1.hasCondition = cleanString(this.step1.hasCondition);
@@ -144,8 +157,6 @@ admissionSchema.pre("validate", function normalizeAdmission(next) {
   if (!this.step2 || typeof this.step2 !== "object") {
     this.step2 = {};
   }
-
-  next();
 });
 
 admissionSchema.index({ "step1.email": 1 });
