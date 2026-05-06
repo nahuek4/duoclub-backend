@@ -901,14 +901,17 @@ function getSlotReservationStats(existing, dateStr, time) {
   const list = Array.isArray(existing) ? existing : [];
 
   const epReserved = list.filter((a) => appointmentServiceKey(a) === "EP").length;
-  const therapyReserved = list.filter((a) => {
-    const sk = appointmentServiceKey(a);
-    return ["RA", "RF", "KD"].includes(sk);
-  }).length;
+  const raReserved = list.filter((a) => appointmentServiceKey(a) === "RA").length;
+  const rfReserved = list.filter((a) => appointmentServiceKey(a) === "RF").length;
+  const kdReserved = list.filter((a) => appointmentServiceKey(a) === "KD").length;
+  const therapyReserved = raReserved + rfReserved + kdReserved;
 
   return {
     totalReserved: list.length,
     epReserved,
+    raReserved,
+    rfReserved,
+    kdReserved,
     therapyReserved,
     therapyCap: getTherapyCapForSlot(dateStr, time),
     epCap: getEpCapForSlot(dateStr, time),
@@ -1301,6 +1304,25 @@ function slotKey(date, time) {
   return `${date}__${time}`;
 }
 
+function escapeRegExp(value) {
+  return String(value || "").replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function buildReservedSlotQuery(date, time, extra = {}) {
+  const day = String(date || "").slice(0, 10);
+  const t = String(time || "").slice(0, 5);
+
+  return {
+    ...(extra || {}),
+    $or: [
+      { date: day },
+      { date: { $regex: `^${escapeRegExp(day)}T` } },
+    ],
+    time: t,
+    status: "reserved",
+  };
+}
+
 function isValidYMD(s) {
   if (typeof s !== "string") return false;
   return /^\d{4}-\d{2}-\d{2}$/.test(s);
@@ -1416,12 +1438,9 @@ async function createAppointmentForTargetUser({
 
   const t = String(time).slice(0, 5);
 
-  const alreadyByUser = await Appointment.findOne({
-    date,
-    time: t,
-    user: targetUser._id,
-    status: "reserved",
-  }).lean();
+  const alreadyByUser = await Appointment.findOne(
+    buildReservedSlotQuery(date, t, { user: targetUser._id })
+  ).lean();
 
   if (alreadyByUser) {
     const e = new Error("ALREADY_HAVE_SLOT");
@@ -1429,11 +1448,9 @@ async function createAppointmentForTargetUser({
     throw e;
   }
 
-  const existingAtSlot = await Appointment.find({
-    date,
-    time: t,
-    status: "reserved",
-  }).lean();
+  const existingAtSlot = await Appointment.find(
+    buildReservedSlotQuery(date, t)
+  ).lean();
 
   const stats = getSlotReservationStats(existingAtSlot, date, t);
 
@@ -2106,7 +2123,7 @@ router.get("/availability", async (req, res) => {
         }
       }
 
-      const existing = await Appointment.find({ date, time: t, status: "reserved" })
+      const existing = await Appointment.find(buildReservedSlotQuery(date, t))
         .select("service serviceKey serviceName")
         .lean();
 
@@ -2126,6 +2143,14 @@ router.get("/availability", async (req, res) => {
             epCap: stats.epCap,
             therapyReserved: stats.therapyReserved,
             therapyCap: stats.therapyCap,
+            raReserved: stats.raReserved,
+            rfReserved: stats.rfReserved,
+            kdReserved: stats.kdReserved,
+            capacity: stats.epCap,
+            reserved: stats.epReserved,
+            available: Math.max(0, stats.epCap - stats.epReserved),
+            availableVacancies: Math.max(0, stats.epCap - stats.epReserved),
+            slotGroup: "EP",
           });
           continue;
         }
@@ -2135,12 +2160,34 @@ router.get("/availability", async (req, res) => {
             time: t,
             state: "full",
             totalReserved: stats.totalReserved,
+            epReserved: stats.epReserved,
+            epCap: stats.epCap,
             therapyReserved: stats.therapyReserved,
             therapyCap: stats.therapyCap,
+            raReserved: stats.raReserved,
+            rfReserved: stats.rfReserved,
+            kdReserved: stats.kdReserved,
+            capacity: stats.therapyCap,
+            reserved: stats.therapyReserved,
+            available: Math.max(0, stats.therapyCap - stats.therapyReserved),
+            availableVacancies: Math.max(0, stats.therapyCap - stats.therapyReserved),
+            slotGroup: "THERAPY_SHARED",
           });
           continue;
         }
       }
+
+      const slotCapacity = basic.isEpService
+        ? stats.epCap
+        : isTherapy
+          ? stats.therapyCap
+          : 0;
+      const slotReserved = basic.isEpService
+        ? stats.epReserved
+        : isTherapy
+          ? stats.therapyReserved
+          : stats.totalReserved;
+      const availableVacancies = Math.max(0, slotCapacity - slotReserved);
 
       out.push({
         time: t,
@@ -2150,6 +2197,14 @@ router.get("/availability", async (req, res) => {
         epCap: stats.epCap,
         therapyReserved: stats.therapyReserved,
         therapyCap: stats.therapyCap,
+        raReserved: stats.raReserved,
+        rfReserved: stats.rfReserved,
+        kdReserved: stats.kdReserved,
+        capacity: slotCapacity,
+        reserved: slotReserved,
+        available: availableVacancies,
+        availableVacancies,
+        slotGroup: basic.isEpService ? "EP" : isTherapy ? "THERAPY_SHARED" : "OTHER",
       });
     }
 
@@ -2459,20 +2514,15 @@ router.post("/", async (req, res) => {
 
       const t = String(time).slice(0, 5);
 
-      const alreadyByUser = await Appointment.findOne({
-        date,
-        time: t,
-        user: user._id,
-        status: "reserved",
-      }).session(session).lean();
+      const alreadyByUser = await Appointment.findOne(
+        buildReservedSlotQuery(date, t, { user: user._id })
+      ).session(session).lean();
 
       if (alreadyByUser) throw new Error("ALREADY_HAVE_SLOT");
 
-      const existingAtSlot = await Appointment.find({
-        date,
-        time: t,
-        status: "reserved",
-      }).session(session).lean();
+      const existingAtSlot = await Appointment.find(
+        buildReservedSlotQuery(date, t)
+      ).session(session).lean();
 
       let willWaitlist = false;
       const stats = getSlotReservationStats(existingAtSlot, date, t);
@@ -2788,20 +2838,15 @@ router.post("/batch", async (req, res) => {
           throw new Error(`NO_CREDITS_FOR_SLOT_${requestedSk}`);
         }
 
-        const alreadyByUser = await Appointment.findOne({
-          date: it.date,
-          time: it.time,
-          user: user._id,
-          status: "reserved",
-        }).session(session).lean();
+        const alreadyByUser = await Appointment.findOne(
+          buildReservedSlotQuery(it.date, it.time, { user: user._id })
+        ).session(session).lean();
 
         if (alreadyByUser) throw new Error("ALREADY_HAVE_SLOT");
 
-        const existingAtSlot = await Appointment.find({
-          date: it.date,
-          time: it.time,
-          status: "reserved",
-        }).session(session).lean();
+        const existingAtSlot = await Appointment.find(
+          buildReservedSlotQuery(it.date, it.time)
+        ).session(session).lean();
 
         const stats = getSlotReservationStats(existingAtSlot, it.date, it.time);
 
