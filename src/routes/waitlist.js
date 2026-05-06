@@ -4,9 +4,7 @@ import Appointment from "../models/Appointment.js";
 import WaitlistEntry from "../models/WaitlistEntry.js";
 
 const EP_CAP_PER_SLOT = 12;
-const THERAPY_CAP_WHEN_ACTIVE = 2;
-const TOTAL_CAP = EP_CAP_PER_SLOT + THERAPY_CAP_WHEN_ACTIVE;
-const EP_CAP_WHEN_THERAPY_ACTIVE = EP_CAP_PER_SLOT;
+const THERAPY_SHARED_CAP_PER_SLOT = 8;
 
 const EP_KEY = "EP";
 const RA_KEY = "RA";
@@ -26,7 +24,7 @@ const ALLOWED_SERVICE_KEYS = new Set(Object.keys(SERVICE_KEY_TO_NAME));
 
 const TIMES_REHAB_MWF = [
   "07:00", "08:00", "09:00", "10:00",
-  "11:00", "12:00", "13:30", "14:00", "15:00",
+  "11:00", "12:00", "13:00", "14:00", "15:00",
 ];
 
 const TIMES_REHAB_TT = [
@@ -124,7 +122,7 @@ function isTherapyAreaActiveAt(dateStr, time) {
 }
 
 function getTherapyCapForSlot(dateStr, time) {
-  return isTherapyAreaActiveAt(dateStr, time) ? THERAPY_CAP_WHEN_ACTIVE : 0;
+  return isTherapyAreaActiveAt(dateStr, time) ? THERAPY_SHARED_CAP_PER_SLOT : 0;
 }
 
 function getEpCapForSlot(dateStr, time) {
@@ -186,7 +184,7 @@ export async function notifyWaitlistForSlot({ date, time, service = "", serviceK
       .lean();
 
     const stats = getSlotReservationStats(existingReservations, date, t);
-    if (stats.totalReserved >= TOTAL_CAP || stats.epReserved >= stats.epCap) {
+    if (stats.epReserved >= stats.epCap) {
       return { ok: true, skipped: true, reason: "SLOT_STILL_FULL", serviceKey: EP_KEY };
     }
 

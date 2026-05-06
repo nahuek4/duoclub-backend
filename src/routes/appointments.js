@@ -198,10 +198,8 @@ function getTurnoFromTime(time) {
   const h = Number(hStr);
   const m = Number(mStr);
 
-  if (h === 13 && m === 30) return "maniana";
-
   if (h >= 7 && h <= 12) return "maniana";
-  if (h >= 14 && h <= 17) return "tarde";
+  if (h >= 13 && h <= 17) return "tarde";
   if (h >= 18 && h <= 20) return "noche";
 
   return "";
@@ -825,9 +823,7 @@ function requiresApto(user) {
    Cupos + horarios por servicio
 ========================= */
 const EP_CAP_PER_SLOT = 12;
-const THERAPY_CAP_WHEN_ACTIVE = 2;
-const TOTAL_CAP = EP_CAP_PER_SLOT + THERAPY_CAP_WHEN_ACTIVE;
-const EP_CAP_WHEN_THERAPY_ACTIVE = EP_CAP_PER_SLOT;
+const THERAPY_SHARED_CAP_PER_SLOT = 8;
 
 const PE_NAME = "Primera evaluación presencial";
 const EP_NAME = "Entrenamiento Personal";
@@ -837,14 +833,14 @@ const KD_NAME = "Kinefilaxia Deportiva";
 
 const TIMES_EP_WEEKDAY = [
   "07:00", "08:00", "09:00", "10:00",
-  "11:00", "12:00", "13:30",
+  "11:00", "12:00", "13:00",
   "14:00", "15:00", "16:00", "17:00",
   "18:00", "19:00", "20:00",
 ];
 
 const TIMES_REHAB_MWF = [
   "07:00", "08:00", "09:00", "10:00",
-  "11:00", "12:00", "13:30", "14:00", "15:00",
+  "11:00", "12:00", "13:00", "14:00", "15:00",
 ];
 
 const TIMES_REHAB_TT = [
@@ -855,7 +851,7 @@ const TIMES_REHAB_TT = [
 
 const TIMES_DEFAULT = [
   "07:00", "08:00", "09:00", "10:00",
-  "11:00", "12:00", "13:30",
+  "11:00", "12:00", "13:00",
   "18:00", "19:00", "20:00",
 ];
 
@@ -894,7 +890,7 @@ function isTherapyAreaActiveAt(dateStr, time) {
 }
 
 function getTherapyCapForSlot(dateStr, time) {
-  return isTherapyAreaActiveAt(dateStr, time) ? THERAPY_CAP_WHEN_ACTIVE : 0;
+  return isTherapyAreaActiveAt(dateStr, time) ? THERAPY_SHARED_CAP_PER_SLOT : 0;
 }
 
 function getEpCapForSlot(dateStr, time) {
@@ -1211,10 +1207,6 @@ function validateBasicSlotRules({ date, time, service, serviceKey }) {
 
   const timeNorm = String(time).slice(0, 5);
 
-  if (timeNorm.startsWith("13:") && timeNorm !== "13:30") {
-    return { ok: false, error: "Horario inválido." };
-  }
-
   if (!isAllowedTimeForService(normalizedServiceKey, date, timeNorm)) {
     return {
       ok: false,
@@ -1268,10 +1260,6 @@ function validateBasicSlotRulesAdmin({ date, time, service, serviceKey, bypassWi
   }
 
   const timeNorm = String(time).slice(0, 5);
-
-  if (timeNorm.startsWith("13:") && timeNorm !== "13:30") {
-    return { ok: false, error: "Horario inválido." };
-  }
 
   if (!isAllowedTimeForService(normalizedServiceKey, date, timeNorm)) {
     return {
@@ -1450,29 +1438,18 @@ async function createAppointmentForTargetUser({
   const stats = getSlotReservationStats(existingAtSlot, date, t);
 
   if (basic.isEpService) {
-    if (stats.totalReserved >= TOTAL_CAP || stats.epReserved >= stats.epCap) {
-      const e = new Error(
-        stats.totalReserved >= TOTAL_CAP ? "TOTAL_CAP_REACHED" : "SERVICE_CAP_REACHED"
-      );
+    if (stats.epReserved >= stats.epCap) {
+      const e = new Error("SERVICE_CAP_REACHED");
       e.http = 409;
       throw e;
     }
   } else if (isTherapyService(requestedSk)) {
-    if (stats.totalReserved >= TOTAL_CAP) {
-      const e = new Error("TOTAL_CAP_REACHED");
-      e.http = 409;
-      throw e;
-    }
 
     if (stats.therapyReserved >= stats.therapyCap) {
       const e = new Error("SERVICE_CAP_REACHED");
       e.http = 409;
       throw e;
     }
-  } else if (stats.totalReserved >= TOTAL_CAP) {
-    const e = new Error("TOTAL_CAP_REACHED");
-    e.http = 409;
-    throw e;
   }
 
   const consumed = await consumeCreditAtomic({
@@ -2130,14 +2107,14 @@ router.get("/availability", async (req, res) => {
       }
 
       const existing = await Appointment.find({ date, time: t, status: "reserved" })
-        .select("service")
+        .select("service serviceKey serviceName")
         .lean();
 
       const stats = getSlotReservationStats(existing, date, t);
       const isTherapy = isTherapyService(normalizedServiceKey);
 
       if (basic.isEpService) {
-        if (stats.totalReserved >= TOTAL_CAP || stats.epReserved >= stats.epCap) {
+        if (stats.epReserved >= stats.epCap) {
           const waitlistCheck = validateWaitlistOpen(basic.slotDate, normalizedServiceKey);
 
           out.push({
@@ -2153,7 +2130,7 @@ router.get("/availability", async (req, res) => {
           continue;
         }
       } else if (isTherapy) {
-        if (stats.totalReserved >= TOTAL_CAP || stats.therapyReserved >= stats.therapyCap) {
+        if (stats.therapyReserved >= stats.therapyCap) {
           out.push({
             time: t,
             state: "full",
@@ -2163,9 +2140,6 @@ router.get("/availability", async (req, res) => {
           });
           continue;
         }
-      } else if (stats.totalReserved >= TOTAL_CAP) {
-        out.push({ time: t, state: "full", totalReserved: stats.totalReserved });
-        continue;
       }
 
       out.push({
@@ -2504,17 +2478,14 @@ router.post("/", async (req, res) => {
       const stats = getSlotReservationStats(existingAtSlot, date, t);
 
       if (basic.isEpService) {
-        if (stats.totalReserved >= TOTAL_CAP || stats.epReserved >= stats.epCap) {
+        if (stats.epReserved >= stats.epCap) {
           willWaitlist = true;
         }
       } else if (isTherapyService(requestedSk)) {
-        if (stats.totalReserved >= TOTAL_CAP) throw new Error("TOTAL_CAP_REACHED");
         if (stats.therapyReserved >= stats.therapyCap) {
           throw new Error("SERVICE_CAP_REACHED");
         }
-      } else if (stats.totalReserved >= TOTAL_CAP) {
-        throw new Error("TOTAL_CAP_REACHED");
-      }
+        }
 
       if (willWaitlist && basic.isEpService) {
         const wlWindow = validateWaitlistOpen(basic.slotDate, requestedSk);
@@ -2835,16 +2806,13 @@ router.post("/batch", async (req, res) => {
         const stats = getSlotReservationStats(existingAtSlot, it.date, it.time);
 
         if (it.isEpService) {
-          if (stats.totalReserved >= TOTAL_CAP || stats.epReserved >= stats.epCap) {
+          if (stats.epReserved >= stats.epCap) {
             throw new Error("SERVICE_CAP_REACHED");
           }
         } else if (isTherapyService(requestedSk)) {
-          if (stats.totalReserved >= TOTAL_CAP) throw new Error("TOTAL_CAP_REACHED");
           if (stats.therapyReserved >= stats.therapyCap) {
             throw new Error("SERVICE_CAP_REACHED");
           }
-        } else if (stats.totalReserved >= TOTAL_CAP) {
-          throw new Error("TOTAL_CAP_REACHED");
         }
       }
 
