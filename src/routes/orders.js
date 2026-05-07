@@ -20,6 +20,8 @@ const router = express.Router();
 const PLUS_PRICE = Number(process.env.PLUS_PRICE || 20000);
 const PLUS_DISCOUNT_PCT = 15;
 const CREDITS_EXPIRE_DAYS = 30;
+const PERFORMANCE_COPAY_PRICE = Number(process.env.PERFORMANCE_COPAY_PRICE || 12500);
+const PERFORMANCE_COPAY_KEYS = new Set(["RA", "RF", "KD"]);
 
 const ALLOWED_SERVICE_KEYS = new Set(["PE", "EP", "RA", "RF", "KD", "NUT"]);
 const SERVICE_KEY_TO_NAME = {
@@ -480,12 +482,56 @@ async function createMpPreference({ order, user }) {
 /* =======================
    Pricing resolvers
 ======================= */
-async function resolveCreditsItem({ serviceKey, credits, payMethod }) {
+function isPerformanceCopayItem(input = {}) {
+  const planCode = String(input?.planCode || input?.priceCode || "")
+    .toUpperCase()
+    .trim();
+  const haystack = [
+    input?.id,
+    input?.sku,
+    input?.label,
+    input?.name,
+    input?.title,
+  ]
+    .map((x) => String(x || ""))
+    .join(" ")
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase();
+
+  return (
+    planCode === "COPAY" ||
+    planCode === "COPAGO" ||
+    haystack.includes("copay") ||
+    haystack.includes("copago") ||
+    haystack.includes("obra social")
+  );
+}
+
+async function resolveCreditsItem({ serviceKey, credits, payMethod, planCode, label }) {
   const sk = normalizeServiceKey(serviceKey);
   const pm = String(payMethod || "").toUpperCase();
   const cr = Number(credits);
 
   if (!sk || !pm || !cr) throw new Error("Ítem de créditos inválido.");
+
+  const isCopay = isPerformanceCopayItem({ planCode, label });
+  if (isCopay) {
+    if (!PERFORMANCE_COPAY_KEYS.has(sk)) {
+      throw new Error("El copago solo está disponible para RA, RF o KD.");
+    }
+    if (cr !== 1) {
+      throw new Error("El copago debe corresponder a 1 sesión.");
+    }
+
+    return {
+      kind: "CREDITS",
+      serviceKey: sk,
+      credits: 1,
+      label: "Copago obra social",
+      basePrice: PERFORMANCE_COPAY_PRICE,
+    };
+  }
 
   const plan = await PricingPlan.findOne({
     serviceKey: sk,
@@ -543,6 +589,10 @@ router.post("/checkout", protect, async (req, res) => {
           serviceKey: it.serviceKey,
           credits: it.credits,
           payMethod: pm,
+          planCode: it.planCode || it.priceCode || "",
+          label: it.label || "",
+          id: it.id || it.itemId || "",
+          sku: it.sku || "",
         });
 
         items.push({
