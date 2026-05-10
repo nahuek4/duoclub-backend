@@ -23,7 +23,7 @@ const orderItemSchema = new mongoose.Schema(
       required: true,
       uppercase: true,
       trim: true,
-      enum: ["CREDITS", "MEMBERSHIP"],
+      enum: ["CREDITS", "MEMBERSHIP", "MANUAL_SERVICE"],
     },
 
     // CREDITS
@@ -37,11 +37,11 @@ const orderItemSchema = new mongoose.Schema(
           const kind = String(this?.kind || "").toUpperCase().trim();
           const normalized = normalizeServiceKey(value);
 
-          if (kind !== "CREDITS") {
-            return normalized === "";
+          if (kind === "CREDITS" || kind === "MANUAL_SERVICE") {
+            return isValidServiceKey(normalized);
           }
 
-          return isValidServiceKey(normalized);
+          return normalized === "";
         },
         message: "serviceKey inválido para el item de orden.",
       },
@@ -69,7 +69,7 @@ const orderItemSchema = new mongoose.Schema(
 
 const orderSchema = new mongoose.Schema(
   {
-    user: { type: mongoose.Schema.Types.ObjectId, ref: "User", required: true },
+    user: { type: mongoose.Schema.Types.ObjectId, ref: "User", default: null, index: true },
 
     payMethod: {
       type: String,
@@ -115,6 +115,21 @@ const orderSchema = new mongoose.Schema(
     paidAt: { type: Date, default: null },
     notes: { type: String, default: "" },
 
+    // Links públicos de pago creados por admin
+    publicPaymentLink: { type: Boolean, default: false, index: true },
+    publicPaymentToken: { type: String, default: "", trim: true, index: true },
+    publicPaymentExpiresAt: { type: Date, default: null },
+    publicPaymentUrl: { type: String, default: "", trim: true },
+    manualFulfillmentRequired: { type: Boolean, default: false },
+    createdByAdmin: { type: Boolean, default: false },
+    createdByAdminId: { type: mongoose.Schema.Types.ObjectId, ref: "User", default: null },
+
+    // Comprador libre: permite links para personas nuevas sin usuario
+    customerName: { type: String, default: "", trim: true },
+    customerEmail: { type: String, default: "", trim: true, lowercase: true },
+    customerPhone: { type: String, default: "", trim: true },
+
+
     // LEGACY (compatibilidad)
     serviceKey: {
       type: String,
@@ -151,7 +166,7 @@ orderSchema.pre("validate", function () {
       const item = typeof it?.toObject === "function" ? it.toObject() : { ...it };
       const kind = String(item?.kind || "").toUpperCase().trim();
 
-      if (kind === "CREDITS") {
+      if (kind === "CREDITS" || kind === "MANUAL_SERVICE") {
         item.serviceKey = normalizeServiceKey(item.serviceKey);
       } else {
         item.serviceKey = "";
@@ -203,6 +218,8 @@ orderSchema.index({ user: 1, createdAt: -1 });
 orderSchema.index({ createdAt: -1 });
 orderSchema.index({ status: 1, createdAt: -1 });
 orderSchema.index({ serviceKey: 1, createdAt: -1 });
+orderSchema.index({ publicPaymentToken: 1 }, { unique: true, sparse: true });
+orderSchema.index({ publicPaymentLink: 1, publicPaymentExpiresAt: 1 });
 
 const Order = mongoose.models.Order || mongoose.model("Order", orderSchema);
 export default Order;

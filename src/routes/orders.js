@@ -1,5 +1,6 @@
 // backend/src/routes/orders.js
 import express from "express";
+import crypto from "crypto";
 import mongoose from "mongoose";
 import { protect, adminOnly } from "../middleware/auth.js";
 import PricingPlan from "../models/PricingPlan.js";
@@ -253,6 +254,144 @@ function buildOrderHistoryTitle(order) {
   return "Realizó una orden.";
 }
 
+
+function getFrontBaseUrl() {
+  return String(process.env.FRONT_BASE_URL || "https://app.duoclub.ar").replace(/\/+$/, "");
+}
+
+function buildPublicPaymentUrl(token) {
+  return `${getFrontBaseUrl()}/pagar/${encodeURIComponent(String(token || ""))}`;
+}
+
+function addHours(date, hours) {
+  const d = new Date(date || Date.now());
+  d.setHours(d.getHours() + Number(hours || 0));
+  return d;
+}
+
+function normalizeMoney(value) {
+  const n = Number(value);
+  if (!Number.isFinite(n)) return NaN;
+  return Math.round(n);
+}
+
+function normalizeCustomerName(value) {
+  return String(value || "").trim().replace(/\s+/g, " ");
+}
+
+function normalizeCustomerEmail(value) {
+  return String(value || "").trim().toLowerCase();
+}
+
+function normalizeCustomerPhone(value) {
+  return String(value || "").trim();
+}
+
+function getOrderCustomerName(order = {}) {
+  const user = order?.user && typeof order.user === "object" ? order.user : null;
+  const userName = [user?.name, user?.lastName].filter(Boolean).join(" ").trim();
+  return (
+    String(order?.customerName || "").trim() ||
+    String(user?.fullName || "").trim() ||
+    userName ||
+    "Cliente"
+  );
+}
+
+function getOrderCustomerEmail(order = {}) {
+  const user = order?.user && typeof order.user === "object" ? order.user : null;
+  return String(order?.customerEmail || user?.email || "").trim();
+}
+
+function getOrderCustomerPhone(order = {}) {
+  return String(order?.customerPhone || "").trim();
+}
+
+function publicStatusFor(order = {}) {
+  const st = String(order?.status || "pending").toLowerCase().trim();
+  if (st === "paid" || st === "approved") return "paid";
+  if (st === "cancelled" || st === "canceled") return "cancelled";
+
+  const exp = order?.publicPaymentExpiresAt ? new Date(order.publicPaymentExpiresAt) : null;
+  if (exp && exp.getTime() <= Date.now()) return "expired";
+
+  return st || "pending";
+}
+
+function buildOrderPaymentTitle(order = {}) {
+  const items = Array.isArray(order?.items) ? order.items : [];
+  const serviceItems = items.filter((it) =>
+    ["CREDITS", "MANUAL_SERVICE"].includes(String(it?.kind || "").toUpperCase())
+  );
+
+  if (serviceItems.length) {
+    const parts = serviceItems.map((it) => {
+      const credits = Math.max(0, Number(it?.credits || 0));
+      const qty = Math.max(1, Number(it?.qty || 1));
+      const totalSessions = credits * qty;
+      const serviceName = prettyServiceNameFromKey(it?.serviceKey);
+      const label = String(it?.label || "").trim();
+
+      if (label) return label;
+      if (totalSessions > 0) {
+        return `${totalSessions} ${pluralizeSessions(totalSessions)} de ${serviceName}`;
+      }
+      return serviceName;
+    });
+
+    return parts.filter(Boolean).join(" + ") || "DUO - Pago";
+  }
+
+  const membershipItems = items.filter(
+    (it) => String(it?.kind || "").toUpperCase() === "MEMBERSHIP"
+  );
+  if (membershipItems.length) return "DUO+ mensual";
+
+  return String(order?.label || "DUO - Pago").trim() || "DUO - Pago";
+}
+
+function serializePublicPaymentOrder(order = {}) {
+  const obj = typeof order?.toObject === "function" ? order.toObject() : order;
+  const items = (Array.isArray(obj?.items) ? obj.items : []).map((it) => {
+    const kind = String(it?.kind || "").toUpperCase().trim();
+    const credits = Math.max(0, Number(it?.credits || 0));
+    const qty = Math.max(1, Number(it?.qty || 1));
+    const serviceKey = normalizeServiceKey(it?.serviceKey, { allowEmpty: true });
+    const serviceName = serviceKey ? prettyServiceNameFromKey(serviceKey) : "";
+    const totalSessions = credits * qty;
+    const label = String(it?.label || "").trim();
+
+    return {
+      kind,
+      serviceKey,
+      serviceName,
+      sessions: totalSessions,
+      credits,
+      qty,
+      label: label || (totalSessions > 0 && serviceName ? `${totalSessions} ${pluralizeSessions(totalSessions)} de ${serviceName}` : serviceName || kind),
+      price: Number(it?.price || 0),
+      basePrice: Number(it?.basePrice || 0),
+    };
+  });
+
+  return {
+    id: String(obj?._id || ""),
+    status: publicStatusFor(obj),
+    payMethod: String(obj?.payMethod || "MP").toUpperCase(),
+    total: Number(obj?.totalFinal ?? obj?.total ?? obj?.price ?? 0),
+    customerName: getOrderCustomerName(obj),
+    customerEmail: getOrderCustomerEmail(obj),
+    customerPhone: getOrderCustomerPhone(obj),
+    title: buildOrderPaymentTitle(obj),
+    notes: String(obj?.notes || ""),
+    items,
+    expiresAt: obj?.publicPaymentExpiresAt || null,
+    createdAt: obj?.createdAt || null,
+    paidAt: obj?.paidAt || null,
+    manualFulfillmentRequired: Boolean(obj?.manualFulfillmentRequired),
+  };
+}
+
 /* =======================
    Notificar admin
 ======================= */
@@ -424,38 +563,47 @@ async function applyOrderIfNeeded(order) {
 /* =======================
    MercadoPago
 ======================= */
-async function createMpPreference({ order, user }) {
+async function createMpPreference({ order, user = null }) {
   const accessToken = process.env.MP_ACCESS_TOKEN;
   if (!accessToken) {
     return { ok: false, error: "MP_ACCESS_TOKEN no configurado." };
   }
 
-  const FRONT_BASE = process.env.FRONT_BASE_URL || "https://app.duoclub.ar";
+  const FRONT_BASE = getFrontBaseUrl();
   const amountToCharge = Number(order.totalFinal ?? order.total ?? order.price ?? 0);
+  const isPublicPaymentLink = Boolean(order?.publicPaymentLink && order?.publicPaymentToken);
+  const paymentTitle = buildOrderPaymentTitle(order);
+  const backBase = isPublicPaymentLink
+    ? `${FRONT_BASE}/pagar/${encodeURIComponent(String(order.publicPaymentToken || ""))}`
+    : FRONT_BASE;
+
+  const metadata = {
+    orderId: String(order._id),
+    userId: user?._id ? String(user._id) : order?.user ? String(order.user) : "",
+    payMethod: order.payMethod,
+    itemsCount: Array.isArray(order.items) ? order.items.length : 0,
+    discountPercent: Number(order.discountPercent || 0),
+    discountAmount: Number(order.discountAmount || 0),
+    totalFinal: amountToCharge,
+    publicPaymentLink: isPublicPaymentLink,
+    manualFulfillmentRequired: Boolean(order?.manualFulfillmentRequired),
+  };
 
   const body = {
     items: [
       {
-        title: `DUO - Compra`,
+        title: paymentTitle || `DUO - Compra`,
         quantity: 1,
         currency_id: "ARS",
         unit_price: amountToCharge,
       },
     ],
     external_reference: String(order._id),
-    metadata: {
-      orderId: String(order._id),
-      userId: String(user._id),
-      payMethod: order.payMethod,
-      itemsCount: Array.isArray(order.items) ? order.items.length : 0,
-      discountPercent: Number(order.discountPercent || 0),
-      discountAmount: Number(order.discountAmount || 0),
-      totalFinal: amountToCharge,
-    },
+    metadata,
     back_urls: {
-      success: `${FRONT_BASE}/?mp=success`,
-      pending: `${FRONT_BASE}/?mp=pending`,
-      failure: `${FRONT_BASE}/?mp=failure`,
+      success: isPublicPaymentLink ? `${backBase}?mp=success` : `${FRONT_BASE}/?mp=success`,
+      pending: isPublicPaymentLink ? `${backBase}?mp=pending` : `${FRONT_BASE}/?mp=pending`,
+      failure: isPublicPaymentLink ? `${backBase}?mp=failure` : `${FRONT_BASE}/?mp=failure`,
     },
     auto_return: "approved",
     notification_url: process.env.MP_WEBHOOK_URL || undefined,
@@ -843,6 +991,180 @@ router.post("/", protect, async (req, res) => {
   }
 });
 
+
+/* =========================================================
+   PUBLIC PAYMENT LINK: creado por admin, no acredita créditos
+========================================================= */
+router.post("/admin-payment-link", protect, adminOnly, async (req, res) => {
+  try {
+    const sk = assertServiceKey(req.body?.serviceKey, "serviceKey");
+    const sessions = Math.trunc(Number(req.body?.sessions ?? req.body?.credits ?? 0));
+    const amount = normalizeMoney(req.body?.amount ?? req.body?.price ?? req.body?.total);
+    const customerName = normalizeCustomerName(req.body?.customerName || req.body?.name);
+    const customerEmail = normalizeCustomerEmail(req.body?.customerEmail || req.body?.email);
+    const customerPhone = normalizeCustomerPhone(req.body?.customerPhone || req.body?.phone);
+    const notes = String(req.body?.notes || "").trim();
+    const customLabel = String(req.body?.label || req.body?.title || "").trim();
+
+    if (!customerName) {
+      return res.status(400).json({ error: "Nombre del cliente requerido." });
+    }
+    if (!Number.isFinite(sessions) || sessions <= 0) {
+      return res.status(400).json({ error: "Cantidad de sesiones inválida." });
+    }
+    if (!Number.isFinite(amount) || amount <= 0) {
+      return res.status(400).json({ error: "Monto inválido." });
+    }
+
+    const token = crypto.randomBytes(24).toString("hex");
+    const expiresAt = addHours(new Date(), 48);
+    const serviceName = prettyServiceNameFromKey(sk);
+    const label = customLabel || `${sessions} ${pluralizeSessions(sessions)} de ${serviceName}`;
+    const publicUrl = buildPublicPaymentUrl(token);
+
+    const order = await Order.create({
+      user: null,
+      payMethod: "MP",
+      items: [
+        {
+          kind: "MANUAL_SERVICE",
+          serviceKey: sk,
+          credits: sessions,
+          label,
+          qty: 1,
+          basePrice: amount,
+          price: amount,
+        },
+      ],
+      totalBase: amount,
+      total: amount,
+      discountPercent: 0,
+      discountAmount: 0,
+      totalFinal: amount,
+      status: "pending",
+      applied: false,
+      creditsApplied: false,
+      publicPaymentLink: true,
+      publicPaymentToken: token,
+      publicPaymentExpiresAt: expiresAt,
+      publicPaymentUrl: publicUrl,
+      manualFulfillmentRequired: true,
+      createdByAdmin: true,
+      createdByAdminId: req.user?._id || null,
+      customerName,
+      customerEmail,
+      customerPhone,
+      notes,
+      serviceKey: sk,
+      credits: 0,
+      price: amount,
+      label,
+    });
+
+    await logActivity({
+      req,
+      category: "orders",
+      action: "public_payment_link_created",
+      entity: "order",
+      entityId: order._id,
+      title: "Link de pago creado",
+      description: "Se creó un link público de pago con vencimiento de 48 horas.",
+      subject: buildUserSubject(req.user),
+      meta: {
+        serviceKey: sk,
+        sessions,
+        amount,
+        expiresAt,
+        manualFulfillmentRequired: true,
+      },
+    });
+
+    return res.status(201).json({
+      ok: true,
+      order: serializePublicPaymentOrder(order),
+      publicUrl,
+      token,
+      expiresAt,
+      message: "Link de pago creado. No acredita créditos automáticamente.",
+    });
+  } catch (err) {
+    console.error("POST /orders/admin-payment-link", err);
+    return res.status(500).json({
+      error: err?.message || "No se pudo crear el link de pago.",
+    });
+  }
+});
+
+router.get("/public-payment/:token", async (req, res) => {
+  try {
+    const token = String(req.params?.token || "").trim();
+    if (!token) return res.status(400).json({ error: "Token requerido." });
+
+    const order = await Order.findOne({
+      publicPaymentLink: true,
+      publicPaymentToken: token,
+    }).lean();
+
+    if (!order) return res.status(404).json({ error: "Link de pago no encontrado." });
+
+    const status = publicStatusFor(order);
+    if (status === "expired" && String(order.status || "").toLowerCase() === "pending") {
+      await Order.updateOne({ _id: order._id, status: "pending" }, { $set: { status: "expired" } });
+      order.status = "expired";
+    }
+
+    return res.json({ ok: true, order: serializePublicPaymentOrder(order) });
+  } catch (err) {
+    console.error("GET /orders/public-payment/:token", err);
+    return res.status(500).json({ error: "No se pudo abrir el link de pago." });
+  }
+});
+
+router.post("/public-payment/:token/pay", async (req, res) => {
+  try {
+    const token = String(req.params?.token || "").trim();
+    if (!token) return res.status(400).json({ error: "Token requerido." });
+
+    const order = await Order.findOne({
+      publicPaymentLink: true,
+      publicPaymentToken: token,
+    });
+
+    if (!order) return res.status(404).json({ error: "Link de pago no encontrado." });
+
+    const status = publicStatusFor(order);
+    if (status === "expired") {
+      if (String(order.status || "").toLowerCase() === "pending") {
+        order.status = "expired";
+        await order.save();
+      }
+      return res.status(410).json({ error: "Este link de pago venció." });
+    }
+    if (status === "paid") {
+      return res.status(409).json({ error: "Esta orden ya figura como pagada." });
+    }
+    if (status === "cancelled") {
+      return res.status(409).json({ error: "Esta orden fue cancelada." });
+    }
+
+    const mp = await createMpPreference({ order, user: null });
+    if (!mp.ok) {
+      order.notes = [order.notes, mp.error].filter(Boolean).join("\n");
+      await order.save();
+      return res.status(500).json({ error: mp.error });
+    }
+
+    order.mpPreferenceId = mp.preferenceId;
+    order.mpInitPoint = mp.init_point;
+    await order.save();
+
+    return res.json({ ok: true, init_point: mp.init_point });
+  } catch (err) {
+    console.error("POST /orders/public-payment/:token/pay", err);
+    return res.status(500).json({ error: err?.message || "No se pudo iniciar el pago." });
+  }
+});
+
 router.get("/me", protect, async (req, res) => {
   const list = await Order.find({ user: req.user._id }).sort({ createdAt: -1 }).lean();
   res.json(list);
@@ -922,8 +1244,9 @@ router.patch("/:id/mark-paid", protect, adminOnly, async (req, res) => {
     if (!order) return res.status(404).json({ error: "Orden no encontrada" });
 
     const pm = String(order.payMethod || "").toUpperCase();
-    if (pm !== "CASH") {
-      return res.status(400).json({ error: "Solo CASH puede marcarse manualmente" });
+    const isPublicManualLink = Boolean(order.publicPaymentLink && order.manualFulfillmentRequired);
+    if (pm !== "CASH" && !isPublicManualLink) {
+      return res.status(400).json({ error: "Solo CASH o links públicos manuales pueden marcarse manualmente" });
     }
 
     const st = String(order.status || "").toLowerCase();
@@ -935,9 +1258,11 @@ router.patch("/:id/mark-paid", protect, adminOnly, async (req, res) => {
       await order.save();
     }
 
-    const applied = await applyOrderIfNeeded(order);
-    if (!applied.ok) {
-      return res.status(500).json({ error: applied.error || "No se pudo aplicar." });
+    if (!isPublicManualLink) {
+      const applied = await applyOrderIfNeeded(order);
+      if (!applied.ok) {
+        return res.status(500).json({ error: applied.error || "No se pudo aplicar." });
+      }
     }
 
     if (!wasPaid) {
@@ -946,8 +1271,10 @@ router.patch("/:id/mark-paid", protect, adminOnly, async (req, res) => {
         if (userDoc) {
           userDoc.history = Array.isArray(userDoc.history) ? userDoc.history : [];
           userDoc.history.push({
-            action: "order_paid",
-            title: "Se acreditó una orden.",
+            action: isPublicManualLink ? "public_payment_link_paid" : "order_paid",
+            title: isPublicManualLink
+              ? "Se marcó como pagado un link público de pago."
+              : "Se acreditó una orden.",
             createdAt: new Date(),
           });
           await userDoc.save();
@@ -966,7 +1293,9 @@ router.patch("/:id/mark-paid", protect, adminOnly, async (req, res) => {
       entity: "order",
       entityId: order._id,
       title: "Orden marcada como pagada",
-      description: "Un admin marcó manualmente una orden como pagada.",
+      description: isPublicManualLink
+        ? "Un admin marcó como pagado un link público. No se acreditaron créditos automáticamente."
+        : "Un admin marcó manualmente una orden como pagada.",
       subject: buildUserSubject(req.user),
       meta: {
         total: Number(order.totalFinal || order.total || 0),
