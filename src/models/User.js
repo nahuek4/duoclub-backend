@@ -340,6 +340,11 @@ const userSchema = new mongoose.Schema(
 
     creditLots: { type: [creditLotSchema], default: [] },
 
+    monthlyAutomation: {
+      lastMonthlyResetMonthKey: { type: String, default: "" },
+      lastRunAt: { type: Date, default: null },
+    },
+
     monthlyPlan: {
       type: monthlyPlanSchema,
       default: createDefaultMonthlyPlan,

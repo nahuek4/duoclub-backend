@@ -147,6 +147,16 @@ const fixedScheduleSchema = new mongoose.Schema(
       default: true,
       index: true,
     },
+
+    lastGeneratedMonthKey: { type: String, default: "", trim: true },
+    lastCustodyMonthKey: { type: String, default: "", trim: true },
+    lastAutoReleasedMonthKey: { type: String, default: "", trim: true },
+    deactivatedAt: { type: Date, default: null },
+    deactivatedBy: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "User",
+      default: null,
+    },
   },
   { timestamps: true }
 );

@@ -306,6 +306,7 @@ function normalizeMembershipForUI(user) {
   };
 }
 
+
 function recalcUserCredits(user) {
   const now = nowDate();
   const lots = Array.isArray(user.creditLots) ? user.creditLots : [];
@@ -316,6 +317,19 @@ function recalcUserCredits(user) {
   }, 0);
   user.credits = sum;
 }
+
+function lastBusinessDayOfCurrentMonth() {
+  const now = nowDate();
+  const d = new Date(now.getFullYear(), now.getMonth() + 1, 0, 23, 59, 59, 999);
+
+  while (d.getDay() === 0 || d.getDay() === 6) {
+    d.setDate(d.getDate() - 1);
+  }
+
+  d.setHours(23, 59, 59, 999);
+  return d;
+}
+
 
 function normalizeLotServiceKey(lot) {
   return (
@@ -341,6 +355,7 @@ function computeServiceAccessFromLots(u) {
     const sk = normalizeLotServiceKey(lot);
     if (byKey[sk] !== undefined) byKey[sk] += remaining;
   }
+
 
   if (!u?.firstEvaluationCompleted) {
     const peCredits = Number(byKey.PE || 0);
@@ -444,8 +459,7 @@ function addCreditLot(
   if (!qty) return;
 
   const now = nowDate();
-  const exp = new Date(now);
-  exp.setDate(exp.getDate() + CREDITS_EXPIRE_DAYS);
+  const exp = lastBusinessDayOfCurrentMonth();
 
   user.creditLots = user.creditLots || [];
   user.creditLots.push({
@@ -455,6 +469,18 @@ function addCreditLot(
     expiresAt: exp,
     source,
     orderId: null,
+    createdAt: now,
+  });
+
+  user.history = Array.isArray(user.history) ? user.history : [];
+  user.history.push({
+    action: "credits_added_monthly",
+    title: `Créditos acreditados ${sk}`,
+    message: `Se acreditaron ${qty} crédito(s), con vencimiento el último día hábil del mes.`,
+    serviceKey: sk,
+    serviceName: SERVICE_KEY_TO_NAME[sk] || sk,
+    service: SERVICE_KEY_TO_NAME[sk] || sk,
+    qty,
     createdAt: now,
   });
 
@@ -468,6 +494,7 @@ function buildCreditsByService(user) {
     EP: sumCreditsForService(user, "EP"),
     RF: sumCreditsForService(user, "RF"),
     RA: sumCreditsForService(user, "RA"),
+    KD: sumCreditsForService(user, "KD"),
     NUT: sumCreditsForService(user, "NUT"),
   };
 

@@ -292,17 +292,29 @@ function getCreditsExpireDays(_user) {
   return CREDITS_EXPIRE_DAYS;
 }
 
-function recalcUserCredits(user) {
-  const now = nowDate();
-  const lots = Array.isArray(user.creditLots) ? user.creditLots : [];
 
-  const sum = lots.reduce((acc, lot) => {
+function sumCreditLotsForService(user, serviceKey = "", slotDate = null) {
+  const now = nowDate();
+  const wanted = normalizeServiceKey(serviceKey) || serviceToKey(serviceKey);
+  const lots = Array.isArray(user?.creditLots) ? user.creditLots : [];
+
+  return lots.reduce((acc, lot) => {
     const exp = lot.expiresAt ? new Date(lot.expiresAt) : null;
     if (exp && exp <= now) return acc;
+    if (wanted && normalizeLotServiceKey(lot) !== wanted) return acc;
+    if (slotDate && !ensureSlotBeforeCreditExpiry(slotDate, lot.expiresAt).ok) return acc;
     return acc + Number(lot.remaining || 0);
   }, 0);
+}
 
-  user.credits = sum;
+function getServiceBalance(user, serviceKey, slotDate = null) {
+  const sk = normalizeServiceKey(serviceKey) || serviceToKey(serviceKey);
+  if (!sk) return 0;
+  return sumCreditLotsForService(user, sk, slotDate);
+}
+
+function recalcUserCredits(user) {
+  user.credits = sumCreditLotsForService(user);
 }
 
 function normalizeLotServiceKey(lot) {
@@ -434,12 +446,12 @@ function pickLotToConsumeForSlot(user, wantedServiceKey, slotDate) {
 
 function hasValidCreditsForService(user, serviceNameOrKey) {
   const sk = serviceToKey(serviceNameOrKey);
-  return !!pickLotToConsume(user, sk);
+  return getServiceBalance(user, sk) > 0 && !!pickLotToConsume(user, sk);
 }
 
 function hasValidCreditsForServiceAndSlot(user, serviceNameOrKey, slotDate) {
   const sk = serviceToKey(serviceNameOrKey);
-  return !!pickLotToConsumeForSlot(user, sk, slotDate);
+  return getServiceBalance(user, sk, slotDate) > 0 && !!pickLotToConsumeForSlot(user, sk, slotDate);
 }
 
 function findLotById(user, lotId) {
@@ -464,7 +476,7 @@ async function consumeCreditAtomic({
   if (!currentUser) throw new Error("USER_NOT_FOUND");
 
   recalcUserCredits(currentUser);
-  if ((currentUser.credits || 0) <= 0) {
+  if ((currentUser.credits || 0) <= 0 || getServiceBalance(currentUser, requestedSk, slotDate) <= 0) {
     throw new Error("NO_CREDITS");
   }
 
@@ -1470,6 +1482,9 @@ async function createAppointmentForTargetUser({
   serviceKey,
   notes = "",
   bypassWindow = false,
+  bypassCredits = false,
+  fixedScheduleId = null,
+  monthlyRolloverMonthKey = "",
 }) {
   const basic = validateBasicSlotRulesAdmin({
     date,
@@ -1504,17 +1519,20 @@ async function createAppointmentForTargetUser({
   }
 
   recalcUserCredits(targetUser);
-  if ((targetUser.credits || 0) <= 0) {
-    const e = new Error("NO_CREDITS");
-    e.http = 403;
-    throw e;
-  }
 
   const requestedSk = basic.serviceKey;
-  if (!hasValidCreditsForServiceAndSlot(targetUser, requestedSk, basic.slotDate)) {
-    const e = new Error(`NO_CREDITS_FOR_SLOT_${requestedSk}`);
-    e.http = 403;
-    throw e;
+  if (!bypassCredits) {
+    if ((targetUser.credits || 0) <= 0 || getServiceBalance(targetUser, requestedSk, basic.slotDate) <= 0) {
+      const e = new Error("NO_CREDITS");
+      e.http = 403;
+      throw e;
+    }
+
+    if (!hasValidCreditsForServiceAndSlot(targetUser, requestedSk, basic.slotDate)) {
+      const e = new Error(`NO_CREDITS_FOR_SLOT_${requestedSk}`);
+      e.http = 403;
+      throw e;
+    }
   }
 
   const t = String(time).slice(0, 5);
@@ -1556,25 +1574,48 @@ async function createAppointmentForTargetUser({
     }
   }
 
-  const consumed = await consumeCreditAtomic({
-    userId: targetUser._id,
-    serviceKey: basic.serviceKey,
-    serviceName: basic.serviceName,
-    historyItem: {
-      action: "reservado_por_admin",
+  let effectiveUser = targetUser;
+  let usedLotId = null;
+  let usedLotExp = null;
+
+  if (!bypassCredits) {
+    const consumed = await consumeCreditAtomic({
+      userId: targetUser._id,
+      serviceKey: basic.serviceKey,
+      serviceName: basic.serviceName,
+      historyItem: {
+        action: "reservado_por_admin",
+        date,
+        time: t,
+        service: basic.serviceName,
+        serviceName: basic.serviceName,
+        serviceKey: basic.serviceKey,
+      },
+      slotDate: basic.slotDate,
+      session: null,
+    });
+
+    effectiveUser = consumed.user;
+    usedLotId = consumed.usedLotId;
+    usedLotExp = consumed.usedLotExp;
+  } else {
+    targetUser.history = Array.isArray(targetUser.history) ? targetUser.history : [];
+    targetUser.history.push({
+      action: fixedScheduleId ? "turno_fijo_asignado" : "reservado_por_admin_sin_credito",
       date,
       time: t,
       service: basic.serviceName,
       serviceName: basic.serviceName,
       serviceKey: basic.serviceKey,
-    },
-    slotDate: basic.slotDate,
-    session: null,
-  });
-
-  const effectiveUser = consumed.user;
-  const usedLotId = consumed.usedLotId;
-  const usedLotExp = consumed.usedLotExp;
+      title: fixedScheduleId
+        ? "Turno fijo asignado por administración."
+        : "Turno asignado por administración sin consumir crédito.",
+      createdAt: new Date(),
+    });
+    recalcUserCredits(targetUser);
+    await targetUser.save();
+    effectiveUser = targetUser;
+  }
 
   console.log("[BOOKING DEBUG AFTER CONSUME]", {
     userId: String(effectiveUser?._id || targetUser?._id || ""),
@@ -1596,6 +1637,8 @@ async function createAppointmentForTargetUser({
     createdByRole: String(actorReq?.user?.role || "").toLowerCase(),
     createdByUser: actorReq?.user?._id || actorReq?.user?.id || null,
     assignedManually: true,
+    fixedScheduleId: fixedScheduleId || null,
+    monthlyRolloverMonthKey: monthlyRolloverMonthKey || "",
   });
 
   const populated = await Appointment.findById(created._id)
@@ -2456,6 +2499,7 @@ router.post("/admin/assign", async (req, res) => {
           serviceKey: String(it?.serviceKey || "").trim(),
           notes,
           bypassWindow: true,
+          bypassCredits: true,
         });
         created.push(ap);
       } catch (e) {
@@ -2531,6 +2575,7 @@ router.post("/admin/fixed-schedules", async (req, res) => {
     const fixed = await FixedSchedule.create({
       user: userId,
       createdBy: req.user?._id || req.user?.id,
+      serviceKey: serviceIdentity.serviceKey,
       service: serviceIdentity.serviceName,
       items: cleanItems,
       months,
@@ -2560,6 +2605,8 @@ router.post("/admin/fixed-schedules", async (req, res) => {
           serviceKey: serviceIdentity.serviceKey,
           notes,
           bypassWindow: true,
+          bypassCredits: true,
+          fixedScheduleId: fixed._id,
         });
         created.push(ap);
       } catch (e) {
@@ -2618,9 +2665,10 @@ router.post("/", async (req, res) => {
       }
 
       recalcUserCredits(user);
-      if ((user.credits || 0) <= 0) throw new Error("NO_CREDITS");
 
       const requestedSk = basic.serviceKey;
+      if ((user.credits || 0) <= 0 || getServiceBalance(user, requestedSk, basic.slotDate) <= 0) throw new Error("NO_CREDITS");
+
       if (!hasValidCreditsForServiceAndSlot(user, requestedSk, basic.slotDate)) {
         throw new Error(`NO_CREDITS_FOR_SLOT_${requestedSk}`);
       }
@@ -3222,7 +3270,11 @@ router.delete("/:id", async (req, res) => {
       let updatedUser = user;
 
       if (decision.refund) {
-        if (ap.creditLotId) {
+        if (ap.fixedScheduleId && !ap.creditLotId) {
+          decision.refund = false;
+          decision.refundMode = "none";
+          decision.reason = "Turno fijo sin crédito consumido: no corresponde reintegro automático.";
+        } else if (ap.creditLotId) {
           updatedUser = await refundCreditAtomicToOriginalLot({
             userId: user._id,
             lotId: ap.creditLotId,

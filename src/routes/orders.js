@@ -104,6 +104,7 @@ function activatePlus(user) {
   addPlusMonths(user, 1);
 }
 
+
 function recalcCreditsCache(user) {
   const now = new Date();
   const lots = Array.isArray(user.creditLots) ? user.creditLots : [];
@@ -115,33 +116,66 @@ function recalcCreditsCache(user) {
   user.credits = sum;
 }
 
+function pad2(n) {
+  return String(n).padStart(2, "0");
+}
+
+function lastBusinessDayOfCurrentMonth() {
+  const now = new Date();
+  const y = now.getFullYear();
+  const m = now.getMonth();
+  const d = new Date(y, m + 1, 0, 23, 59, 59, 999);
+
+  while (d.getDay() === 0 || d.getDay() === 6) {
+    d.setDate(d.getDate() - 1);
+  }
+
+  d.setHours(23, 59, 59, 999);
+  return d;
+}
+
+function currentMonthKey() {
+  const now = new Date();
+  return `${now.getFullYear()}-${pad2(now.getMonth() + 1)}`;
+}
+
+
 function addCreditLot(user, { amount, source, orderId, serviceKey }) {
   const now = new Date();
   ensureBasicIfExpired(user);
 
-  const expireDays = CREDITS_EXPIRE_DAYS;
   const sk = assertServiceKey(serviceKey);
+  const qty = Math.max(0, Number(amount || 0));
+  if (!qty) return;
 
-  const exp = new Date(now);
-  exp.setDate(exp.getDate() + expireDays);
+  const exp = lastBusinessDayOfCurrentMonth();
 
   user.creditLots = user.creditLots || [];
   user.creditLots.push({
     serviceKey: sk,
-    amount: Number(amount || 0),
-    remaining: Number(amount || 0),
+    amount: qty,
+    remaining: qty,
     expiresAt: exp,
     source: source || "",
     orderId: orderId || null,
     createdAt: now,
   });
 
+  user.history = Array.isArray(user.history) ? user.history : [];
+  user.history.push({
+    action: "credits_added_monthly",
+    title: `Créditos acreditados ${sk}`,
+    message: `Se acreditaron ${qty} crédito(s), con vencimiento el último día hábil del mes.`,
+    serviceKey: sk,
+    serviceName: SERVICE_KEY_TO_NAME[sk] || sk,
+    service: SERVICE_KEY_TO_NAME[sk] || sk,
+    qty,
+    createdAt: now,
+  });
+
   recalcCreditsCache(user);
 }
 
-function pad2(n) {
-  return String(n).padStart(2, "0");
-}
 function ymd(d = new Date()) {
   return `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}`;
 }

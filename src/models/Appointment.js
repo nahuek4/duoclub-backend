@@ -162,6 +162,20 @@ const appointmentSchema = new mongoose.Schema(
       default: false,
     },
 
+    fixedScheduleId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "FixedSchedule",
+      default: null,
+      index: true,
+    },
+
+    monthlyRolloverMonthKey: {
+      type: String,
+      default: "",
+      trim: true,
+      index: true,
+    },
+
     waitlistEntryId: {
       type: mongoose.Schema.Types.ObjectId,
       ref: "WaitlistEntry",
@@ -272,6 +286,7 @@ appointmentSchema.index({
 appointmentSchema.index({ waitlistEntryId: 1 });
 appointmentSchema.index({ createdByUser: 1, createdAt: -1 });
 appointmentSchema.index({ assignedManually: 1, assignedFromWaitlist: 1 });
+appointmentSchema.index({ fixedScheduleId: 1, status: 1, date: 1 });
 appointmentSchema.index({ cancelledAt: 1, cancelledBy: 1 });
 
 const Appointment =

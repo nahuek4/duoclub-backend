@@ -27,6 +27,7 @@ import adminDashboardRoutes from "./routes/adminDashboard.js";
 
 import { startAppointmentReminderScheduler } from "./jobs/startReminders.js";
 import { startWaitlistScheduler } from "./jobs/startWaitlist.js";
+import { startMonthlyRolloverScheduler } from "./jobs/monthlyRollover.js";
 
 dotenv.config();
 
@@ -58,6 +59,10 @@ startAppointmentReminderScheduler({
 
 startWaitlistScheduler({
   everyMinutes: Number(process.env.WAITLIST_EVERY_MINUTES || 2),
+});
+
+startMonthlyRolloverScheduler({
+  everyMinutes: Number(process.env.MONTHLY_ROLLOVER_EVERY_MINUTES || 60),
 });
 
 /* =========================
