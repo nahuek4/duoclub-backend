@@ -348,6 +348,10 @@ const userSchema = new mongoose.Schema(
     weight: { type: Number, default: null },
     notes: { type: String, default: "" },
 
+    healthInsurance: {
+      provider: { type: String, default: "", trim: true },
+    },
+
     credits: { type: Number, default: 0 },
 
     role: {
@@ -418,6 +422,14 @@ const userSchema = new mongoose.Schema(
 );
 
 userSchema.pre("validate", function () {
+  if (!this.healthInsurance || typeof this.healthInsurance !== "object") {
+    this.healthInsurance = { provider: "" };
+  }
+
+  this.healthInsurance.provider = String(
+    this.healthInsurance.provider || ""
+  ).trim();
+
   if (!this.medicalClearance || typeof this.medicalClearance !== "object") {
     this.medicalClearance = createDefaultMedicalClearance();
   }

@@ -192,6 +192,9 @@ function mapAdmissionToUserUpdate(adm) {
     age: age ?? null,
     weight: weight ?? null,
     notes: buildNotesFromAdmission(s1, s2) || "",
+    healthInsurance: {
+      provider: String(s1.healthInsuranceProvider || "").trim(),
+    },
   };
 
   Object.keys(update).forEach((k) => {
@@ -448,6 +451,7 @@ router.get("/admin", protect, adminOrProfessor, async (req, res) => {
           "step1.fullName",
           "step1.email",
           "step1.phone",
+          "step1.healthInsuranceProvider",
           "step1.city",
           "step1.cityOther",
           "step1Completed",
@@ -575,6 +579,9 @@ router.post("/admin/:id/create-user", protect, adminOnly, async (req, res) => {
         lastName: lastName || "-",
         email,
         phone,
+        healthInsurance: {
+          provider: String(s1.healthInsuranceProvider || "").trim(),
+        },
 
         dni: "",
         age: computeAgeFromBirth(s1),

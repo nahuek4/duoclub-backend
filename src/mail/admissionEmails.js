@@ -71,6 +71,8 @@ function admissionSummary(adm = {}, user = null) {
     ? cleanStr(`${s1.city || ""} (${s1.cityOther})`.trim())
     : cleanStr(s1.city);
 
+  const healthInsuranceProvider = cleanStr(s1.healthInsuranceProvider);
+
   const birth =
     s1.birthDay && s1.birthMonth && s1.birthYear
       ? `${cleanStr(s1.birthDay)} / ${cleanStr(s1.birthMonth)} / ${cleanStr(
@@ -198,6 +200,7 @@ function admissionSummary(adm = {}, user = null) {
     email,
     phone,
     city,
+    healthInsuranceProvider,
     birth,
     height: cleanStr(s1.height),
     weight: cleanStr(s1.weight),
@@ -347,6 +350,7 @@ export async function sendAdminAdmissionCompletedEmail(
     `Nombre: ${s.fullName}`,
     `Email: ${s.email}`,
     `Tel: ${s.phone}`,
+    `Obra social / prepaga: ${s.healthInsuranceProvider}`,
     `Ciudad: ${s.city}`,
     "",
     "=== STEP 1 · DATOS PERSONALES / FÍSICO / SALUD ===",
@@ -415,6 +419,7 @@ export async function sendAdminAdmissionCompletedEmail(
         { label: "Nombre", value: s.fullName },
         { label: "Email", value: s.email },
         { label: "Teléfono", value: s.phone },
+        { label: "Obra social / prepaga", value: s.healthInsuranceProvider },
         { label: "Ciudad", value: s.city },
       ])}
 
@@ -422,6 +427,7 @@ export async function sendAdminAdmissionCompletedEmail(
         { label: "Fecha nacimiento", value: s.birth },
         { label: "Altura", value: s.height },
         { label: "Peso", value: s.weight },
+        { label: "Obra social / prepaga", value: s.healthInsuranceProvider },
         { label: "Condición física actual", value: s.fitnessLevel },
         { label: "Contraindicación médica", value: s.hasContraindication },
         {

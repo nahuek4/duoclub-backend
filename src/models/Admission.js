@@ -46,6 +46,7 @@ const admissionSchema = new mongoose.Schema(
       cityOther: { type: String, default: "", trim: true },
       phone: { type: String, default: "", trim: true },
       email: { type: String, default: "", trim: true, lowercase: true },
+      healthInsuranceProvider: { type: String, default: "", trim: true },
 
       fitnessLevel: { type: String, default: "", trim: true },
       hasContraindication: { type: String, default: "", trim: true },
@@ -114,6 +115,9 @@ admissionSchema.pre("validate", function normalizeAdmission() {
     this.step1.cityOther = cleanString(this.step1.cityOther);
     this.step1.phone = cleanString(this.step1.phone);
     this.step1.email = cleanEmail(this.step1.email);
+    this.step1.healthInsuranceProvider = cleanString(
+      this.step1.healthInsuranceProvider
+    );
 
     this.step1.fitnessLevel = cleanString(this.step1.fitnessLevel);
     this.step1.hasContraindication = cleanString(
