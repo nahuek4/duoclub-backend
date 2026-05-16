@@ -1,6 +1,6 @@
 import mongoose from "mongoose";
 
-const ALLOWED_SERVICE_KEYS = ["PE", "EP", "RA", "RF", "NUT"];
+const ALLOWED_SERVICE_KEYS = ["PE", "EP", "RA", "RF", "KD", "NUT"];
 
 function stripAccents(value) {
   return String(value || "")
@@ -14,6 +14,7 @@ function serviceNameFromKey(serviceKey) {
   if (sk === "EP") return "Entrenamiento Personal";
   if (sk === "RA") return "Rehabilitación Activa";
   if (sk === "RF") return "Reeducación Funcional";
+  if (sk === "KD") return "Kinefilaxia Deportiva";
   if (sk === "NUT") return "Nutrición";
   return "";
 }
@@ -21,6 +22,7 @@ function serviceNameFromKey(serviceKey) {
 function normalizeServiceKey(rawServiceKey, rawServiceName = "") {
   const rawKey = String(rawServiceKey || "").toUpperCase().trim();
   if (rawKey === "AR") return "RA";
+  if (rawKey === "KINEDEPO" || rawKey === "KINE-DEPO") return "KD";
   if (ALLOWED_SERVICE_KEYS.includes(rawKey)) return rawKey;
 
   const s = stripAccents(rawServiceName).toLowerCase().trim();
@@ -29,6 +31,7 @@ function normalizeServiceKey(rawServiceKey, rawServiceName = "") {
   if (s.includes("entrenamiento") && s.includes("personal")) return "EP";
   if (s.includes("rehabilitacion") && s.includes("activa")) return "RA";
   if (s.includes("reeducacion") && s.includes("funcional")) return "RF";
+  if (s.includes("kinefilaxia") || (s.includes("kine") && s.includes("deport"))) return "KD";
   if (s.includes("nutric")) return "NUT";
 
   return "";
@@ -74,15 +77,13 @@ const evaluationSchema = new mongoose.Schema(
   { timestamps: true }
 );
 
-evaluationSchema.pre("validate", function normalizeEvaluationService(next) {
+evaluationSchema.pre("validate", function normalizeEvaluationService() {
   const normalizedKey = normalizeServiceKey(this.serviceKey, this.serviceName);
 
   if (this.serviceKey || this.serviceName) {
     this.serviceKey = normalizedKey;
     this.serviceName = normalizedKey ? serviceNameFromKey(normalizedKey) : "";
   }
-
-  next();
 });
 
 evaluationSchema.index({ user: 1, createdAt: -1 });

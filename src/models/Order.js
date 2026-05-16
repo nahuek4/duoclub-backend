@@ -117,7 +117,7 @@ const orderSchema = new mongoose.Schema(
 
     // Links públicos de pago creados por admin
     publicPaymentLink: { type: Boolean, default: false, index: true },
-    publicPaymentToken: { type: String, default: "", trim: true, index: true },
+    publicPaymentToken: { type: String, default: undefined, trim: true },
     publicPaymentExpiresAt: { type: Date, default: null },
     publicPaymentUrl: { type: String, default: "", trim: true },
     manualFulfillmentRequired: { type: Boolean, default: false },
@@ -218,7 +218,15 @@ orderSchema.index({ user: 1, createdAt: -1 });
 orderSchema.index({ createdAt: -1 });
 orderSchema.index({ status: 1, createdAt: -1 });
 orderSchema.index({ serviceKey: 1, createdAt: -1 });
-orderSchema.index({ publicPaymentToken: 1 }, { unique: true, sparse: true });
+orderSchema.index(
+  { publicPaymentToken: 1 },
+  {
+    unique: true,
+    partialFilterExpression: {
+      publicPaymentToken: { $type: "string", $ne: "" },
+    },
+  }
+);
 orderSchema.index({ publicPaymentLink: 1, publicPaymentExpiresAt: 1 });
 
 const Order = mongoose.models.Order || mongoose.model("Order", orderSchema);
