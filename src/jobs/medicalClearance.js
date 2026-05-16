@@ -1,5 +1,8 @@
 import User from "../models/User.js";
-import { sendMail } from "../mail/core.js";
+import {
+  sendMedicalClearanceReminderEmail,
+  sendMedicalClearanceSuspendedEmail,
+} from "../mail.js";
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 const DEFAULT_EVERY_MINUTES = 360;
@@ -72,60 +75,15 @@ function isApproved(user) {
   );
 }
 
-function buildReminderText(user, reminderDay) {
-  const name = fullName(user);
-
-  if (reminderDay === 10) {
-    return {
-      subject: "Recordatorio de apto físico - DUO",
-      text: [
-        `Hola ${name},`,
-        "",
-        "Te recordamos que la entrega del apto físico es muy importante para cuidarte y cuidarnos.",
-        "Te quedan 20 días para presentarlo; caso contrario debemos suspender tu membresía hasta que regularices tu situación.",
-        "",
-        "DUO Health Club",
-      ].join("\n"),
-    };
-  }
-
-  if (reminderDay === 20) {
-    return {
-      subject: "Te quedan 10 días para presentar tu apto físico - DUO",
-      text: [
-        `Hola ${name},`,
-        "",
-        "Te recordamos que la entrega del apto físico es muy importante para cuidarte y cuidarnos.",
-        "Te quedan solo 10 días para presentarlo; caso contrario debemos suspender tu membresía hasta que regularices tu situación.",
-        "",
-        "DUO Health Club",
-      ].join("\n"),
-    };
-  }
-
-  return {
-    subject: "Último aviso de apto físico - DUO",
-    text: [
-      `Hola ${name},`,
-      "",
-      "Llegamos al límite de tiempo para la presentación de tu apto médico y aún no lo recibimos.",
-      "Recordá que el último sábado de cada mes podés hacerlo en DUO con nuestro cardiólogo; caso contrario la semana próxima, lamentablemente debemos suspender tu membresía.",
-      "",
-      "DUO Health Club",
-    ].join("\n"),
-  };
-}
-
-async function sendReminder(user, reminderDay) {
+async function sendReminder(user, reminderDay, medicalClearance = null) {
   const to = String(user?.email || "").trim();
   if (!to) return false;
 
-  const { subject, text } = buildReminderText(user, reminderDay);
-  const html = `<div style="font-family:Arial,sans-serif;color:#111;line-height:1.5;">
-    <p>${text.replace(/\n/g, "<br>")}</p>
-  </div>`;
+  await sendMedicalClearanceReminderEmail(user, {
+    day: reminderDay,
+    dueAt: medicalClearance?.dueAt || user?.medicalClearance?.dueAt || null,
+  });
 
-  await sendMail(to, subject, text, html);
   return true;
 }
 
@@ -134,7 +92,7 @@ async function maybeSendReminder(user, reminderDay, field, now) {
   if (mc[field]) return false;
 
   try {
-    const sent = await sendReminder(user, reminderDay);
+    const sent = await sendReminder(user, reminderDay, mc);
     if (!sent) return false;
 
     mc[field] = now;
@@ -156,7 +114,7 @@ async function maybeSendReminder(user, reminderDay, field, now) {
   }
 }
 
-function suspendForMedicalClearance(user, now) {
+async function suspendForMedicalClearance(user, now) {
   const mc = ensureMedicalClearance(user, now);
 
   if (mc.status === "approved") return false;
@@ -177,6 +135,22 @@ function suspendForMedicalClearance(user, now) {
     message: "Se suspendió automáticamente la posibilidad de reservar por no presentar apto físico desde el día 31 de alta.",
     createdAt: now,
   });
+
+  try {
+    await sendMedicalClearanceSuspendedEmail(user);
+    user.history.push({
+      action: "medical_clearance_suspended_email_sent",
+      title: "Mail de suspensión por apto físico enviado",
+      message: "Se informó por mail que la reserva de turnos quedó suspendida por apto físico pendiente.",
+      createdAt: now,
+    });
+  } catch (e) {
+    console.log("[MEDICAL] suspended email failed", {
+      userId: String(user?._id || ""),
+      email: user?.email || "",
+      error: e?.message || e,
+    });
+  }
 
   return true;
 }
@@ -204,7 +178,7 @@ async function processUser(user, now = new Date()) {
   if (days >= 10) changed = (await maybeSendReminder(user, 10, "lastReminder10At", now)) || changed;
   if (days >= 20) changed = (await maybeSendReminder(user, 20, "lastReminder20At", now)) || changed;
   if (days >= 30) changed = (await maybeSendReminder(user, 30, "lastReminder30At", now)) || changed;
-  if (days >= 31) changed = suspendForMedicalClearance(user, now) || changed;
+  if (days >= 31) changed = (await suspendForMedicalClearance(user, now)) || changed;
 
   mc.lastCheckedAt = now;
 

@@ -9,6 +9,7 @@ export * from "./mail/admissionEmails.js";
 export * from "./mail/orderEmails.js";
 export * from "./mail/layout.js";
 export * from "./mail/creditsEmails.js";
+export * from "./mail/medicalClearanceEmails.js";
 export * from "./mail/helpers.js";
 export * from "./mail/ui.js";
 

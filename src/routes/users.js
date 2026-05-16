@@ -19,6 +19,7 @@ import {
   sendUserApprovalResultEmail,
   sendAdminCreditsAssignedEmail,
   sendUserCreditsAssignedEmail,
+  sendMedicalClearanceStatusEmail,
 } from "../mail.js";
 import { sendMail } from "../mail/core.js";
 import {
@@ -650,54 +651,10 @@ function setMedicalClearanceStatus(user, status, { notes = "", actor = "admin" }
   return mc;
 }
 
-async function sendAptoStatusEmail(user, status) {
-  const to = String(user?.email || "").trim();
-  if (!to) return null;
-
-  const fullName = `${String(user?.name || "").trim()} ${String(user?.lastName || "").trim()}`.trim() || "";
-  const st = String(status || "").toLowerCase().trim();
-
-  let subject = "Actualización de apto físico - DUO";
-  let text = "";
-
-  if (st === "approved") {
-    subject = "Apto físico aprobado - DUO";
-    text = [
-      `Hola ${fullName || ""}`.trim(),
-      "",
-      "Tu apto físico fue aprobado por el equipo de DUO.",
-      "Ya podés continuar utilizando la plataforma normalmente.",
-      "",
-      "DUO Health Club",
-    ].join("\n");
-  } else if (st === "rejected") {
-    subject = "Apto físico observado - DUO";
-    text = [
-      `Hola ${fullName || ""}`.trim(),
-      "",
-      "Tu apto físico fue revisado y necesitamos que regularices o vuelvas a enviarlo.",
-      "Por favor, contactanos si tenés dudas.",
-      "",
-      "DUO Health Club",
-    ].join("\n");
-  } else if (st === "pending_review") {
-    subject = "Recibimos tu apto físico - DUO";
-    text = [
-      `Hola ${fullName || ""}`.trim(),
-      "",
-      "Recibimos tu apto físico y quedó pendiente de revisión por nuestro equipo.",
-      "",
-      "DUO Health Club",
-    ].join("\n");
-  } else {
-    return null;
-  }
-
-  const html = `<div style="font-family:Arial,sans-serif;color:#111;line-height:1.5;">
-    <p>${text.replace(/\n/g, "<br>")}</p>
-  </div>`;
-
-  return sendMail(to, subject, text, html);
+async function sendAptoStatusEmail(user, status, opts = {}) {
+  return sendMedicalClearanceStatusEmail(user, status, {
+    note: opts?.note || opts?.notes || user?.medicalClearance?.notes || "",
+  });
 }
 
 /* ============================================
@@ -1963,7 +1920,7 @@ router.patch("/:id/apto/status", adminOnly, validateObjectIdParam, async (req, r
     });
 
     fireAndForget(
-      () => sendAptoStatusEmail(user, status),
+      () => sendAptoStatusEmail(user, status, { notes }),
       "MAIL_APTO_STATUS_UPDATED"
     );
 
