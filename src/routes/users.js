@@ -551,6 +551,155 @@ function decorateUserForResponse(rawUser, { includeClinicalNotes = true } = {}) 
   };
 }
 
+
+/* ============================================
+   HELPERS: APTO FÍSICO / SUSPENSIÓN MÉDICA
+============================================ */
+function ensureMedicalClearance(user) {
+  if (!user.medicalClearance || typeof user.medicalClearance !== "object") {
+    const startedAt = user.createdAt || new Date();
+    const dueAt = new Date(startedAt);
+    dueAt.setDate(dueAt.getDate() + 30);
+    user.medicalClearance = {
+      status: "not_submitted",
+      startedAt,
+      dueAt,
+      approvedAt: null,
+      rejectedAt: null,
+      suspendedAt: null,
+      lastReminder10At: null,
+      lastReminder20At: null,
+      lastReminder30At: null,
+      lastCheckedAt: null,
+      notes: "",
+    };
+  }
+
+  if (!user.medicalClearance.startedAt) {
+    user.medicalClearance.startedAt = user.createdAt || new Date();
+  }
+
+  if (!user.medicalClearance.dueAt) {
+    const dueAt = new Date(user.medicalClearance.startedAt || user.createdAt || Date.now());
+    dueAt.setDate(dueAt.getDate() + 30);
+    user.medicalClearance.dueAt = dueAt;
+  }
+
+  return user.medicalClearance;
+}
+
+function setMedicalClearanceStatus(user, status, { notes = "", actor = "admin" } = {}) {
+  const now = new Date();
+  const st = String(status || "").toLowerCase().trim();
+  const mc = ensureMedicalClearance(user);
+  const prev = mc.status || "not_submitted";
+
+  if (!["not_submitted", "pending_review", "approved", "rejected", "suspended"].includes(st)) {
+    const err = new Error("Estado de apto inválido.");
+    err.status = 400;
+    throw err;
+  }
+
+  mc.status = st;
+  if (notes) mc.notes = String(notes || "").trim();
+  mc.lastCheckedAt = now;
+
+  if (st === "approved") {
+    mc.approvedAt = now;
+    mc.rejectedAt = null;
+    mc.suspendedAt = null;
+    user.aptoStatus = "approved";
+    user.aptoCompletedAt = now;
+
+    if (user.suspended && String(user.suspendedReason || "") === "medical_clearance") {
+      user.suspended = false;
+      user.suspendedReason = "";
+      user.suspendedAt = null;
+    }
+  }
+
+  if (st === "pending_review") {
+    user.aptoStatus = "pending_review";
+  }
+
+  if (st === "not_submitted") {
+    user.aptoStatus = "not_submitted";
+    user.aptoCompletedAt = null;
+  }
+
+  if (st === "rejected") {
+    mc.rejectedAt = now;
+    user.aptoStatus = "rejected";
+  }
+
+  if (st === "suspended") {
+    mc.suspendedAt = mc.suspendedAt || now;
+    user.suspended = true;
+    user.suspendedReason = "medical_clearance";
+    user.suspendedAt = user.suspendedAt || now;
+  }
+
+  pushUserHistory(user, {
+    action: "medical_clearance_status_updated",
+    title: "Estado de apto físico actualizado",
+    message: `Estado anterior: ${prev}. Estado nuevo: ${st}.`,
+    field: "medicalClearance.status",
+    createdAt: now,
+  });
+
+  return mc;
+}
+
+async function sendAptoStatusEmail(user, status) {
+  const to = String(user?.email || "").trim();
+  if (!to) return null;
+
+  const fullName = `${String(user?.name || "").trim()} ${String(user?.lastName || "").trim()}`.trim() || "";
+  const st = String(status || "").toLowerCase().trim();
+
+  let subject = "Actualización de apto físico - DUO";
+  let text = "";
+
+  if (st === "approved") {
+    subject = "Apto físico aprobado - DUO";
+    text = [
+      `Hola ${fullName || ""}`.trim(),
+      "",
+      "Tu apto físico fue aprobado por el equipo de DUO.",
+      "Ya podés continuar utilizando la plataforma normalmente.",
+      "",
+      "DUO Health Club",
+    ].join("\n");
+  } else if (st === "rejected") {
+    subject = "Apto físico observado - DUO";
+    text = [
+      `Hola ${fullName || ""}`.trim(),
+      "",
+      "Tu apto físico fue revisado y necesitamos que regularices o vuelvas a enviarlo.",
+      "Por favor, contactanos si tenés dudas.",
+      "",
+      "DUO Health Club",
+    ].join("\n");
+  } else if (st === "pending_review") {
+    subject = "Recibimos tu apto físico - DUO";
+    text = [
+      `Hola ${fullName || ""}`.trim(),
+      "",
+      "Recibimos tu apto físico y quedó pendiente de revisión por nuestro equipo.",
+      "",
+      "DUO Health Club",
+    ].join("\n");
+  } else {
+    return null;
+  }
+
+  const html = `<div style="font-family:Arial,sans-serif;color:#111;line-height:1.5;">
+    <p>${text.replace(/\n/g, "<br>")}</p>
+  </div>`;
+
+  return sendMail(to, subject, text, html);
+}
+
 /* ============================================
    HELPERS: MAIL CRÉDITOS
 ============================================ */
@@ -933,10 +1082,13 @@ router.post("/", adminOnly, async (req, res) => {
       password: hashed,
       mustChangePassword: true,
       suspended: false,
+      suspendedReason: "",
+      suspendedAt: null,
       emailVerified: true,
       approvalStatus: "approved",
       aptoPath: "",
-      aptoStatus: "",
+      aptoStatus: "not_submitted",
+      medicalClearance: undefined,
       welcomeApprovedEmailSentAt: new Date(),
       firstEvaluationCompleted: false,
       firstEvaluationCompletedAt: null,
@@ -1083,6 +1235,9 @@ router.patch("/:id/approval", adminOnly, validateObjectIdParam, async (req, res)
 
     user.approvalStatus = "approved";
     user.suspended = false;
+    user.suspendedReason = "";
+    user.suspendedAt = null;
+    ensureMedicalClearance(user);
 
     const changed = prevStatus !== "approved";
     const shouldSendApprovalMail =
@@ -1616,6 +1771,8 @@ router.patch("/:id/suspend", adminOnly, validateObjectIdParam, async (req, res) 
 
     const prevSuspended = !!user.suspended;
     user.suspended = !!suspended;
+    user.suspendedReason = user.suspended ? String(req.body?.reason || user.suspendedReason || "manual").trim() : "";
+    user.suspendedAt = user.suspended ? user.suspendedAt || new Date() : null;
     await user.save();
 
     await logActivity({
@@ -1672,18 +1829,27 @@ router.post("/:id/apto", validateObjectIdParam, uploadAptoSingle, async (req, re
     const newPath = "/api/uploads/aptos/" + req.file.filename;
 
     user.aptoPath = newPath;
-    user.aptoStatus = "uploaded";
+    user.aptoStatus = "pending_review";
+    setMedicalClearanceStatus(user, "pending_review", { actor: isAdmin ? "admin" : "user" });
     pushUserHistory(user, {
       action: "apto_uploaded",
       title: "Cargó el Apto Físico.",
+      message: "El apto físico quedó pendiente de revisión.",
       createdAt: new Date(),
     });
     await user.save();
 
+    fireAndForget(
+      () => sendAptoStatusEmail(user, "pending_review"),
+      "MAIL_APTO_PENDING_REVIEW"
+    );
+
     return res.json({
       ok: true,
-      message: "Apto subido correctamente.",
+      message: "Apto subido correctamente y pendiente de revisión.",
       aptoPath: newPath,
+      aptoStatus: user.aptoStatus,
+      medicalClearance: user.medicalClearance,
     });
   } catch (err) {
     console.error("Error en POST /users/:id/apto:", err);
@@ -1736,7 +1902,7 @@ router.delete("/:id/apto", validateObjectIdParam, async (req, res) => {
     }
 
     user.aptoPath = "";
-    user.aptoStatus = "";
+    setMedicalClearanceStatus(user, "not_submitted", { actor: isAdmin ? "admin" : "user" });
     pushUserHistory(user, {
       action: "apto_deleted",
       title: "Borró el Apto Físico.",
@@ -1744,12 +1910,74 @@ router.delete("/:id/apto", validateObjectIdParam, async (req, res) => {
     });
     await user.save();
 
-    return res.json({ ok: true, message: "Apto eliminado correctamente." });
+    return res.json({
+      ok: true,
+      message: "Apto eliminado correctamente.",
+      aptoStatus: user.aptoStatus,
+      medicalClearance: user.medicalClearance,
+    });
   } catch (err) {
     console.error("Error en DELETE /users/:id/apto:", err);
     return res.status(500).json({
       error: "Error al borrar apto.",
       detail: err?.message || String(err),
+    });
+  }
+});
+
+
+router.patch("/:id/apto/status", adminOnly, validateObjectIdParam, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const status = String(req.body?.status || "").toLowerCase().trim();
+    const notes = String(req.body?.notes || "").trim();
+
+    const user = await User.findById(id);
+    if (!user) return res.status(404).json({ error: "Usuario no encontrado." });
+
+    const prev = {
+      aptoStatus: user.aptoStatus || "",
+      suspended: !!user.suspended,
+      suspendedReason: user.suspendedReason || "",
+      medicalClearance: user.medicalClearance?.toObject?.() || user.medicalClearance || null,
+    };
+
+    setMedicalClearanceStatus(user, status, { notes, actor: "admin" });
+    await user.save();
+
+    await logActivity({
+      req,
+      category: "users",
+      action: "apto_status_updated",
+      entity: "user",
+      entityId: user._id,
+      title: "Estado de apto físico actualizado",
+      description: `El apto físico cambió a ${status}.`,
+      subject: buildUserSubject(user),
+      diff: buildDiff(prev, {
+        aptoStatus: user.aptoStatus || "",
+        suspended: !!user.suspended,
+        suspendedReason: user.suspendedReason || "",
+        medicalClearance: user.medicalClearance?.toObject?.() || user.medicalClearance || null,
+      }),
+    });
+
+    fireAndForget(
+      () => sendAptoStatusEmail(user, status),
+      "MAIL_APTO_STATUS_UPDATED"
+    );
+
+    return res.json({
+      ok: true,
+      aptoStatus: user.aptoStatus,
+      suspended: user.suspended,
+      suspendedReason: user.suspendedReason || "",
+      medicalClearance: user.medicalClearance,
+    });
+  } catch (err) {
+    console.error("Error en PATCH /users/:id/apto/status:", err);
+    return res.status(err?.status || 500).json({
+      error: err?.message || "Error al actualizar estado del apto.",
     });
   }
 });

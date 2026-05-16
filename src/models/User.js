@@ -125,6 +125,54 @@ creditLotSchema.pre("validate", function () {
   this.remaining = Math.max(0, Math.min(this.amount, remaining));
 });
 
+
+const medicalClearanceSchema = new mongoose.Schema(
+  {
+    status: {
+      type: String,
+      default: "not_submitted",
+      enum: ["not_submitted", "pending_review", "approved", "rejected", "suspended"],
+    },
+    startedAt: { type: Date, default: Date.now },
+    dueAt: {
+      type: Date,
+      default() {
+        const d = new Date();
+        d.setDate(d.getDate() + 30);
+        return d;
+      },
+    },
+    approvedAt: { type: Date, default: null },
+    rejectedAt: { type: Date, default: null },
+    suspendedAt: { type: Date, default: null },
+    lastReminder10At: { type: Date, default: null },
+    lastReminder20At: { type: Date, default: null },
+    lastReminder30At: { type: Date, default: null },
+    lastCheckedAt: { type: Date, default: null },
+    notes: { type: String, default: "" },
+  },
+  { _id: false }
+);
+
+function createDefaultMedicalClearance() {
+  const startedAt = new Date();
+  const dueAt = new Date(startedAt);
+  dueAt.setDate(dueAt.getDate() + 30);
+  return {
+    status: "not_submitted",
+    startedAt,
+    dueAt,
+    approvedAt: null,
+    rejectedAt: null,
+    suspendedAt: null,
+    lastReminder10At: null,
+    lastReminder20At: null,
+    lastReminder30At: null,
+    lastCheckedAt: null,
+    notes: "",
+  };
+}
+
 const clinicalNoteSchema = new mongoose.Schema(
   {
     date: { type: Date, default: Date.now },
@@ -312,9 +360,20 @@ const userSchema = new mongoose.Schema(
 
     mustChangePassword: { type: Boolean, default: false },
     suspended: { type: Boolean, default: false },
+    suspendedReason: { type: String, default: "", trim: true },
+    suspendedAt: { type: Date, default: null },
 
     aptoPath: { type: String, default: "" },
-    aptoStatus: { type: String, default: "" },
+    aptoStatus: {
+      type: String,
+      default: "",
+      enum: ["", "not_submitted", "uploaded", "pending_review", "approved", "rejected"],
+    },
+    aptoCompletedAt: { type: Date, default: null },
+    medicalClearance: {
+      type: medicalClearanceSchema,
+      default: createDefaultMedicalClearance,
+    },
     photoPath: { type: String, default: "" },
 
     history: { type: [historySchema], default: [] },
@@ -359,6 +418,43 @@ const userSchema = new mongoose.Schema(
 );
 
 userSchema.pre("validate", function () {
+  if (!this.medicalClearance || typeof this.medicalClearance !== "object") {
+    this.medicalClearance = createDefaultMedicalClearance();
+  }
+
+  if (!this.medicalClearance.startedAt) {
+    this.medicalClearance.startedAt = this.createdAt || new Date();
+  }
+
+  if (!this.medicalClearance.dueAt) {
+    const due = new Date(this.medicalClearance.startedAt || this.createdAt || Date.now());
+    due.setDate(due.getDate() + 30);
+    this.medicalClearance.dueAt = due;
+  }
+
+  const aptoStatus = String(this.aptoStatus || "").toLowerCase().trim();
+  const hasLegacyCompletedApto = !!this.aptoCompletedAt || String(this.aptoPath || "") === "ADMIN_COMPLETED_APTO";
+
+  if ((aptoStatus === "approved" || hasLegacyCompletedApto) && this.medicalClearance.status !== "approved") {
+    this.medicalClearance.status = "approved";
+    this.medicalClearance.approvedAt = this.medicalClearance.approvedAt || this.aptoCompletedAt || new Date();
+  }
+
+  if (this.medicalClearance.status === "approved") {
+    this.aptoStatus = "approved";
+  } else if (this.medicalClearance.status === "pending_review") {
+    this.aptoStatus = this.aptoStatus || "pending_review";
+  } else if (this.medicalClearance.status === "rejected") {
+    this.aptoStatus = "rejected";
+  }
+
+  if (!this.suspended) {
+    this.suspendedReason = "";
+    this.suspendedAt = null;
+  } else if (!this.suspendedAt) {
+    this.suspendedAt = new Date();
+  }
+
   if (Array.isArray(this.history)) {
     this.history = this.history.map((item) => {
       if (!item) return item;

@@ -826,10 +826,12 @@ function serializeWaitlistEntry(entry) {
 }
 
 function requiresApto(user) {
-  if (!user?.createdAt) return false;
-  const created = new Date(user.createdAt);
-  const days = Math.floor((Date.now() - created.getTime()) / (1000 * 60 * 60 * 24));
-  return days > 20 && !user.aptoPath;
+  // La regla nueva no bloquea por días de alta directamente.
+  // El job de apto físico envía recordatorios a los días 10/20/30 y recién
+  // desde el día 31 marca al usuario como suspendido. Esa suspensión ya se
+  // valida por separado con user.suspended.
+  const status = String(user?.medicalClearance?.status || "").toLowerCase().trim();
+  return status === "suspended";
 }
 
 /* =========================
@@ -2025,18 +2027,36 @@ router.post("/admin/:userId/complete-apto", ensureStaff, async (req, res) => {
       return res.status(404).json({ error: "Usuario no encontrado." });
     }
 
+    const now = new Date();
+
     if (!user.aptoPath) {
       user.aptoPath = "ADMIN_COMPLETED_APTO";
-      user.aptoCompletedAt = new Date();
-
-      user.history = Array.isArray(user.history) ? user.history : [];
-      user.history.push({
-        action: "apto_completado_por_admin",
-        createdAt: new Date(),
-      });
-
-      await user.save();
     }
+
+    user.aptoStatus = "approved";
+    user.aptoCompletedAt = now;
+    user.medicalClearance = user.medicalClearance || {};
+    user.medicalClearance.status = "approved";
+    user.medicalClearance.approvedAt = now;
+    user.medicalClearance.rejectedAt = null;
+    user.medicalClearance.suspendedAt = null;
+    user.medicalClearance.lastCheckedAt = now;
+
+    if (user.suspended && String(user.suspendedReason || "") === "medical_clearance") {
+      user.suspended = false;
+      user.suspendedReason = "";
+      user.suspendedAt = null;
+    }
+
+    user.history = Array.isArray(user.history) ? user.history : [];
+    user.history.push({
+      action: "apto_completado_por_admin",
+      title: "Apto físico aprobado",
+      message: "Se marcó manualmente el apto como aprobado.",
+      createdAt: now,
+    });
+
+    await user.save();
 
     await logActivity({
       req,
@@ -2170,7 +2190,7 @@ router.get("/availability", async (req, res) => {
       await syncPastAppointmentsForUserId(requesterId);
 
       const me = await User.findById(requesterId)
-        .select("role suspended aptoPath createdAt credits creditLots firstEvaluationCompleted firstEvaluationCompletedAt")
+        .select("role suspended suspendedReason aptoPath aptoStatus medicalClearance createdAt credits creditLots firstEvaluationCompleted firstEvaluationCompletedAt")
         .lean();
 
       if (!me) {
