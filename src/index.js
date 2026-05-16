@@ -20,6 +20,7 @@ import adminEvaluationsRoutes from "./routes/adminEvaluations.js";
 import evaluationsRoutes from "./routes/evaluations.js";
 import testMailRouter from "./routes/testMail.js";
 import waitlistRouter from "./routes/waitlist.js";
+import scheduleBlocksRoutes from "./routes/scheduleBlocks.js";
 
 import adminApprovalLinksRoutes from "./routes/adminApprovalLinks.js";
 import adminDashboardRoutes from "./routes/adminDashboard.js";
@@ -166,6 +167,7 @@ function mountRoutes(prefix = "") {
   app.use(`${prefix}/admin/dashboard`, adminDashboardRoutes);
   app.use(`${prefix}/api/test-mail`, testMailRouter);
   app.use(`${prefix}/waitlist`, waitlistRouter);
+  app.use(`${prefix}/schedule-blocks`, scheduleBlocksRoutes);
 }
 
 mountRoutes("");

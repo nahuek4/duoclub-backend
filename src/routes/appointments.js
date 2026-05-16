@@ -5,6 +5,7 @@ import Appointment from "../models/Appointment.js";
 import User from "../models/User.js";
 import WaitlistEntry from "../models/WaitlistEntry.js";
 import FixedSchedule from "../models/FixedSchedule.js";
+import ScheduleBlock from "../models/ScheduleBlock.js";
 
 import { protect } from "../middleware/auth.js";
 
@@ -919,6 +920,86 @@ function getSlotReservationStats(existing, dateStr, time) {
   };
 }
 
+
+function timeIsInsideScheduleBlock(block, time) {
+  if (!block) return false;
+  if (block.allDay) return true;
+
+  const t = String(time || "").slice(0, 5);
+  const from = String(block.timeFrom || "").slice(0, 5);
+  const to = String(block.timeTo || "").slice(0, 5);
+
+  if (!from || !to) return true;
+  return t >= from && t < to;
+}
+
+function dateMatchesScheduleBlock(block, date) {
+  const day = String(date || "").slice(0, 10);
+  if (!day || !block?.dateFrom) return false;
+  if (day < String(block.dateFrom).slice(0, 10)) return false;
+
+  if (!block.indefinite) {
+    const to = String(block.dateTo || block.dateFrom || "").slice(0, 10);
+    if (to && day > to) return false;
+  }
+
+  const weekdays = Array.isArray(block.weekdays) ? block.weekdays : [];
+  if (weekdays.length) {
+    const weekday = getWeekdayMondayFirst(day);
+    if (!weekdays.map(Number).includes(weekday)) return false;
+  }
+
+  return true;
+}
+
+function scheduleBlockReason(block) {
+  return (
+    String(block?.reason || "").trim() ||
+    String(block?.title || "").trim() ||
+    "Agenda bloqueada"
+  );
+}
+
+async function findActiveScheduleBlock({ date, time, serviceKey, session = null }) {
+  const day = String(date || "").slice(0, 10);
+  const sk = normalizeServiceKey(serviceKey);
+  if (!day || !sk) return null;
+
+  const query = ScheduleBlock.find({
+    active: true,
+    serviceKeys: sk,
+    dateFrom: { $lte: day },
+    $or: [
+      { indefinite: true },
+      { dateTo: { $gte: day } },
+      { dateTo: "" },
+      { dateTo: { $exists: false } },
+    ],
+  }).sort({ createdAt: -1 });
+
+  if (session) query.session(session);
+
+  const candidates = await query.lean();
+
+  return (
+    candidates.find(
+      (block) =>
+        dateMatchesScheduleBlock(block, day) &&
+        timeIsInsideScheduleBlock(block, time)
+    ) || null
+  );
+}
+
+async function assertSlotNotBlocked({ date, time, serviceKey, session = null }) {
+  const block = await findActiveScheduleBlock({ date, time, serviceKey, session });
+  if (!block) return null;
+
+  const e = new Error(`SCHEDULE_BLOCKED:${scheduleBlockReason(block)}`);
+  e.http = 409;
+  e.block = block;
+  throw e;
+}
+
 /* =========================
    CANCELACIÓN / REINTEGRO
 ========================= */
@@ -1438,6 +1519,12 @@ async function createAppointmentForTargetUser({
 
   const t = String(time).slice(0, 5);
 
+  await assertSlotNotBlocked({
+    date,
+    time: t,
+    serviceKey: basic.serviceKey,
+  });
+
   const alreadyByUser = await Appointment.findOne(
     buildReservedSlotQuery(date, t, { user: targetUser._id })
   ).lean();
@@ -1756,6 +1843,11 @@ router.post("/waitlist/claim", async (req, res, next) => {
     }
     if (msg === "ALREADY_HAVE_SLOT") {
       return res.status(409).json({ error: "Ya tenías ese turno reservado." });
+    }
+    if (msg.startsWith("SCHEDULE_BLOCKED:")) {
+      return res.status(409).json({
+        error: msg.replace("SCHEDULE_BLOCKED:", "") || "Agenda bloqueada para ese horario.",
+      });
     }
     if (msg === "SERVICE_CAP_REACHED" || msg === "TOTAL_CAP_REACHED") {
       return res.status(409).json({ error: "La vacante ya fue ocupada." });
@@ -2105,6 +2197,27 @@ router.get("/availability", async (req, res) => {
 
       if (!basic.ok) {
         out.push({ time: t, state: "closed", reason: basic.error });
+        continue;
+      }
+
+      const block = await findActiveScheduleBlock({
+        date,
+        time: t,
+        serviceKey: normalizedServiceKey,
+      });
+
+      if (block) {
+        out.push({
+          time: t,
+          state: "blocked",
+          reason: scheduleBlockReason(block),
+          totalReserved: 0,
+          capacity: 0,
+          reserved: 0,
+          available: 0,
+          availableVacancies: 0,
+          blockId: String(block._id || block.id || ""),
+        });
         continue;
       }
 
@@ -2514,6 +2627,13 @@ router.post("/", async (req, res) => {
 
       const t = String(time).slice(0, 5);
 
+      await assertSlotNotBlocked({
+        date,
+        time: t,
+        serviceKey: basic.serviceKey,
+        session,
+      });
+
       const alreadyByUser = await Appointment.findOne(
         buildReservedSlotQuery(date, t, { user: user._id })
       ).session(session).lean();
@@ -2753,6 +2873,11 @@ router.post("/", async (req, res) => {
     if (msg === "ALREADY_IN_WAITLIST") {
       return res.status(409).json({ error: "Ya estás anotado/a en la lista de espera de ese horario." });
     }
+    if (msg.startsWith("SCHEDULE_BLOCKED:")) {
+      return res.status(409).json({
+        error: msg.replace("SCHEDULE_BLOCKED:", "") || "Agenda bloqueada para ese horario.",
+      });
+    }
     if (msg === "SERVICE_CAP_REACHED") {
       return res.status(409).json({ error: "Ese servicio ya alcanzó su cupo para ese horario." });
     }
@@ -2837,6 +2962,13 @@ router.post("/batch", async (req, res) => {
         if (!hasValidCreditsForServiceAndSlot(user, requestedSk, it.slotDate)) {
           throw new Error(`NO_CREDITS_FOR_SLOT_${requestedSk}`);
         }
+
+        await assertSlotNotBlocked({
+          date: it.date,
+          time: it.time,
+          serviceKey: requestedSk,
+          session,
+        });
 
         const alreadyByUser = await Appointment.findOne(
           buildReservedSlotQuery(it.date, it.time, { user: user._id })
@@ -2988,6 +3120,11 @@ router.post("/batch", async (req, res) => {
     }
     if (msg === "DUPLICATED_SLOT_IN_REQUEST") {
       return res.status(400).json({ error: "Hay horarios duplicados en la misma reserva." });
+    }
+    if (msg.startsWith("SCHEDULE_BLOCKED:")) {
+      return res.status(409).json({
+        error: msg.replace("SCHEDULE_BLOCKED:", "") || "Agenda bloqueada para ese horario.",
+      });
     }
     if (msg === "SERVICE_CAP_REACHED") {
       return res.status(409).json({ error: "Uno de los servicios ya alcanzó su cupo para ese horario." });
@@ -3355,6 +3492,11 @@ router.post("/waitlist/claim", ensureStaff, async (req, res) => {
     }
     if (msg === "ALREADY_HAVE_SLOT") {
       return res.status(409).json({ error: "El usuario ya tiene un turno reservado en ese horario." });
+    }
+    if (msg.startsWith("SCHEDULE_BLOCKED:")) {
+      return res.status(409).json({
+        error: msg.replace("SCHEDULE_BLOCKED:", "") || "Agenda bloqueada para ese horario.",
+      });
     }
     if (msg === "SERVICE_CAP_REACHED") {
       return res.status(409).json({ error: "Ese servicio ya alcanzó su cupo para ese horario." });
