@@ -184,6 +184,9 @@ function mapAdmissionToUserUpdate(adm) {
 
   const age = computeAgeFromBirth(s1);
   const weight = toNumberOrNull(s1.weight);
+  const birthDay = Number(s1.birthDay || 0) || null;
+  const birthMonth = Number(s1.birthMonth || 0) || null;
+  const birthYear = Number(s1.birthYear || 0) || null;
 
   const update = {
     name: name || undefined,
@@ -194,6 +197,11 @@ function mapAdmissionToUserUpdate(adm) {
     notes: buildNotesFromAdmission(s1, s2) || "",
     healthInsurance: {
       provider: String(s1.healthInsuranceProvider || "").trim(),
+    },
+    birthDate: {
+      day: birthDay,
+      month: birthMonth,
+      year: birthYear,
     },
   };
 

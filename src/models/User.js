@@ -352,6 +352,12 @@ const userSchema = new mongoose.Schema(
       provider: { type: String, default: "", trim: true },
     },
 
+    birthDate: {
+      day: { type: Number, default: null, min: 1, max: 31 },
+      month: { type: Number, default: null, min: 1, max: 12 },
+      year: { type: Number, default: null, min: 1900, max: 2200 },
+    },
+
     credits: { type: Number, default: 0 },
 
     role: {
@@ -408,6 +414,15 @@ const userSchema = new mongoose.Schema(
       lastRunAt: { type: Date, default: null },
     },
 
+    notifications: {
+      lastCreditsExpiryMonthKey: { type: String, default: "" },
+      lastFinalWeekMonthKey: { type: String, default: "" },
+      lastMonthEndMonthKey: { type: String, default: "" },
+      lastMonthStartFixedMonthKey: { type: String, default: "" },
+      lastBirthdayYearKey: { type: String, default: "" },
+      lastAdminBirthdayYearKey: { type: String, default: "" },
+    },
+
     monthlyPlan: {
       type: monthlyPlanSchema,
       default: createDefaultMonthlyPlan,
@@ -429,6 +444,20 @@ userSchema.pre("validate", function () {
   this.healthInsurance.provider = String(
     this.healthInsurance.provider || ""
   ).trim();
+
+  if (!this.birthDate || typeof this.birthDate !== "object") {
+    this.birthDate = { day: null, month: null, year: null };
+  }
+
+  for (const k of ["day", "month", "year"]) {
+    const raw = this.birthDate?.[k];
+    const n = raw === null || raw === undefined || raw === "" ? null : Number(raw);
+    this.birthDate[k] = Number.isFinite(n) ? n : null;
+  }
+
+  if (!this.notifications || typeof this.notifications !== "object") {
+    this.notifications = {};
+  }
 
   if (!this.medicalClearance || typeof this.medicalClearance !== "object") {
     this.medicalClearance = createDefaultMedicalClearance();

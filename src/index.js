@@ -29,6 +29,7 @@ import { startAppointmentReminderScheduler } from "./jobs/startReminders.js";
 import { startWaitlistScheduler } from "./jobs/startWaitlist.js";
 import { startMonthlyRolloverScheduler } from "./jobs/monthlyRollover.js";
 import { startMedicalClearanceScheduler } from "./jobs/medicalClearance.js";
+import { startUserNotificationsScheduler } from "./jobs/userNotifications.js";
 
 dotenv.config();
 
@@ -68,6 +69,10 @@ startMonthlyRolloverScheduler({
 
 startMedicalClearanceScheduler({
   everyMinutes: Number(process.env.MEDICAL_CLEARANCE_EVERY_MINUTES || 360),
+});
+
+startUserNotificationsScheduler({
+  everyMinutes: Number(process.env.USER_NOTIFICATIONS_EVERY_MINUTES || 360),
 });
 
 /* =========================

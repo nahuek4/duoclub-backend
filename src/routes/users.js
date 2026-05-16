@@ -319,16 +319,9 @@ function recalcUserCredits(user) {
   user.credits = sum;
 }
 
-function lastBusinessDayOfCurrentMonth() {
+function lastDayOfCurrentMonth() {
   const now = nowDate();
-  const d = new Date(now.getFullYear(), now.getMonth() + 1, 0, 23, 59, 59, 999);
-
-  while (d.getDay() === 0 || d.getDay() === 6) {
-    d.setDate(d.getDate() - 1);
-  }
-
-  d.setHours(23, 59, 59, 999);
-  return d;
+  return new Date(now.getFullYear(), now.getMonth() + 1, 0, 23, 59, 59, 999);
 }
 
 
@@ -460,7 +453,7 @@ function addCreditLot(
   if (!qty) return;
 
   const now = nowDate();
-  const exp = lastBusinessDayOfCurrentMonth();
+  const exp = lastDayOfCurrentMonth();
 
   user.creditLots = user.creditLots || [];
   user.creditLots.push({
@@ -477,7 +470,7 @@ function addCreditLot(
   user.history.push({
     action: "credits_added_monthly",
     title: `Créditos acreditados ${sk}`,
-    message: `Se acreditaron ${qty} crédito(s), con vencimiento el último día hábil del mes.`,
+    message: `Se acreditaron ${qty} crédito(s), con vencimiento el último día del mes.`,
     serviceKey: sk,
     serviceName: SERVICE_KEY_TO_NAME[sk] || sk,
     service: SERVICE_KEY_TO_NAME[sk] || sk,

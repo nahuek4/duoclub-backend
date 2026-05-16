@@ -120,18 +120,11 @@ function pad2(n) {
   return String(n).padStart(2, "0");
 }
 
-function lastBusinessDayOfCurrentMonth() {
+function lastDayOfCurrentMonth() {
   const now = new Date();
   const y = now.getFullYear();
   const m = now.getMonth();
-  const d = new Date(y, m + 1, 0, 23, 59, 59, 999);
-
-  while (d.getDay() === 0 || d.getDay() === 6) {
-    d.setDate(d.getDate() - 1);
-  }
-
-  d.setHours(23, 59, 59, 999);
-  return d;
+  return new Date(y, m + 1, 0, 23, 59, 59, 999);
 }
 
 function currentMonthKey() {
@@ -148,7 +141,7 @@ function addCreditLot(user, { amount, source, orderId, serviceKey }) {
   const qty = Math.max(0, Number(amount || 0));
   if (!qty) return;
 
-  const exp = lastBusinessDayOfCurrentMonth();
+  const exp = lastDayOfCurrentMonth();
 
   user.creditLots = user.creditLots || [];
   user.creditLots.push({
@@ -165,7 +158,7 @@ function addCreditLot(user, { amount, source, orderId, serviceKey }) {
   user.history.push({
     action: "credits_added_monthly",
     title: `Créditos acreditados ${sk}`,
-    message: `Se acreditaron ${qty} crédito(s), con vencimiento el último día hábil del mes.`,
+    message: `Se acreditaron ${qty} crédito(s), con vencimiento el último día del mes.`,
     serviceKey: sk,
     serviceName: SERVICE_KEY_TO_NAME[sk] || sk,
     service: SERVICE_KEY_TO_NAME[sk] || sk,
