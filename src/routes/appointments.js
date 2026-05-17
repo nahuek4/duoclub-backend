@@ -53,6 +53,24 @@ const CREDITS_EXPIRE_DAYS = 30;
 ========================= */
 const ACTIVE_WAITLIST_STATUSES = ["waiting", "notified"];
 
+function waitlistQueueServiceKeys(serviceKeyOrName) {
+  const sk = serviceToKey(serviceKeyOrName);
+  if (!sk) return [];
+  if (isTherapyService(sk)) return ["RA", "RF", "KD"];
+  return [sk];
+}
+
+function buildWaitlistQueueMatch(serviceKeyOrName) {
+  const keys = waitlistQueueServiceKeys(serviceKeyOrName);
+  if (!keys.length) return { serviceKey: "__NO_SERVICE__" };
+  return { serviceKey: { $in: keys } };
+}
+
+function isWaitlistableService(serviceKeyOrName) {
+  const sk = serviceToKey(serviceKeyOrName);
+  return sk === "EP" || isTherapyService(sk);
+}
+
 /* =========================
    ADMIN MAIL (fallback)
 ========================= */
@@ -810,7 +828,9 @@ function serializeWaitlistEntry(entry) {
     date: json?.date,
     time: json?.time,
     service: json?.service || EP_NAME,
+    serviceKey: waitlistEntryServiceKey(json) || serviceToKey(json?.service || "") || "",
     status: json?.status || "waiting",
+    priorityOrder: Number(json?.priorityOrder || 0),
     createdAt: json?.createdAt || null,
     notifiedAt: json?.notifiedAt || null,
     claimedAt: json?.claimedAt || null,
@@ -1836,23 +1856,9 @@ router.post("/waitlist/claim", async (req, res, next) => {
       entry.tokenExpiresAt = null;
       await entry.save({ session });
 
-      await WaitlistEntry.updateMany(
-        {
-          _id: { $ne: entry._id },
-          date: entry.date,
-          time: entry.time,
-          serviceKey: entry.serviceKey || "EP",
-          status: { $in: ACTIVE_WAITLIST_STATUSES },
-        },
-        {
-          $set: {
-            status: "closed",
-            closeReason: "SLOT_FILLED",
-            closedAt: new Date(),
-          },
-        },
-        { session }
-      );
+      // La sala de espera queda bajo gestión manual del admin.
+      // No cerramos automáticamente el resto de la cola: puede quedar cupo
+      // disponible para más de una persona o para otro servicio del pool RA/RF/KD.
     });
 
     return res.status(201).json({
@@ -2332,9 +2338,12 @@ router.get("/availability", async (req, res) => {
         }
       } else if (isTherapy) {
         if (stats.therapyReserved >= stats.therapyCap) {
+          const waitlistCheck = validateWaitlistOpen(basic.slotDate, normalizedServiceKey);
+
           out.push({
             time: t,
-            state: "full",
+            state: waitlistCheck.ok ? "waitlist" : "waitlist_closed",
+            reason: waitlistCheck.ok ? "" : waitlistCheck.error,
             totalReserved: stats.totalReserved,
             epReserved: stats.epReserved,
             epCap: stats.epCap,
@@ -2721,19 +2730,21 @@ router.post("/", async (req, res) => {
         }
       } else if (isTherapyService(requestedSk)) {
         if (stats.therapyReserved >= stats.therapyCap) {
-          throw new Error("SERVICE_CAP_REACHED");
+          willWaitlist = true;
         }
-        }
+      }
 
-      if (willWaitlist && basic.isEpService) {
+      if (willWaitlist && isWaitlistableService(requestedSk)) {
         const wlWindow = validateWaitlistOpen(basic.slotDate, requestedSk);
         if (!wlWindow.ok) throw new Error("WAITLIST_CLOSED");
+
+        const queueMatch = buildWaitlistQueueMatch(requestedSk);
 
         const wlExists = await WaitlistEntry.findOne({
           user: user._id,
           date,
           time: t,
-          service: EP_NAME,
+          ...queueMatch,
           status: { $in: ACTIVE_WAITLIST_STATUSES },
         }).session(session);
 
@@ -2742,7 +2753,7 @@ router.post("/", async (req, res) => {
         const lastPriority = await WaitlistEntry.findOne({
           date,
           time: t,
-          service: EP_NAME,
+          ...queueMatch,
           status: { $in: ACTIVE_WAITLIST_STATUSES },
         })
           .sort({ priorityOrder: -1, createdAt: -1 })
@@ -2756,8 +2767,8 @@ router.post("/", async (req, res) => {
             user: user._id,
             date,
             time: t,
-            serviceKey: "EP",
-            service: EP_NAME,
+            serviceKey: requestedSk,
+            service: basic.serviceName,
             status: "waiting",
             notes: String(notes || "").trim(),
             priorityOrder: nextPriority,
@@ -2774,7 +2785,8 @@ router.post("/", async (req, res) => {
           id: String(createdWaitlist._id),
           date,
           time: t,
-          service: EP_NAME,
+          service: basic.serviceName,
+          serviceKey: requestedSk,
           status: "waiting",
           priorityOrder: nextPriority,
           createdAt: createdWaitlist.createdAt || new Date(),
@@ -3512,23 +3524,9 @@ router.post("/waitlist/claim", ensureStaff, async (req, res) => {
       entry.closeReason = "CLAIMED_BY_STAFF";
       await entry.save({ session });
 
-      await WaitlistEntry.updateMany(
-        {
-          _id: { $ne: entry._id },
-          date: entry.date,
-          time: entry.time,
-          serviceKey: entry.serviceKey || "EP",
-          status: { $in: ACTIVE_WAITLIST_STATUSES },
-        },
-        {
-          $set: {
-            status: "closed",
-            closeReason: "SLOT_FILLED",
-            closedAt: new Date(),
-          },
-        },
-        { session }
-      );
+      // La sala de espera queda bajo gestión manual del admin.
+      // No cerramos automáticamente el resto de la cola: puede quedar cupo
+      // disponible para más de una persona o para otro servicio del pool RA/RF/KD.
     });
 
     return res.status(201).json({
