@@ -102,7 +102,7 @@ const pricingPlanSchema = new mongoose.Schema(
   { timestamps: true }
 );
 
-pricingPlanSchema.pre("validate", function normalizeBeforeValidate(next) {
+pricingPlanSchema.pre("validate", function normalizeBeforeValidate() {
   this.serviceKey = normalizeServiceKey(this.serviceKey);
   this.payMethod = String(this.payMethod || "").toUpperCase().trim();
   this.credits = Number(this.credits || 0);
@@ -119,7 +119,6 @@ pricingPlanSchema.pre("validate", function normalizeBeforeValidate(next) {
     this.label = this.customTitle;
   }
 
-  next();
 });
 
 // IMPORTANTE:
