@@ -23,6 +23,7 @@ const PLUS_DISCOUNT_PCT = 15;
 const CREDITS_EXPIRE_DAYS = 30;
 const PERFORMANCE_COPAY_PRICE = Number(process.env.PERFORMANCE_COPAY_PRICE || 12500);
 const PERFORMANCE_COPAY_KEYS = new Set(["RA", "RF", "KD"]);
+const PUBLIC_EVALUATION_PRICE = Number(process.env.PUBLIC_EVALUATION_PRICE || 30000);
 
 const ALLOWED_SERVICE_KEYS = new Set(["PE", "EP", "RA", "RF", "KD", "NUT"]);
 const SERVICE_KEY_TO_NAME = {
@@ -1220,6 +1221,103 @@ router.post("/public-payment/:token/pay", async (req, res) => {
     return res.status(500).json({ error: err?.message || "No se pudo iniciar el pago." });
   }
 });
+
+/* =======================================================
+   PUBLIC EVALUATION PAYMENT: pago público de primera evaluación
+   No crea usuario y no acredita créditos automáticamente.
+========================================================= */
+router.post("/public-evaluation/pay", async (req, res) => {
+  try {
+    const customerName = normalizeCustomerName(req.body?.customerName || req.body?.name);
+    const customerEmail = normalizeCustomerEmail(req.body?.customerEmail || req.body?.email);
+    const customerPhone = normalizeCustomerPhone(req.body?.customerPhone || req.body?.phone);
+    const amount = PUBLIC_EVALUATION_PRICE;
+    const serviceKey = "PE";
+    const label = "Primera evaluación presencial";
+
+    if (!customerName || customerName.length < 3) {
+      return res.status(400).json({
+        error: "Ingresá nombre y apellido para identificar el pago.",
+      });
+    }
+
+    if (!Number.isFinite(amount) || amount <= 0) {
+      return res.status(500).json({
+        error: "Precio de evaluación inválido. Revisá PUBLIC_EVALUATION_PRICE.",
+      });
+    }
+
+    const token = crypto.randomBytes(24).toString("hex");
+    const publicUrl = buildPublicPaymentUrl(token);
+
+    const order = await Order.create({
+      user: null,
+      payMethod: "MP",
+      items: [
+        {
+          kind: "MANUAL_SERVICE",
+          serviceKey,
+          credits: 1,
+          label,
+          qty: 1,
+          basePrice: amount,
+          price: amount,
+        },
+      ],
+      totalBase: amount,
+      total: amount,
+      discountPercent: 0,
+      discountAmount: 0,
+      totalFinal: amount,
+      status: "pending",
+      applied: false,
+      creditsApplied: false,
+      publicPaymentLink: true,
+      publicPaymentToken: token,
+      publicPaymentExpiresAt: null,
+      publicPaymentUrl: publicUrl,
+      manualFulfillmentRequired: true,
+      createdByAdmin: false,
+      createdByAdminId: null,
+      customerName,
+      customerEmail,
+      customerPhone,
+      notes:
+        "Pago público de primera evaluación. No crea usuario ni acredita créditos automáticamente.",
+      serviceKey,
+      credits: 0,
+      price: amount,
+      label,
+    });
+
+    const mp = await createMpPreference({ order, user: null });
+    if (!mp.ok) {
+      order.notes = [order.notes, mp.error].filter(Boolean).join("\n");
+      await order.save();
+      return res.status(500).json({ error: mp.error });
+    }
+
+    order.mpPreferenceId = mp.preferenceId;
+    order.mpInitPoint = mp.init_point;
+    await order.save();
+
+    return res.status(201).json({
+      ok: true,
+      init_point: mp.init_point,
+      order: serializePublicPaymentOrder(order),
+      publicUrl,
+      token,
+      message:
+        "Pago de evaluación creado. No crea usuario ni acredita créditos automáticamente.",
+    });
+  } catch (err) {
+    console.error("POST /orders/public-evaluation/pay", err);
+    return res.status(500).json({
+      error: err?.message || "No se pudo iniciar el pago de la evaluación.",
+    });
+  }
+});
+
 
 router.get("/me", protect, async (req, res) => {
   const list = await Order.find({ user: req.user._id }).sort({ createdAt: -1 }).lean();
