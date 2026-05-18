@@ -104,7 +104,7 @@ const serviceSchema = new mongoose.Schema(
   { timestamps: true }
 );
 
-serviceSchema.pre("validate", function normalizeBeforeValidate(next) {
+serviceSchema.pre("validate", function normalizeBeforeValidate() {
   const resolvedKey =
     normalizeServiceKey(this.serviceKey) ||
     normalizeServiceKey(this.key) ||
@@ -116,7 +116,7 @@ serviceSchema.pre("validate", function normalizeBeforeValidate(next) {
       "serviceKey",
       "serviceKey inválido. Usá PE, EP, RA, RF, KD o NUT."
     );
-    return next();
+    return;
   }
 
   this.serviceKey = resolvedKey;
@@ -133,7 +133,6 @@ serviceSchema.pre("validate", function normalizeBeforeValidate(next) {
     this.label = this.name;
   }
 
-  next();
 });
 
 serviceSchema.index({ serviceKey: 1 }, { unique: true });

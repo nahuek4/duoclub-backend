@@ -291,6 +291,17 @@ function appointmentServiceKey(ap) {
   return serviceToKey(ap?.serviceKey || ap?.service || ap?.serviceName || "");
 }
 
+function waitlistEntryServiceKey(entry) {
+  return serviceToKey(
+    entry?.serviceKey ||
+      entry?.service ||
+      entry?.serviceName ||
+      entry?.requestedService ||
+      entry?.requestedServiceKey ||
+      ""
+  );
+}
+
 function sameService(a, b) {
   const ak = serviceToKey(a);
   const bk = serviceToKey(b);
