@@ -683,10 +683,11 @@ function isPerformanceCopayItem(input = {}) {
   );
 }
 
-async function resolveCreditsItem({ serviceKey, credits, payMethod, planCode, label }) {
+async function resolveCreditsItem({ serviceKey, credits, payMethod, planCode, label, pricingPlanId, id, itemId }) {
   const sk = normalizeServiceKey(serviceKey);
   const pm = String(payMethod || "").toUpperCase();
   const cr = Number(credits);
+  const planId = String(pricingPlanId || id || itemId || "").trim();
 
   if (!sk || !pm || !cr) throw new Error("Ítem de créditos inválido.");
 
@@ -708,20 +709,44 @@ async function resolveCreditsItem({ serviceKey, credits, payMethod, planCode, la
     };
   }
 
-  const plan = await PricingPlan.findOne({
-    serviceKey: sk,
-    payMethod: pm,
-    credits: cr,
-    active: true,
-  }).lean();
+  let plan = null;
+
+  // Tarjetas libres: se resuelven por ID para no confundirlas con planes estándar
+  // que tienen mismo servicio + método + sesiones.
+  if (planId && mongoose.Types.ObjectId.isValid(planId)) {
+    plan = await PricingPlan.findOne({
+      _id: planId,
+      serviceKey: sk,
+      payMethod: pm,
+      credits: cr,
+      active: true,
+    }).lean();
+  }
+
+  // Planes estándar: compatibilidad con el checkout anterior.
+  if (!plan) {
+    plan = await PricingPlan.findOne({
+      serviceKey: sk,
+      payMethod: pm,
+      credits: cr,
+      active: true,
+      isCustom: { $ne: true },
+    }).lean();
+  }
 
   if (!plan) throw new Error(`Plan inválido (${sk} ${cr} ${pm}).`);
+
+  const visibleLabel = plan.isCustom
+    ? String(plan.customTitle || plan.label || "").trim()
+    : String(plan.label || "").trim();
 
   return {
     kind: "CREDITS",
     serviceKey: sk,
     credits: cr,
-    label: plan.label || "",
+    label: visibleLabel,
+    pricingPlanId: plan._id,
+    isCustom: Boolean(plan.isCustom),
     basePrice: Number(plan.price || 0),
   };
 }
@@ -766,6 +791,7 @@ router.post("/checkout", protect, async (req, res) => {
           payMethod: pm,
           planCode: it.planCode || it.priceCode || "",
           label: it.label || "",
+          pricingPlanId: it.pricingPlanId || it.planId || it.id || it.itemId || "",
           id: it.id || it.itemId || "",
           sku: it.sku || "",
         });
@@ -775,6 +801,8 @@ router.post("/checkout", protect, async (req, res) => {
           serviceKey: base.serviceKey,
           credits: base.credits,
           label: base.label,
+          pricingPlanId: base.pricingPlanId || null,
+          isCustom: Boolean(base.isCustom),
           qty,
           basePrice: base.basePrice,
           price: base.basePrice * qty,
@@ -930,6 +958,7 @@ router.post("/", protect, async (req, res) => {
       payMethod: pm,
       credits: cr,
       active: true,
+      isCustom: { $ne: true },
     }).lean();
 
     if (!plan) return res.status(404).json({ error: "Plan inválido." });

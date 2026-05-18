@@ -1,5 +1,6 @@
 // backend/src/routes/pricing.js
 import express from "express";
+import mongoose from "mongoose";
 import PricingPlan from "../models/PricingPlan.js";
 import { protect, adminOnly } from "../middleware/auth.js";
 import { logActivity } from "../lib/activityLogger.js";
@@ -35,10 +36,16 @@ function normalizePrice(value) {
   return n;
 }
 
+function cleanString(value) {
+  return String(value || "").trim();
+}
+
+function validObjectId(value) {
+  return mongoose.Types.ObjectId.isValid(String(value || ""));
+}
+
 /* =========================
    AUTO-SEED KD PRICING
-   Crea/activa planes de Kinefilaxia Deportiva copiando RA o RF.
-   No inventa precios: toma los planes existentes de RA/RF.
 ========================= */
 const KD_SERVICE_KEY = "KD";
 const KD_SEED_SOURCE_KEYS = ["RA", "RF"];
@@ -51,6 +58,9 @@ function pricingIdentityKey(plan) {
 }
 
 function planIsUsableForSeed(plan) {
+  // No copiamos tarjetas libres para evitar duplicaciones de promos personalizadas.
+  if (plan?.isCustom === true) return false;
+
   const payMethod = normalizePayMethod(plan?.payMethod);
   const credits = normalizeCredits(plan?.credits);
   const price = normalizePrice(plan?.price);
@@ -97,18 +107,19 @@ function pickSourcePlansForKD(allSourcePlans = []) {
 }
 
 async function ensureKDPricingPlans() {
-  const existingKD = await PricingPlan.find({ serviceKey: KD_SERVICE_KEY }).lean();
+  const existingKD = await PricingPlan.find({
+    serviceKey: KD_SERVICE_KEY,
+    isCustom: { $ne: true },
+  }).lean();
   const activeKD = existingKD.filter((p) => p.active !== false);
 
-  // Si ya hay al menos un plan activo de KD, no tocamos precios ni duplicamos nada.
   if (activeKD.length > 0) {
     return { created: 0, activated: 0, skipped: true, reason: "KD_ALREADY_ACTIVE" };
   }
 
-  // Si existían planes KD pero estaban inactivos, los activamos y no cambiamos su precio.
   if (existingKD.length > 0) {
     await PricingPlan.updateMany(
-      { serviceKey: KD_SERVICE_KEY },
+      { serviceKey: KD_SERVICE_KEY, isCustom: { $ne: true } },
       { $set: { active: true } }
     );
     return {
@@ -121,6 +132,7 @@ async function ensureKDPricingPlans() {
 
   const sourcePlans = await PricingPlan.find({
     serviceKey: { $in: KD_SEED_SOURCE_KEYS },
+    isCustom: { $ne: true },
   })
     .sort({ serviceKey: 1, payMethod: 1, credits: 1 })
     .lean();
@@ -147,7 +159,12 @@ async function ensureKDPricingPlans() {
 
     return {
       updateOne: {
-        filter: { serviceKey: KD_SERVICE_KEY, payMethod, credits },
+        filter: {
+          serviceKey: KD_SERVICE_KEY,
+          payMethod,
+          credits,
+          isCustom: { $ne: true },
+        },
         update: {
           $setOnInsert: {
             serviceKey: KD_SERVICE_KEY,
@@ -155,6 +172,8 @@ async function ensureKDPricingPlans() {
             credits,
             price,
             label: labelForKDPlan(source),
+            isCustom: false,
+            customTitle: "",
           },
           $set: { active: true },
         },
@@ -184,14 +203,6 @@ async function ensureKDPricingPlans() {
   };
 }
 
-/**
- * GET /pricing
- * Devuelve TODOS los planes activos (para el front).
- * Podés hacerlo público o privado.
- *
- * Yo lo dejo protegido por defecto para que no sea scrapeable sin login.
- * Si lo querés público, comentás router.use(protect).
- */
 router.use(protect);
 
 // GET /pricing?active=1
@@ -203,7 +214,7 @@ router.get("/", async (req, res) => {
 
     const query = active ? { active: true } : {};
     const list = await PricingPlan.find(query)
-      .sort({ serviceKey: 1, payMethod: 1, credits: 1 })
+      .sort({ isCustom: 1, serviceKey: 1, payMethod: 1, credits: 1, createdAt: 1 })
       .lean();
 
     res.json(list);
@@ -216,64 +227,118 @@ router.get("/", async (req, res) => {
 /**
  * ADMIN
  * POST /pricing/upsert
- * body: { serviceKey, payMethod, credits, price, label, active }
- * Permite actualizar o crear sin romper.
+ * body estándar: { serviceKey, payMethod, credits, price, label, active }
+ * body tarjeta libre: { id?, isCustom: true, customTitle, serviceKey, payMethod, credits, price, active }
  */
 router.post("/upsert", adminOnly, async (req, res) => {
   try {
-    const { serviceKey, payMethod, credits, price, label, active } = req.body || {};
+    const {
+      id,
+      serviceKey,
+      payMethod,
+      credits,
+      price,
+      label,
+      active,
+      isCustom,
+      customTitle,
+    } = req.body || {};
 
     const normalizedServiceKey = normalizeServiceKey(serviceKey);
     const normalizedPayMethod = normalizePayMethod(payMethod);
     const normalizedCredits = normalizeCredits(credits);
     const normalizedPrice = normalizePrice(price);
+    const custom = Boolean(isCustom);
+    const title = cleanString(customTitle || label);
+    const cleanLabel = cleanString(label || customTitle);
 
     if (
       !normalizedServiceKey ||
-      !normalizedPayMethod ||
+      !["CASH", "MP"].includes(normalizedPayMethod) ||
       !Number.isFinite(normalizedCredits) ||
       !Number.isFinite(normalizedPrice)
     ) {
       return res.status(400).json({
-        error:
-          "Datos inválidos. Revisá serviceKey, payMethod, credits y price.",
+        error: "Datos inválidos. Revisá serviceKey, payMethod, credits y price.",
       });
     }
 
     if (normalizedCredits <= 0) {
-      return res.status(400).json({
-        error: "La cantidad de créditos debe ser mayor a 0.",
-      });
+      return res.status(400).json({ error: "La cantidad de créditos debe ser mayor a 0." });
     }
 
     if (normalizedPrice < 0) {
-      return res.status(400).json({
-        error: "El precio no puede ser negativo.",
-      });
+      return res.status(400).json({ error: "El precio no puede ser negativo." });
     }
 
-    const filter = {
-      serviceKey: normalizedServiceKey,
-      payMethod: normalizedPayMethod,
-      credits: normalizedCredits,
-    };
+    if (custom && !title) {
+      return res.status(400).json({ error: "La tarjeta libre necesita un título." });
+    }
 
-    const existing = await PricingPlan.findOne(filter).lean();
+    let existing = null;
+    let doc = null;
 
-    const doc = await PricingPlan.findOneAndUpdate(
-      filter,
-      {
-        $set: {
+    if (custom) {
+      if (id) {
+        if (!validObjectId(id)) return res.status(400).json({ error: "ID inválido." });
+        existing = await PricingPlan.findById(id).lean();
+        if (!existing) return res.status(404).json({ error: "Tarjeta no encontrada." });
+
+        doc = await PricingPlan.findByIdAndUpdate(
+          id,
+          {
+            $set: {
+              serviceKey: normalizedServiceKey,
+              payMethod: normalizedPayMethod,
+              credits: normalizedCredits,
+              price: normalizedPrice,
+              label: cleanLabel || title,
+              customTitle: title,
+              isCustom: true,
+              active: typeof active === "boolean" ? active : true,
+            },
+          },
+          { new: true, runValidators: true }
+        );
+      } else {
+        doc = await PricingPlan.create({
           serviceKey: normalizedServiceKey,
           payMethod: normalizedPayMethod,
           credits: normalizedCredits,
           price: normalizedPrice,
-          label: String(label || "").trim(),
+          label: cleanLabel || title,
+          customTitle: title,
+          isCustom: true,
           active: typeof active === "boolean" ? active : true,
+        });
+      }
+    } else {
+      const filter = {
+        serviceKey: normalizedServiceKey,
+        payMethod: normalizedPayMethod,
+        credits: normalizedCredits,
+        isCustom: { $ne: true },
+      };
+
+      existing = await PricingPlan.findOne(filter).lean();
+
+      doc = await PricingPlan.findOneAndUpdate(
+        filter,
+        {
+          $set: {
+            serviceKey: normalizedServiceKey,
+            payMethod: normalizedPayMethod,
+            credits: normalizedCredits,
+            price: normalizedPrice,
+            label: cleanLabel,
+            isCustom: false,
+            customTitle: "",
+            active: typeof active === "boolean" ? active : true,
+          },
         },
-      },
-      { upsert: true, new: true }
-    );
+        { upsert: true, new: true, runValidators: true }
+      );
+    }
 
     await logActivity({
       req,
@@ -281,27 +346,64 @@ router.post("/upsert", adminOnly, async (req, res) => {
       action: existing ? "pricing_updated" : "pricing_created",
       entity: "pricing_plan",
       entityId: doc._id,
-      title: existing ? "Plan actualizado" : "Plan creado",
-      description: "Se guardó un plan de precios.",
+      title: existing ? "Plan actualizado" : custom ? "Tarjeta libre creada" : "Plan creado",
+      description: custom ? "Se guardó una tarjeta libre de precios." : "Se guardó un plan de precios.",
       meta: {
         serviceKey: doc.serviceKey,
         payMethod: doc.payMethod,
         credits: doc.credits,
         price: doc.price,
         active: doc.active,
+        isCustom: doc.isCustom,
+        customTitle: doc.customTitle,
       },
-      diff: existing
-        ? { before: existing, after: doc.toObject ? doc.toObject() : doc }
-        : {},
+      diff: existing ? { before: existing, after: doc.toObject ? doc.toObject() : doc } : {},
     });
 
     res.json({ ok: true, plan: doc });
   } catch (err) {
     console.error("Error en POST /pricing/upsert:", err);
     if (err?.code === 11000) {
-      return res.status(409).json({ error: "Plan duplicado." });
+      return res.status(409).json({ error: "Plan duplicado. Revisá los índices de MongoDB." });
     }
-    res.status(500).json({ error: "Error al guardar el plan." });
+    res.status(500).json({ error: err?.message || "Error al guardar el plan." });
+  }
+});
+
+router.delete("/:id", adminOnly, async (req, res) => {
+  try {
+    const { id } = req.params;
+    if (!validObjectId(id)) return res.status(400).json({ error: "ID inválido." });
+
+    const existing = await PricingPlan.findById(id).lean();
+    if (!existing) return res.status(404).json({ error: "Plan no encontrado." });
+
+    await PricingPlan.deleteOne({ _id: id });
+
+    await logActivity({
+      req,
+      category: "pricing",
+      action: "pricing_deleted",
+      entity: "pricing_plan",
+      entityId: id,
+      title: existing?.isCustom ? "Tarjeta libre eliminada" : "Plan eliminado",
+      description: "Se eliminó un plan/tarjeta de precios.",
+      meta: {
+        serviceKey: existing.serviceKey,
+        payMethod: existing.payMethod,
+        credits: existing.credits,
+        price: existing.price,
+        active: existing.active,
+        isCustom: existing.isCustom,
+        customTitle: existing.customTitle,
+      },
+      diff: { before: existing, after: null },
+    });
+
+    res.json({ ok: true });
+  } catch (err) {
+    console.error("Error en DELETE /pricing/:id:", err);
+    res.status(500).json({ error: "Error al eliminar el plan." });
   }
 });
 

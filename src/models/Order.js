@@ -48,6 +48,12 @@ const orderItemSchema = new mongoose.Schema(
     },
     credits: { type: Number, default: 0, min: 0 },
     label: { type: String, default: "" },
+    pricingPlanId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "PricingPlan",
+      default: null,
+    },
+    isCustom: { type: Boolean, default: false },
 
     // MEMBERSHIP
     membershipTier: { type: String, default: "", lowercase: true, trim: true },
