@@ -31,16 +31,16 @@ export function buildEmailLayout({ title, preheader, bodyHtml, footerNote }) {
     <meta name="x-apple-disable-message-reformatting" />
     <title>${_title}</title>
   </head>
-  <body style="margin:0; padding:0; background:#e9e9e9;">
+  <body style="margin:0; padding:0; background:#ffffff;">
     ${preheaderHtml}
 
-    <div style="margin:0; padding:24px 0; background:#e9e9e9;">
+    <div style="margin:0; padding:24px 0; background:#ffffff;">
       <table
         role="presentation"
         cellpadding="0"
         cellspacing="0"
         width="100%"
-        style="border-collapse:collapse; background:#e9e9e9;"
+        style="border-collapse:collapse; background:#ffffff;"
       >
         <tr>
           <td align="center" style="padding:0 10px;">
@@ -52,7 +52,7 @@ export function buildEmailLayout({ title, preheader, bodyHtml, footerNote }) {
               style="max-width:560px; border-collapse:collapse;"
             >
               <tr>
-                <td style="background:#e9e9e9; padding:8px 0 16px;">
+                <td style="background:#ffffff; padding:8px 0 16px;">
                   <div style="
                     font-family:${EMAIL_FONT};
                     color:#111111;

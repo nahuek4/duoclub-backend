@@ -15,6 +15,33 @@ import {
   renderAdminDetailPanel,
 } from "./ui.js";
 
+
+const IMG_BASE = "https://api.duoclub.ar/images";
+
+function renderMailHeaderLogo(width = 34) {
+  return `<img src="${IMG_BASE}/logo.png" alt="${escapeHtml(BRAND_NAME)}" width="${Number(width) || 34}" style="display:block; margin:0 auto; width:${Number(width) || 34}px; max-width:${Number(width) || 34}px; height:auto; border:0; outline:none; text-decoration:none;" />`;
+}
+
+function renderMailCheckIcon(size = 19) {
+  return `<img src="${IMG_BASE}/iconocheck.png" alt="" width="${Number(size) || 19}" height="${Number(size) || 19}" style="display:block; width:${Number(size) || 19}px; height:${Number(size) || 19}px; border:0; outline:none; text-decoration:none;" />`;
+}
+
+function renderMailFooterBrand(width = 92) {
+  return `<img src="${IMG_BASE}/duohealthclub.png" alt="${escapeHtml(BRAND_NAME)} Health Club" width="${Number(width) || 92}" style="display:block; width:${Number(width) || 92}px; max-width:100%; height:auto; border:0; outline:none; text-decoration:none;" />`;
+}
+
+function renderMailFooterIcons() {
+  return `
+    <table role="presentation" cellpadding="0" cellspacing="0" style="border-collapse:collapse; margin-top:8px; margin-left:auto;">
+      <tr>
+        <td style="padding-right:6px;"><div style="width:20px; height:20px; border-radius:999px; border:1px solid #ffffff; color:#ffffff; font-family:Arial, Helvetica, sans-serif; font-size:8px; line-height:20px; text-align:center; font-weight:800;">ig</div></td>
+        <td style="padding-right:6px;"><div style="width:20px; height:20px; border-radius:999px; border:1px solid #ffffff; color:#ffffff; font-family:Arial, Helvetica, sans-serif; font-size:10px; line-height:20px; text-align:center; font-weight:800;">f</div></td>
+        <td><div style="width:20px; height:20px; border-radius:999px; border:1px solid #ffffff; color:#ffffff; font-family:Arial, Helvetica, sans-serif; font-size:8px; line-height:20px; text-align:center; font-weight:800;">in</div></td>
+      </tr>
+    </table>
+  `;
+}
+
 /* =========================================================
    Helpers
 ========================================================= */
@@ -144,7 +171,7 @@ function buildVerifyVisualEmail({
                 <td
                   class="duo-verify-card"
                   style="
-                    background:#f3f3f3;
+                    background:#ffffff;
                     border-radius:0 0 28px 28px;
                     overflow:hidden;
                     font-family:Arial, Helvetica, sans-serif;
@@ -156,7 +183,7 @@ function buildVerifyVisualEmail({
                       <td
                         class="duo-verify-content"
                         style="
-                          background:#f3f3f3;
+                          background:#ffffff;
                           padding:34px 36px 36px;
                           font-family:Arial, Helvetica, sans-serif;
                           color:#111111;
@@ -171,10 +198,10 @@ function buildVerifyVisualEmail({
                                   font-size:34px;
                                   line-height:34px;
                                   font-weight:900;
-                                  color:#050505;
+                                  color:#0A0A0A;
                                   letter-spacing:-3px;
                                 "
-                              >ᗡ◖</div>
+                              >${renderMailHeaderLogo()}</div>
                             </td>
                           </tr>
 
@@ -253,7 +280,7 @@ function buildVerifyVisualEmail({
                                   width:100%;
                                   border:1.5px solid #111111;
                                   border-radius:10px;
-                                  background:#f3f3f3;
+                                  background:#F4F4F4;
                                 "
                               >
                                 <tr>
@@ -359,7 +386,7 @@ function buildVerifyVisualEmail({
                       <td
                         class="duo-verify-footer"
                         style="
-                          background:#050505;
+                          background:#0A0A0A;
                           padding:40px 48px 42px;
                           border-radius:0 0 28px 28px;
                           font-family:Arial, Helvetica, sans-serif;
@@ -393,7 +420,7 @@ function buildVerifyVisualEmail({
                                   margin-top:4px;
                                   opacity:0.95;
                                 "
-                              >HEALTH CLUB</div>
+                              ></div>
                             </td>
                             <td
                               valign="middle"
@@ -412,7 +439,7 @@ function buildVerifyVisualEmail({
                               <div style="font-weight:900; letter-spacing:2.8px;">DUOCLUB.AR</div>
                               <div>+54 249 420 7343</div>
                               <div>Av. Santamaría 54, Tandil.</div>
-                              <div style="padding-top:6px; font-size:10px; line-height:10px; letter-spacing:4px;">◎ f in</div>
+                              <div style="padding-top:6px; font-size:10px; line-height:10px; letter-spacing:4px;">${renderMailFooterIcons()}</div>
                             </td>
                           </tr>
                         </table>
@@ -550,7 +577,7 @@ function buildRegistrationReceivedVisualEmail({
                 <td
                   class="duo-reg-card"
                   style="
-                    background:#f3f3f3;
+                    background:#ffffff;
                     border-radius:0 0 28px 28px;
                     overflow:hidden;
                     font-family:Arial, Helvetica, sans-serif;
@@ -568,7 +595,7 @@ function buildRegistrationReceivedVisualEmail({
                       <td
                         class="duo-reg-content"
                         style="
-                          background:#f3f3f3;
+                          background:#ffffff;
                           padding:34px 36px 36px;
                           font-family:Arial, Helvetica, sans-serif;
                           color:#111111;
@@ -593,10 +620,10 @@ function buildRegistrationReceivedVisualEmail({
                                   font-size:34px;
                                   line-height:34px;
                                   font-weight:900;
-                                  color:#050505;
+                                  color:#0A0A0A;
                                   letter-spacing:-3px;
                                 "
-                              >ᗡ◖</div>
+                              >${renderMailHeaderLogo()}</div>
                             </td>
                           </tr>
 
@@ -684,7 +711,7 @@ function buildRegistrationReceivedVisualEmail({
                                   width:100%;
                                   border:1.5px solid #111111;
                                   border-radius:10px;
-                                  background:#f3f3f3;
+                                  background:#F4F4F4;
                                 "
                               >
                                 <tr>
@@ -782,7 +809,7 @@ function buildRegistrationReceivedVisualEmail({
                       <td
                         class="duo-reg-footer"
                         style="
-                          background:#050505;
+                          background:#0A0A0A;
                           padding:40px 48px 42px;
                           border-radius:0 0 28px 28px;
                           font-family:Arial, Helvetica, sans-serif;
@@ -822,7 +849,7 @@ function buildRegistrationReceivedVisualEmail({
                                   margin-top:4px;
                                   opacity:0.95;
                                 "
-                              >HEALTH CLUB</div>
+                              ></div>
                             </td>
                             <td
                               valign="middle"
@@ -841,7 +868,7 @@ function buildRegistrationReceivedVisualEmail({
                               <div style="font-weight:900; letter-spacing:2.8px;">DUOCLUB.AR</div>
                               <div>+54 249 420 7343</div>
                               <div>Av. Santamaría 54, Tandil.</div>
-                              <div style="padding-top:6px; font-size:10px; line-height:10px; letter-spacing:4px;">◎ f in</div>
+                              <div style="padding-top:6px; font-size:10px; line-height:10px; letter-spacing:4px;">${renderMailFooterIcons()}</div>
                             </td>
                           </tr>
                         </table>
@@ -930,12 +957,12 @@ function buildAdminRegistrationVisualEmail({
       <table role="presentation" cellpadding="0" cellspacing="0" width="100%" style="border-collapse:collapse;">
         <tr><td align="center" style="padding:0;">
           <table role="presentation" cellpadding="0" cellspacing="0" width="100%" class="duo-admin-reg-wrap" style="max-width:430px; border-collapse:separate; border-spacing:0;">
-            <tr><td class="duo-admin-reg-card" style="background:#f3f3f3; border-radius:0 0 28px 28px; overflow:hidden; font-family:Arial, Helvetica, sans-serif; color:#111111;">
+            <tr><td class="duo-admin-reg-card" style="background:#ffffff; border-radius:0 0 28px 28px; overflow:hidden; font-family:Arial, Helvetica, sans-serif; color:#111111;">
               <table role="presentation" cellpadding="0" cellspacing="0" width="100%" style="border-collapse:collapse; width:100%;">
                 <tr>
-                  <td class="duo-admin-reg-content" style="padding:34px 28px 34px; background:#f3f3f3; color:#111111;">
+                  <td class="duo-admin-reg-content" style="padding:34px 28px 34px; background:#ffffff; color:#111111;">
                     <table role="presentation" cellpadding="0" cellspacing="0" width="100%" style="border-collapse:collapse; width:100%;">
-                      <tr><td align="center" style="padding:0 0 36px;"><div style="font-size:34px; line-height:34px; font-weight:900; color:#050505; letter-spacing:-3px;">ᗡ◖</div></td></tr>
+                      <tr><td align="center" style="padding:0 0 36px;"><div style="font-size:34px; line-height:34px; font-weight:900; color:#0A0A0A; letter-spacing:-3px;">${renderMailHeaderLogo()}</div></td></tr>
                       <tr>
                         <td style="padding:0 0 14px;">
                           <table role="presentation" cellpadding="0" cellspacing="0" width="100%" style="border-collapse:collapse;">
@@ -959,11 +986,11 @@ function buildAdminRegistrationVisualEmail({
                   </td>
                 </tr>
                 <tr>
-                  <td class="duo-admin-reg-footer" style="background:#050505; padding:40px 48px 42px; border-radius:0 0 28px 28px; font-family:Arial, Helvetica, sans-serif;">
+                  <td class="duo-admin-reg-footer" style="background:#0A0A0A; padding:40px 48px 42px; border-radius:0 0 28px 28px; font-family:Arial, Helvetica, sans-serif;">
                     <table role="presentation" cellpadding="0" cellspacing="0" width="100%" style="border-collapse:collapse; width:100%;">
                       <tr>
-                        <td valign="middle" style="width:42%; color:#ffffff;"><div class="duo-footer-brand" style="font-size:23px; line-height:23px; font-weight:900; letter-spacing:7px;">DUO</div><div style="font-size:4px; line-height:7px; font-weight:700; letter-spacing:1.8px; margin-top:4px; opacity:0.95;">HEALTH CLUB</div></td>
-                        <td valign="middle" align="right" class="duo-footer-info" style="width:58%; color:#ffffff; font-size:9px; line-height:13px; font-weight:500; letter-spacing:0.2px;"><div style="font-weight:900; letter-spacing:2.8px;">DUOCLUB.AR</div><div>+54 249 420 7343</div><div>Av. Santamaría 54, Tandil.</div><div style="padding-top:6px; font-size:10px; line-height:10px; letter-spacing:4px;">◎ f in</div></td>
+                        <td valign="middle" style="width:42%; color:#ffffff;"><div class="duo-footer-brand" style="font-size:23px; line-height:23px; font-weight:900; letter-spacing:7px;">${renderMailFooterBrand()}</div><div style="font-size:4px; line-height:7px; font-weight:700; letter-spacing:1.8px; margin-top:4px; opacity:0.95;"></div></td>
+                        <td valign="middle" align="right" class="duo-footer-info" style="width:58%; color:#ffffff; font-size:9px; line-height:13px; font-weight:500; letter-spacing:0.2px;"><div style="font-weight:900; letter-spacing:2.8px;">DUOCLUB.AR</div><div>+54 249 420 7343</div><div>Av. Santamaría 54, Tandil.</div><div style="padding-top:6px; font-size:10px; line-height:10px; letter-spacing:4px;">${renderMailFooterIcons()}</div></td>
                       </tr>
                     </table>
                   </td>
@@ -1102,7 +1129,7 @@ function buildAccountResultVisualEmail({
                 <td
                   class="duo-account-card"
                   style="
-                    background:#f3f3f3;
+                    background:#ffffff;
                     border-radius:0 0 28px 28px;
                     overflow:hidden;
                     font-family:Arial, Helvetica, sans-serif;
@@ -1120,7 +1147,7 @@ function buildAccountResultVisualEmail({
                       <td
                         class="duo-account-content"
                         style="
-                          background:#f3f3f3;
+                          background:#ffffff;
                           padding:34px 56px 58px;
                           font-family:Arial, Helvetica, sans-serif;
                           color:#111111;
@@ -1145,10 +1172,10 @@ function buildAccountResultVisualEmail({
                                   font-size:34px;
                                   line-height:34px;
                                   font-weight:900;
-                                  color:#050505;
+                                  color:#0A0A0A;
                                   letter-spacing:-3px;
                                 "
-                              >ᗡ◖</div>
+                              >${renderMailHeaderLogo()}</div>
                             </td>
                           </tr>
 
@@ -1294,7 +1321,7 @@ function buildAccountResultVisualEmail({
                       <td
                         class="duo-account-footer"
                         style="
-                          background:#050505;
+                          background:#0A0A0A;
                           padding:40px 48px 42px;
                           border-radius:0 0 28px 28px;
                           font-family:Arial, Helvetica, sans-serif;
@@ -1334,7 +1361,7 @@ function buildAccountResultVisualEmail({
                                   margin-top:4px;
                                   opacity:0.95;
                                 "
-                              >HEALTH CLUB</div>
+                              ></div>
                             </td>
                             <td
                               valign="middle"
@@ -1353,7 +1380,7 @@ function buildAccountResultVisualEmail({
                               <div style="font-weight:900; letter-spacing:2.8px;">DUOCLUB.AR</div>
                               <div>+54 249 420 7343</div>
                               <div>Av. Santamaría 54, Tandil.</div>
-                              <div style="padding-top:6px; font-size:10px; line-height:10px; letter-spacing:4px;">◎ f in</div>
+                              <div style="padding-top:6px; font-size:10px; line-height:10px; letter-spacing:4px;">${renderMailFooterIcons()}</div>
                             </td>
                           </tr>
                         </table>

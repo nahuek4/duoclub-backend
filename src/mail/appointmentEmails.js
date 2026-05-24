@@ -110,7 +110,7 @@ function buildHeroHeader({ title, kind = "confirmed" }) {
           <tr>
             <td
               style="
-                background:#050505;
+                background:#0A0A0A;
                 border-top-left-radius:28px;
                 border-top-right-radius:28px;
                 border-bottom-right-radius:0;
@@ -168,7 +168,7 @@ function buildHeroHeader({ title, kind = "confirmed" }) {
                 style="
                   width:115px;
                   height:36px;
-                  background:#f3f3f3;
+                  background:#F4F4F4;
                   border-top-left-radius:28px;
                 "
               ></div>
@@ -196,14 +196,14 @@ function buildAppointmentCard(item = {}) {
         border-spacing:0;
         width:100%;
         margin:0 0 14px;
-        background:#f3f3f3;
+        background:#F4F4F4;
         border:1.5px solid #171717;
         border-radius:14px;
         overflow:hidden;
       "
     >
       <tr>
-        <td style="width:11px; background:#050505; font-size:0; line-height:0;">&nbsp;</td>
+        <td style="width:11px; background:#0A0A0A; font-size:0; line-height:0;">&nbsp;</td>
         <td style="padding:0;">
           <table
             role="presentation"
@@ -306,14 +306,14 @@ function buildAdminDataCard({ label, value, valueHtml = "" } = {}) {
         border-spacing:0;
         width:100%;
         margin:0 0 10px;
-        background:#f3f3f3;
+        background:#F4F4F4;
         border:1.5px solid #171717;
         border-radius:14px;
         overflow:hidden;
       "
     >
       <tr>
-        <td style="width:11px; background:#050505; font-size:0; line-height:0;">&nbsp;</td>
+        <td style="width:11px; background:#0A0A0A; font-size:0; line-height:0;">&nbsp;</td>
         <td
           style="
             padding:13px 16px 14px;
@@ -415,7 +415,7 @@ function buildAdminAppointmentVisualEmail({
               <tr>
                 <td
                   style="
-                    background:#f3f3f3;
+                    background:#F4F4F4;
                     border-radius:28px;
                     overflow:hidden;
                   "
@@ -428,7 +428,7 @@ function buildAdminAppointmentVisualEmail({
                     style="
                       border-collapse:collapse;
                       width:100%;
-                      background-color:#f3f3f3;
+                      background-color:#F4F4F4;
                     "
                   >
                     ${buildHeroHeader({ title, kind })}
@@ -501,7 +501,7 @@ function buildFooterBlock() {
       <td
         class="ap-footer"
         style="
-          background:#050505;
+          background:#0A0A0A;
           padding:28px 24px 30px;
           border-bottom-left-radius:28px;
           border-bottom-right-radius:28px;
@@ -523,8 +523,8 @@ function buildFooterBlock() {
                 color:#ffffff;
               "
             >
-              <div style="font-size:26px; line-height:24px; font-weight:900; letter-spacing:1px;">DUO</div>
-              <div style="font-size:5px; line-height:8px; opacity:0.95; letter-spacing:1.4px; margin-top:4px;">HEALTH CLUB</div>
+              <div style="font-size:26px; line-height:24px; font-weight:900; letter-spacing:1px;"><img src="${IMG_BASE}/duohealthclub.png" alt="DUO Health Club" width="92" style="display:block; width:92px; max-width:100%; height:auto; border:0; outline:none; text-decoration:none;" /></div>
+              <div style="font-size:5px; line-height:8px; opacity:0.95; letter-spacing:1.4px; margin-top:4px;"></div>
             </td>
             <td
               valign="bottom"
@@ -546,7 +546,7 @@ function buildFooterBlock() {
                     height:17px;
                     border-radius:50%;
                     background:#ffffff;
-                    color:#050505;
+                    color:#0A0A0A;
                     font-family:${duoFontStack()};
                     font-size:9px;
                     line-height:17px;
@@ -561,7 +561,7 @@ function buildFooterBlock() {
                     height:17px;
                     border-radius:50%;
                     background:#ffffff;
-                    color:#050505;
+                    color:#0A0A0A;
                     font-family:${duoFontStack()};
                     font-size:10px;
                     line-height:17px;
@@ -576,7 +576,7 @@ function buildFooterBlock() {
                     height:17px;
                     border-radius:50%;
                     background:#ffffff;
-                    color:#050505;
+                    color:#0A0A0A;
                     font-family:${duoFontStack()};
                     font-size:9px;
                     line-height:17px;
@@ -658,7 +658,7 @@ function buildAppointmentVisualEmail({
               <tr>
                 <td
                   style="
-                    background:#f3f3f3;
+                    background:#F4F4F4;
                     border-radius:28px;
                     overflow:hidden;
                   "
@@ -671,7 +671,7 @@ function buildAppointmentVisualEmail({
                     style="
                       border-collapse:collapse;
                       width:100%;
-                      background-color:#f3f3f3;
+                      background-color:#F4F4F4;
                     "
                   >
                     ${buildHeroHeader({ title, kind })}

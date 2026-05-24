@@ -1,6 +1,8 @@
 // backend/src/mail/ui.js
 import { EMAIL_FONT, escapeHtml } from "./helpers.js";
 
+const IMG_BASE = "https://api.duoclub.ar/images";
+
 /* =========================================================
    UI kit mail — estilo DUO unificado
 ========================================================= */
@@ -70,7 +72,7 @@ export function renderExactStatusIcon(symbol = "✓") {
         height:58px;
         margin:0 auto 0;
         border-radius:999px;
-        background:#0a0a0a;
+        background:#0A0A0A;
         color:#ffffff;
         font-size:38px;
         line-height:58px;
@@ -78,7 +80,7 @@ export function renderExactStatusIcon(symbol = "✓") {
         font-family:${EMAIL_FONT};
         text-align:center;
       "
-    >${escapeHtml(symbol)}</div>
+    ><img src="${IMG_BASE}/iconocheck.png" width="58" height="58" alt="${escapeHtml(symbol)}" style="display:block; width:58px; height:58px; margin:0 auto; border:0; outline:none; text-decoration:none;" /></div>
   `;
 }
 
@@ -135,7 +137,7 @@ export function panelOpen() {
     <div
       class="panel"
       style="
-        background:#0a0a0a;
+        background:#0A0A0A;
         border-radius:6px;
         padding:14px;
         margin:0 auto 22px;
@@ -185,7 +187,7 @@ export function renderRowCard({ titleLeft, titleRight = "", subtitle = "" }) {
         padding:10px 12px;
         margin:0 0 11px;
         text-align:left;
-        background:#0b0b0b;
+        background:#0A0A0A;
       "
     >
       <table role="presentation" cellpadding="0" cellspacing="0" width="100%" style="border-collapse:collapse;">
@@ -401,7 +403,7 @@ export function renderAdminMetaPanel(rows = []) {
     <div
       class="admin-panel"
       style="
-        background:#0a0a0a;
+        background:#0A0A0A;
         border-radius:6px;
         padding:14px;
         margin:0 auto 22px;
@@ -467,7 +469,7 @@ export function renderAdminDetailPanel(rows = []) {
     <div
       class="admin-panel"
       style="
-        background:#0a0a0a;
+        background:#0A0A0A;
         border-radius:6px;
         padding:14px;
         margin:0 auto 22px;
