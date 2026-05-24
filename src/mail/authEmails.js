@@ -11,6 +11,8 @@ import {
   renderExactButtons,
   renderLinksFallback,
   renderPrimaryButton,
+  renderAdminMetaPanel,
+  renderAdminDetailPanel,
 } from "./ui.js";
 
 /* =========================================================
@@ -63,6 +65,370 @@ function buildPanel(rows = []) {
    1) VERIFY EMAIL
 ========================================================= */
 
+function buildVerifyVisualEmail({
+  title,
+  preheader,
+  name,
+  verifyHref,
+}) {
+  const safeHref = verifyHref || BRAND_URL || "#";
+
+  return buildEmailLayout({
+    title: `${BRAND_NAME} · ${title}`,
+    preheader,
+    footerNote: "",
+    bodyHtml: `
+      <style>
+        @media only screen and (max-width: 560px) {
+          .duo-verify-wrap {
+            max-width: 100% !important;
+          }
+          .duo-verify-card {
+            border-radius: 0 0 22px 22px !important;
+          }
+          .duo-verify-content {
+            padding: 30px 26px 34px !important;
+          }
+          .duo-verify-logo {
+            padding-bottom: 34px !important;
+          }
+          .duo-verify-heading {
+            font-size: 22px !important;
+            line-height: 26px !important;
+          }
+          .duo-verify-copy {
+            font-size: 14px !important;
+            line-height: 21px !important;
+          }
+          .duo-verify-box {
+            padding: 22px 18px 24px !important;
+          }
+          .duo-verify-box-copy,
+          .duo-verify-box-note,
+          .duo-verify-link-note {
+            font-size: 14px !important;
+            line-height: 20px !important;
+          }
+          .duo-verify-fallback {
+            font-size: 11px !important;
+            line-height: 17px !important;
+          }
+          .duo-verify-footer {
+            padding: 36px 32px 38px !important;
+            border-radius: 0 0 22px 22px !important;
+          }
+          .duo-footer-brand {
+            font-size: 22px !important;
+            line-height: 22px !important;
+            letter-spacing: 6px !important;
+          }
+          .duo-footer-info {
+            font-size: 9px !important;
+            line-height: 13px !important;
+          }
+        }
+      </style>
+
+      <table role="presentation" cellpadding="0" cellspacing="0" width="100%" style="border-collapse:collapse;">
+        <tr>
+          <td align="center" style="padding:0;">
+            <table
+              role="presentation"
+              cellpadding="0"
+              cellspacing="0"
+              width="100%"
+              class="duo-verify-wrap"
+              style="max-width:430px; border-collapse:separate; border-spacing:0;"
+            >
+              <tr>
+                <td
+                  class="duo-verify-card"
+                  style="
+                    background:#f3f3f3;
+                    border-radius:0 0 28px 28px;
+                    overflow:hidden;
+                    font-family:Arial, Helvetica, sans-serif;
+                    color:#111111;
+                  "
+                >
+                  <table role="presentation" cellpadding="0" cellspacing="0" width="100%" style="border-collapse:collapse; width:100%;">
+                    <tr>
+                      <td
+                        class="duo-verify-content"
+                        style="
+                          background:#f3f3f3;
+                          padding:34px 36px 36px;
+                          font-family:Arial, Helvetica, sans-serif;
+                          color:#111111;
+                        "
+                      >
+                        <table role="presentation" cellpadding="0" cellspacing="0" width="100%" style="border-collapse:collapse; width:100%;">
+                          <tr>
+                            <td class="duo-verify-logo" align="center" style="padding:0 0 36px;">
+                              <div
+                                style="
+                                  font-family:Arial, Helvetica, sans-serif;
+                                  font-size:34px;
+                                  line-height:34px;
+                                  font-weight:900;
+                                  color:#050505;
+                                  letter-spacing:-3px;
+                                "
+                              >ᗡ◖</div>
+                            </td>
+                          </tr>
+
+                          <tr>
+                            <td style="padding:0 0 14px;">
+                              <table role="presentation" cellpadding="0" cellspacing="0" width="100%" style="border-collapse:collapse;">
+                                <tr>
+                                  <td valign="middle" style="width:24px; padding:0 10px 0 0;">
+                                    <div
+                                      style="
+                                        width:19px;
+                                        height:19px;
+                                        border:2px solid #111111;
+                                        border-radius:999px;
+                                        font-size:11px;
+                                        line-height:17px;
+                                        text-align:center;
+                                        font-weight:900;
+                                        color:#111111;
+                                      "
+                                    >@</div>
+                                  </td>
+                                  <td
+                                    class="duo-verify-heading"
+                                    valign="middle"
+                                    style="
+                                      font-family:Arial, Helvetica, sans-serif;
+                                      font-size:24px;
+                                      line-height:28px;
+                                      font-weight:900;
+                                      color:#111111;
+                                      letter-spacing:-0.6px;
+                                    "
+                                  >Verificá tu email</td>
+                                </tr>
+                              </table>
+                            </td>
+                          </tr>
+
+                          <tr>
+                            <td style="padding:0 0 16px;">
+                              <div style="height:1px; background:#c9c9c9; width:100%;"></div>
+                            </td>
+                          </tr>
+
+                          <tr>
+                            <td
+                              class="duo-verify-copy"
+                              style="
+                                font-family:Arial, Helvetica, sans-serif;
+                                font-size:14px;
+                                line-height:20px;
+                                font-weight:400;
+                                color:#111111;
+                                text-align:left;
+                                padding:0 0 30px;
+                              "
+                            >
+                              Hola <b>${escapeHtml(name)}</b>,<br />
+                              Gracias por registrarte en <b>${escapeHtml(BRAND_NAME)}</b>.<br />
+                              Para continuar, necesitás verificar tu correo electrónico.
+                            </td>
+                          </tr>
+
+                          <tr>
+                            <td style="padding:0 0 24px;">
+                              <table
+                                role="presentation"
+                                cellpadding="0"
+                                cellspacing="0"
+                                width="100%"
+                                class="duo-verify-box"
+                                style="
+                                  border-collapse:separate;
+                                  border-spacing:0;
+                                  width:100%;
+                                  border:1.5px solid #111111;
+                                  border-radius:10px;
+                                  background:#f3f3f3;
+                                "
+                              >
+                                <tr>
+                                  <td style="padding:22px 22px 24px; text-align:center;">
+                                    <div
+                                      class="duo-verify-box-copy"
+                                      style="
+                                        font-family:Arial, Helvetica, sans-serif;
+                                        font-size:14px;
+                                        line-height:20px;
+                                        font-weight:500;
+                                        color:#111111;
+                                        text-align:center;
+                                      "
+                                    >
+                                      Hacé clic en el botón para <b>verificar tu email</b> y continuar con el alta de tu cuenta.
+                                    </div>
+
+                                    <table role="presentation" cellpadding="0" cellspacing="0" style="border-collapse:collapse; margin:20px auto 16px;">
+                                      <tr>
+                                        <td
+                                          align="center"
+                                          style="
+                                            background:#dfff00;
+                                            border-radius:999px;
+                                            box-shadow:0 10px 14px rgba(0,0,0,0.18);
+                                          "
+                                        >
+                                          <a
+                                            href="${escapeHtml(safeHref)}"
+                                            style="
+                                              display:inline-block;
+                                              padding:13px 21px;
+                                              font-family:Arial, Helvetica, sans-serif;
+                                              font-size:15px;
+                                              line-height:16px;
+                                              font-weight:800;
+                                              color:#111111;
+                                              text-decoration:none;
+                                            "
+                                          >Verificar email</a>
+                                        </td>
+                                      </tr>
+                                    </table>
+
+                                    <div
+                                      class="duo-verify-box-note"
+                                      style="
+                                        font-family:Arial, Helvetica, sans-serif;
+                                        font-size:14px;
+                                        line-height:20px;
+                                        font-weight:500;
+                                        color:#111111;
+                                        text-align:center;
+                                      "
+                                    >
+                                      Este link vence en <b>24 horas</b>.
+                                    </div>
+                                  </td>
+                                </tr>
+                              </table>
+                            </td>
+                          </tr>
+
+                          <tr>
+                            <td
+                              class="duo-verify-link-note"
+                              style="
+                                font-family:Arial, Helvetica, sans-serif;
+                                font-size:12px;
+                                line-height:18px;
+                                font-weight:600;
+                                color:#111111;
+                                text-align:left;
+                                padding:0 0 18px;
+                              "
+                            >
+                              Si vos no creaste esta cuenta, podés ignorar este email.
+                            </td>
+                          </tr>
+
+                          <tr>
+                            <td
+                              class="duo-verify-fallback"
+                              style="
+                                font-family:Arial, Helvetica, sans-serif;
+                                font-size:11px;
+                                line-height:16px;
+                                font-weight:600;
+                                color:#111111;
+                                text-align:center;
+                              "
+                            >
+                              ¿Tuviste un problema con el botón?<br />
+                              <a href="${escapeHtml(safeHref)}" style="color:#2b59ff; text-decoration:underline;">Podés acceder igual desde este enlace</a>
+                            </td>
+                          </tr>
+                        </table>
+                      </td>
+                    </tr>
+
+                    <tr>
+                      <td
+                        class="duo-verify-footer"
+                        style="
+                          background:#050505;
+                          padding:40px 48px 42px;
+                          border-radius:0 0 28px 28px;
+                          font-family:Arial, Helvetica, sans-serif;
+                        "
+                      >
+                        <table role="presentation" cellpadding="0" cellspacing="0" width="100%" style="border-collapse:collapse; width:100%;">
+                          <tr>
+                            <td
+                              valign="middle"
+                              style="
+                                width:42%;
+                                color:#ffffff;
+                                font-family:Arial, Helvetica, sans-serif;
+                              "
+                            >
+                              <div
+                                class="duo-footer-brand"
+                                style="
+                                  font-size:23px;
+                                  line-height:23px;
+                                  font-weight:900;
+                                  letter-spacing:7px;
+                                "
+                              >DUO</div>
+                              <div
+                                style="
+                                  font-size:4px;
+                                  line-height:7px;
+                                  font-weight:700;
+                                  letter-spacing:1.8px;
+                                  margin-top:4px;
+                                  opacity:0.95;
+                                "
+                              >HEALTH CLUB</div>
+                            </td>
+                            <td
+                              valign="middle"
+                              align="right"
+                              class="duo-footer-info"
+                              style="
+                                width:58%;
+                                color:#ffffff;
+                                font-family:Arial, Helvetica, sans-serif;
+                                font-size:9px;
+                                line-height:13px;
+                                font-weight:500;
+                                letter-spacing:0.2px;
+                              "
+                            >
+                              <div style="font-weight:900; letter-spacing:2.8px;">DUOCLUB.AR</div>
+                              <div>+54 249 420 7343</div>
+                              <div>Av. Santamaría 54, Tandil.</div>
+                              <div style="padding-top:6px; font-size:10px; line-height:10px; letter-spacing:4px;">◎ f in</div>
+                            </td>
+                          </tr>
+                        </table>
+                      </td>
+                    </tr>
+                  </table>
+                </td>
+              </tr>
+            </table>
+          </td>
+        </tr>
+      </table>
+    `,
+  });
+}
+
 export async function sendVerifyEmail(user, verifyUrl) {
   if (!user?.email || !verifyUrl) return;
 
@@ -81,50 +447,11 @@ export async function sendVerifyEmail(user, verifyUrl) {
     "Si vos no creaste esta cuenta, podés ignorar este mensaje.",
   ].join("\n");
 
-  const panel = buildPanel([
-    panelRow(
-      "Estado",
-      `<span style="color:#ffffff;">Pendiente de verificación</span>`
-    ),
-    panelRow("Vence", `<span style="color:#ffffff;">24 horas</span>`),
-  ]);
-
-  const innerHtml = `
-    ${renderExactBodyText(
-      `Hola <b>${escapeHtml(uName)}</b>,<br/>Para continuar, verificá tu email.`,
-      {
-        fontSize: 14,
-        lineHeight: 19,
-        weight: 700,
-        maxWidth: 320,
-        marginBottom: 14,
-      }
-    )}
-
-    ${panel}
-
-    ${renderPrimaryButton("Verificar email", verifyUrl)}
-
-    ${renderLinksFallback([{ href: verifyUrl }])}
-
-    ${renderExactBodyText(
-      "Si vos no creaste esta cuenta, podés ignorar este email.",
-      {
-        fontSize: 12,
-        lineHeight: 17,
-        weight: 600,
-        maxWidth: 320,
-        marginTop: 10,
-        marginBottom: 0,
-      }
-    )}
-  `;
-
-  const html = buildAuthEmail({
+  const html = buildVerifyVisualEmail({
     title: "Verificación de email",
-    icon: "✓",
     preheader: "Verificá tu email para continuar",
-    innerHtml,
+    name: uName,
+    verifyHref: verifyUrl,
   });
 
   await sendMail(
@@ -139,96 +466,422 @@ export async function sendVerifyEmail(user, verifyUrl) {
    2) USER -> REGISTRO RECIBIDO
 ========================================================= */
 
-export async function sendUserRegistrationReceivedEmail(user) {
+function buildRegistrationReceivedVisualEmail({
+  title,
+  preheader,
+  name,
+  verifyHref = "",
+}) {
+  const safeHref = verifyHref || BRAND_URL || "#";
+
+  return buildEmailLayout({
+    title: `${BRAND_NAME} · ${title}`,
+    preheader,
+    footerNote: "",
+    bodyHtml: `
+      <style>
+        @media only screen and (max-width: 560px) {
+          .duo-reg-wrap {
+            max-width: 100% !important;
+          }
+          .duo-reg-card {
+            border-radius: 0 0 22px 22px !important;
+          }
+          .duo-reg-content {
+            padding: 30px 26px 34px !important;
+          }
+          .duo-reg-logo {
+            padding-bottom: 34px !important;
+          }
+          .duo-reg-heading {
+            font-size: 22px !important;
+            line-height: 26px !important;
+          }
+          .duo-reg-copy {
+            font-size: 14px !important;
+            line-height: 21px !important;
+          }
+          .duo-reg-box {
+            padding: 22px 18px 24px !important;
+          }
+          .duo-reg-box-copy,
+          .duo-reg-box-note {
+            font-size: 14px !important;
+            line-height: 20px !important;
+          }
+          .duo-reg-footer-link {
+            font-size: 11px !important;
+            line-height: 17px !important;
+          }
+          .duo-reg-footer {
+            padding: 36px 32px 38px !important;
+            border-radius: 0 0 22px 22px !important;
+          }
+          .duo-footer-brand {
+            font-size: 22px !important;
+            line-height: 22px !important;
+            letter-spacing: 6px !important;
+          }
+          .duo-footer-info {
+            font-size: 9px !important;
+            line-height: 13px !important;
+          }
+        }
+      </style>
+
+      <table
+        role="presentation"
+        cellpadding="0"
+        cellspacing="0"
+        width="100%"
+        style="border-collapse:collapse;"
+      >
+        <tr>
+          <td align="center" style="padding:0;">
+            <table
+              role="presentation"
+              cellpadding="0"
+              cellspacing="0"
+              width="100%"
+              class="duo-reg-wrap"
+              style="max-width:430px; border-collapse:separate; border-spacing:0;"
+            >
+              <tr>
+                <td
+                  class="duo-reg-card"
+                  style="
+                    background:#f3f3f3;
+                    border-radius:0 0 28px 28px;
+                    overflow:hidden;
+                    font-family:Arial, Helvetica, sans-serif;
+                    color:#111111;
+                  "
+                >
+                  <table
+                    role="presentation"
+                    cellpadding="0"
+                    cellspacing="0"
+                    width="100%"
+                    style="border-collapse:collapse; width:100%;"
+                  >
+                    <tr>
+                      <td
+                        class="duo-reg-content"
+                        style="
+                          background:#f3f3f3;
+                          padding:34px 36px 36px;
+                          font-family:Arial, Helvetica, sans-serif;
+                          color:#111111;
+                        "
+                      >
+                        <table
+                          role="presentation"
+                          cellpadding="0"
+                          cellspacing="0"
+                          width="100%"
+                          style="border-collapse:collapse; width:100%;"
+                        >
+                          <tr>
+                            <td
+                              class="duo-reg-logo"
+                              align="center"
+                              style="padding:0 0 36px;"
+                            >
+                              <div
+                                style="
+                                  font-family:Arial, Helvetica, sans-serif;
+                                  font-size:34px;
+                                  line-height:34px;
+                                  font-weight:900;
+                                  color:#050505;
+                                  letter-spacing:-3px;
+                                "
+                              >ᗡ◖</div>
+                            </td>
+                          </tr>
+
+                          <tr>
+                            <td style="padding:0 0 14px;">
+                              <table
+                                role="presentation"
+                                cellpadding="0"
+                                cellspacing="0"
+                                width="100%"
+                                style="border-collapse:collapse;"
+                              >
+                                <tr>
+                                  <td
+                                    valign="middle"
+                                    style="width:24px; padding:0 10px 0 0;"
+                                  >
+                                    <div
+                                      style="
+                                        width:19px;
+                                        height:19px;
+                                        border:2px solid #111111;
+                                        border-radius:999px;
+                                        font-size:11px;
+                                        line-height:17px;
+                                        text-align:center;
+                                        font-weight:900;
+                                        color:#111111;
+                                      "
+                                    >✓</div>
+                                  </td>
+                                  <td
+                                    class="duo-reg-heading"
+                                    valign="middle"
+                                    style="
+                                      font-family:Arial, Helvetica, sans-serif;
+                                      font-size:24px;
+                                      line-height:28px;
+                                      font-weight:900;
+                                      color:#111111;
+                                      letter-spacing:-0.6px;
+                                    "
+                                  >Registro recibido</td>
+                                </tr>
+                              </table>
+                            </td>
+                          </tr>
+
+                          <tr>
+                            <td style="padding:0 0 16px;">
+                              <div style="height:1px; background:#c9c9c9; width:100%;"></div>
+                            </td>
+                          </tr>
+
+                          <tr>
+                            <td
+                              class="duo-reg-copy"
+                              style="
+                                font-family:Arial, Helvetica, sans-serif;
+                                font-size:14px;
+                                line-height:20px;
+                                font-weight:400;
+                                color:#111111;
+                                text-align:left;
+                                padding:0 0 30px;
+                              "
+                            >
+                              Hola <b>${escapeHtml(name)}</b>,<br />
+                              Recibimos tu registro en <b>${escapeHtml(BRAND_NAME)}</b> correctamente.<br />
+                              <b>y se encuentra pendiente de aprobación.</b>
+                            </td>
+                          </tr>
+
+                          <tr>
+                            <td style="padding:0 0 24px;">
+                              <table
+                                role="presentation"
+                                cellpadding="0"
+                                cellspacing="0"
+                                width="100%"
+                                class="duo-reg-box"
+                                style="
+                                  border-collapse:separate;
+                                  border-spacing:0;
+                                  width:100%;
+                                  border:1.5px solid #111111;
+                                  border-radius:10px;
+                                  background:#f3f3f3;
+                                "
+                              >
+                                <tr>
+                                  <td style="padding:22px 22px 24px; text-align:center;">
+                                    <div
+                                      class="duo-reg-box-copy"
+                                      style="
+                                        font-family:Arial, Helvetica, sans-serif;
+                                        font-size:14px;
+                                        line-height:20px;
+                                        font-weight:500;
+                                        color:#111111;
+                                        text-align:center;
+                                      "
+                                    >
+                                      Antes de continuar: <b>Verificá tu correo electrónico</b>, si todavía no lo hiciste.
+                                    </div>
+
+                                    <table
+                                      role="presentation"
+                                      cellpadding="0"
+                                      cellspacing="0"
+                                      style="border-collapse:collapse; margin:20px auto 18px;"
+                                    >
+                                      <tr>
+                                        <td
+                                          align="center"
+                                          style="
+                                            background:#dfff00;
+                                            border-radius:999px;
+                                            box-shadow:0 10px 14px rgba(0,0,0,0.18);
+                                          "
+                                        >
+                                          <a
+                                            href="${escapeHtml(safeHref)}"
+                                            style="
+                                              display:inline-block;
+                                              padding:13px 21px;
+                                              font-family:Arial, Helvetica, sans-serif;
+                                              font-size:15px;
+                                              line-height:16px;
+                                              font-weight:800;
+                                              color:#111111;
+                                              text-decoration:none;
+                                            "
+                                          >Verificar email</a>
+                                        </td>
+                                      </tr>
+                                    </table>
+
+                                    <div
+                                      class="duo-reg-box-note"
+                                      style="
+                                        font-family:Arial, Helvetica, sans-serif;
+                                        font-size:14px;
+                                        line-height:20px;
+                                        font-weight:500;
+                                        color:#111111;
+                                        text-align:center;
+                                      "
+                                    >
+                                      Una vez que el equipo apruebe tu cuenta,<br />
+                                      <b>te lo vamos a avisar por mail.</b>
+                                    </div>
+                                  </td>
+                                </tr>
+                              </table>
+                            </td>
+                          </tr>
+
+                          <tr>
+                            <td
+                              class="duo-reg-footer-link"
+                              style="
+                                font-family:Arial, Helvetica, sans-serif;
+                                font-size:11px;
+                                line-height:16px;
+                                font-weight:600;
+                                color:#111111;
+                                text-align:center;
+                              "
+                            >
+                              ¿Tuviste un problema con el botón?<br />
+                              <a
+                                href="${escapeHtml(safeHref)}"
+                                style="color:#2b59ff; text-decoration:underline;"
+                              >Podés acceder igual desde este enlace</a>
+                            </td>
+                          </tr>
+                        </table>
+                      </td>
+                    </tr>
+
+                    <tr>
+                      <td
+                        class="duo-reg-footer"
+                        style="
+                          background:#050505;
+                          padding:40px 48px 42px;
+                          border-radius:0 0 28px 28px;
+                          font-family:Arial, Helvetica, sans-serif;
+                        "
+                      >
+                        <table
+                          role="presentation"
+                          cellpadding="0"
+                          cellspacing="0"
+                          width="100%"
+                          style="border-collapse:collapse; width:100%;"
+                        >
+                          <tr>
+                            <td
+                              valign="middle"
+                              style="
+                                width:42%;
+                                color:#ffffff;
+                                font-family:Arial, Helvetica, sans-serif;
+                              "
+                            >
+                              <div
+                                class="duo-footer-brand"
+                                style="
+                                  font-size:23px;
+                                  line-height:23px;
+                                  font-weight:900;
+                                  letter-spacing:7px;
+                                "
+                              >DUO</div>
+                              <div
+                                style="
+                                  font-size:4px;
+                                  line-height:7px;
+                                  font-weight:700;
+                                  letter-spacing:1.8px;
+                                  margin-top:4px;
+                                  opacity:0.95;
+                                "
+                              >HEALTH CLUB</div>
+                            </td>
+                            <td
+                              valign="middle"
+                              align="right"
+                              class="duo-footer-info"
+                              style="
+                                width:58%;
+                                color:#ffffff;
+                                font-family:Arial, Helvetica, sans-serif;
+                                font-size:9px;
+                                line-height:13px;
+                                font-weight:500;
+                                letter-spacing:0.2px;
+                              "
+                            >
+                              <div style="font-weight:900; letter-spacing:2.8px;">DUOCLUB.AR</div>
+                              <div>+54 249 420 7343</div>
+                              <div>Av. Santamaría 54, Tandil.</div>
+                              <div style="padding-top:6px; font-size:10px; line-height:10px; letter-spacing:4px;">◎ f in</div>
+                            </td>
+                          </tr>
+                        </table>
+                      </td>
+                    </tr>
+                  </table>
+                </td>
+              </tr>
+            </table>
+          </td>
+        </tr>
+      </table>
+    `,
+  });
+}
+
+export async function sendUserRegistrationReceivedEmail(user, verifyUrl = BRAND_URL) {
   if (!user?.email) return;
 
   const uName = safeName(user);
+  const verifyHref = verifyUrl || BRAND_URL || "#";
 
   const text = [
     `Hola ${uName},`,
     "",
-    `Recibimos tu registro en ${BRAND_NAME} correctamente.`,
-    "Tu cuenta se encuentra pendiente de aprobación.",
+    `Recibimos tu registro en ${BRAND_NAME} correctamente y se encuentra pendiente de aprobación.`,
     "",
-    "Antes de continuar:",
-    "- Verificá tu correo electrónico, si todavía no lo hiciste.",
+    "Antes de continuar: verificá tu correo electrónico, si todavía no lo hiciste.",
+    verifyHref ? `Verificar email: ${verifyHref}` : "",
     "",
-    "Una vez que el equipo apruebe tu cuenta, te vamos a avisar por mail.",
-    "",
-    BRAND_URL ? `Acceso: ${BRAND_URL}` : "",
+    "Una vez que el equipo apruebe tu cuenta, te lo vamos a avisar por mail.",
   ]
     .filter(Boolean)
     .join("\n");
 
-  const panel = buildPanel([
-    panelRow(
-      "Estado",
-      `<span style="color:#ffffff;">Pendiente de aprobación</span>`
-    ),
-    panelRow(
-      "Importante",
-      `<span style="color:#ffffff;">Verificá tu correo electrónico si todavía no lo hiciste.</span>`
-    ),
-  ]);
-
-  const innerHtml = `
-    ${renderExactBodyText(
-      `Hola <b>${escapeHtml(uName)}</b>,<br/>Recibimos tu registro en <b>${escapeHtml(
-        BRAND_NAME
-      )}</b> correctamente.<br/>Tu cuenta se encuentra <b>pendiente de aprobación</b>.`,
-      {
-        fontSize: 14,
-        lineHeight: 19,
-        weight: 700,
-        maxWidth: 320,
-        marginBottom: 14,
-      }
-    )}
-
-    ${panel}
-
-    ${
-      BRAND_URL
-        ? renderPrimaryButton(`Ingresar a ${BRAND_NAME}`, BRAND_URL)
-        : ""
-    }
-
-    ${renderExactBodyText(
-      "Una vez que el equipo apruebe tu cuenta, te lo vamos a avisar por mail.",
-      {
-        fontSize: 13,
-        lineHeight: 18,
-        weight: 700,
-        maxWidth: 320,
-        marginTop: 2,
-        marginBottom: 0,
-      }
-    )}
-
-    ${
-      BRAND_URL
-        ? renderExactBodyText(
-            `¿Tuviste un problema con el botón?<br/><a href="${escapeHtml(
-              BRAND_URL
-            )}" style="color:#2b59ff; text-decoration:underline;">Podés acceder igual desde este enlace</a>`,
-            {
-              fontSize: 11,
-              lineHeight: 16,
-              weight: 600,
-              maxWidth: 320,
-              marginTop: 8,
-              marginBottom: 0,
-            }
-          )
-        : ""
-    }
-  `;
-
-  const html = buildAuthEmail({
+  const html = buildRegistrationReceivedVisualEmail({
     title: "Registro recibido",
-    icon: "✓",
     preheader: "Registro realizado correctamente",
-    innerHtml,
+    name: uName,
+    verifyHref,
   });
 
   await sendMail(
@@ -242,6 +895,87 @@ export async function sendUserRegistrationReceivedEmail(user) {
 /* =========================================================
    3) ADMIN -> NUEVO REGISTRO
 ========================================================= */
+
+function buildAdminRegistrationVisualEmail({
+  title,
+  preheader,
+  name,
+  email,
+  phone,
+  userId,
+  emailVerified,
+  approveUrl = "",
+  rejectUrl = "",
+}) {
+  const approveHref = approveUrl || "#";
+  const rejectHref = rejectUrl || "#";
+
+  return buildEmailLayout({
+    title: `${BRAND_NAME} · ${title}`,
+    preheader,
+    footerNote: "",
+    bodyHtml: `
+      <style>
+        @media only screen and (max-width: 560px) {
+          .duo-admin-reg-wrap { max-width: 100% !important; }
+          .duo-admin-reg-card { border-radius: 0 0 22px 22px !important; }
+          .duo-admin-reg-content { padding: 30px 26px 34px !important; }
+          .duo-admin-reg-heading { font-size: 22px !important; line-height: 26px !important; }
+          .duo-admin-reg-copy { font-size: 14px !important; line-height: 21px !important; }
+          .duo-admin-reg-footer { padding: 36px 32px 38px !important; border-radius: 0 0 22px 22px !important; }
+          .duo-footer-brand { font-size: 22px !important; line-height: 22px !important; letter-spacing: 6px !important; }
+          .duo-footer-info { font-size: 9px !important; line-height: 13px !important; }
+        }
+      </style>
+      <table role="presentation" cellpadding="0" cellspacing="0" width="100%" style="border-collapse:collapse;">
+        <tr><td align="center" style="padding:0;">
+          <table role="presentation" cellpadding="0" cellspacing="0" width="100%" class="duo-admin-reg-wrap" style="max-width:430px; border-collapse:separate; border-spacing:0;">
+            <tr><td class="duo-admin-reg-card" style="background:#f3f3f3; border-radius:0 0 28px 28px; overflow:hidden; font-family:Arial, Helvetica, sans-serif; color:#111111;">
+              <table role="presentation" cellpadding="0" cellspacing="0" width="100%" style="border-collapse:collapse; width:100%;">
+                <tr>
+                  <td class="duo-admin-reg-content" style="padding:34px 28px 34px; background:#f3f3f3; color:#111111;">
+                    <table role="presentation" cellpadding="0" cellspacing="0" width="100%" style="border-collapse:collapse; width:100%;">
+                      <tr><td align="center" style="padding:0 0 36px;"><div style="font-size:34px; line-height:34px; font-weight:900; color:#050505; letter-spacing:-3px;">ᗡ◖</div></td></tr>
+                      <tr>
+                        <td style="padding:0 0 14px;">
+                          <table role="presentation" cellpadding="0" cellspacing="0" width="100%" style="border-collapse:collapse;">
+                            <tr>
+                              <td valign="middle" style="width:24px; padding:0 10px 0 0;"><div style="width:19px; height:19px; border:2px solid #111111; border-radius:999px; font-size:11px; line-height:17px; text-align:center; font-weight:900; color:#111111;">+</div></td>
+                              <td class="duo-admin-reg-heading" valign="middle" style="font-size:24px; line-height:28px; font-weight:900; color:#111111; letter-spacing:-0.6px;">Nuevo registro</td>
+                            </tr>
+                          </table>
+                        </td>
+                      </tr>
+                      <tr><td style="padding:0 0 16px;"><div style="height:1px; background:#c9c9c9; width:100%;"></div></td></tr>
+                      <tr><td class="duo-admin-reg-copy" style="font-size:14px; line-height:20px; font-weight:400; color:#111111; text-align:left; padding:0 0 20px;">Se registró un nuevo usuario en <b>${escapeHtml(BRAND_NAME)}</b>.<br />Revisá sus datos y aprobá o rechazá el acceso.</td></tr>
+                      <tr><td style="padding:0 0 16px;">${renderAdminMetaPanel([{ label: "Nombre", value: name }, { label: "Email", value: email }])}</td></tr>
+                      <tr><td style="padding:0 0 20px;">${renderAdminDetailPanel([{ label: "Teléfono", value: phone }, { label: "ID", value: userId }, { label: "Email verificado", value: emailVerified }, { label: "Estado", value: "Pendiente" }])}</td></tr>
+                      <tr><td style="padding:0 0 8px;">${renderExactButtons([
+                        approveUrl ? { label: "Aprobar", href: approveHref, variant: "primary" } : null,
+                        rejectUrl ? { label: "Rechazar", href: rejectHref, variant: "danger" } : null,
+                      ].filter(Boolean))}</td></tr>
+                      <tr><td style="padding:0 0 0;">${renderLinksFallback([approveUrl, rejectUrl].filter(Boolean).map((href) => ({ href })))}</td></tr>
+                    </table>
+                  </td>
+                </tr>
+                <tr>
+                  <td class="duo-admin-reg-footer" style="background:#050505; padding:40px 48px 42px; border-radius:0 0 28px 28px; font-family:Arial, Helvetica, sans-serif;">
+                    <table role="presentation" cellpadding="0" cellspacing="0" width="100%" style="border-collapse:collapse; width:100%;">
+                      <tr>
+                        <td valign="middle" style="width:42%; color:#ffffff;"><div class="duo-footer-brand" style="font-size:23px; line-height:23px; font-weight:900; letter-spacing:7px;">DUO</div><div style="font-size:4px; line-height:7px; font-weight:700; letter-spacing:1.8px; margin-top:4px; opacity:0.95;">HEALTH CLUB</div></td>
+                        <td valign="middle" align="right" class="duo-footer-info" style="width:58%; color:#ffffff; font-size:9px; line-height:13px; font-weight:500; letter-spacing:0.2px;"><div style="font-weight:900; letter-spacing:2.8px;">DUOCLUB.AR</div><div>+54 249 420 7343</div><div>Av. Santamaría 54, Tandil.</div><div style="padding-top:6px; font-size:10px; line-height:10px; letter-spacing:4px;">◎ f in</div></td>
+                      </tr>
+                    </table>
+                  </td>
+                </tr>
+              </table>
+            </td></tr>
+          </table>
+        </td></tr>
+      </table>
+    `,
+  });
+}
 
 export async function sendAdminNewRegistrationEmail({
   user,
@@ -267,55 +1001,16 @@ export async function sendAdminNewRegistrationEmail({
     .filter(Boolean)
     .join("\n");
 
-  const panel = buildPanel([
-    panelRow("Nombre", `<span style="color:#ffffff;">${escapeHtml(fullName)}</span>`),
-    panelRow("Email", `<span style="color:#ffffff;">${escapeHtml(user.email || "-")}</span>`),
-    panelRow("Teléfono", `<span style="color:#ffffff;">${escapeHtml(user.phone || "-")}</span>`),
-    panelRow("ID", `<span style="color:#ffffff;">${escapeHtml(String(user._id || "-"))}</span>`),
-    panelRow(
-      "Email verificado",
-      `<span style="color:#ffffff;">${user?.emailVerified ? "SI" : "NO"}</span>`
-    ),
-    panelRow("Estado", `<span style="color:#ffffff;">Pendiente</span>`),
-  ]);
-
-  const innerHtml = `
-    ${renderExactBodyText(
-      `Se registró un nuevo usuario en <b>${escapeHtml(BRAND_NAME)}</b>.`,
-      {
-        fontSize: 14,
-        lineHeight: 19,
-        weight: 700,
-        maxWidth: 320,
-        marginBottom: 14,
-      }
-    )}
-
-    ${panel}
-
-    ${renderExactButtons(
-      [
-        approveUrl
-          ? { label: "Aprobar", href: approveUrl, variant: "primary" }
-          : null,
-        rejectUrl
-          ? { label: "Rechazar", href: rejectUrl, variant: "danger" }
-          : null,
-      ].filter(Boolean)
-    )}
-
-    ${renderLinksFallback(
-      [approveUrl, rejectUrl]
-        .filter(Boolean)
-        .map((href) => ({ href }))
-    )}
-  `;
-
-  const html = buildAuthEmail({
+  const html = buildAdminRegistrationVisualEmail({
     title: "Nuevo registro",
-    icon: "✓",
     preheader: "Nuevo usuario pendiente de aprobación",
-    innerHtml,
+    name: fullName,
+    email: user.email || "-",
+    phone: user.phone || "-",
+    userId: String(user._id || "-"),
+    emailVerified: user?.emailVerified ? "SI" : "NO",
+    approveUrl,
+    rejectUrl,
   });
 
   await sendMail(
@@ -329,6 +1024,351 @@ export async function sendAdminNewRegistrationEmail({
 /* =========================================================
    4) USER -> APROBADO / RECHAZADO
 ========================================================= */
+
+function buildAccountResultVisualEmail({
+  title,
+  preheader,
+  heading,
+  name,
+  messageHtml,
+  ctaLabel = "",
+  ctaHref = "",
+  noteHtml = "",
+}) {
+  return buildEmailLayout({
+    title: `${BRAND_NAME} · ${title}`,
+    preheader,
+    footerNote: "",
+    bodyHtml: `
+      <style>
+        @media only screen and (max-width: 560px) {
+          .duo-account-wrap {
+            max-width: 100% !important;
+          }
+          .duo-account-card {
+            border-radius: 0 0 22px 22px !important;
+          }
+          .duo-account-content {
+            padding: 30px 28px 54px !important;
+          }
+          .duo-account-logo {
+            padding: 0 0 58px !important;
+          }
+          .duo-account-heading {
+            font-size: 22px !important;
+            line-height: 26px !important;
+          }
+          .duo-account-copy {
+            font-size: 14px !important;
+            line-height: 20px !important;
+          }
+          .duo-account-button-row {
+            padding-top: 44px !important;
+          }
+          .duo-account-footer {
+            padding: 36px 44px 38px !important;
+            border-radius: 0 0 22px 22px !important;
+          }
+          .duo-footer-brand {
+            font-size: 22px !important;
+            line-height: 22px !important;
+            letter-spacing: 6px !important;
+          }
+          .duo-footer-info {
+            font-size: 9px !important;
+            line-height: 13px !important;
+          }
+        }
+      </style>
+
+      <table
+        role="presentation"
+        cellpadding="0"
+        cellspacing="0"
+        width="100%"
+        style="border-collapse:collapse;"
+      >
+        <tr>
+          <td align="center" style="padding:0;">
+            <table
+              role="presentation"
+              cellpadding="0"
+              cellspacing="0"
+              width="100%"
+              class="duo-account-wrap"
+              style="max-width:430px; border-collapse:separate; border-spacing:0;"
+            >
+              <tr>
+                <td
+                  class="duo-account-card"
+                  style="
+                    background:#f3f3f3;
+                    border-radius:0 0 28px 28px;
+                    overflow:hidden;
+                    font-family:Arial, Helvetica, sans-serif;
+                    color:#111111;
+                  "
+                >
+                  <table
+                    role="presentation"
+                    cellpadding="0"
+                    cellspacing="0"
+                    width="100%"
+                    style="border-collapse:collapse; width:100%;"
+                  >
+                    <tr>
+                      <td
+                        class="duo-account-content"
+                        style="
+                          background:#f3f3f3;
+                          padding:34px 56px 58px;
+                          font-family:Arial, Helvetica, sans-serif;
+                          color:#111111;
+                        "
+                      >
+                        <table
+                          role="presentation"
+                          cellpadding="0"
+                          cellspacing="0"
+                          width="100%"
+                          style="border-collapse:collapse; width:100%;"
+                        >
+                          <tr>
+                            <td
+                              class="duo-account-logo"
+                              align="center"
+                              style="padding:0 0 62px;"
+                            >
+                              <div
+                                style="
+                                  font-family:Arial, Helvetica, sans-serif;
+                                  font-size:34px;
+                                  line-height:34px;
+                                  font-weight:900;
+                                  color:#050505;
+                                  letter-spacing:-3px;
+                                "
+                              >ᗡ◖</div>
+                            </td>
+                          </tr>
+
+                          <tr>
+                            <td style="padding:0 0 18px;">
+                              <table
+                                role="presentation"
+                                cellpadding="0"
+                                cellspacing="0"
+                                width="100%"
+                                style="border-collapse:collapse;"
+                              >
+                                <tr>
+                                  <td
+                                    valign="middle"
+                                    style="width:24px; padding:0 10px 0 0;"
+                                  >
+                                    <div
+                                      style="
+                                        width:19px;
+                                        height:19px;
+                                        border:2px solid #111111;
+                                        border-radius:999px;
+                                        font-size:11px;
+                                        line-height:17px;
+                                        text-align:center;
+                                        font-weight:900;
+                                        color:#111111;
+                                      "
+                                    >${ctaHref ? "✓" : "!"}</div>
+                                  </td>
+                                  <td
+                                    class="duo-account-heading"
+                                    valign="middle"
+                                    style="
+                                      font-family:Arial, Helvetica, sans-serif;
+                                      font-size:24px;
+                                      line-height:28px;
+                                      font-weight:900;
+                                      color:#111111;
+                                      letter-spacing:-0.6px;
+                                    "
+                                  >${escapeHtml(heading)}</td>
+                                </tr>
+                              </table>
+                            </td>
+                          </tr>
+
+                          <tr>
+                            <td style="padding:0 0 14px;">
+                              <div style="height:1px; background:#c9c9c9; width:100%;"></div>
+                            </td>
+                          </tr>
+
+                          <tr>
+                            <td
+                              class="duo-account-copy"
+                              style="
+                                font-family:Arial, Helvetica, sans-serif;
+                                font-size:14px;
+                                line-height:20px;
+                                font-weight:400;
+                                color:#111111;
+                                padding:0;
+                                text-align:left;
+                              "
+                            >
+                              Hola <b>${escapeHtml(name)}</b>,<br />
+                              ${messageHtml}
+                            </td>
+                          </tr>
+
+                          ${
+                            ctaLabel && ctaHref
+                              ? `
+                          <tr>
+                            <td
+                              class="duo-account-button-row"
+                              align="center"
+                              style="padding:50px 0 0;"
+                            >
+                              <table
+                                role="presentation"
+                                cellpadding="0"
+                                cellspacing="0"
+                                style="border-collapse:collapse; margin:0 auto;"
+                              >
+                                <tr>
+                                  <td
+                                    align="center"
+                                    style="
+                                      background:#dfff00;
+                                      border-radius:999px;
+                                      box-shadow:0 12px 16px rgba(0,0,0,0.18);
+                                    "
+                                  >
+                                    <a
+                                      href="${escapeHtml(ctaHref)}"
+                                      style="
+                                        display:inline-block;
+                                        padding:14px 22px;
+                                        font-family:Arial, Helvetica, sans-serif;
+                                        font-size:15px;
+                                        line-height:16px;
+                                        font-weight:800;
+                                        color:#111111;
+                                        text-decoration:none;
+                                      "
+                                    >${escapeHtml(ctaLabel)}</a>
+                                  </td>
+                                </tr>
+                              </table>
+                            </td>
+                          </tr>
+                              `
+                              : ""
+                          }
+
+                          ${
+                            noteHtml
+                              ? `
+                          <tr>
+                            <td
+                              style="
+                                padding:34px 0 0;
+                                font-family:Arial, Helvetica, sans-serif;
+                                font-size:12px;
+                                line-height:18px;
+                                font-weight:600;
+                                color:#111111;
+                                text-align:left;
+                              "
+                            >${noteHtml}</td>
+                          </tr>
+                              `
+                              : ""
+                          }
+                        </table>
+                      </td>
+                    </tr>
+
+                    <tr>
+                      <td
+                        class="duo-account-footer"
+                        style="
+                          background:#050505;
+                          padding:40px 48px 42px;
+                          border-radius:0 0 28px 28px;
+                          font-family:Arial, Helvetica, sans-serif;
+                        "
+                      >
+                        <table
+                          role="presentation"
+                          cellpadding="0"
+                          cellspacing="0"
+                          width="100%"
+                          style="border-collapse:collapse; width:100%;"
+                        >
+                          <tr>
+                            <td
+                              valign="middle"
+                              style="
+                                width:42%;
+                                color:#ffffff;
+                                font-family:Arial, Helvetica, sans-serif;
+                              "
+                            >
+                              <div
+                                class="duo-footer-brand"
+                                style="
+                                  font-size:23px;
+                                  line-height:23px;
+                                  font-weight:900;
+                                  letter-spacing:7px;
+                                "
+                              >DUO</div>
+                              <div
+                                style="
+                                  font-size:4px;
+                                  line-height:7px;
+                                  font-weight:700;
+                                  letter-spacing:1.8px;
+                                  margin-top:4px;
+                                  opacity:0.95;
+                                "
+                              >HEALTH CLUB</div>
+                            </td>
+                            <td
+                              valign="middle"
+                              align="right"
+                              class="duo-footer-info"
+                              style="
+                                width:58%;
+                                color:#ffffff;
+                                font-family:Arial, Helvetica, sans-serif;
+                                font-size:9px;
+                                line-height:13px;
+                                font-weight:500;
+                                letter-spacing:0.2px;
+                              "
+                            >
+                              <div style="font-weight:900; letter-spacing:2.8px;">DUOCLUB.AR</div>
+                              <div>+54 249 420 7343</div>
+                              <div>Av. Santamaría 54, Tandil.</div>
+                              <div style="padding-top:6px; font-size:10px; line-height:10px; letter-spacing:4px;">◎ f in</div>
+                            </td>
+                          </tr>
+                        </table>
+                      </td>
+                    </tr>
+                  </table>
+                </td>
+              </tr>
+            </table>
+          </td>
+        </tr>
+      </table>
+    `,
+  });
+}
 
 export async function sendUserApprovalResultEmail(user, status) {
   if (!user?.email) return;
@@ -356,330 +1396,29 @@ export async function sendUserApprovalResultEmail(user, status) {
     .filter(Boolean)
     .join("\n");
 
-  if (isApproved) {
-    const html = buildEmailLayout({
-      title: `${BRAND_NAME} · Cuenta aprobada`,
-      preheader,
-      footerNote: "",
-      bodyHtml: `
-        <style>
-          @media only screen and (max-width: 560px) {
-            .duo-mail-outer {
-              padding: 0 !important;
-            }
-            .duo-mail-card {
-              border-radius: 0 !important;
-            }
-            .duo-mail-content {
-              padding: 26px 26px 0 !important;
-            }
-            .duo-mail-logo {
-              padding-top: 4px !important;
-              padding-bottom: 18px !important;
-            }
-            .duo-mail-title {
-              font-size: 33px !important;
-              line-height: 34px !important;
-            }
-            .duo-mail-copy {
-              font-size: 15px !important;
-              line-height: 21px !important;
-            }
-            .duo-mail-button-cell {
-              padding-left: 26px !important;
-              padding-right: 26px !important;
-            }
-            .duo-mail-footer {
-              padding: 22px 26px !important;
-            }
-          }
-        </style>
+  const html = isApproved
+    ? buildAccountResultVisualEmail({
+        title,
+        preheader,
+        heading: "Cuenta aprobada",
+        name: uName,
+        messageHtml: `Tu cuenta de <b>${escapeHtml(
+          BRAND_NAME
+        )}</b> ya fue aprobada!<br />Ya podés ingresar y comenzar a usar la plataforma.`,
+        ctaLabel: `Ingresar a ${BRAND_NAME}`,
+        ctaHref: BRAND_URL || "#",
+      })
+    : buildAccountResultVisualEmail({
+        title,
+        preheader,
+        heading: "Cuenta rechazada",
+        name: uName,
+        messageHtml: `Tu cuenta de <b>${escapeHtml(
+          BRAND_NAME
+        )}</b> no pudo ser aprobada.`,
+        noteHtml:
+          "Si creés que esto es un error, respondé este mail o comunicate con el staff.",
+      });
 
-        <table
-          role="presentation"
-          cellpadding="0"
-          cellspacing="0"
-          width="100%"
-          class="duo-mail-outer"
-          style="border-collapse:collapse;"
-        >
-          <tr>
-            <td align="center" style="padding:0;">
-              <table
-                role="presentation"
-                cellpadding="0"
-                cellspacing="0"
-                width="100%"
-                style="max-width:560px; border-collapse:collapse;"
-              >
-                <tr>
-                  <td
-                    class="duo-mail-card"
-                    style="
-                      background:#f3f3f3;
-                      border-radius:0;
-                      overflow:hidden;
-                    "
-                  >
-                    <table
-                      role="presentation"
-                      cellpadding="0"
-                      cellspacing="0"
-                      width="100%"
-                      style="border-collapse:collapse;"
-                    >
-                      <tr>
-                        <td
-                          class="duo-mail-content"
-                          style="
-                            padding:24px 34px 0;
-                            background:#f3f3f3;
-                            font-family:Arial, Helvetica, sans-serif;
-                            color:#111111;
-                          "
-                        >
-                          <table
-                            role="presentation"
-                            cellpadding="0"
-                            cellspacing="0"
-                            width="100%"
-                            style="border-collapse:collapse;"
-                          >
-                            <tr>
-                              <td
-                                class="duo-mail-logo"
-                                align="center"
-                                style="padding:2px 0 20px;"
-                              >
-                                <div
-                                  style="
-                                    font-size:42px;
-                                    line-height:42px;
-                                    font-weight:900;
-                                    color:#111111;
-                                    letter-spacing:-2px;
-                                    font-family:Arial, Helvetica, sans-serif;
-                                  "
-                                >
-                                  ᗡ◖
-                                </div>
-                              </td>
-                            </tr>
-
-                            <tr>
-                              <td
-                                class="duo-mail-title"
-                                style="
-                                  font-size:35px;
-                                  line-height:36px;
-                                  font-weight:900;
-                                  color:#111111;
-                                  letter-spacing:-1px;
-                                  padding:0 0 14px;
-                                  font-family:Arial, Helvetica, sans-serif;
-                                "
-                              >
-                                Cuenta aprobada
-                              </td>
-                            </tr>
-
-                            <tr>
-                              <td style="padding:0 0 14px;">
-                                <div
-                                  style="
-                                    height:1px;
-                                    background:#cfcfcf;
-                                    width:100%;
-                                  "
-                                ></div>
-                              </td>
-                            </tr>
-
-                            <tr>
-                              <td
-                                class="duo-mail-copy"
-                                style="
-                                  font-size:14px;
-                                  line-height:20px;
-                                  font-weight:400;
-                                  color:#111111;
-                                  padding:0 0 22px;
-                                  font-family:Arial, Helvetica, sans-serif;
-                                "
-                              >
-                                Hola ${escapeHtml(uName)},<br /><br />
-                                Tu cuenta de ${escapeHtml(
-                                  BRAND_NAME
-                                )} ya fue aprobada!<br />
-                                Ya podés ingresar y comenzar a usar la plataforma.
-                              </td>
-                            </tr>
-                          </table>
-                        </td>
-                      </tr>
-
-                      <tr>
-                        <td
-                          class="duo-mail-button-cell"
-                          style="
-                            background:#f3f3f3;
-                            padding:0 34px 28px;
-                            font-family:Arial, Helvetica, sans-serif;
-                          "
-                        >
-                          <table
-                            role="presentation"
-                            cellpadding="0"
-                            cellspacing="0"
-                            style="border-collapse:collapse;"
-                          >
-                            <tr>
-                              <td
-                                align="center"
-                                style="
-                                  background:#dfff00;
-                                  border-radius:999px;
-                                "
-                              >
-                                <a
-                                  href="${escapeHtml(BRAND_URL || "#")}"
-                                  style="
-                                    display:inline-block;
-                                    padding:13px 24px;
-                                    font-size:14px;
-                                    line-height:14px;
-                                    font-weight:700;
-                                    color:#111111;
-                                    text-decoration:none;
-                                    font-family:Arial, Helvetica, sans-serif;
-                                  "
-                                >
-                                  Ingresar a ${escapeHtml(BRAND_NAME)}
-                                </a>
-                              </td>
-                            </tr>
-                          </table>
-                        </td>
-                      </tr>
-
-                      <tr>
-                        <td
-                          class="duo-mail-footer"
-                          style="
-                            background:#0a0a0a;
-                            padding:24px 34px;
-                            font-family:Arial, Helvetica, sans-serif;
-                          "
-                        >
-                          <table
-                            role="presentation"
-                            cellpadding="0"
-                            cellspacing="0"
-                            width="100%"
-                            style="border-collapse:collapse;"
-                          >
-                            <tr>
-                              <td
-                                valign="middle"
-                                style="
-                                  color:#ffffff;
-                                  font-size:28px;
-                                  line-height:28px;
-                                  font-weight:900;
-                                  letter-spacing:2px;
-                                  font-family:Arial, Helvetica, sans-serif;
-                                "
-                              >
-                                DUO
-                              </td>
-
-                              <td
-                                valign="middle"
-                                align="right"
-                                style="
-                                  color:#ffffff;
-                                  font-size:11px;
-                                  line-height:16px;
-                                  font-weight:500;
-                                  font-family:Arial, Helvetica, sans-serif;
-                                "
-                              >
-                                DUOCLUB.AR<br />
-                                INFO@DUOCLUB.AR<br />
-                                Av. Santa Fe 2567, Tandil<br />
-                                +54 9 249 123 4567
-                              </td>
-                            </tr>
-                          </table>
-                        </td>
-                      </tr>
-                    </table>
-                  </td>
-                </tr>
-              </table>
-            </td>
-          </tr>
-        </table>
-      `,
-    });
-
-    await sendMail(
-      user.email,
-      `${title} - ${BRAND_NAME}`,
-      text,
-      html
-    );
-
-    return;
-  }
-
-  const panel = buildPanel([
-    panelRow(
-      "Estado",
-      `<span style="color:#ffffff;">Rechazada</span>`
-    ),
-  ]);
-
-  const innerHtml = `
-    ${renderExactBodyText(
-      `Hola <b>${escapeHtml(uName)}</b>,<br/>Tu cuenta de <b>${escapeHtml(
-        BRAND_NAME
-      )}</b> no pudo ser aprobada.`,
-      {
-        fontSize: 14,
-        lineHeight: 19,
-        weight: 700,
-        maxWidth: 320,
-        marginBottom: 14,
-      }
-    )}
-
-    ${panel}
-
-    ${renderExactBodyText(
-      "Si creés que esto es un error, respondé este mail o comunicate con el staff.",
-      {
-        fontSize: 12,
-        lineHeight: 17,
-        weight: 600,
-        maxWidth: 320,
-        marginTop: 8,
-        marginBottom: 0,
-      }
-    )}
-  `;
-
-  const html = buildAuthEmail({
-    title,
-    icon: "✕",
-    preheader,
-    innerHtml,
-  });
-
-  await sendMail(
-    user.email,
-    `${title} - ${BRAND_NAME}`,
-    text,
-    html
-  );
+  await sendMail(user.email, `${title} - ${BRAND_NAME}`, text, html);
 }

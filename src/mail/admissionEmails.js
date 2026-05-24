@@ -316,6 +316,57 @@ function buildAdmissionEmail({ title, preheader, icon = "✓", innerHtml }) {
   });
 }
 
+
+function buildAdminAdmissionVisualEmail({
+  title,
+  preheader,
+  heading,
+  introHtml,
+  bodyHtml,
+}) {
+  return buildEmailLayout({
+    title: `${BRAND_NAME} · ${title}`,
+    preheader,
+    footerNote: "",
+    bodyHtml: `
+      <style>
+        @media only screen and (max-width: 560px) {
+          .duo-admin-wrap { max-width: 100% !important; }
+          .duo-admin-card { border-radius: 0 0 22px 22px !important; }
+          .duo-admin-content { padding: 30px 26px 34px !important; }
+          .duo-admin-heading { font-size: 22px !important; line-height: 26px !important; }
+          .duo-admin-copy { font-size: 14px !important; line-height: 21px !important; }
+          .duo-admin-footer { padding: 36px 32px 38px !important; border-radius: 0 0 22px 22px !important; }
+          .duo-footer-brand { font-size: 22px !important; line-height: 22px !important; letter-spacing: 6px !important; }
+          .duo-footer-info { font-size: 9px !important; line-height: 13px !important; }
+        }
+      </style>
+      <table role="presentation" cellpadding="0" cellspacing="0" width="100%" style="border-collapse:collapse;">
+        <tr><td align="center" style="padding:0;">
+          <table role="presentation" cellpadding="0" cellspacing="0" width="100%" class="duo-admin-wrap" style="max-width:430px; border-collapse:separate; border-spacing:0;">
+            <tr><td class="duo-admin-card" style="background:#f3f3f3; border-radius:0 0 28px 28px; overflow:hidden; font-family:Arial, Helvetica, sans-serif; color:#111111;">
+              <table role="presentation" cellpadding="0" cellspacing="0" width="100%" style="border-collapse:collapse; width:100%;">
+                <tr>
+                  <td class="duo-admin-content" style="padding:34px 28px 34px; background:#f3f3f3; color:#111111;">
+                    <table role="presentation" cellpadding="0" cellspacing="0" width="100%" style="border-collapse:collapse; width:100%;">
+                      <tr><td align="center" style="padding:0 0 36px;"><div style="font-size:34px; line-height:34px; font-weight:900; color:#050505; letter-spacing:-3px;">ᗡ◖</div></td></tr>
+                      <tr><td style="padding:0 0 14px;"><table role="presentation" cellpadding="0" cellspacing="0" width="100%" style="border-collapse:collapse;"><tr><td valign="middle" style="width:24px; padding:0 10px 0 0;"><div style="width:19px; height:19px; border:2px solid #111111; border-radius:999px; font-size:11px; line-height:17px; text-align:center; font-weight:900; color:#111111;">✓</div></td><td class="duo-admin-heading" valign="middle" style="font-size:24px; line-height:28px; font-weight:900; color:#111111; letter-spacing:-0.6px;">${escapeHtml(heading)}</td></tr></table></td></tr>
+                      <tr><td style="padding:0 0 16px;"><div style="height:1px; background:#c9c9c9; width:100%;"></div></td></tr>
+                      <tr><td class="duo-admin-copy" style="font-size:14px; line-height:20px; font-weight:400; color:#111111; text-align:left; padding:0 0 18px;">${introHtml}</td></tr>
+                      <tr><td>${bodyHtml}</td></tr>
+                    </table>
+                  </td>
+                </tr>
+                <tr><td class="duo-admin-footer" style="background:#050505; padding:40px 48px 42px; border-radius:0 0 28px 28px; font-family:Arial, Helvetica, sans-serif;"><table role="presentation" cellpadding="0" cellspacing="0" width="100%" style="border-collapse:collapse; width:100%;"><tr><td valign="middle" style="width:42%; color:#ffffff;"><div class="duo-footer-brand" style="font-size:23px; line-height:23px; font-weight:900; letter-spacing:7px;">DUO</div><div style="font-size:4px; line-height:7px; font-weight:700; letter-spacing:1.8px; margin-top:4px; opacity:0.95;">HEALTH CLUB</div></td><td valign="middle" align="right" class="duo-footer-info" style="width:58%; color:#ffffff; font-size:9px; line-height:13px; font-weight:500; letter-spacing:0.2px;"><div style="font-weight:900; letter-spacing:2.8px;">DUOCLUB.AR</div><div>+54 249 420 7343</div><div>Av. Santamaría 54, Tandil.</div><div style="padding-top:6px; font-size:10px; line-height:10px; letter-spacing:4px;">◎ f in</div></td></tr></table></td></tr>
+              </table>
+            </td></tr>
+          </table>
+        </td></tr>
+      </table>
+    `,
+  });
+}
+
 /* =========================================================
    ADMIN email
 ========================================================= */
@@ -404,11 +455,12 @@ export async function sendAdminAdmissionCompletedEmail(
     `Aceptó términos: ${s.acceptsConsent}`,
   ].join("\n");
 
-  const html = buildAdmissionEmail({
+  const html = buildAdminAdmissionVisualEmail({
     title: "Formulario completo",
     preheader: `Admisión completa #${s.publicId}`,
-    icon: "✓",
-    innerHtml: `
+    heading: "Formulario completo",
+    introHtml: `Se completó un formulario de admisión de <b>${escapeHtml(s.fullName)}</b>.<br />Revisá toda la información cargada a continuación.`,
+    bodyHtml: `
       ${renderAdminMetaPanel([
         { label: "Código", value: `#${s.publicId}` },
         { label: "AdmissionId", value: s.admissionId },
@@ -430,16 +482,10 @@ export async function sendAdminAdmissionCompletedEmail(
         { label: "Obra social / prepaga", value: s.healthInsuranceProvider },
         { label: "Condición física actual", value: s.fitnessLevel },
         { label: "Contraindicación médica", value: s.hasContraindication },
-        {
-          label: "Último entrenamiento supervisado",
-          value: s.lastSupervisedTraining,
-        },
+        { label: "Último entrenamiento supervisado", value: s.lastSupervisedTraining },
         { label: "Último examen médico", value: s.lastMedicalExam },
         { label: "Dolor habitual", value: s.hasPain },
-        {
-          label: "Enfermedad que condicione rendimiento",
-          value: s.hasCondition,
-        },
+        { label: "Enfermedad que condicione rendimiento", value: s.hasCondition },
         { label: "Lesión último año", value: s.hadInjuryLastYear },
         { label: "Diabetes", value: s.diabetes },
         { label: "Presión arterial", value: s.bloodPressure },
@@ -454,34 +500,19 @@ export async function sendAdminAdmissionCompletedEmail(
 
       ${renderSectionPanel("Step 2 · Rehabilitación", [
         { label: "Necesita rehabilitación", value: s.needsRehab },
-        {
-          label: "Diagnóstico y orden médica",
-          value: s.rehab_hasDiagnosisOrder,
-        },
+        { label: "Diagnóstico y orden médica", value: s.rehab_hasDiagnosisOrder },
         { label: "Síntomas", value: s.rehab_symptoms },
-        {
-          label: "Fecha lesión/aparición síntomas",
-          value: s.rehab_symptomDate,
-        },
+        { label: "Fecha lesión/aparición síntomas", value: s.rehab_symptomDate },
         { label: "Consulta médica", value: s.rehab_medicalConsult },
-        {
-          label: "Estudios de diagnóstico",
-          value: s.rehab_diagnosticStudy,
-        },
+        { label: "Estudios de diagnóstico", value: s.rehab_diagnosticStudy },
         { label: "Cómo sucedió", value: s.rehab_howHappened },
         { label: "Malestar diario", value: s.rehab_dailyDiscomfort },
-        {
-          label: "Imposibilidad para desplazarte",
-          value: s.rehab_mobilityIssue,
-        },
+        { label: "Imposibilidad para desplazarte", value: s.rehab_mobilityIssue },
         { label: "Toma medicación", value: s.rehab_takesMedication },
       ])}
 
       ${renderSectionPanel("Step 2 · Actualidad deportiva", [
-        {
-          label: "Deporte competitivo",
-          value: s.practicesCompetitiveSport,
-        },
+        { label: "Deporte competitivo", value: s.practicesCompetitiveSport },
         { label: "Nivel", value: s.competitionLevel },
         { label: "Deporte", value: s.sportName },
         { label: "Puesto", value: s.sportPosition },
