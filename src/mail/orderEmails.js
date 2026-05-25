@@ -18,8 +18,13 @@ function renderMailHeaderLogo(width = 34) {
   return `<img src="${IMG_BASE}/logo.png" alt="${escapeHtml(BRAND_NAME)}" width="${Number(width) || 34}" style="display:block; margin:0 auto; width:${Number(width) || 34}px; max-width:${Number(width) || 34}px; height:auto; border:0; outline:none; text-decoration:none;" />`;
 }
 
+function renderMailIcon(fileName = "iconocheck.png", size = 19) {
+  const safeFileName = String(fileName || "iconocheck.png").replace(/^\/+/, "");
+  return `<img src="${IMG_BASE}/${escapeHtml(safeFileName)}" alt="" width="${Number(size) || 19}" height="${Number(size) || 19}" style="display:block; width:${Number(size) || 19}px; height:${Number(size) || 19}px; border:0; outline:none; text-decoration:none;" />`;
+}
+
 function renderMailCheckIcon(size = 19) {
-  return `<img src="${IMG_BASE}/iconocheck.png" alt="" width="${Number(size) || 19}" height="${Number(size) || 19}" style="display:block; width:${Number(size) || 19}px; height:${Number(size) || 19}px; border:0; outline:none; text-decoration:none;" />`;
+  return renderMailIcon("iconocheck.png", size);
 }
 
 function renderMailFooterBrand(width = 92) {
@@ -293,6 +298,7 @@ function buildPaymentUserVisualEmail({
   helperLinkText = "",
   helperLinkHref = "",
   forcedStatus = null,
+  iconFile = "iconocheck.png",
 }) {
   const s = orderSummary(order, user);
   const linkHref = ctaHref || BRAND_URL || "#";
@@ -338,7 +344,7 @@ function buildPaymentUserVisualEmail({
                               <table role="presentation" cellpadding="0" cellspacing="0" width="100%" style="border-collapse:collapse;">
                                 <tr>
                                   <td valign="middle" style="width:24px; padding:0 10px 0 0;">
-                                    <div style="width:19px; height:19px; border:2px solid #111111; border-radius:999px; font-size:11px; line-height:17px; text-align:center; font-weight:900; color:#111111;">${renderMailCheckIcon(19)}</div>
+                                    <div style="width:19px; height:19px; border:2px solid #111111; border-radius:999px; font-size:11px; line-height:17px; text-align:center; font-weight:900; color:#111111;">${renderMailIcon(iconFile, 19)}</div>
                                   </td>
                                   <td class="duo-pay-heading" valign="middle" style="font-family:Arial, Helvetica, sans-serif; font-size:24px; line-height:28px; font-weight:900; color:#111111; letter-spacing:-0.6px;">${escapeHtml(heading)}</td>
                                 </tr>
@@ -688,6 +694,7 @@ export async function sendOrderPaidEmail(order = {}, user = null) {
     title: "Pago aprobado",
     preheader: "Tu pago fue aprobado",
     heading: "Pago aprobado",
+    iconFile: "pagoAprobado.png",
     name: s.uName,
     introHtml: `Tu pago fue aprobado y tu compra<br />se acreditó correctamente.`,
     order: { ...order, status: "paid" },
@@ -820,6 +827,7 @@ export async function sendAdminOrderPaidEmail(order = {}, user = null) {
     title: "Pago aprobado",
     preheader: `Pago aprobado de ${s.uName}`,
     heading: "Pago aprobado",
+    iconFile: "pagoAprobado.png",
     name: s.uName,
     introHtml: `El pago del pedido fue aprobado correctamente.<br /><b>La compra ya quedó acreditada.</b>`,
     order: { ...order, status: "paid" },

@@ -108,21 +108,27 @@ function renderExactHeaderLogo(width = 34) {
 
 export function renderExactStatusIcon(symbol = "✓") {
   const normalized = String(symbol || "").trim().toLowerCase();
-  const isAccountApproved = ["account-approved", "cuenta-aprobada", "alta-aprobada"].includes(normalized);
-  const src = isAccountApproved
-    ? `${IMG_BASE}/iconoCuentaAprobada.png`
-    : `${IMG_BASE}/iconocheck.png`;
-  const alt = isAccountApproved ? "Cuenta aprobada" : symbol;
-  const size = isAccountApproved ? 28 : 19;
+  const iconMap = {
+    "account-approved": { src: `${IMG_BASE}/iconoCuentaAprobada.png`, alt: "Cuenta aprobada", size: 28 },
+    "cuenta-aprobada": { src: `${IMG_BASE}/iconoCuentaAprobada.png`, alt: "Cuenta aprobada", size: 28 },
+    "alta-aprobada": { src: `${IMG_BASE}/iconoCuentaAprobada.png`, alt: "Alta aprobada", size: 28 },
+    "sesiones-actualizadas": { src: `${IMG_BASE}/sesionesActualizas.png`, alt: "Sesiones actualizadas", size: 28 },
+    "creditos-actualizados": { src: `${IMG_BASE}/sesionesActualizas.png`, alt: "Créditos actualizados", size: 28 },
+  };
+  const selected = iconMap[normalized] || {
+    src: `${IMG_BASE}/iconocheck.png`,
+    alt: symbol,
+    size: 19,
+  };
 
   return `
     <img
       class="status-icon"
-      src="${src}"
-      width="${size}"
-      height="${size}"
-      alt="${escapeHtml(alt)}"
-      style="display:block; width:${size}px; height:${size}px; border:0; outline:none; text-decoration:none;"
+      src="${selected.src}"
+      width="${selected.size}"
+      height="${selected.size}"
+      alt="${escapeHtml(selected.alt)}"
+      style="display:block; width:${selected.size}px; height:${selected.size}px; border:0; outline:none; text-decoration:none;"
     />
   `;
 }
