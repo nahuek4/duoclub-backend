@@ -732,7 +732,7 @@ export async function sendUserApprovedEmail({
   const html = buildAdmissionEmail({
     title: "Alta aprobada",
     preheader: "Tu alta fue aprobada",
-    icon: "✓",
+    icon: "account-approved",
     innerHtml: `
       ${renderExactBodyText(
         `Hola <b>${escapeHtml(fullName)}</b>,<br/>Tu alta fue <b>aprobada</b>. Ya podés ingresar a la plataforma.`,

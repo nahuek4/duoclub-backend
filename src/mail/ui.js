@@ -11,15 +11,20 @@ export function renderExactUserShell(innerHtml) {
   return `
     <style>
       @media only screen and (max-width: 560px) {
-        .mail-shell { padding:16px 8px 22px !important; }
-        .mail-title { font-size:18px !important; line-height:19px !important; margin:0 auto 16px !important; }
+        .mail-wrap { max-width:100% !important; }
+        .mail-shell { padding:30px 26px 34px !important; border-radius:0 0 22px 22px !important; }
+        .mail-logo { padding-bottom:34px !important; }
+        .mail-heading { font-size:22px !important; line-height:26px !important; }
+        .mail-title { font-size:22px !important; line-height:26px !important; }
         .panel { padding:12px !important; }
         .row-card { padding:9px 10px !important; }
         .row-k { font-size:14px !important; line-height:16px !important; }
         .row-v { font-size:13px !important; line-height:15px !important; }
-        .status-icon { width:54px !important; height:54px !important; line-height:54px !important; font-size:34px !important; }
-        .btn { padding:12px 14px !important; }
-        .btn-wrap { gap:10px !important; }
+        .status-icon { width:20px !important; height:20px !important; }
+        .btn { padding:12px 16px !important; }
+        .duo-exact-footer { padding:36px 32px 38px !important; border-radius:0 0 22px 22px !important; }
+        .duo-footer-brand-img { width:92px !important; max-width:92px !important; }
+        .duo-footer-info { font-size:9px !important; line-height:13px !important; }
         .admin-meta-stack,
         .admin-meta-stack tbody,
         .admin-meta-stack tr,
@@ -39,21 +44,49 @@ export function renderExactUserShell(innerHtml) {
     <table role="presentation" cellpadding="0" cellspacing="0" width="100%" style="border-collapse:collapse; font-family:${EMAIL_FONT};">
       <tr>
         <td align="center" style="padding:0;">
-          <table role="presentation" cellpadding="0" cellspacing="0" width="100%" style="max-width:430px; border-collapse:separate;">
+          <table role="presentation" cellpadding="0" cellspacing="0" width="100%" class="mail-wrap" style="max-width:430px; border-collapse:separate; border-spacing:0;">
             <tr>
-              <td
-                class="mail-shell"
-                bgcolor="#ffffff"
-                style="
-                  background:#ffffff;
-                  border-radius:14px;
-                  padding:18px 10px 26px;
-                  text-align:center;
-                  font-family:${EMAIL_FONT};
-                  color:#111111;
-                "
-              >
-                ${innerHtml}
+              <td style="background:#ffffff; border-radius:0 0 28px 28px; overflow:hidden; font-family:${EMAIL_FONT}; color:#111111;">
+                <table role="presentation" cellpadding="0" cellspacing="0" width="100%" style="border-collapse:collapse; width:100%;">
+                  <tr>
+                    <td
+                      class="mail-shell"
+                      bgcolor="#ffffff"
+                      style="
+                        background:#ffffff;
+                        padding:34px 36px 36px;
+                        text-align:left;
+                        font-family:${EMAIL_FONT};
+                        color:#111111;
+                      "
+                    >
+                      ${innerHtml}
+                    </td>
+                  </tr>
+                  <tr>
+                    <td class="duo-exact-footer" style="background:#0A0A0A; padding:40px 48px 42px; border-radius:0 0 28px 28px; font-family:${EMAIL_FONT};">
+                      <table role="presentation" cellpadding="0" cellspacing="0" width="100%" style="border-collapse:collapse; width:100%;">
+                        <tr>
+                          <td valign="middle" style="width:42%; color:#ffffff; font-family:${EMAIL_FONT};">
+                            <img src="${IMG_BASE}/duohealthclub.png" alt="DUO Health Club" width="92" class="duo-footer-brand-img" style="display:block; width:92px; max-width:92px; height:auto; border:0; outline:none; text-decoration:none;" />
+                          </td>
+                          <td valign="middle" align="right" class="duo-footer-info" style="width:58%; color:#ffffff; font-family:${EMAIL_FONT}; font-size:9px; line-height:13px; font-weight:500; letter-spacing:0.2px;">
+                            <div style="font-weight:900; letter-spacing:2.8px;">DUOCLUB.AR</div>
+                            <div>+54 249 420 7343</div>
+                            <div>Av. Santamaría 54, Tandil.</div>
+                            <table role="presentation" cellpadding="0" cellspacing="0" align="right" style="border-collapse:collapse; margin-top:8px;">
+                              <tr>
+                                <td style="padding-left:6px;"><div style="width:20px; height:20px; border-radius:999px; border:1px solid #ffffff; color:#ffffff; font-family:${EMAIL_FONT}; font-size:8px; line-height:20px; text-align:center; font-weight:700;">ig</div></td>
+                                <td style="padding-left:6px;"><div style="width:20px; height:20px; border-radius:999px; border:1px solid #ffffff; color:#ffffff; font-family:${EMAIL_FONT}; font-size:10px; line-height:20px; text-align:center; font-weight:700;">f</div></td>
+                                <td style="padding-left:6px;"><div style="width:20px; height:20px; border-radius:999px; border:1px solid #ffffff; color:#ffffff; font-family:${EMAIL_FONT}; font-size:8px; line-height:20px; text-align:center; font-weight:700;">in</div></td>
+                              </tr>
+                            </table>
+                          </td>
+                        </tr>
+                      </table>
+                    </td>
+                  </tr>
+                </table>
               </td>
             </tr>
           </table>
@@ -63,24 +96,34 @@ export function renderExactUserShell(innerHtml) {
   `;
 }
 
-export function renderExactStatusIcon(symbol = "✓") {
+function renderExactHeaderLogo(width = 34) {
   return `
-    <div
+    <tr>
+      <td class="mail-logo" align="center" style="padding:0 0 36px;">
+        <img src="${IMG_BASE}/logo.png" alt="DUO" width="${Number(width) || 34}" style="display:block; margin:0 auto; width:${Number(width) || 34}px; max-width:${Number(width) || 34}px; height:auto; border:0; outline:none; text-decoration:none; filter:invert(1);" />
+      </td>
+    </tr>
+  `;
+}
+
+export function renderExactStatusIcon(symbol = "✓") {
+  const normalized = String(symbol || "").trim().toLowerCase();
+  const isAccountApproved = ["account-approved", "cuenta-aprobada", "alta-aprobada"].includes(normalized);
+  const src = isAccountApproved
+    ? `${IMG_BASE}/iconoCuentaAprobada.png`
+    : `${IMG_BASE}/iconocheck.png`;
+  const alt = isAccountApproved ? "Cuenta aprobada" : symbol;
+  const size = isAccountApproved ? 28 : 19;
+
+  return `
+    <img
       class="status-icon"
-      style="
-        width:58px;
-        height:58px;
-        margin:0 auto 0;
-        border-radius:999px;
-        background:#0A0A0A;
-        color:#ffffff;
-        font-size:38px;
-        line-height:58px;
-        font-weight:900;
-        font-family:${EMAIL_FONT};
-        text-align:center;
-      "
-    ><img src="${IMG_BASE}/iconocheck.png" width="58" height="58" alt="${escapeHtml(symbol)}" style="display:block; width:58px; height:58px; margin:0 auto; border:0; outline:none; text-decoration:none;" /></div>
+      src="${src}"
+      width="${size}"
+      height="${size}"
+      alt="${escapeHtml(alt)}"
+      style="display:block; width:${size}px; height:${size}px; border:0; outline:none; text-decoration:none;"
+    />
   `;
 }
 
@@ -89,15 +132,16 @@ export function renderExactTitle(text, maxWidth = 300) {
     <div
       class="mail-title"
       style="
-        font-size:19px;
-        line-height:20px;
+        font-size:24px;
+        line-height:28px;
         font-weight:900;
-        margin:0 auto 18px;
+        margin:0;
         max-width:${Number(maxWidth) || 300}px;
         font-family:${EMAIL_FONT};
         color:#111111;
         white-space:pre-line;
-        letter-spacing:-0.2px;
+        letter-spacing:-0.6px;
+        text-align:left;
       "
     >
       ${escapeHtml(text)}
@@ -541,9 +585,33 @@ export function buildExactMail({
   innerHtml,
 }) {
   const bodyHtml = renderExactUserShell(`
-    ${renderExactStatusIcon(icon)}
-    ${renderExactTitle(title, 285)}
-    ${innerHtml}
+    <table role="presentation" cellpadding="0" cellspacing="0" width="100%" style="border-collapse:collapse; width:100%;">
+      ${renderExactHeaderLogo()}
+      <tr>
+        <td style="padding:0 0 14px;">
+          <table role="presentation" cellpadding="0" cellspacing="0" width="100%" style="border-collapse:collapse; width:100%;">
+            <tr>
+              <td valign="middle" style="width:24px; padding:0 10px 0 0;">
+                ${renderExactStatusIcon(icon)}
+              </td>
+              <td valign="middle" class="mail-heading">
+                ${renderExactTitle(title, 285)}
+              </td>
+            </tr>
+          </table>
+        </td>
+      </tr>
+      <tr>
+        <td style="padding:0 0 16px;">
+          <div style="height:1px; background:#c9c9c9; width:100%;"></div>
+        </td>
+      </tr>
+      <tr>
+        <td style="padding:0;">
+          ${innerHtml}
+        </td>
+      </tr>
+    </table>
   `);
 
   return {

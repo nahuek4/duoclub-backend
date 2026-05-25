@@ -26,6 +26,11 @@ function renderMailCheckIcon(size = 19) {
   return `<img src="${IMG_BASE}/iconocheck.png" alt="" width="${Number(size) || 19}" height="${Number(size) || 19}" style="display:block; width:${Number(size) || 19}px; height:${Number(size) || 19}px; border:0; outline:none; text-decoration:none;" />`;
 }
 
+function renderMailAccountApprovedIcon(size = 28) {
+  const safeSize = Number(size) || 28;
+  return `<img src="${IMG_BASE}/iconoCuentaAprobada.png" alt="Cuenta aprobada" width="${safeSize}" height="${safeSize}" style="display:block; width:${safeSize}px; height:${safeSize}px; border:0; outline:none; text-decoration:none;" />`;
+}
+
 function renderMailFooterBrand(width = 92) {
   return `<img src="${IMG_BASE}/duohealthclub.png" alt="${escapeHtml(BRAND_NAME)} Health Club" width="${Number(width) || 92}" style="display:block; width:${Number(width) || 92}px; max-width:100%; height:auto; border:0; outline:none; text-decoration:none;" />`;
 }
@@ -641,19 +646,7 @@ function buildRegistrationReceivedVisualEmail({
                                     valign="middle"
                                     style="width:24px; padding:0 10px 0 0;"
                                   >
-                                    <div
-                                      style="
-                                        width:19px;
-                                        height:19px;
-                                        border:2px solid #111111;
-                                        border-radius:999px;
-                                        font-size:11px;
-                                        line-height:17px;
-                                        text-align:center;
-                                        font-weight:900;
-                                        color:#111111;
-                                      "
-                                    >✓</div>
+                                    ${renderMailAccountApprovedIcon(28)}
                                   </td>
                                   <td
                                     class="duo-reg-heading"
@@ -1193,19 +1186,11 @@ function buildAccountResultVisualEmail({
                                     valign="middle"
                                     style="width:24px; padding:0 10px 0 0;"
                                   >
-                                    <div
-                                      style="
-                                        width:19px;
-                                        height:19px;
-                                        border:2px solid #111111;
-                                        border-radius:999px;
-                                        font-size:11px;
-                                        line-height:17px;
-                                        text-align:center;
-                                        font-weight:900;
-                                        color:#111111;
-                                      "
-                                    >${ctaHref ? "✓" : "!"}</div>
+                                    ${
+                                      ctaHref
+                                        ? renderMailAccountApprovedIcon(28)
+                                        : `<div style="width:19px; height:19px; border:2px solid #111111; border-radius:999px; font-size:11px; line-height:17px; text-align:center; font-weight:900; color:#111111;">!</div>`
+                                    }
                                   </td>
                                   <td
                                     class="duo-account-heading"
