@@ -827,6 +827,11 @@ function serializeAppointment(ap) {
     userEmail: userObj?.email || "",
     creditExpiresAt: json?.creditExpiresAt || null,
     completedAt: json?.completedAt || null,
+    fixedScheduleId: json?.fixedScheduleId?.toString?.() || json?.fixedScheduleId || null,
+    creditDebitStatus: json?.creditDebitStatus || "",
+    creditDebitedAt: json?.creditDebitedAt || null,
+    fixedDebitProcessedAt: json?.fixedDebitProcessedAt || null,
+    fixedDebtAmount: Number(json?.fixedDebtAmount || 0),
   };
 }
 
@@ -1672,6 +1677,8 @@ async function createAppointmentForTargetUser({
     assignedManually: true,
     fixedScheduleId: fixedScheduleId || null,
     monthlyRolloverMonthKey: monthlyRolloverMonthKey || "",
+    creditDebitStatus: fixedScheduleId ? "pending" : (usedLotId ? "debited" : ""),
+    creditDebitedAt: fixedScheduleId ? null : (usedLotId ? new Date() : null),
   });
 
   const populated = await Appointment.findById(created._id)
@@ -2590,12 +2597,17 @@ router.post("/admin/fixed-schedules", async (req, res) => {
     const service = String(req.body?.service || "").trim();
     const serviceKey = String(req.body?.serviceKey || "").trim();
     const notes = String(req.body?.notes || "").trim();
-    const months = Math.max(1, Math.min(12, Number(req.body?.months || 1)));
+    // Turnos fijos: se administran por mes calendario. La continuidad del mes siguiente
+    // la asegura el job mensual; no se crean bloques extra por fuera de ese mes.
+    const months = 1;
     const items = Array.isArray(req.body?.items) ? req.body.items : [];
 
     if (!userId) return res.status(400).json({ error: "Falta userId." });
     const serviceIdentity = normalizeServiceIdentity({ service, serviceKey });
     if (!serviceIdentity?.serviceKey) return res.status(400).json({ error: "Falta service." });
+    if (!["EP", "RA", "RF", "KD"].includes(serviceIdentity.serviceKey)) {
+      return res.status(400).json({ error: "Los turnos fijos solo están habilitados para EP, RA, RF o KD." });
+    }
     if (!items.length) return res.status(400).json({ error: "Faltan días fijos." });
 
     const cleanItems = items

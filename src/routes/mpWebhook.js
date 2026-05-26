@@ -34,6 +34,7 @@ async function fetchMpPayment(paymentId) {
    Helpers membresía / créditos
 ======================= */
 const CREDITS_EXPIRE_DAYS = 30; // ✅ SI O SI
+const SERVICE_KEY_TO_NAME = { EP: "Entrenamiento Personal", RA: "Rehabilitación Activa", RF: "Reeducación Funcional", KD: "Kinefilaxia Deportiva" };
 
 function isPlusActive(user) {
   const m = user?.membership || {};
@@ -99,6 +100,40 @@ function recalcCreditsCache(user) {
   }, 0);
 }
 
+
+function ensureFixedScheduleDebt(user) {
+  user.fixedScheduleDebt = user.fixedScheduleDebt || {};
+  for (const k of ["EP", "RA", "RF", "KD"]) {
+    const n = Number(user.fixedScheduleDebt?.[k] || 0);
+    user.fixedScheduleDebt[k] = Number.isFinite(n) ? Math.max(0, Math.trunc(n)) : 0;
+  }
+}
+
+function settleFixedScheduleDebt(user, { amount, serviceKey, source = "credits" } = {}) {
+  const sk = String(serviceKey || "EP").toUpperCase().trim();
+  const qty = Math.max(0, Math.trunc(Number(amount || 0)));
+  if (!qty) return { settled: 0, remaining: 0 };
+  ensureFixedScheduleDebt(user);
+  const currentDebt = Math.max(0, Number(user.fixedScheduleDebt?.[sk] || 0));
+  if (!currentDebt) return { settled: 0, remaining: qty };
+  const settled = Math.min(currentDebt, qty);
+  const remaining = qty - settled;
+  user.fixedScheduleDebt[sk] = currentDebt - settled;
+  user.markModified?.("fixedScheduleDebt");
+  user.history = Array.isArray(user.history) ? user.history : [];
+  user.history.push({
+    action: "fixed_schedule_debt_settled",
+    title: `Deuda de turnos fijos saldada ${sk}`,
+    message: `Se usaron ${settled} crédito(s) acreditados para saldar deuda pendiente de turnos fijos.`,
+    serviceKey: sk,
+    serviceName: SERVICE_KEY_TO_NAME[sk] || sk,
+    service: SERVICE_KEY_TO_NAME[sk] || sk,
+    qty: settled,
+    createdAt: new Date(),
+  });
+  return { settled, remaining };
+}
+
 function addCreditLot(user, { amount, source, orderId, serviceKey }) {
   const now = new Date();
   ensureBasicIfExpired(user);
@@ -106,11 +141,20 @@ function addCreditLot(user, { amount, source, orderId, serviceKey }) {
   const exp = new Date(now);
   exp.setDate(exp.getDate() + CREDITS_EXPIRE_DAYS);
 
+  const sk = String(serviceKey || "EP").toUpperCase().trim();
+  const qty = Math.max(0, Number(amount || 0));
+  const debtSettlement = settleFixedScheduleDebt(user, { amount: qty, serviceKey: sk, source });
+  const remainingQty = Math.max(0, Number(debtSettlement.remaining || 0));
+  if (!remainingQty) {
+    recalcCreditsCache(user);
+    return;
+  }
+
   user.creditLots = user.creditLots || [];
   user.creditLots.push({
-    serviceKey: String(serviceKey || "EP").toUpperCase().trim(),
-    amount: Number(amount || 0),
-    remaining: Number(amount || 0),
+    serviceKey: sk,
+    amount: remainingQty,
+    remaining: remainingQty,
     expiresAt: exp,
     source: source || "",
     orderId: orderId || null,

@@ -417,3 +417,75 @@ export async function sendCreditConsumedEmail(user = {}, payload = {}) {
 
   await sendMail(to, subject, text, html);
 }
+/* =========================================================
+   ADMIN — RESUMEN SEMANAL DE DEUDAS POR TURNOS FIJOS
+========================================================= */
+export async function sendAdminFixedScheduleDebtSummaryEmail(rows = [], meta = {}) {
+  const to = String(ADMIN_EMAIL || "").trim();
+  const list = Array.isArray(rows) ? rows : [];
+  if (!to || !list.length) return;
+
+  const serviceName = (key) => {
+    const k = String(key || "").toUpperCase().trim();
+    if (k === "EP") return "Entrenamiento Personal";
+    if (k === "RA") return "Rehabilitación Activa";
+    if (k === "RF") return "Reeducación Funcional";
+    if (k === "KD") return "Kinefilaxia Deportiva";
+    return k || "Servicio";
+  };
+
+  const rowLines = list.map((r) => {
+    const debt = r?.debt || {};
+    const parts = ["EP", "RA", "RF", "KD"]
+      .map((k) => ({ key: k, value: Math.max(0, Number(debt?.[k] || 0)) }))
+      .filter((x) => x.value > 0)
+      .map((x) => `${x.key}: ${x.value}`)
+      .join(" · ");
+    return `• ${r?.name || "Usuario"} (${r?.email || "-"}) — ${parts}`;
+  });
+
+  const subject = `Resumen semanal de sesiones adeudadas - ${BRAND_NAME}`;
+  const text = [
+    "Resumen semanal de sesiones adeudadas por turnos fijos",
+    meta?.monthKey ? `Mes: ${meta.monthKey}` : "",
+    "",
+    ...rowLines,
+  ].filter(Boolean).join("\n");
+
+  const cards = list.map((r) => {
+    const debt = r?.debt || {};
+    const detail = ["EP", "RA", "RF", "KD"]
+      .map((k) => ({ key: k, value: Math.max(0, Number(debt?.[k] || 0)) }))
+      .filter((x) => x.value > 0)
+      .map((x) => `${serviceName(x.key)} (${x.key}): ${x.value}`)
+      .join("<br/>");
+
+    return renderRowCard({
+      titleLeft: r?.name || "Usuario",
+      titleRight: r?.email || "-",
+      subtitle: `<span style="color:#ffffff;">${detail}</span>`,
+    });
+  }).join("");
+
+  const html = buildCreditsAdminVisualEmail({
+    title: "Sesiones adeudadas",
+    preheader: "Resumen semanal de sesiones adeudadas por turnos fijos",
+    heading: "Sesiones adeudadas",
+    introHtml: `Resumen semanal de usuarios con deuda generada por <b>turnos fijos</b>.`,
+    bodyHtml: `
+      ${renderAdminMetaPanel([
+        { label: "Mes", value: meta?.monthKey || "-" },
+        { label: "Usuarios", value: String(list.length) },
+      ])}
+      <div class="panel" style="background:#0a0a0a; border-radius:6px; padding:14px; margin:0 auto 22px; max-width:100%; text-align:left;">
+        ${cards}
+      </div>
+      ${renderExactBodyText(
+        "Este mail es automático y sirve para que administración pueda hacer seguimiento de pagos pendientes.",
+        { fontSize: 12, lineHeight: 17, weight: 600, maxWidth: 320, marginTop: 8, marginBottom: 0 }
+      )}
+    `,
+  });
+
+  await sendMail(to, subject, text, html);
+}

@@ -1,8 +1,8 @@
 // backend/src/jobs/monthlyRollover.js
-// Renovación mensual SIN créditos negativos.
-// - No genera deudas/custodias negativas.
-// - No libera turnos por falta de pago.
-// - Solo deja expirar créditos vencidos y asegura turnos fijos activos del mes.
+// Renovación mensual DUO.
+// - Expira créditos vencidos.
+// - Asegura turnos fijos activos del mes, sin consumir créditos al crearlos.
+// - La deuda/consumo se procesa cuando llega el horario de cada turno fijo.
 
 import User from "../models/User.js";
 import FixedSchedule from "../models/FixedSchedule.js";
@@ -220,7 +220,7 @@ async function ensureFixedAppointmentsForMonth(monthKey) {
   for (const schedule of schedules) {
     const userId = schedule.user;
     const sk = normalizeServiceKey(schedule.serviceKey || schedule.service);
-    if (!userId || !sk) {
+    if (!userId || !sk || !["EP", "RA", "RF", "KD"].includes(sk)) {
       skipped += 1;
       continue;
     }
@@ -263,6 +263,9 @@ async function ensureFixedAppointmentsForMonth(monthKey) {
           status: "reserved",
           createdByRole: "admin",
           assignedManually: true,
+          fixedScheduleId: schedule._id,
+          monthlyRolloverMonthKey: monthKey,
+          creditDebitStatus: "pending",
           notes: schedule.notes
             ? `Turno fijo mensual. ${String(schedule.notes).trim()}`
             : "Turno fijo mensual.",
@@ -322,7 +325,7 @@ export async function runMonthlyRollover({ force = false } = {}) {
     user.history.push({
       action: "monthly_rollover",
       title: "Renovación mensual aplicada",
-      message: "Se actualizó el vencimiento mensual de créditos. No se aplicaron créditos negativos.",
+      message: "Se actualizó el vencimiento mensual de créditos y se aseguraron los turnos fijos del mes sin consumir sesiones por adelantado.",
       createdAt: now,
     });
 

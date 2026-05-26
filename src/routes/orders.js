@@ -134,6 +134,40 @@ function currentMonthKey() {
 }
 
 
+
+function ensureFixedScheduleDebt(user) {
+  user.fixedScheduleDebt = user.fixedScheduleDebt || {};
+  for (const k of ["EP", "RA", "RF", "KD"]) {
+    const n = Number(user.fixedScheduleDebt?.[k] || 0);
+    user.fixedScheduleDebt[k] = Number.isFinite(n) ? Math.max(0, Math.trunc(n)) : 0;
+  }
+}
+
+function settleFixedScheduleDebt(user, { amount, serviceKey, source = "credits" } = {}) {
+  const sk = assertServiceKey ? assertServiceKey(serviceKey) : String(serviceKey || "EP").toUpperCase().trim();
+  const qty = Math.max(0, Math.trunc(Number(amount || 0)));
+  if (!qty) return { settled: 0, remaining: 0 };
+  ensureFixedScheduleDebt(user);
+  const currentDebt = Math.max(0, Number(user.fixedScheduleDebt?.[sk] || 0));
+  if (!currentDebt) return { settled: 0, remaining: qty };
+  const settled = Math.min(currentDebt, qty);
+  const remaining = qty - settled;
+  user.fixedScheduleDebt[sk] = currentDebt - settled;
+  user.markModified?.("fixedScheduleDebt");
+  user.history = Array.isArray(user.history) ? user.history : [];
+  user.history.push({
+    action: "fixed_schedule_debt_settled",
+    title: `Deuda de turnos fijos saldada ${sk}`,
+    message: `Se usaron ${settled} crédito(s) acreditados para saldar deuda pendiente de turnos fijos.`,
+    serviceKey: sk,
+    serviceName: SERVICE_KEY_TO_NAME[sk] || sk,
+    service: SERVICE_KEY_TO_NAME[sk] || sk,
+    qty: settled,
+    createdAt: new Date(),
+  });
+  return { settled, remaining };
+}
+
 function addCreditLot(user, { amount, source, orderId, serviceKey }) {
   const now = new Date();
   ensureBasicIfExpired(user);
@@ -142,13 +176,20 @@ function addCreditLot(user, { amount, source, orderId, serviceKey }) {
   const qty = Math.max(0, Number(amount || 0));
   if (!qty) return;
 
+  const debtSettlement = settleFixedScheduleDebt(user, { amount: qty, serviceKey: sk, source });
+  const remainingQty = Math.max(0, Number(debtSettlement.remaining || 0));
+  if (!remainingQty) {
+    recalcCreditsCache(user);
+    return;
+  }
+
   const exp = lastDayOfCurrentMonth();
 
   user.creditLots = user.creditLots || [];
   user.creditLots.push({
     serviceKey: sk,
-    amount: qty,
-    remaining: qty,
+    amount: remainingQty,
+    remaining: remainingQty,
     expiresAt: exp,
     source: source || "",
     orderId: orderId || null,
@@ -159,11 +200,11 @@ function addCreditLot(user, { amount, source, orderId, serviceKey }) {
   user.history.push({
     action: "credits_added_monthly",
     title: `Créditos acreditados ${sk}`,
-    message: `Se acreditaron ${qty} crédito(s), con vencimiento el último día del mes.`,
+    message: `Se acreditaron ${remainingQty} crédito(s), con vencimiento el último día del mes.${debtSettlement.settled ? ` Antes se saldaron ${debtSettlement.settled} crédito(s) adeudados.` : ""}`,
     serviceKey: sk,
     serviceName: SERVICE_KEY_TO_NAME[sk] || sk,
     service: SERVICE_KEY_TO_NAME[sk] || sk,
-    qty,
+    qty: remainingQty,
     createdAt: now,
   });
 

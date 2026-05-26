@@ -134,6 +134,18 @@ const appointmentSchema = new mongoose.Schema(
 
     creditExpiresAt: { type: Date, default: null },
 
+    // Turnos fijos: el crédito se debita recién cuando llega el horario del turno.
+    creditDebitStatus: {
+      type: String,
+      enum: ["", "pending", "debited", "debt", "skipped"],
+      default: "",
+      index: true,
+    },
+    creditDebitedAt: { type: Date, default: null },
+    fixedDebitProcessedAt: { type: Date, default: null, index: true },
+    fixedDebtAmount: { type: Number, default: 0, min: 0 },
+
+
     reminder24hSentAt: { type: Date, default: null },
     reminder24hLastError: { type: String, default: "" },
 
@@ -267,6 +279,14 @@ appointmentSchema.index(
   { date: 1, time: 1, user: 1, status: 1 },
   { unique: true, partialFilterExpression: { status: "reserved" } }
 );
+
+appointmentSchema.index({
+  fixedScheduleId: 1,
+  fixedDebitProcessedAt: 1,
+  status: 1,
+  date: 1,
+  time: 1,
+});
 
 appointmentSchema.index({
   status: 1,

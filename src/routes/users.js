@@ -334,6 +334,18 @@ function normalizeLotServiceKey(lot) {
   );
 }
 
+function fixedScheduleDebtByServiceKey(u) {
+  const raw = u?.fixedScheduleDebt || {};
+  return {
+    PE: 0,
+    EP: Math.max(0, Number(raw?.EP || 0)),
+    RF: Math.max(0, Number(raw?.RF || 0)),
+    RA: Math.max(0, Number(raw?.RA || 0)),
+    KD: Math.max(0, Number(raw?.KD || 0)),
+    NUT: 0,
+  };
+}
+
 function computeServiceAccessFromLots(u) {
   const now = new Date();
   const lots = Array.isArray(u?.creditLots) ? u.creditLots : [];
@@ -438,6 +450,41 @@ function consumeCreditsForService(user, toRemove, serviceKey) {
   recalcUserCredits(user);
 }
 
+
+function ensureFixedScheduleDebt(user) {
+  user.fixedScheduleDebt = user.fixedScheduleDebt || {};
+  for (const k of ["EP", "RA", "RF", "KD"]) {
+    const n = Number(user.fixedScheduleDebt?.[k] || 0);
+    user.fixedScheduleDebt[k] = Number.isFinite(n) ? Math.max(0, Math.trunc(n)) : 0;
+  }
+}
+
+function settleFixedScheduleDebt(user, { amount, serviceKey, source = "credits" } = {}) {
+  const sk = canonicalServiceKeyFromValue(serviceKey);
+  if (!sk) return { settled: 0, remaining: Math.max(0, Math.trunc(Number(amount || 0))) };
+  const qty = Math.max(0, Math.trunc(Number(amount || 0)));
+  if (!qty) return { settled: 0, remaining: 0 };
+  ensureFixedScheduleDebt(user);
+  const currentDebt = Math.max(0, Number(user.fixedScheduleDebt?.[sk] || 0));
+  if (!currentDebt) return { settled: 0, remaining: qty };
+  const settled = Math.min(currentDebt, qty);
+  const remaining = qty - settled;
+  user.fixedScheduleDebt[sk] = currentDebt - settled;
+  user.markModified?.("fixedScheduleDebt");
+  user.history = Array.isArray(user.history) ? user.history : [];
+  user.history.push({
+    action: "fixed_schedule_debt_settled",
+    title: `Deuda de turnos fijos saldada ${sk}`,
+    message: `Se usaron ${settled} crédito(s) acreditados para saldar deuda pendiente de turnos fijos.`,
+    serviceKey: sk,
+    serviceName: SERVICE_KEY_TO_NAME[sk] || sk,
+    service: SERVICE_KEY_TO_NAME[sk] || sk,
+    qty: settled,
+    createdAt: new Date(),
+  });
+  return { settled, remaining };
+}
+
 function addCreditLot(
   user,
   { amount, serviceKey, source = "admin-adjust" }
@@ -453,13 +500,20 @@ function addCreditLot(
   if (!qty) return;
 
   const now = nowDate();
+  const debtSettlement = settleFixedScheduleDebt(user, { amount: qty, serviceKey: sk, source });
+  const remainingQty = Math.max(0, Number(debtSettlement.remaining || 0));
+  if (!remainingQty) {
+    recalcUserCredits(user);
+    return;
+  }
+
   const exp = lastDayOfCurrentMonth();
 
   user.creditLots = user.creditLots || [];
   user.creditLots.push({
     serviceKey: sk,
-    amount: qty,
-    remaining: qty,
+    amount: remainingQty,
+    remaining: remainingQty,
     expiresAt: exp,
     source,
     orderId: null,
@@ -470,11 +524,11 @@ function addCreditLot(
   user.history.push({
     action: "credits_added_monthly",
     title: `Créditos acreditados ${sk}`,
-    message: `Se acreditaron ${qty} crédito(s), con vencimiento el último día del mes.`,
+    message: `Se acreditaron ${remainingQty} crédito(s), con vencimiento el último día del mes.${debtSettlement.settled ? ` Antes se saldaron ${debtSettlement.settled} crédito(s) adeudados.` : ""}`,
     serviceKey: sk,
     serviceName: SERVICE_KEY_TO_NAME[sk] || sk,
     service: SERVICE_KEY_TO_NAME[sk] || sk,
-    qty,
+    qty: remainingQty,
     createdAt: now,
   });
 
@@ -483,12 +537,13 @@ function addCreditLot(
 
 function buildCreditsByService(user) {
   const firstEvaluationCompleted = !!user?.firstEvaluationCompleted;
+  const debt = fixedScheduleDebtByServiceKey(user);
 
   const result = {
-    EP: sumCreditsForService(user, "EP"),
-    RF: sumCreditsForService(user, "RF"),
-    RA: sumCreditsForService(user, "RA"),
-    KD: sumCreditsForService(user, "KD"),
+    EP: sumCreditsForService(user, "EP") - Number(debt.EP || 0),
+    RF: sumCreditsForService(user, "RF") - Number(debt.RF || 0),
+    RA: sumCreditsForService(user, "RA") - Number(debt.RA || 0),
+    KD: sumCreditsForService(user, "KD") - Number(debt.KD || 0),
     NUT: sumCreditsForService(user, "NUT"),
   };
 
@@ -530,6 +585,9 @@ function decorateUserForResponse(rawUser, { includeClinicalNotes = true } = {}) 
       ...svc,
       membership,
       creditsByService,
+      creditsByServiceKey: svc.creditsByServiceKey,
+      availableCreditsByServiceKey: svc.availableCreditsByServiceKey,
+      fixedScheduleDebt: svc.fixedScheduleDebt,
       firstEvaluationCompleted: !!u.firstEvaluationCompleted,
       firstEvaluationCompletedAt: u.firstEvaluationCompletedAt || null,
     };
@@ -540,6 +598,9 @@ function decorateUserForResponse(rawUser, { includeClinicalNotes = true } = {}) 
     ...svc,
     membership,
     creditsByService,
+    creditsByServiceKey: svc.creditsByServiceKey,
+    availableCreditsByServiceKey: svc.availableCreditsByServiceKey,
+    fixedScheduleDebt: svc.fixedScheduleDebt,
     firstEvaluationCompleted: !!u.firstEvaluationCompleted,
     firstEvaluationCompletedAt: u.firstEvaluationCompletedAt || null,
   };

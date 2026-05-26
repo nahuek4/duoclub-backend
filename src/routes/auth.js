@@ -107,6 +107,18 @@ function getLotServiceKey(lot) {
   );
 }
 
+function fixedScheduleDebtByServiceKey(u) {
+  const raw = u?.fixedScheduleDebt || {};
+  return {
+    PE: 0,
+    EP: Math.max(0, Number(raw?.EP || 0)),
+    RF: Math.max(0, Number(raw?.RF || 0)),
+    RA: Math.max(0, Number(raw?.RA || 0)),
+    KD: Math.max(0, Number(raw?.KD || 0)),
+    NUT: 0,
+  };
+}
+
 /* ============================================
    SERVICIOS DISPONIBLES (UI) DESDE creditLots
 ============================================ */
@@ -130,8 +142,13 @@ function computeServiceAccessFromLots(u) {
     byKey[sk] += remaining;
   }
 
+  const debtByServiceKey = fixedScheduleDebtByServiceKey(u);
   const creditsByServiceKey = { PE: 0, EP: 0, RF: 0, RA: 0, KD: 0, NUT: 0 };
-  for (const k of SERVICE_KEYS) creditsByServiceKey[k] = Number(byKey[k] || 0);
+  const availableCreditsByServiceKey = { PE: 0, EP: 0, RF: 0, RA: 0, KD: 0, NUT: 0 };
+  for (const k of SERVICE_KEYS) {
+    availableCreditsByServiceKey[k] = Number(byKey[k] || 0);
+    creditsByServiceKey[k] = Number(byKey[k] || 0) - Number(debtByServiceKey[k] || 0);
+  }
 
   if (!u?.firstEvaluationCompleted) {
     const peCredits = Number(byKey.PE || 0);
@@ -141,12 +158,14 @@ function computeServiceAccessFromLots(u) {
       serviceCredits: peCredits > 0 ? { [SERVICE_KEY_TO_NAME.PE]: peCredits } : {},
       creditsByServiceKey: {
         PE: peCredits,
-        EP: 0,
-        RF: 0,
-        RA: 0,
-        KD: 0,
+        EP: -Number(debtByServiceKey.EP || 0),
+        RF: -Number(debtByServiceKey.RF || 0),
+        RA: -Number(debtByServiceKey.RA || 0),
+        KD: -Number(debtByServiceKey.KD || 0),
         NUT: 0,
       },
+      availableCreditsByServiceKey,
+      fixedScheduleDebt: debtByServiceKey,
     };
   }
 
@@ -161,7 +180,7 @@ function computeServiceAccessFromLots(u) {
     if (v > 0) serviceCredits[SERVICE_KEY_TO_NAME[k]] = v;
   }
 
-  return { allowedServices, serviceCredits, creditsByServiceKey };
+  return { allowedServices, serviceCredits, creditsByServiceKey, availableCreditsByServiceKey, fixedScheduleDebt: debtByServiceKey };
 }
 
 function recalcCreditsCache(u) {
@@ -315,6 +334,8 @@ function serializeUser(u) {
     allowedServices: svc.allowedServices,
     serviceCredits: svc.serviceCredits,
     creditsByServiceKey: svc.creditsByServiceKey,
+    availableCreditsByServiceKey: svc.availableCreditsByServiceKey,
+    fixedScheduleDebt: svc.fixedScheduleDebt,
 
     membership: {
       tier: tierNorm || "basic",

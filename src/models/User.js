@@ -126,6 +126,21 @@ creditLotSchema.pre("validate", function () {
 });
 
 
+
+const fixedScheduleDebtSchema = new mongoose.Schema(
+  {
+    EP: { type: Number, default: 0, min: 0 },
+    RA: { type: Number, default: 0, min: 0 },
+    RF: { type: Number, default: 0, min: 0 },
+    KD: { type: Number, default: 0, min: 0 },
+  },
+  { _id: false }
+);
+
+function createDefaultFixedScheduleDebt() {
+  return { EP: 0, RA: 0, RF: 0, KD: 0 };
+}
+
 const medicalClearanceSchema = new mongoose.Schema(
   {
     status: {
@@ -409,6 +424,13 @@ const userSchema = new mongoose.Schema(
 
     creditLots: { type: [creditLotSchema], default: [] },
 
+    // Deuda generada por turnos fijos que llegaron a horario sin crédito disponible.
+    // Se descuenta primero cuando se acreditan nuevas sesiones del mismo servicio.
+    fixedScheduleDebt: {
+      type: fixedScheduleDebtSchema,
+      default: createDefaultFixedScheduleDebt,
+    },
+
     monthlyAutomation: {
       lastMonthlyResetMonthKey: { type: String, default: "" },
       lastRunAt: { type: Date, default: null },
@@ -457,6 +479,15 @@ userSchema.pre("validate", function () {
 
   if (!this.notifications || typeof this.notifications !== "object") {
     this.notifications = {};
+  }
+
+  if (!this.fixedScheduleDebt || typeof this.fixedScheduleDebt !== "object") {
+    this.fixedScheduleDebt = createDefaultFixedScheduleDebt();
+  }
+
+  for (const k of ["EP", "RA", "RF", "KD"]) {
+    const n = Number(this.fixedScheduleDebt?.[k] || 0);
+    this.fixedScheduleDebt[k] = Number.isFinite(n) ? Math.max(0, Math.trunc(n)) : 0;
   }
 
   if (!this.medicalClearance || typeof this.medicalClearance !== "object") {
@@ -532,6 +563,7 @@ userSchema.index(
 );
 
 userSchema.index({ "creditLots.serviceKey": 1, createdAt: -1 });
+userSchema.index({ "fixedScheduleDebt.EP": 1, "fixedScheduleDebt.RA": 1, "fixedScheduleDebt.RF": 1, "fixedScheduleDebt.KD": 1 });
 userSchema.index({ "history.serviceKey": 1, createdAt: -1 });
 
 const User = mongoose.models.User || mongoose.model("User", userSchema);

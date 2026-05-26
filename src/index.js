@@ -30,6 +30,7 @@ import { startWaitlistScheduler } from "./jobs/startWaitlist.js";
 import { startMonthlyRolloverScheduler } from "./jobs/monthlyRollover.js";
 import { startMedicalClearanceScheduler } from "./jobs/medicalClearance.js";
 import { startUserNotificationsScheduler } from "./jobs/userNotifications.js";
+import { startFixedScheduleBillingScheduler } from "./jobs/fixedScheduleBilling.js";
 
 dotenv.config();
 
@@ -73,6 +74,11 @@ startMedicalClearanceScheduler({
 
 startUserNotificationsScheduler({
   everyMinutes: Number(process.env.USER_NOTIFICATIONS_EVERY_MINUTES || 360),
+});
+
+startFixedScheduleBillingScheduler({
+  everyMinutes: Number(process.env.FIXED_SCHEDULE_BILLING_EVERY_MINUTES || 2),
+  weeklySummaryEveryMinutes: Number(process.env.FIXED_DEBT_SUMMARY_EVERY_MINUTES || 60),
 });
 
 /* =========================
