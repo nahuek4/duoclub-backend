@@ -1511,6 +1511,15 @@ function buildOccurrencesForFixedSchedule({ startDate, months, items }) {
   });
 }
 
+function shouldCreateInitialFixedOccurrence(occ, now = new Date()) {
+  const slotDate = buildSlotDate(occ?.date, occ?.time);
+  if (!slotDate) return false;
+
+  // Si el admin asigna un turno fijo después del horario de inicio de hoy,
+  // no se crea ese turno retroactivo y por lo tanto no consume ni genera deuda.
+  return slotDate.getTime() > now.getTime();
+}
+
 async function createAppointmentForTargetUser({
   userId,
   actorReq,
@@ -2637,11 +2646,12 @@ router.post("/admin/fixed-schedules", async (req, res) => {
       active: true,
     });
 
+    const createdAt = new Date();
     const occurrences = buildOccurrencesForFixedSchedule({
       startDate,
       months,
       items: cleanItems,
-    });
+    }).filter((occ) => shouldCreateInitialFixedOccurrence(occ, createdAt));
 
     const created = [];
     const conflicts = [];
@@ -2676,6 +2686,7 @@ router.post("/admin/fixed-schedules", async (req, res) => {
       ok: true,
       fixedScheduleId: String(fixed._id),
       createdCount: created.length,
+      skippedPastInitialCount: Math.max(0, buildOccurrencesForFixedSchedule({ startDate, months, items: cleanItems }).length - occurrences.length),
       conflictsCount: conflicts.length,
       items: created,
       conflicts,
