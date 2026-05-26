@@ -993,6 +993,13 @@ export async function sendAppointmentCancelledEmail(
         ? ap.refund
         : null;
 
+  const isFixedSchedule = !!(meta?.isFixedSchedule || ap?.isFixedSchedule || ap?.fixedScheduleId);
+  const fixedScheduleMessage = String(
+    meta?.cancellationMessage ||
+      ap?.cancellationMessage ||
+      "Cancelaste un turno fijo. No se devuelve crédito por ser turno fijo."
+  ).trim();
+
   const cutoff =
     typeof meta?.refundCutoffHours === "number"
       ? meta.refundCutoffHours
@@ -1009,8 +1016,9 @@ export async function sendAppointmentCancelledEmail(
         ? "Reintegro: Sí (1 sesión)"
         : "Reintegro: No";
 
-  const extraExplain =
-    refundFlag === null
+  const extraExplain = isFixedSchedule
+    ? fixedScheduleMessage
+    : refundFlag === null
       ? ""
       : refundFlag
         ? "Se reintegró 1 sesión a tu cuenta."
@@ -1034,8 +1042,9 @@ export async function sendAppointmentCancelledEmail(
     .filter(Boolean)
     .join("\n");
 
-  const introHtml =
-    refundFlag === null
+  const introHtml = isFixedSchedule
+    ? `Tu turno fijo fue cancelado correctamente.<br /><b>${escapeHtml(fixedScheduleMessage)}</b>`
+    : refundFlag === null
       ? "Tu turno fue cancelado correctamente."
       : refundFlag
         ? "Tu turno fue cancelado correctamente.<br /><b>Si correspondiera según la política de cancelación, el crédito ya fue reintegrado a tu cuenta.</b>"

@@ -828,10 +828,9 @@ function serializeAppointment(ap) {
     creditExpiresAt: json?.creditExpiresAt || null,
     completedAt: json?.completedAt || null,
     fixedScheduleId: json?.fixedScheduleId?.toString?.() || json?.fixedScheduleId || null,
+    isFixedSchedule: !!json?.fixedScheduleId,
     creditDebitStatus: json?.creditDebitStatus || "",
-    creditDebitedAt: json?.creditDebitedAt || null,
     fixedDebitProcessedAt: json?.fixedDebitProcessedAt || null,
-    fixedDebtAmount: Number(json?.fixedDebtAmount || 0),
   };
 }
 
@@ -1202,6 +1201,10 @@ function getMonthlyCancellationCounters(user, serviceName, refDate = new Date())
 function buildCancellationClientMessage({ appointment, decision, counters }) {
   const sk = serviceToKey(appointment?.service || "");
 
+  if (appointment?.fixedScheduleId || decision?.refundMode === "fixed-schedule") {
+    return "Cancelaste un turno fijo. No se devuelve crédito por ser turno fijo. Si lo cancelaste antes del horario de inicio, no se consume ninguna sesión; si el turno ya había sido procesado, la sesión queda tomada según la regla de turno fijo.";
+  }
+
   if (decision?.refundMode === "timely") {
     if (["RA", "RF", "KD"].includes(sk)) {
       if (counters.timelyRemaining > 0) {
@@ -1511,15 +1514,6 @@ function buildOccurrencesForFixedSchedule({ startDate, months, items }) {
   });
 }
 
-function shouldCreateInitialFixedOccurrence(occ, now = new Date()) {
-  const slotDate = buildSlotDate(occ?.date, occ?.time);
-  if (!slotDate) return false;
-
-  // Si el admin asigna un turno fijo después del horario de inicio de hoy,
-  // no se crea ese turno retroactivo y por lo tanto no consume ni genera deuda.
-  return slotDate.getTime() > now.getTime();
-}
-
 async function createAppointmentForTargetUser({
   userId,
   actorReq,
@@ -1686,8 +1680,6 @@ async function createAppointmentForTargetUser({
     assignedManually: true,
     fixedScheduleId: fixedScheduleId || null,
     monthlyRolloverMonthKey: monthlyRolloverMonthKey || "",
-    creditDebitStatus: fixedScheduleId ? "pending" : (usedLotId ? "debited" : ""),
-    creditDebitedAt: fixedScheduleId ? null : (usedLotId ? new Date() : null),
   });
 
   const populated = await Appointment.findById(created._id)
@@ -2502,6 +2494,10 @@ router.get("/", async (req, res) => {
         coach: a?.coach || "",
         creditExpiresAt: a?.creditExpiresAt || null,
         completedAt: a?.completedAt || null,
+        fixedScheduleId: a?.fixedScheduleId?.toString?.() || a?.fixedScheduleId || null,
+        isFixedSchedule: !!a?.fixedScheduleId,
+        creditDebitStatus: a?.creditDebitStatus || "",
+        fixedDebitProcessedAt: a?.fixedDebitProcessedAt || null,
         userId: String(a?.user || ""),
       }))
     );
@@ -2606,17 +2602,12 @@ router.post("/admin/fixed-schedules", async (req, res) => {
     const service = String(req.body?.service || "").trim();
     const serviceKey = String(req.body?.serviceKey || "").trim();
     const notes = String(req.body?.notes || "").trim();
-    // Turnos fijos: se administran por mes calendario. La continuidad del mes siguiente
-    // la asegura el job mensual; no se crean bloques extra por fuera de ese mes.
-    const months = 1;
+    const months = Math.max(1, Math.min(12, Number(req.body?.months || 1)));
     const items = Array.isArray(req.body?.items) ? req.body.items : [];
 
     if (!userId) return res.status(400).json({ error: "Falta userId." });
     const serviceIdentity = normalizeServiceIdentity({ service, serviceKey });
     if (!serviceIdentity?.serviceKey) return res.status(400).json({ error: "Falta service." });
-    if (!["EP", "RA", "RF", "KD"].includes(serviceIdentity.serviceKey)) {
-      return res.status(400).json({ error: "Los turnos fijos solo están habilitados para EP, RA, RF o KD." });
-    }
     if (!items.length) return res.status(400).json({ error: "Faltan días fijos." });
 
     const cleanItems = items
@@ -2646,12 +2637,11 @@ router.post("/admin/fixed-schedules", async (req, res) => {
       active: true,
     });
 
-    const createdAt = new Date();
     const occurrences = buildOccurrencesForFixedSchedule({
       startDate,
       months,
       items: cleanItems,
-    }).filter((occ) => shouldCreateInitialFixedOccurrence(occ, createdAt));
+    });
 
     const created = [];
     const conflicts = [];
@@ -2686,7 +2676,6 @@ router.post("/admin/fixed-schedules", async (req, res) => {
       ok: true,
       fixedScheduleId: String(fixed._id),
       createdCount: created.length,
-      skippedPastInitialCount: Math.max(0, buildOccurrencesForFixedSchedule({ startDate, months, items: cleanItems }).length - occurrences.length),
       conflictsCount: conflicts.length,
       items: created,
       conflicts,
@@ -3309,6 +3298,13 @@ router.delete("/:id", async (req, res) => {
         hoursToStart,
       });
 
+      if (ap.fixedScheduleId) {
+        decision.refund = false;
+        decision.refundMode = "fixed-schedule";
+        decision.reason = "FIXED_SCHEDULE_NO_REFUND";
+        decision.historyAction = "turno_fijo_cancelado_sin_reintegro";
+      }
+
       console.log("[CANCEL DEBUG]", {
         appointmentId: String(ap._id),
         service: ap.service,
@@ -3420,6 +3416,8 @@ router.delete("/:id", async (req, res) => {
         cancelReason: decision.reason || "",
         cancellationMessage,
         cancellationPolicy: cancellationCounters,
+        fixedScheduleId: ap.fixedScheduleId?.toString?.() || ap.fixedScheduleId || null,
+        isFixedSchedule: !!ap.fixedScheduleId,
         userCredits: Number(updatedUser.credits || 0),
         userCreditLots: serializeUserCreditLots(updatedUser),
       };
@@ -3436,6 +3434,9 @@ router.delete("/:id", async (req, res) => {
         refundMode: decision.refundMode || "none",
         refundCutoffHours: Number(decision.refundCutoffHours || 0),
         cancelReason: decision.reason || "",
+        cancellationMessage,
+        fixedScheduleId: ap.fixedScheduleId?.toString?.() || ap.fixedScheduleId || null,
+        isFixedSchedule: !!ap.fixedScheduleId,
       };
 
       console.log("[CANCEL MAIL PAYLOAD]", {
