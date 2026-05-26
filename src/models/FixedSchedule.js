@@ -161,7 +161,7 @@ const fixedScheduleSchema = new mongoose.Schema(
   { timestamps: true }
 );
 
-fixedScheduleSchema.pre("validate", function normalizeFixedScheduleService(next) {
+fixedScheduleSchema.pre("validate", function normalizeFixedScheduleService() {
   const normalizedKey = normalizeServiceKey(this.serviceKey || this.service);
 
   if (!normalizedKey) {
@@ -169,7 +169,7 @@ fixedScheduleSchema.pre("validate", function normalizeFixedScheduleService(next)
       "serviceKey",
       "serviceKey inválido. Valores permitidos: PE, EP, RA, RF, KD, NUT."
     );
-    return next();
+    return;
   }
 
   this.serviceKey = normalizedKey;
@@ -178,7 +178,7 @@ fixedScheduleSchema.pre("validate", function normalizeFixedScheduleService(next)
     this.service = getServiceNameFromKey(normalizedKey);
   }
 
-  return next();
+  return;
 });
 
 // para listar configuraciones activas de un usuario

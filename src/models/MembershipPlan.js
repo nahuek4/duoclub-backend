@@ -74,7 +74,7 @@ const membershipPlanSchema = new mongoose.Schema(
   { timestamps: true }
 );
 
-membershipPlanSchema.pre("validate", function normalizeMembershipPlan(next) {
+membershipPlanSchema.pre("validate", function normalizeMembershipPlan() {
   this.tier = normalizeTier(this.tier);
   this.payMethod = normalizePayMethod(this.payMethod);
 
@@ -84,7 +84,6 @@ membershipPlanSchema.pre("validate", function normalizeMembershipPlan(next) {
     this.label = `${tierLabel} - ${payLabel}`;
   }
 
-  next();
 });
 
 // Un plan por tier+payMethod

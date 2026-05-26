@@ -37,7 +37,7 @@ const activityLogSchema = new mongoose.Schema(
   { timestamps: true }
 );
 
-activityLogSchema.pre("validate", function normalizeActivityLog(next) {
+activityLogSchema.pre("validate", function normalizeActivityLog() {
   this.category = String(this.category || "").trim();
   this.action = String(this.action || "").trim();
   this.entity = String(this.entity || "").trim();
@@ -49,7 +49,6 @@ activityLogSchema.pre("validate", function normalizeActivityLog(next) {
     this.status = "success";
   }
 
-  next();
 });
 
 activityLogSchema.index({ createdAt: -1 });
