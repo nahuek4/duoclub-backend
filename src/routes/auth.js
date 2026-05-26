@@ -8,7 +8,6 @@ import Appointment from "../models/Appointment.js";
 import { protect } from "../middleware/auth.js";
 
 import {
-  sendVerifyEmail,
   sendUserRegistrationReceivedEmail,
   sendAdminNewRegistrationEmail,
   sendUserApprovalResultEmail,
@@ -483,12 +482,7 @@ router.post("/register", async (req, res) => {
     const frontend = process.env.FRONTEND_URL || "https://duoclub.ar";
     const verifyUrl = `${frontend}/verificar-email?token=${rawToken}`;
 
-    await sendVerifyEmail(user, verifyUrl);
-
-    fireAndForget(
-      () => sendUserRegistrationReceivedEmail(user),
-      "MAIL_REGISTER_RECEIVED"
-    );
+    await sendUserRegistrationReceivedEmail(user, verifyUrl);
 
     const backendBase = getBackendBase(req);
     const secret = process.env.JWT_SECRET || "dev_secret";
@@ -669,11 +663,11 @@ router.post("/resend-verification", async (req, res) => {
     const frontend = process.env.FRONTEND_URL || "https://duoclub.ar";
     const verifyUrl = `${frontend}/verificar-email?token=${rawToken}`;
 
-    await sendVerifyEmail(user, verifyUrl);
+    await sendUserRegistrationReceivedEmail(user, verifyUrl);
 
     return res.json({
       ok: true,
-      message: "Te reenviamos el correo de verificación.",
+      message: "Te reenviamos el correo de registro con el link de verificación.",
     });
   } catch (err) {
     console.error("Error resend-verification:", err);

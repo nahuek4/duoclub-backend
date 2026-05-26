@@ -720,7 +720,7 @@ function buildRegistrationReceivedVisualEmail({
                                         text-align:center;
                                       "
                                     >
-                                      Antes de continuar: <b>Verificá tu correo electrónico</b>, si todavía no lo hiciste.
+                                      Antes de continuar: <b>Verificá tu correo electrónico</b> desde este mismo mail.
                                     </div>
 
                                     <table
@@ -889,7 +889,7 @@ export async function sendUserRegistrationReceivedEmail(user, verifyUrl = BRAND_
     "",
     `Recibimos tu registro en ${BRAND_NAME} correctamente y se encuentra pendiente de aprobación.`,
     "",
-    "Antes de continuar: verificá tu correo electrónico, si todavía no lo hiciste.",
+    "Antes de continuar: verificá tu correo electrónico desde este mismo mail.",
     verifyHref ? `Verificar email: ${verifyHref}` : "",
     "",
     "Una vez que el equipo apruebe tu cuenta, te lo vamos a avisar por mail.",
@@ -899,14 +899,14 @@ export async function sendUserRegistrationReceivedEmail(user, verifyUrl = BRAND_
 
   const html = buildRegistrationReceivedVisualEmail({
     title: "Registro recibido",
-    preheader: "Registro realizado correctamente",
+    preheader: "Registro recibido: verificá tu email para continuar",
     name: uName,
     verifyHref,
   });
 
   await sendMail(
     user.email,
-    `Registro recibido - ${BRAND_NAME}`,
+    `Registro recibido · Verificá tu email - ${BRAND_NAME}`,
     text,
     html
   );
