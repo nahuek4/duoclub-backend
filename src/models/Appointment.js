@@ -134,10 +134,10 @@ const appointmentSchema = new mongoose.Schema(
 
     creditExpiresAt: { type: Date, default: null },
 
-    // Turnos fijos: el crédito se debita recién cuando llega el horario del turno.
+    // Turnos fijos: la deuda mensual se genera al reservar el mes; el job solo marca asistencia/completado al llegar el horario.
     creditDebitStatus: {
       type: String,
-      enum: ["", "pending", "debited", "debt", "skipped"],
+      enum: ["", "pending", "debited", "debt", "monthly_reserved", "skipped"],
       default: "",
       index: true,
     },

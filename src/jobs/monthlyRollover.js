@@ -1,8 +1,9 @@
 // backend/src/jobs/monthlyRollover.js
 // Renovación mensual DUO.
 // - Expira créditos vencidos.
-// - Asegura turnos fijos activos del mes, sin consumir créditos al crearlos.
-// - La deuda/consumo se procesa cuando llega el horario de cada turno fijo.
+// - Asegura turnos fijos activos del mes.
+// - Al reservar el mes, genera deuda mensual por servicio según la cantidad de turnos fijos creados.
+// - Al llegar cada horario fijo, el job solo marca el turno como completado; no vuelve a debitar.
 
 import User from "../models/User.js";
 import FixedSchedule from "../models/FixedSchedule.js";
@@ -89,6 +90,29 @@ function ymdFromParts(p) {
 
 function monthKeyFromParts(p) {
   return `${p.year}-${pad2(p.month)}`;
+}
+
+function currentHmFromParts(p) {
+  return `${pad2(p.hour)}:${pad2(p.minute)}`;
+}
+
+function isPastOccurrence(date, time, now = new Date()) {
+  const p = arParts(now);
+  const today = ymdFromParts(p);
+  const hm = currentHmFromParts(p);
+  const d = String(date || "").slice(0, 10);
+  const t = String(time || "").slice(0, 5);
+  if (d < today) return true;
+  if (d > today) return false;
+  return t <= hm;
+}
+
+function ensureFixedDebt(user) {
+  user.fixedScheduleDebt = user.fixedScheduleDebt || {};
+  for (const k of ["EP", "RA", "RF", "KD"]) {
+    const n = Number(user.fixedScheduleDebt?.[k] || 0);
+    user.fixedScheduleDebt[k] = Number.isFinite(n) ? Math.max(0, Math.trunc(n)) : 0;
+  }
 }
 
 function parseYmd(ymd) {
@@ -205,8 +229,9 @@ async function slotHasCapacity({ date, time, serviceKey }) {
   return true;
 }
 
-async function ensureFixedAppointmentsForMonth(monthKey) {
+async function ensureFixedAppointmentsForMonth(monthKey, { now = new Date() } = {}) {
   const { startYmd, endYmd } = monthStartEnd(monthKey);
+  const debtCounts = new Map();
 
   const schedules = await FixedSchedule.find({
     active: true,
@@ -234,6 +259,10 @@ async function ensureFixedAppointmentsForMonth(monthKey) {
       if (occ.date < startYmd || occ.date > endYmd) continue;
       if (schedule.startDate && occ.date < schedule.startDate) continue;
       if (schedule.endDate && occ.date > schedule.endDate) continue;
+      if (isPastOccurrence(occ.date, occ.time, now)) {
+        skipped += 1;
+        continue;
+      }
 
       const alreadyForUser = await Appointment.findOne({
         user: userId,
@@ -265,12 +294,15 @@ async function ensureFixedAppointmentsForMonth(monthKey) {
           assignedManually: true,
           fixedScheduleId: schedule._id,
           monthlyRolloverMonthKey: monthKey,
-          creditDebitStatus: "pending",
+          creditDebitStatus: "debt",
+          fixedDebtAmount: 1,
           notes: schedule.notes
             ? `Turno fijo mensual. ${String(schedule.notes).trim()}`
             : "Turno fijo mensual.",
         });
         created += 1;
+        const debtKey = `${String(userId)}__${sk}`;
+        debtCounts.set(debtKey, { userId, serviceKey: sk, count: (debtCounts.get(debtKey)?.count || 0) + 1 });
       } catch (err) {
         // Conflictos por índice único u otro proceso paralelo: no tumbar el job.
         skipped += 1;
@@ -286,7 +318,32 @@ async function ensureFixedAppointmentsForMonth(monthKey) {
     }
   }
 
-  return { schedules: schedules.length, created, skipped };
+  let monthlyDebtAdded = 0;
+
+  for (const item of debtCounts.values()) {
+    const user = await User.findById(item.userId).select("fixedScheduleDebt credits creditLots history");
+    if (!user) continue;
+
+    ensureFixedDebt(user);
+    user.fixedScheduleDebt[item.serviceKey] = Math.max(0, Number(user.fixedScheduleDebt?.[item.serviceKey] || 0)) + item.count;
+    user.markModified?.("fixedScheduleDebt");
+    user.history = Array.isArray(user.history) ? user.history : [];
+    user.history.push({
+      action: "fixed_schedule_monthly_reserved",
+      title: `Deuda mensual de turnos fijos ${item.serviceKey}`,
+      message: `Se reservaron ${item.count} turno${item.count === 1 ? "" : "s"} fijo${item.count === 1 ? "" : "s"} de ${serviceName(item.serviceKey)} para ${monthKey}. Se generó deuda mensual de ${item.count} sesión${item.count === 1 ? "" : "es"}.`,
+      serviceKey: item.serviceKey,
+      serviceName: serviceName(item.serviceKey),
+      service: serviceName(item.serviceKey),
+      qty: -item.count,
+      createdAt: now,
+    });
+    recalcUserCredits(user);
+    await user.save();
+    monthlyDebtAdded += item.count;
+  }
+
+  return { schedules: schedules.length, created, skipped, monthlyDebtAdded };
 }
 
 export async function runMonthlyRollover({ force = false } = {}) {
@@ -325,7 +382,7 @@ export async function runMonthlyRollover({ force = false } = {}) {
     user.history.push({
       action: "monthly_rollover",
       title: "Renovación mensual aplicada",
-      message: "Se actualizó el vencimiento mensual de créditos y se aseguraron los turnos fijos del mes sin consumir sesiones por adelantado.",
+      message: "Se actualizó el vencimiento mensual de créditos y se aseguraron los turnos fijos del mes, generando la deuda mensual correspondiente por servicio.",
       createdAt: now,
     });
 
@@ -333,7 +390,7 @@ export async function runMonthlyRollover({ force = false } = {}) {
     usersTouched += 1;
   }
 
-  const fixed = await ensureFixedAppointmentsForMonth(monthKey);
+  const fixed = await ensureFixedAppointmentsForMonth(monthKey, { now });
 
   return {
     ok: true,

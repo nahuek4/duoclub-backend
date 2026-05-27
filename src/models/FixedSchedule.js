@@ -115,12 +115,19 @@ const fixedScheduleSchema = new mongoose.Schema(
       },
     },
 
+    // Compatibilidad legacy: antes se guardaba una cantidad de meses.
+    // Desde turnos fijos infinitos, se mantiene solo para no romper datos anteriores.
     months: {
       type: Number,
-      required: true,
+      required: false,
       min: 1,
-      max: 12,
       default: 1,
+    },
+
+    isInfinite: {
+      type: Boolean,
+      default: true,
+      index: true,
     },
 
     // rango que cubre la configuración

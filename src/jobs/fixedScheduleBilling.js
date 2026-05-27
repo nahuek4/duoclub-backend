@@ -110,6 +110,32 @@ async function processAppointment(apId, now = new Date()) {
       ensureDebt(user);
       user.history = Array.isArray(user.history) ? user.history : [];
 
+      // Nuevo comportamiento mensual:
+      // la deuda del turno fijo se genera cuando se reserva el mes, no al llegar el horario.
+      // Al llegar el horario solo marcamos el turno como completado para no duplicar deuda ni consumir créditos.
+      if (String(ap.creditDebitStatus || "") === "debt" && Number(ap.fixedDebtAmount || 0) > 0) {
+        ap.status = "completed";
+        ap.completedAt = ap.completedAt || now;
+        ap.fixedDebitProcessedAt = now;
+        user.history.push({
+          action: "fixed_schedule_monthly_turn_completed",
+          title: `Turno fijo completado ${sk}`,
+          message: `El turno fijo de ${serviceName(sk)} (${ap.date} ${ap.time} hs) fue procesado contra la deuda mensual ya generada.`,
+          date: ap.date,
+          time: ap.time,
+          serviceKey: sk,
+          serviceName: serviceName(sk),
+          service: serviceName(sk),
+          qty: 0,
+          createdAt: now,
+        });
+        recalcCredits(user);
+        await user.save({ session });
+        await ap.save({ session });
+        result = { ok: true, status: "monthly_completed", serviceKey: sk };
+        return;
+      }
+
       const lot = activeLots(user, sk)[0] || null;
       if (lot) {
         lot.remaining = Math.max(0, Number(lot.remaining || 0) - 1);
@@ -176,7 +202,7 @@ export async function runFixedScheduleBillingTick({ limit = 300 } = {}) {
     date: { $lte: today },
   }).sort({ date: 1, time: 1 }).limit(limit).select("_id date time status").lean();
 
-  let checked = 0, debited = 0, debt = 0, skipped = 0;
+  let checked = 0, debited = 0, debt = 0, monthlyCompleted = 0, skipped = 0;
   for (const ap of candidates) {
     if (!slotDue(ap.date, ap.time, now)) continue;
     checked += 1;
@@ -184,13 +210,14 @@ export async function runFixedScheduleBillingTick({ limit = 300 } = {}) {
       const r = await processAppointment(ap._id, now);
       if (r?.status === "debited") debited += 1;
       else if (r?.status === "debt") debt += 1;
+      else if (r?.status === "monthly_completed") monthlyCompleted += 1;
       else skipped += 1;
     } catch (e) {
       skipped += 1;
       console.log("[FIXED BILLING] appointment error", { apId: String(ap._id), error: e?.message || e });
     }
   }
-  const out = { ok: true, checked, debited, debt, skipped, today };
+  const out = { ok: true, checked, debited, debt, monthlyCompleted, skipped, today };
   console.log("[FIXED BILLING] tick", out);
   return out;
 }
@@ -213,23 +240,44 @@ export async function releaseUnpaidFixedSchedules({ now = new Date(), force = fa
     const schedules = await FixedSchedule.find({ user: user._id, active: true });
     const scheduleIds = schedules.map((s) => s._id);
     if (scheduleIds.length) {
-      const upd = await Appointment.updateMany({
+      const futureReserved = await Appointment.find({
         user: user._id,
         fixedScheduleId: { $in: scheduleIds },
         status: "reserved",
         date: { $gte: today },
-      }, {
-        $set: {
-          status: "cancelled",
-          cancelledAt: now,
-          cancelReason: "Liberado automáticamente por deuda de turnos fijos al finalizar la primera semana del mes.",
-          refundApplied: false,
-          refundMode: "none",
-          creditDebitStatus: "skipped",
-          fixedDebitProcessedAt: now,
-        },
-      });
-      appointmentsCancelled += Number(upd?.modifiedCount || 0);
+      }).select("_id serviceKey service creditDebitStatus fixedDebtAmount");
+
+      const debtToRemove = Object.fromEntries(FIXED_SERVICE_KEYS.map((k) => [k, 0]));
+      for (const ap of futureReserved) {
+        const sk = normalizeServiceKey(ap.serviceKey || ap.service);
+        if (sk && String(ap.creditDebitStatus || "") === "debt" && Number(ap.fixedDebtAmount || 0) > 0) {
+          debtToRemove[sk] += 1;
+        }
+      }
+
+      if (futureReserved.length) {
+        const ids = futureReserved.map((ap) => ap._id);
+        const upd = await Appointment.updateMany({ _id: { $in: ids } }, {
+          $set: {
+            status: "cancelled",
+            cancelledAt: now,
+            cancelReason: "Liberado automáticamente por deuda de turnos fijos al finalizar la primera semana del mes.",
+            refundApplied: false,
+            refundMode: "none",
+            creditDebitStatus: "skipped",
+            fixedDebitProcessedAt: now,
+          },
+        });
+        appointmentsCancelled += Number(upd?.modifiedCount || 0);
+      }
+
+      ensureDebt(user);
+      for (const sk of FIXED_SERVICE_KEYS) {
+        if (debtToRemove[sk] > 0) {
+          user.fixedScheduleDebt[sk] = Math.max(0, Number(user.fixedScheduleDebt?.[sk] || 0) - debtToRemove[sk]);
+        }
+      }
+      user.markModified?.("fixedScheduleDebt");
     }
 
     for (const schedule of schedules) {
@@ -246,7 +294,7 @@ export async function releaseUnpaidFixedSchedules({ now = new Date(), force = fa
     user.history.push({
       action: "fixed_schedule_auto_released_unpaid",
       title: "Turnos fijos liberados por deuda",
-      message: "Al iniciar la segunda semana del mes seguía habiendo sesiones adeudadas. Se liberaron los próximos turnos fijos reservados.",
+      message: "Al iniciar la segunda semana del mes seguía habiendo sesiones adeudadas. Se liberaron los próximos turnos fijos reservados y se descontó de la deuda mensual lo correspondiente a esos turnos futuros cancelados.",
       createdAt: now,
     });
     user.monthlyAutomation.lastFixedDebtReleaseMonthKey = monthKey;
