@@ -829,6 +829,8 @@ function serializeAppointment(ap) {
     completedAt: json?.completedAt || null,
     fixedScheduleId: json?.fixedScheduleId?.toString?.() || json?.fixedScheduleId || null,
     isFixedSchedule: !!json?.fixedScheduleId,
+    isFixedSchedulePreview: !!json?.isFixedSchedulePreview,
+    isVirtualFixedSchedule: !!json?.isVirtualFixedSchedule,
     creditDebitStatus: json?.creditDebitStatus || "",
     fixedDebitProcessedAt: json?.fixedDebitProcessedAt || null,
   };
@@ -1604,6 +1606,130 @@ async function addFixedMonthlyDebt({ userId, serviceKey, serviceName, count, mon
   }).catch?.(() => {});
 
   return { added: qty };
+}
+
+function parseYmdDateLocal(dateStr) {
+  const [y, m, d] = String(dateStr || "").slice(0, 10).split("-").map(Number);
+  if (!y || !m || !d) return null;
+  return new Date(y, (m || 1) - 1, d || 1, 12, 0, 0, 0);
+}
+
+function addDaysToYmd(dateStr, amount) {
+  const dt = parseYmdDateLocal(dateStr);
+  if (!dt) return "";
+  dt.setDate(dt.getDate() + Number(amount || 0));
+  return ymdAR(dt);
+}
+
+function maxYmd(a, b) {
+  const aa = String(a || "").slice(0, 10);
+  const bb = String(b || "").slice(0, 10);
+  if (!isValidYMD(aa)) return bb;
+  if (!isValidYMD(bb)) return aa;
+  return aa >= bb ? aa : bb;
+}
+
+function minYmd(a, b) {
+  const aa = String(a || "").slice(0, 10);
+  const bb = String(b || "").slice(0, 10);
+  if (!isValidYMD(aa)) return bb;
+  if (!isValidYMD(bb)) return aa;
+  return aa <= bb ? aa : bb;
+}
+
+function fixedScheduleUserId(schedule = {}) {
+  const user = schedule?.user;
+  return (
+    user?._id?.toString?.() ||
+    user?.id ||
+    user?.toString?.() ||
+    ""
+  );
+}
+
+function fixedScheduleUserObject(schedule = {}) {
+  const user = schedule?.user;
+  if (user && typeof user === "object" && user._id) {
+    return user;
+  }
+  const uid = fixedScheduleUserId(schedule);
+  return uid ? { _id: uid } : null;
+}
+
+function buildFixedSchedulePreviewAppointments({ schedules = [], existingAppointments = [], from = "", to = "" } = {}) {
+  if (!isValidYMD(from) || !isValidYMD(to) || from >= to) return [];
+
+  const existingByFixed = new Set();
+  const existingByUserSlot = new Set();
+
+  for (const ap of existingAppointments || []) {
+    const apDate = String(ap?.date || "").slice(0, 10);
+    const apTime = String(ap?.time || "").slice(0, 5);
+    const apUser = ap?.user?._id?.toString?.() || ap?.user?.toString?.() || ap?.userId || "";
+    const apFixed = ap?.fixedScheduleId?.toString?.() || ap?.fixedScheduleId || "";
+
+    if (apFixed && apDate && apTime) existingByFixed.add(`${apFixed}__${apDate}__${apTime}`);
+    if (apUser && apDate && apTime) existingByUserSlot.add(`${apUser}__${apDate}__${apTime}`);
+  }
+
+  const rangeEndInclusive = addDaysToYmd(to, -1);
+  const preview = [];
+
+  for (const schedule of schedules || []) {
+    if (!schedule?.active) continue;
+
+    const scheduleId = schedule?._id?.toString?.() || schedule?.id || "";
+    const userId = fixedScheduleUserId(schedule);
+    const userObj = fixedScheduleUserObject(schedule);
+    const serviceKey = normalizeServiceKey(schedule?.serviceKey || schedule?.service);
+    const serviceName = serviceKeyToName(serviceKey) || String(schedule?.service || "").trim();
+
+    if (!scheduleId || !userId || !serviceKey || !["EP", "RA", "RF", "KD"].includes(serviceKey)) continue;
+
+    const startYmd = maxYmd(from, schedule?.startDate || from);
+    const hardEnd = schedule?.isInfinite === false ? minYmd(rangeEndInclusive, schedule?.endDate || rangeEndInclusive) : rangeEndInclusive;
+
+    const startDate = parseYmdDateLocal(startYmd);
+    const endDate = parseYmdDateLocal(hardEnd);
+    if (!startDate || !endDate || startDate > endDate) continue;
+
+    const cursor = new Date(startDate);
+    while (cursor <= endDate) {
+      const date = ymdAR(cursor);
+      const weekday = getWeekdayMondayFirst(date);
+
+      for (const item of Array.isArray(schedule?.items) ? schedule.items : []) {
+        const time = String(item?.time || "").slice(0, 5);
+        if (Number(item?.weekday || 0) !== weekday || !/^\d{2}:\d{2}$/.test(time)) continue;
+
+        const fixedKey = `${scheduleId}__${date}__${time}`;
+        const userSlotKey = `${userId}__${date}__${time}`;
+        if (existingByFixed.has(fixedKey) || existingByUserSlot.has(userSlotKey)) continue;
+
+        preview.push({
+          _id: `fixed-preview-${scheduleId}-${date}-${time}`,
+          id: `fixed-preview-${scheduleId}-${date}-${time}`,
+          user: userObj,
+          userId,
+          date,
+          time,
+          serviceKey,
+          service: serviceName,
+          status: "reserved",
+          fixedScheduleId: scheduleId,
+          isFixedSchedulePreview: true,
+          isVirtualFixedSchedule: true,
+          creditDebitStatus: "preview",
+          fixedDebitProcessedAt: null,
+          notes: "Turno fijo programado para visualización administrativa. No debita ni genera deuda hasta que se cree mensualmente.",
+        });
+      }
+
+      cursor.setDate(cursor.getDate() + 1);
+    }
+  }
+
+  return preview.sort((a, b) => `${a.date} ${a.time}`.localeCompare(`${b.date} ${b.time}`));
 }
 
 async function createAppointmentForTargetUser({
@@ -2564,7 +2690,40 @@ router.get("/", async (req, res) => {
         .populate("user", "name lastName email")
         .lean();
 
-      return res.json((list || []).map(serializeAppointment));
+      let fullList = Array.isArray(list) ? [...list] : [];
+      const includeFixedSchedulePreview = ["1", "true", "yes", "si"].includes(
+        String(req.query?.includeFixedSchedulePreview || req.query?.includeFixedPreview || "")
+          .toLowerCase()
+          .trim()
+      );
+
+      if (includeFixedSchedulePreview && hasFrom && hasTo) {
+        const rangeEndInclusive = addDaysToYmd(to, -1);
+        const schedules = await FixedSchedule.find({
+          active: true,
+          startDate: { $lte: rangeEndInclusive },
+          $or: [
+            { isInfinite: true },
+            { isInfinite: { $exists: false } },
+            { endDate: { $gte: from } },
+          ],
+        })
+          .populate("user", "name lastName email")
+          .lean();
+
+        const previews = buildFixedSchedulePreviewAppointments({
+          schedules,
+          existingAppointments: fullList,
+          from,
+          to,
+        });
+
+        fullList = [...fullList, ...previews];
+      }
+
+      fullList.sort((a, b) => `${a?.date || ""} ${a?.time || ""}`.localeCompare(`${b?.date || ""} ${b?.time || ""}`));
+
+      return res.json(fullList.map(serializeAppointment));
     }
 
     await syncPastAppointmentsForUserId(tokenUserId);
