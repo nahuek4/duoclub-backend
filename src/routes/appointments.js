@@ -2653,6 +2653,12 @@ router.get("/", async (req, res) => {
 
     await syncPastAppointmentsForUserId(tokenUserId);
 
+    const includeFixedSchedulePreview = ["1", "true", "yes", "si"].includes(
+      String(req.query?.includeFixedSchedulePreview || req.query?.includeFixedPreview || "")
+        .toLowerCase()
+        .trim()
+    );
+
     const q = { user: tokenUserId, status: { $ne: "cancelled" } };
 
     if (hasFrom && hasTo) q.date = { $gte: from, $lt: to };
@@ -2660,22 +2666,41 @@ router.get("/", async (req, res) => {
     else if (!includePast) q.date = { $gte: ymdAR() };
 
     const list = await Appointment.find(q)
+      .populate("user", "name lastName email")
       .sort({ date: 1, time: 1 })
       .lean();
 
-    return res.json(
-      (list || []).map((a) => ({
-        id: a?._id?.toString?.() || String(a?._id || ""),
-        date: a?.date,
-        time: a?.time,
-        service: a?.service || "",
-        status: a?.status || "reserved",
-        coach: a?.coach || "",
-        creditExpiresAt: a?.creditExpiresAt || null,
-        completedAt: a?.completedAt || null,
-        userId: String(a?.user || ""),
-      }))
-    );
+    let fullList = Array.isArray(list) ? [...list] : [];
+
+    if (includeFixedSchedulePreview && hasFrom && hasTo && tokenUserId) {
+      const rangeEndInclusive = addDaysToYmd(to, -1);
+
+      const schedules = await FixedSchedule.find({
+        active: true,
+        user: tokenUserId,
+        startDate: { $lte: rangeEndInclusive },
+        $or: [
+          { endDate: { $gte: from } },
+          { endDate: "" },
+          { endDate: { $exists: false } },
+        ],
+      })
+        .populate("user", "name lastName email")
+        .lean();
+
+      const previews = buildFixedSchedulePreviewAppointments({
+        schedules,
+        existingAppointments: fullList,
+        from,
+        to,
+      });
+
+      fullList = [...fullList, ...previews];
+    }
+
+    fullList.sort((a, b) => `${a?.date || ""} ${a?.time || ""}`.localeCompare(`${b?.date || ""} ${b?.time || ""}`));
+
+    return res.json((fullList || []).map(serializeAppointment));
   } catch (err) {
     console.error("Error en GET /appointments:", err);
     res.status(500).json({ error: "Error al obtener turnos." });
