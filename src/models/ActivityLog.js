@@ -48,7 +48,6 @@ activityLogSchema.pre("validate", function normalizeActivityLog() {
   if (!["success", "error", "warning", "info"].includes(String(this.status || "").trim())) {
     this.status = "success";
   }
-
 });
 
 activityLogSchema.index({ createdAt: -1 });

@@ -1468,96 +1468,152 @@ function addMonthsYmd(dateStr, months) {
   return ymdAR(dt);
 }
 
+
+function parseYmdDateLocal(dateStr) {
+  const [y, m, d] = String(dateStr || "").slice(0, 10).split("-").map(Number);
+  if (!y || !m || !d) return null;
+  return new Date(y, m - 1, d, 12, 0, 0, 0);
+}
+
+function addDaysToYmd(dateStr, amount) {
+  const d = parseYmdDateLocal(dateStr);
+  if (!d) return "";
+  d.setDate(d.getDate() + Number(amount || 0));
+  return ymdAR(d);
+}
+
+function maxYmd(a, b) {
+  const aa = String(a || "").slice(0, 10);
+  const bb = String(b || "").slice(0, 10);
+  if (!isValidYMD(aa)) return bb;
+  if (!isValidYMD(bb)) return aa;
+  return aa >= bb ? aa : bb;
+}
+
+function minYmd(a, b) {
+  const aa = String(a || "").slice(0, 10);
+  const bb = String(b || "").slice(0, 10);
+  if (!isValidYMD(aa)) return bb;
+  if (!isValidYMD(bb)) return aa;
+  return aa <= bb ? aa : bb;
+}
+
+function fixedScheduleUserId(schedule = {}) {
+  const user = schedule?.user;
+  return user?._id?.toString?.() || user?.id || user?.toString?.() || "";
+}
+
+function fixedScheduleUserObject(schedule = {}) {
+  const user = schedule?.user;
+  if (user && typeof user === "object" && user._id) return user;
+  const uid = fixedScheduleUserId(schedule);
+  return uid ? { _id: uid } : null;
+}
+
+function fixedScheduleDescription(items = []) {
+  return (Array.isArray(items) ? items : [])
+    .map((x) => `${weekdayLabel(Number(x?.weekday || 0)).toLowerCase()} ${String(x?.time || "").slice(0, 5)} hs`)
+    .filter(Boolean)
+    .join(", ")
+    .replace(/, ([^,]*)$/, " y $1");
+}
+
+function buildFixedSchedulePreviewAppointments({ schedules = [], existingAppointments = [], from = "", to = "" } = {}) {
+  if (!isValidYMD(from) || !isValidYMD(to) || from >= to) return [];
+
+  const existingByFixed = new Set();
+  const existingByUserSlot = new Set();
+
+  for (const ap of existingAppointments || []) {
+    const apDate = String(ap?.date || "").slice(0, 10);
+    const apTime = String(ap?.time || "").slice(0, 5);
+    const apUser = ap?.user?._id?.toString?.() || ap?.user?.toString?.() || ap?.userId || "";
+    const apFixed = ap?.fixedScheduleId?.toString?.() || ap?.fixedScheduleId || "";
+    const apStatus = String(ap?.status || "reserved").toLowerCase();
+
+    if (apStatus === "cancelled") continue;
+    if (apFixed && apDate && apTime) existingByFixed.add(`${apFixed}__${apDate}__${apTime}`);
+    if (apUser && apDate && apTime) existingByUserSlot.add(`${apUser}__${apDate}__${apTime}`);
+  }
+
+  const rangeEndInclusive = addDaysToYmd(to, -1);
+  const preview = [];
+
+  for (const schedule of schedules || []) {
+    if (!schedule?.active) continue;
+
+    const scheduleId = schedule?._id?.toString?.() || schedule?.id || "";
+    const userId = fixedScheduleUserId(schedule);
+    const userObj = fixedScheduleUserObject(schedule);
+    const serviceKey = normalizeServiceKey(schedule?.serviceKey || schedule?.service);
+    const serviceName = serviceKeyToName(serviceKey) || String(schedule?.service || "").trim();
+
+    if (!scheduleId || !userId || !serviceKey || !["EP", "RA", "RF", "KD", "NUT"].includes(serviceKey)) continue;
+
+    const startYmd = maxYmd(from, schedule?.startDate || from);
+    const scheduleEnds = schedule?.isInfinite === false ? schedule?.endDate : schedule?.endDate || "";
+    const hardEnd = scheduleEnds ? minYmd(rangeEndInclusive, scheduleEnds) : rangeEndInclusive;
+
+    const startDate = parseYmdDateLocal(startYmd);
+    const endDate = parseYmdDateLocal(hardEnd);
+    if (!startDate || !endDate || startDate > endDate) continue;
+
+    const cursor = new Date(startDate);
+    while (cursor <= endDate) {
+      const date = ymdAR(cursor);
+      const weekday = getWeekdayMondayFirst(date);
+
+      for (const item of Array.isArray(schedule?.items) ? schedule.items : []) {
+        const time = String(item?.time || "").slice(0, 5);
+        if (Number(item?.weekday || 0) !== weekday || !/^\d{2}:\d{2}$/.test(time)) continue;
+
+        const fixedKey = `${scheduleId}__${date}__${time}`;
+        const userSlotKey = `${userId}__${date}__${time}`;
+        if (existingByFixed.has(fixedKey) || existingByUserSlot.has(userSlotKey)) continue;
+
+        preview.push({
+          _id: `fixed-preview-${scheduleId}-${date}-${time}`,
+          id: `fixed-preview-${scheduleId}-${date}-${time}`,
+          user: userObj,
+          userId,
+          date,
+          time,
+          serviceKey,
+          service: serviceName,
+          status: "reserved",
+          fixedScheduleId: scheduleId,
+          isFixedSchedulePreview: true,
+          isVirtualFixedSchedule: true,
+          creditDebitStatus: "preview",
+          fixedDebitProcessedAt: null,
+          notes: "Turno fijo programado para visualización administrativa. No debita ni genera deuda hasta que se cree mensualmente.",
+        });
+      }
+
+      cursor.setDate(cursor.getDate() + 1);
+    }
+  }
+
+  return preview.sort((a, b) => `${a.date} ${a.time}`.localeCompare(`${b.date} ${b.time}`));
+}
+
+function weekdayLabel(n) {
+  const map = {
+    1: "Lunes",
+    2: "Martes",
+    3: "Miércoles",
+    4: "Jueves",
+    5: "Viernes",
+    6: "Sábado",
+    7: "Domingo",
+  };
+  return map[Number(n)] || `Día ${n}`;
+}
+
 function getWeekdayMondayFirst(dateStr) {
   const [y, m, d] = String(dateStr).split("-").map(Number);
   const js = new Date(y, (m || 1) - 1, d || 1).getDay();
   return js === 0 ? 7 : js;
-}
-
-const WEEKDAY_NAMES = {
-  1: "lunes",
-  2: "martes",
-  3: "miércoles",
-  4: "jueves",
-  5: "viernes",
-  6: "sábado",
-  7: "domingo",
-};
-
-function actorDisplayName(req) {
-  const u = req?.user || {};
-  const full = `${String(u?.name || "").trim()} ${String(u?.lastName || "").trim()}`.trim();
-  return full || String(u?.email || "").trim() || "Administración";
-}
-
-function userDisplayName(user) {
-  const full = `${String(user?.name || "").trim()} ${String(user?.lastName || "").trim()}`.trim();
-  return full || String(user?.email || "").trim() || "Usuario";
-}
-
-function formatFixedScheduleItems(items = []) {
-  const grouped = new Map();
-
-  for (const item of Array.isArray(items) ? items : []) {
-    const weekday = Number(item?.weekday || 0);
-    const time = String(item?.time || "").slice(0, 5);
-    if (!weekday || !time) continue;
-    const dayName = WEEKDAY_NAMES[weekday] || `día ${weekday}`;
-    if (!grouped.has(dayName)) grouped.set(dayName, []);
-    grouped.get(dayName).push(time);
-  }
-
-  return Array.from(grouped.entries())
-    .map(([day, times]) => {
-      const cleanTimes = Array.from(new Set(times)).sort();
-      return `${day} ${cleanTimes.join(", ")}`;
-    })
-    .join(" y ");
-}
-
-function formatAppointmentItems(items = []) {
-  return (Array.isArray(items) ? items : [])
-    .map((item) => {
-      const date = String(item?.date || "").slice(0, 10);
-      const time = String(item?.time || "").slice(0, 5);
-      if (!date && !time) return "";
-      return `${date}${time ? ` ${time} hs` : ""}`;
-    })
-    .filter(Boolean)
-    .join(", ");
-}
-
-async function appendSingleAssignmentHistory({
-  userId,
-  action,
-  title,
-  message,
-  serviceKey,
-  serviceName,
-  date = "",
-  time = "",
-  qty = 0,
-}) {
-  const user = await User.findById(userId);
-  if (!user) return null;
-
-  user.history = Array.isArray(user.history) ? user.history : [];
-  user.history.push({
-    action,
-    title,
-    message,
-    date,
-    time,
-    service: serviceName || serviceKey || "",
-    serviceName: serviceName || serviceKey || "",
-    serviceKey: serviceKey || "",
-    qty,
-    createdAt: new Date(),
-  });
-
-  recalcUserCredits(user);
-  await user.save();
-  return user;
 }
 
 function buildOccurrencesForFixedSchedule({ startDate, months, items }) {
@@ -1604,8 +1660,8 @@ async function createAppointmentForTargetUser({
   bypassCredits = false,
   fixedScheduleId = null,
   monthlyRolloverMonthKey = "",
-  suppressUserHistory = false,
-  suppressActivity = false,
+  skipUserHistory = false,
+  skipActivityLog = false,
 }) {
   const basic = validateBasicSlotRulesAdmin({
     date,
@@ -1720,7 +1776,7 @@ async function createAppointmentForTargetUser({
     usedLotId = consumed.usedLotId;
     usedLotExp = consumed.usedLotExp;
   } else {
-    if (!suppressUserHistory) {
+    if (!skipUserHistory) {
       targetUser.history = Array.isArray(targetUser.history) ? targetUser.history : [];
       targetUser.history.push({
         action: fixedScheduleId ? "turno_fijo_asignado" : "reservado_por_admin_sin_credito",
@@ -1734,9 +1790,9 @@ async function createAppointmentForTargetUser({
           : "Turno asignado por administración sin consumir crédito.",
         createdAt: new Date(),
       });
-      recalcUserCredits(targetUser);
-      await targetUser.save();
     }
+    recalcUserCredits(targetUser);
+    await targetUser.save();
     effectiveUser = targetUser;
   }
 
@@ -1767,7 +1823,7 @@ async function createAppointmentForTargetUser({
   const populated = await Appointment.findById(created._id)
     .populate("user", "name lastName email");
 
-  if (!suppressActivity) {
+  if (!skipActivityLog) {
     await logActivity({
       req: actorReq,
       category: "appointments",
@@ -1782,7 +1838,6 @@ async function createAppointmentForTargetUser({
         time: t,
         serviceName: basic.serviceName,
         assignedByAdmin: true,
-        assignedBy: actorDisplayName(actorReq),
       },
     });
   }
@@ -2547,22 +2602,22 @@ router.get("/", async (req, res) => {
       if (!isStaff) return res.status(403).json({ error: "No autorizado." });
 
       const userFilterId = String(req.query?.userId || req.query?.user || "").trim();
+      const includeFixedSchedulePreview = ["1", "true", "yes", "si"].includes(
+        String(req.query?.includeFixedSchedulePreview || req.query?.includeFixedPreview || "")
+          .toLowerCase()
+          .trim()
+      );
 
       const q = {};
+      if (userFilterId) q.user = userFilterId;
       if (hasFrom && hasTo) q.date = { $gte: from, $lt: to };
       else if (hasFrom) q.date = { $gte: from };
-      if (userFilterId) q.user = userFilterId;
 
       const list = await Appointment.find(q)
         .populate("user", "name lastName email")
         .lean();
 
       let fullList = Array.isArray(list) ? [...list] : [];
-      const includeFixedSchedulePreview = ["1", "true", "yes", "si"].includes(
-        String(req.query?.includeFixedSchedulePreview || req.query?.includeFixedPreview || "")
-          .toLowerCase()
-          .trim()
-      );
 
       if (includeFixedSchedulePreview && hasFrom && hasTo) {
         const rangeEndInclusive = addDaysToYmd(to, -1);
@@ -2570,12 +2625,11 @@ router.get("/", async (req, res) => {
           active: true,
           startDate: { $lte: rangeEndInclusive },
           $or: [
-            { isInfinite: true },
-            { isInfinite: { $exists: false } },
             { endDate: { $gte: from } },
+            { endDate: "" },
+            { endDate: { $exists: false } },
           ],
         };
-
         if (userFilterId) scheduleQuery.user = userFilterId;
 
         const schedules = await FixedSchedule.find(scheduleQuery)
@@ -2673,8 +2727,8 @@ router.post("/admin/assign", async (req, res) => {
           notes,
           bypassWindow: true,
           bypassCredits: true,
-          suppressUserHistory: true,
-          suppressActivity: true,
+          skipUserHistory: true,
+          skipActivityLog: true,
         });
         created.push(ap);
       } catch (e) {
@@ -2697,31 +2751,28 @@ router.post("/admin/assign", async (req, res) => {
     }
 
     if (created.length) {
-      const targetUser = await User.findById(userId).lean();
-      const actorName = actorDisplayName(req);
-      const targetName = userDisplayName(targetUser);
-      const serviceNames = Array.from(new Set(created.map((x) => x.service).filter(Boolean))).join(", ");
-      const createdItemsLabel = formatAppointmentItems(created);
-      const title =
-        created.length === 1
-          ? "Turno asignado por administración."
-          : "Turnos asignados por administración.";
-      const message =
-        created.length === 1
-          ? `${actorName} asignó un turno de ${serviceNames || "sesión"} a ${targetName}: ${createdItemsLabel}.`
-          : `${actorName} asignó ${created.length} turnos de ${serviceNames || "sesión"} a ${targetName}: ${createdItemsLabel}.`;
+      const targetUser = await User.findById(userId);
+      const serviceName = created[0]?.service || String(items[0]?.service || "").trim();
+      const detail = created
+        .map((x) => `${String(x?.date || "").slice(0, 10)} ${String(x?.time || "").slice(0, 5)} hs`)
+        .join(", ")
+        .replace(/, ([^,]*)$/, " y $1");
 
-      const updatedUser = await appendSingleAssignmentHistory({
-        userId,
-        action: created.length === 1 ? "turno_manual_asignado_por_admin" : "turnos_manuales_asignados_por_admin",
-        title,
-        message,
-        serviceKey: created.length === 1 ? created[0]?.serviceKey || "" : "",
-        serviceName: serviceNames,
-        date: created.length === 1 ? created[0]?.date || "" : "",
-        time: created.length === 1 ? created[0]?.time || "" : "",
-        qty: created.length,
-      });
+      if (targetUser) {
+        targetUser.history = Array.isArray(targetUser.history) ? targetUser.history : [];
+        targetUser.history.push({
+          action: "turnos_asignados_por_admin",
+          title: "Turnos asignados por administración",
+          message: `Se asignaron ${created.length} turno${created.length === 1 ? "" : "s"} de ${serviceName}: ${detail}.`,
+          service: serviceName,
+          serviceName,
+          serviceKey: serviceToKey(serviceName),
+          qty: created.length,
+          createdAt: new Date(),
+        });
+        recalcUserCredits(targetUser);
+        await targetUser.save();
+      }
 
       await logActivity({
         req,
@@ -2729,24 +2780,14 @@ router.post("/admin/assign", async (req, res) => {
         action: "appointments_assigned_by_admin",
         entity: "appointment",
         entityId: created.map((x) => x.id).join(","),
-        title,
-        description: message,
-        subject: buildUserSubject(updatedUser || targetUser || { _id: userId }),
+        title: "Turnos asignados por admin",
+        description: `Se asignaron ${created.length} turno${created.length === 1 ? "" : "s"} manuales a un usuario.`,
+        subject: buildUserSubject(targetUser || { _id: userId }),
         meta: {
-          assignedBy: actorName,
-          assignedTo: targetName,
           userId,
-          serviceNames,
-          items: created.map((x) => ({
-            id: x.id,
-            date: x.date,
-            time: x.time,
-            serviceName: x.service,
-            serviceKey: x.serviceKey,
-          })),
-          createdCount: created.length,
-          conflictsCount: conflicts.length,
-          notes,
+          serviceName,
+          items: created.map((x) => ({ date: x.date, time: x.time, serviceName: x.service })),
+          assignedByAdmin: true,
         },
       });
     }
@@ -2782,6 +2823,7 @@ router.post("/admin/fixed-schedules", async (req, res) => {
     const notes = String(req.body?.notes || "").trim();
     const months = Math.max(1, Math.min(12, Number(req.body?.months || 1)));
     const items = Array.isArray(req.body?.items) ? req.body.items : [];
+    const requestedFixedScheduleId = String(req.body?.fixedScheduleId || "").trim();
 
     if (!userId) return res.status(400).json({ error: "Falta userId." });
     const serviceIdentity = normalizeServiceIdentity({ service, serviceKey });
@@ -2793,7 +2835,7 @@ router.post("/admin/fixed-schedules", async (req, res) => {
         weekday: Number(it?.weekday || 0),
         time: String(it?.time || "").slice(0, 5),
       }))
-      .filter((it) => it.weekday >= 1 && it.weekday <= 5 && !!it.time);
+      .filter((it) => it.weekday >= 1 && it.weekday <= 5 && /^\d{2}:\d{2}$/.test(it.time));
 
     if (!cleanItems.length) {
       return res.status(400).json({ error: "No hay items válidos para guardar." });
@@ -2802,18 +2844,72 @@ router.post("/admin/fixed-schedules", async (req, res) => {
     const startDate = ymdAR(new Date());
     const endDate = addMonthsYmd(startDate, months);
 
-    const fixed = await FixedSchedule.create({
-      user: userId,
-      createdBy: req.user?._id || req.user?.id,
-      serviceKey: serviceIdentity.serviceKey,
-      service: serviceIdentity.serviceName,
-      items: cleanItems,
-      months,
-      startDate,
-      endDate,
-      notes,
-      active: true,
-    });
+    const targetUser = await User.findById(userId);
+    if (!targetUser) return res.status(404).json({ error: "Usuario no encontrado." });
+
+    let fixed = null;
+    if (requestedFixedScheduleId) {
+      fixed = await FixedSchedule.findOne({
+        _id: requestedFixedScheduleId,
+        user: userId,
+        active: true,
+      });
+    }
+
+    if (!fixed) {
+      fixed = await FixedSchedule.findOne({
+        user: userId,
+        serviceKey: serviceIdentity.serviceKey,
+        active: true,
+      }).sort({ createdAt: -1 });
+    }
+
+    const updatingExisting = !!fixed;
+
+    if (fixed) {
+      fixed.createdBy = fixed.createdBy || req.user?._id || req.user?.id;
+      fixed.serviceKey = serviceIdentity.serviceKey;
+      fixed.service = serviceIdentity.serviceName;
+      fixed.items = cleanItems;
+      fixed.months = months;
+      fixed.startDate = startDate;
+      fixed.endDate = endDate;
+      fixed.notes = notes;
+      fixed.active = true;
+      await fixed.save();
+
+      await Appointment.updateMany(
+        {
+          fixedScheduleId: fixed._id,
+          status: "reserved",
+          date: { $gte: startDate },
+        },
+        {
+          $set: {
+            status: "cancelled",
+            cancelledAt: new Date(),
+            cancelledByRole: role || "admin",
+            cancelledByUser: req.user?._id || req.user?.id || null,
+            cancelReason: "FIXED_SCHEDULE_UPDATED_BY_ADMIN",
+            refundApplied: false,
+            refundMode: "none",
+          },
+        }
+      );
+    } else {
+      fixed = await FixedSchedule.create({
+        user: userId,
+        createdBy: req.user?._id || req.user?.id,
+        serviceKey: serviceIdentity.serviceKey,
+        service: serviceIdentity.serviceName,
+        items: cleanItems,
+        months,
+        startDate,
+        endDate,
+        notes,
+        active: true,
+      });
+    }
 
     const occurrences = buildOccurrencesForFixedSchedule({
       startDate,
@@ -2837,8 +2933,8 @@ router.post("/admin/fixed-schedules", async (req, res) => {
           bypassWindow: true,
           bypassCredits: true,
           fixedScheduleId: fixed._id,
-          suppressUserHistory: true,
-          suppressActivity: true,
+          skipUserHistory: true,
+          skipActivityLog: true,
         });
         created.push(ap);
       } catch (e) {
@@ -2852,62 +2948,52 @@ router.post("/admin/fixed-schedules", async (req, res) => {
       }
     }
 
-    const targetUser = await User.findById(userId).lean();
-    const actorName = actorDisplayName(req);
-    const targetName = userDisplayName(targetUser);
-    const scheduleLabel = formatFixedScheduleItems(cleanItems);
-    const message = `${actorName} asignó turnos fijos de ${serviceIdentity.serviceName} a ${targetName}: ${scheduleLabel}.`;
-
-    const updatedUser = await appendSingleAssignmentHistory({
-      userId,
-      action: "turnos_fijos_asignados_por_admin",
-      title: "Turnos fijos asignados por administración.",
-      message,
-      serviceKey: serviceIdentity.serviceKey,
+    const detail = fixedScheduleDescription(cleanItems);
+    targetUser.history = Array.isArray(targetUser.history) ? targetUser.history : [];
+    targetUser.history.push({
+      action: updatingExisting ? "turnos_fijos_actualizados_por_admin" : "turnos_fijos_asignados_por_admin",
+      title: updatingExisting ? "Turnos fijos actualizados por administración" : "Turnos fijos asignados por administración",
+      message: `${updatingExisting ? "Se actualizaron" : "Se asignaron"} turnos fijos de ${serviceIdentity.serviceName}: ${detail}.`,
+      service: serviceIdentity.serviceName,
       serviceName: serviceIdentity.serviceName,
+      serviceKey: serviceIdentity.serviceKey,
       qty: cleanItems.length,
+      createdAt: new Date(),
     });
+    recalcUserCredits(targetUser);
+    await targetUser.save();
 
     await logActivity({
       req,
       category: "appointments",
-      action: "fixed_schedule_assigned_by_admin",
+      action: updatingExisting ? "fixed_schedule_updated_by_admin" : "fixed_schedule_assigned_by_admin",
       entity: "fixedSchedule",
       entityId: String(fixed._id),
-      title: "Turnos fijos asignados",
-      description: message,
-      subject: buildUserSubject(updatedUser || targetUser || { _id: userId }),
+      title: updatingExisting ? "Turnos fijos actualizados" : "Turnos fijos asignados",
+      description: `${updatingExisting ? "Se actualizaron" : "Se asignaron"} turnos fijos a un usuario.`,
+      subject: buildUserSubject(targetUser),
       meta: {
-        assignedBy: actorName,
-        assignedTo: targetName,
         userId,
-        fixedScheduleId: String(fixed._id),
-        serviceName: serviceIdentity.serviceName,
         serviceKey: serviceIdentity.serviceKey,
-        schedule: scheduleLabel,
-        fixedItems: cleanItems.map((x) => ({
+        serviceName: serviceIdentity.serviceName,
+        daysAndTimes: cleanItems.map((x) => ({
           weekday: x.weekday,
-          weekdayName: WEEKDAY_NAMES[x.weekday] || "",
+          weekdayLabel: weekdayLabel(x.weekday),
           time: x.time,
         })),
+        detail,
+        months,
         startDate,
         endDate,
-        months,
-        generatedAppointmentsCount: created.length,
+        updatedExisting: updatingExisting,
+        createdAppointmentsCount: created.length,
         conflictsCount: conflicts.length,
-        generatedAppointments: created.map((x) => ({
-          id: x.id,
-          date: x.date,
-          time: x.time,
-          serviceName: x.service,
-          serviceKey: x.serviceKey,
-        })),
-        notes,
       },
     });
 
-    return res.status(201).json({
+    return res.status(updatingExisting ? 200 : 201).json({
       ok: true,
+      updated: updatingExisting,
       fixedScheduleId: String(fixed._id),
       createdCount: created.length,
       conflictsCount: conflicts.length,
@@ -3841,11 +3927,20 @@ router.post("/waitlist/claim", ensureStaff, async (req, res) => {
 /* =========================
    GET /appointments/admin/fixed-schedules
 ========================= */
-router.get("/admin/fixed-schedules", ensureStaff, async (_req, res) => {
+router.get("/admin/fixed-schedules", ensureStaff, async (req, res) => {
   try {
-    const items = await FixedSchedule.find({ active: true })
+    const userId = String(req.query?.userId || req.query?.user || "").trim();
+    const activeParam = String(req.query?.active || "1").toLowerCase().trim();
+
+    const q = {};
+    if (userId) q.user = userId;
+    if (!["all", "todos"].includes(activeParam)) {
+      q.active = !["0", "false", "no"].includes(activeParam);
+    }
+
+    const items = await FixedSchedule.find(q)
       .populate("user", "name lastName email")
-      .sort({ createdAt: -1 })
+      .sort({ active: -1, createdAt: -1 })
       .lean();
 
     return res.json(
@@ -3860,6 +3955,7 @@ router.get("/admin/fixed-schedules", ensureStaff, async (_req, res) => {
             }
           : null,
         service: it.service || "",
+        serviceKey: it.serviceKey || "",
         items: Array.isArray(it.items)
           ? it.items.map((x) => ({
               weekday: Number(x?.weekday || 0),

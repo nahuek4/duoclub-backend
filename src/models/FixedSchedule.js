@@ -115,19 +115,12 @@ const fixedScheduleSchema = new mongoose.Schema(
       },
     },
 
-    // Compatibilidad legacy: antes se guardaba una cantidad de meses.
-    // Desde turnos fijos infinitos, se mantiene solo para no romper datos anteriores.
     months: {
       type: Number,
-      required: false,
+      required: true,
       min: 1,
+      max: 12,
       default: 1,
-    },
-
-    isInfinite: {
-      type: Boolean,
-      default: true,
-      index: true,
     },
 
     // rango que cubre la configuración
@@ -184,8 +177,6 @@ fixedScheduleSchema.pre("validate", function normalizeFixedScheduleService() {
   if (!String(this.service || "").trim()) {
     this.service = getServiceNameFromKey(normalizedKey);
   }
-
-  return;
 });
 
 // para listar configuraciones activas de un usuario

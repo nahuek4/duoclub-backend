@@ -2,10 +2,6 @@
 import { BRAND_NAME } from "./core.js";
 import { EMAIL_FONT, escapeHtml } from "./helpers.js";
 
-const IMG_BASE = "https://api.duoclub.ar/images";
-const MAIL_BG_URL = `${IMG_BASE}/fondoMailing.png`;
-const MAIL_BG_STYLE = `background-color:#000000; background-image:url('${MAIL_BG_URL}'); background-repeat:repeat-y; background-position:top center; background-size:430px auto;`;
-
 export function buildEmailLayout({ title, preheader, bodyHtml, footerNote }) {
   const _title = escapeHtml(title || BRAND_NAME);
   const _pre = escapeHtml(preheader || "");
@@ -35,16 +31,16 @@ export function buildEmailLayout({ title, preheader, bodyHtml, footerNote }) {
     <meta name="x-apple-disable-message-reformatting" />
     <title>${_title}</title>
   </head>
-  <body background="${MAIL_BG_URL}" style="margin:0; padding:0; ${MAIL_BG_STYLE}">
+  <body style="margin:0; padding:0; background:#ffffff;">
     ${preheaderHtml}
 
-    <div style="margin:0; padding:32px 0; ${MAIL_BG_STYLE}">
+    <div style="margin:0; padding:24px 0; background:#ffffff;">
       <table
         role="presentation"
         cellpadding="0"
         cellspacing="0"
         width="100%"
-        background="${MAIL_BG_URL}" style="border-collapse:collapse; ${MAIL_BG_STYLE}"
+        style="border-collapse:collapse; background:#ffffff;"
       >
         <tr>
           <td align="center" style="padding:0 10px;">
@@ -77,7 +73,7 @@ export function buildEmailLayout({ title, preheader, bodyHtml, footerNote }) {
                     font-family:${EMAIL_FONT};
                     font-size:12px;
                     line-height:18px;
-                    color:#ffffff;
+                    color:#5f5f5f;
                   ">
                     ${_footer}
                   </div>
