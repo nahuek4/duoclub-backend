@@ -827,12 +827,6 @@ function serializeAppointment(ap) {
     userEmail: userObj?.email || "",
     creditExpiresAt: json?.creditExpiresAt || null,
     completedAt: json?.completedAt || null,
-    fixedScheduleId: json?.fixedScheduleId?.toString?.() || json?.fixedScheduleId || "",
-    monthlyRolloverMonthKey: json?.monthlyRolloverMonthKey || "",
-    creditDebitStatus: json?.creditDebitStatus || "",
-    isFixedSchedule: Boolean(json?.fixedScheduleId),
-    isFixedSchedulePreview: Boolean(json?.isFixedSchedulePreview),
-    isVirtualFixedSchedule: Boolean(json?.isVirtualFixedSchedule),
   };
 }
 
@@ -1308,76 +1302,6 @@ function resolveCancellationPolicy({ user, appointment, hoursToStart }) {
   };
 }
 
-
-function ensureFixedScheduleDebtForUser(user) {
-  user.fixedScheduleDebt = user.fixedScheduleDebt || {};
-  for (const key of ["EP", "RA", "RF", "KD"]) {
-    const n = Number(user.fixedScheduleDebt?.[key] || 0);
-    user.fixedScheduleDebt[key] = Number.isFinite(n) ? Math.max(0, Math.trunc(n)) : 0;
-  }
-}
-
-function isFixedMonthlyDebtAppointment(ap) {
-  return Boolean(
-    ap?.fixedScheduleId &&
-      String(ap?.creditDebitStatus || "") === "debt" &&
-      Number(ap?.fixedDebtAmount || 0) > 0
-  );
-}
-
-async function refundFixedMonthlyDebtAtomic({ user, appointment, decision, historyMeta, session }) {
-  const sk = serviceToKey(appointment?.serviceKey || appointment?.service || "");
-  if (!sk || !["EP", "RA", "RF", "KD"].includes(sk)) {
-    throw new Error("INVALID_FIXED_DEBT_SERVICE");
-  }
-
-  ensureFixedScheduleDebtForUser(user);
-
-  const amount = Math.max(1, Math.trunc(Number(appointment?.fixedDebtAmount || 1)));
-  const currentDebt = Math.max(0, Number(user.fixedScheduleDebt?.[sk] || 0));
-  const toRemove = Math.min(currentDebt, amount);
-
-  if (toRemove <= 0) {
-    return { user, removed: 0, serviceKey: sk };
-  }
-
-  user.fixedScheduleDebt[sk] = currentDebt - toRemove;
-  user.markModified?.("fixedScheduleDebt");
-
-  user.history = Array.isArray(user.history) ? user.history : [];
-  user.history.push({
-    action: decision?.historyAction || "cancelado_con_reintegro",
-    title: `Cancelación de turno fijo con ajuste de deuda ${sk}`,
-    message: `Se canceló el turno fijo de ${serviceKeyToName(sk) || sk} (${appointment.date} ${appointment.time} hs) respetando la política del servicio. Se descontó ${toRemove} sesión de la deuda mensual.`,
-    date: appointment.date,
-    time: appointment.time,
-    service: serviceKeyToName(sk) || appointment.service,
-    serviceName: serviceKeyToName(sk) || appointment.service,
-    serviceKey: sk,
-    qty: toRemove,
-    ...historyMeta,
-    createdAt: new Date(),
-  });
-
-  recalcUserCredits(user);
-  await user.save({ session });
-
-  appointment.fixedDebtAmount = Math.max(0, Number(appointment.fixedDebtAmount || 0) - toRemove);
-  if (appointment.fixedDebtAmount <= 0) {
-    appointment.creditDebitStatus = "skipped";
-  }
-
-  return { user, removed: toRemove, serviceKey: sk };
-}
-
-function markDecisionWithoutBalanceRefund(decision, reason) {
-  decision.refund = false;
-  decision.refundMode = "none";
-  decision.reason = reason || "El turno no tenía crédito ni deuda pendiente para reintegrar.";
-  decision.historyAction = "cancelado_sin_reintegro";
-  return decision;
-}
-
 function lotsDebug(user) {
   return (Array.isArray(user?.creditLots) ? user.creditLots : []).map((lot) => ({
     id: String(lot?._id || ""),
@@ -1550,6 +1474,92 @@ function getWeekdayMondayFirst(dateStr) {
   return js === 0 ? 7 : js;
 }
 
+const WEEKDAY_NAMES = {
+  1: "lunes",
+  2: "martes",
+  3: "miércoles",
+  4: "jueves",
+  5: "viernes",
+  6: "sábado",
+  7: "domingo",
+};
+
+function actorDisplayName(req) {
+  const u = req?.user || {};
+  const full = `${String(u?.name || "").trim()} ${String(u?.lastName || "").trim()}`.trim();
+  return full || String(u?.email || "").trim() || "Administración";
+}
+
+function userDisplayName(user) {
+  const full = `${String(user?.name || "").trim()} ${String(user?.lastName || "").trim()}`.trim();
+  return full || String(user?.email || "").trim() || "Usuario";
+}
+
+function formatFixedScheduleItems(items = []) {
+  const grouped = new Map();
+
+  for (const item of Array.isArray(items) ? items : []) {
+    const weekday = Number(item?.weekday || 0);
+    const time = String(item?.time || "").slice(0, 5);
+    if (!weekday || !time) continue;
+    const dayName = WEEKDAY_NAMES[weekday] || `día ${weekday}`;
+    if (!grouped.has(dayName)) grouped.set(dayName, []);
+    grouped.get(dayName).push(time);
+  }
+
+  return Array.from(grouped.entries())
+    .map(([day, times]) => {
+      const cleanTimes = Array.from(new Set(times)).sort();
+      return `${day} ${cleanTimes.join(", ")}`;
+    })
+    .join(" y ");
+}
+
+function formatAppointmentItems(items = []) {
+  return (Array.isArray(items) ? items : [])
+    .map((item) => {
+      const date = String(item?.date || "").slice(0, 10);
+      const time = String(item?.time || "").slice(0, 5);
+      if (!date && !time) return "";
+      return `${date}${time ? ` ${time} hs` : ""}`;
+    })
+    .filter(Boolean)
+    .join(", ");
+}
+
+async function appendSingleAssignmentHistory({
+  userId,
+  action,
+  title,
+  message,
+  serviceKey,
+  serviceName,
+  date = "",
+  time = "",
+  qty = 0,
+}) {
+  const user = await User.findById(userId);
+  if (!user) return null;
+
+  user.history = Array.isArray(user.history) ? user.history : [];
+  user.history.push({
+    action,
+    title,
+    message,
+    date,
+    time,
+    service: serviceName || serviceKey || "",
+    serviceName: serviceName || serviceKey || "",
+    serviceKey: serviceKey || "",
+    qty,
+    createdAt: new Date(),
+  });
+
+  recalcUserCredits(user);
+  await user.save();
+  return user;
+}
+
 function buildOccurrencesForFixedSchedule({ startDate, months, items }) {
   const out = [];
   const start = buildSlotDate(startDate, "00:00");
@@ -1582,124 +1592,6 @@ function buildOccurrencesForFixedSchedule({ startDate, months, items }) {
   });
 }
 
-function parseYmdDateLocal(dateStr) {
-  const [y, m, d] = String(dateStr || "").slice(0, 10).split("-").map(Number);
-  if (!y || !m || !d) return null;
-  return new Date(y, m - 1, d, 12, 0, 0, 0);
-}
-
-function addDaysToYmd(dateStr, amount) {
-  const d = parseYmdDateLocal(dateStr);
-  if (!d) return "";
-  d.setDate(d.getDate() + Number(amount || 0));
-  return ymdAR(d);
-}
-
-function maxYmd(a, b) {
-  const aa = String(a || "").slice(0, 10);
-  const bb = String(b || "").slice(0, 10);
-  if (!isValidYMD(aa)) return bb;
-  if (!isValidYMD(bb)) return aa;
-  return aa >= bb ? aa : bb;
-}
-
-function minYmd(a, b) {
-  const aa = String(a || "").slice(0, 10);
-  const bb = String(b || "").slice(0, 10);
-  if (!isValidYMD(aa)) return bb;
-  if (!isValidYMD(bb)) return aa;
-  return aa <= bb ? aa : bb;
-}
-
-function fixedScheduleUserId(schedule = {}) {
-  const user = schedule?.user;
-  return user?._id?.toString?.() || user?.id || user?.toString?.() || "";
-}
-
-function fixedScheduleUserObject(schedule = {}) {
-  const user = schedule?.user;
-  if (user && typeof user === "object" && user._id) return user;
-  const uid = fixedScheduleUserId(schedule);
-  return uid ? { _id: uid } : null;
-}
-
-function buildFixedSchedulePreviewAppointments({ schedules = [], existingAppointments = [], from = "", to = "" } = {}) {
-  if (!isValidYMD(from) || !isValidYMD(to) || from >= to) return [];
-
-  const existingByFixed = new Set();
-  const existingByUserSlot = new Set();
-
-  for (const ap of existingAppointments || []) {
-    const apDate = String(ap?.date || "").slice(0, 10);
-    const apTime = String(ap?.time || "").slice(0, 5);
-    const apUser = ap?.user?._id?.toString?.() || ap?.user?.toString?.() || ap?.userId || "";
-    const apFixed = ap?.fixedScheduleId?.toString?.() || ap?.fixedScheduleId || "";
-
-    if (apFixed && apDate && apTime) existingByFixed.add(`${apFixed}__${apDate}__${apTime}`);
-    if (apUser && apDate && apTime) existingByUserSlot.add(`${apUser}__${apDate}__${apTime}`);
-  }
-
-  const rangeEndInclusive = addDaysToYmd(to, -1);
-  const preview = [];
-
-  for (const schedule of schedules || []) {
-    if (!schedule?.active) continue;
-
-    const scheduleId = schedule?._id?.toString?.() || schedule?.id || "";
-    const userId = fixedScheduleUserId(schedule);
-    const userObj = fixedScheduleUserObject(schedule);
-    const serviceKey = normalizeServiceKey(schedule?.serviceKey || schedule?.service);
-    const serviceName = serviceKeyToName(serviceKey) || String(schedule?.service || "").trim();
-
-    if (!scheduleId || !userId || !serviceKey || !["EP", "RA", "RF", "KD"].includes(serviceKey)) continue;
-
-    const startYmd = maxYmd(from, schedule?.startDate || from);
-    const scheduleEnds = schedule?.isInfinite === false ? schedule?.endDate : "";
-    const hardEnd = scheduleEnds ? minYmd(rangeEndInclusive, scheduleEnds) : rangeEndInclusive;
-
-    const startDate = parseYmdDateLocal(startYmd);
-    const endDate = parseYmdDateLocal(hardEnd);
-    if (!startDate || !endDate || startDate > endDate) continue;
-
-    const cursor = new Date(startDate);
-    while (cursor <= endDate) {
-      const date = ymdAR(cursor);
-      const weekday = getWeekdayMondayFirst(date);
-
-      for (const item of Array.isArray(schedule?.items) ? schedule.items : []) {
-        const time = String(item?.time || "").slice(0, 5);
-        if (Number(item?.weekday || 0) !== weekday || !/^\d{2}:\d{2}$/.test(time)) continue;
-
-        const fixedKey = `${scheduleId}__${date}__${time}`;
-        const userSlotKey = `${userId}__${date}__${time}`;
-        if (existingByFixed.has(fixedKey) || existingByUserSlot.has(userSlotKey)) continue;
-
-        preview.push({
-          _id: `fixed-preview-${scheduleId}-${date}-${time}`,
-          id: `fixed-preview-${scheduleId}-${date}-${time}`,
-          user: userObj,
-          userId,
-          date,
-          time,
-          serviceKey,
-          service: serviceName,
-          status: "reserved",
-          fixedScheduleId: scheduleId,
-          isFixedSchedulePreview: true,
-          isVirtualFixedSchedule: true,
-          creditDebitStatus: "preview",
-          fixedDebitProcessedAt: null,
-          notes: "Turno fijo programado para visualización administrativa. No debita ni genera deuda hasta que se cree mensualmente.",
-        });
-      }
-
-      cursor.setDate(cursor.getDate() + 1);
-    }
-  }
-
-  return preview.sort((a, b) => `${a.date} ${a.time}`.localeCompare(`${b.date} ${b.time}`));
-}
-
 async function createAppointmentForTargetUser({
   userId,
   actorReq,
@@ -1712,6 +1604,8 @@ async function createAppointmentForTargetUser({
   bypassCredits = false,
   fixedScheduleId = null,
   monthlyRolloverMonthKey = "",
+  suppressUserHistory = false,
+  suppressActivity = false,
 }) {
   const basic = validateBasicSlotRulesAdmin({
     date,
@@ -1826,21 +1720,23 @@ async function createAppointmentForTargetUser({
     usedLotId = consumed.usedLotId;
     usedLotExp = consumed.usedLotExp;
   } else {
-    targetUser.history = Array.isArray(targetUser.history) ? targetUser.history : [];
-    targetUser.history.push({
-      action: fixedScheduleId ? "turno_fijo_asignado" : "reservado_por_admin_sin_credito",
-      date,
-      time: t,
-      service: basic.serviceName,
-      serviceName: basic.serviceName,
-      serviceKey: basic.serviceKey,
-      title: fixedScheduleId
-        ? "Turno fijo asignado por administración."
-        : "Turno asignado por administración sin consumir crédito.",
-      createdAt: new Date(),
-    });
-    recalcUserCredits(targetUser);
-    await targetUser.save();
+    if (!suppressUserHistory) {
+      targetUser.history = Array.isArray(targetUser.history) ? targetUser.history : [];
+      targetUser.history.push({
+        action: fixedScheduleId ? "turno_fijo_asignado" : "reservado_por_admin_sin_credito",
+        date,
+        time: t,
+        service: basic.serviceName,
+        serviceName: basic.serviceName,
+        serviceKey: basic.serviceKey,
+        title: fixedScheduleId
+          ? "Turno fijo asignado por administración."
+          : "Turno asignado por administración sin consumir crédito.",
+        createdAt: new Date(),
+      });
+      recalcUserCredits(targetUser);
+      await targetUser.save();
+    }
     effectiveUser = targetUser;
   }
 
@@ -1871,22 +1767,25 @@ async function createAppointmentForTargetUser({
   const populated = await Appointment.findById(created._id)
     .populate("user", "name lastName email");
 
-  await logActivity({
-    req: actorReq,
-    category: "appointments",
-    action: "appointment_assigned_by_admin",
-    entity: "appointment",
-    entityId: String(created._id),
-    title: "Turno asignado por admin",
-    description: "Se asignó un turno a un usuario desde administración.",
-    subject: buildUserSubject(targetUser),
-    meta: {
-      date,
-      time: t,
-      serviceName: basic.serviceName,
-      assignedByAdmin: true,
-    },
-  });
+  if (!suppressActivity) {
+    await logActivity({
+      req: actorReq,
+      category: "appointments",
+      action: "appointment_assigned_by_admin",
+      entity: "appointment",
+      entityId: String(created._id),
+      title: "Turno asignado por admin",
+      description: "Se asignó un turno a un usuario desde administración.",
+      subject: buildUserSubject(targetUser),
+      meta: {
+        date,
+        time: t,
+        serviceName: basic.serviceName,
+        assignedByAdmin: true,
+        assignedBy: actorDisplayName(actorReq),
+      },
+    });
+  }
 
   const serialized = serializeAppointment(populated);
   serialized.userCredits = Number(effectiveUser.credits || 0);
@@ -2655,40 +2554,7 @@ router.get("/", async (req, res) => {
         .populate("user", "name lastName email")
         .lean();
 
-      let fullList = Array.isArray(list) ? [...list] : [];
-      const includeFixedSchedulePreview = ["1", "true", "yes", "si"].includes(
-        String(req.query?.includeFixedSchedulePreview || req.query?.includeFixedPreview || "")
-          .toLowerCase()
-          .trim()
-      );
-
-      if (includeFixedSchedulePreview && hasFrom && hasTo) {
-        const rangeEndInclusive = addDaysToYmd(to, -1);
-        const schedules = await FixedSchedule.find({
-          active: true,
-          startDate: { $lte: rangeEndInclusive },
-          $or: [
-            { isInfinite: true },
-            { isInfinite: { $exists: false } },
-            { endDate: { $gte: from } },
-          ],
-        })
-          .populate("user", "name lastName email")
-          .lean();
-
-        const previews = buildFixedSchedulePreviewAppointments({
-          schedules,
-          existingAppointments: fullList,
-          from,
-          to,
-        });
-
-        fullList = [...fullList, ...previews];
-      }
-
-      fullList.sort((a, b) => `${a?.date || ""} ${a?.time || ""}`.localeCompare(`${b?.date || ""} ${b?.time || ""}`));
-
-      return res.json((fullList || []).map(serializeAppointment));
+      return res.json((list || []).map(serializeAppointment));
     }
 
     await syncPastAppointmentsForUserId(tokenUserId);
@@ -2767,6 +2633,8 @@ router.post("/admin/assign", async (req, res) => {
           notes,
           bypassWindow: true,
           bypassCredits: true,
+          suppressUserHistory: true,
+          suppressActivity: true,
         });
         created.push(ap);
       } catch (e) {
@@ -2785,6 +2653,61 @@ router.post("/admin/assign", async (req, res) => {
         createdCount: 0,
         conflictsCount: conflicts.length,
         conflicts,
+      });
+    }
+
+    if (created.length) {
+      const targetUser = await User.findById(userId).lean();
+      const actorName = actorDisplayName(req);
+      const targetName = userDisplayName(targetUser);
+      const serviceNames = Array.from(new Set(created.map((x) => x.service).filter(Boolean))).join(", ");
+      const createdItemsLabel = formatAppointmentItems(created);
+      const title =
+        created.length === 1
+          ? "Turno asignado por administración."
+          : "Turnos asignados por administración.";
+      const message =
+        created.length === 1
+          ? `${actorName} asignó un turno de ${serviceNames || "sesión"} a ${targetName}: ${createdItemsLabel}.`
+          : `${actorName} asignó ${created.length} turnos de ${serviceNames || "sesión"} a ${targetName}: ${createdItemsLabel}.`;
+
+      const updatedUser = await appendSingleAssignmentHistory({
+        userId,
+        action: created.length === 1 ? "turno_manual_asignado_por_admin" : "turnos_manuales_asignados_por_admin",
+        title,
+        message,
+        serviceKey: created.length === 1 ? created[0]?.serviceKey || "" : "",
+        serviceName: serviceNames,
+        date: created.length === 1 ? created[0]?.date || "" : "",
+        time: created.length === 1 ? created[0]?.time || "" : "",
+        qty: created.length,
+      });
+
+      await logActivity({
+        req,
+        category: "appointments",
+        action: "appointments_assigned_by_admin",
+        entity: "appointment",
+        entityId: created.map((x) => x.id).join(","),
+        title,
+        description: message,
+        subject: buildUserSubject(updatedUser || targetUser || { _id: userId }),
+        meta: {
+          assignedBy: actorName,
+          assignedTo: targetName,
+          userId,
+          serviceNames,
+          items: created.map((x) => ({
+            id: x.id,
+            date: x.date,
+            time: x.time,
+            serviceName: x.service,
+            serviceKey: x.serviceKey,
+          })),
+          createdCount: created.length,
+          conflictsCount: conflicts.length,
+          notes,
+        },
       });
     }
 
@@ -2874,6 +2797,8 @@ router.post("/admin/fixed-schedules", async (req, res) => {
           bypassWindow: true,
           bypassCredits: true,
           fixedScheduleId: fixed._id,
+          suppressUserHistory: true,
+          suppressActivity: true,
         });
         created.push(ap);
       } catch (e) {
@@ -2886,6 +2811,60 @@ router.post("/admin/fixed-schedules", async (req, res) => {
         });
       }
     }
+
+    const targetUser = await User.findById(userId).lean();
+    const actorName = actorDisplayName(req);
+    const targetName = userDisplayName(targetUser);
+    const scheduleLabel = formatFixedScheduleItems(cleanItems);
+    const message = `${actorName} asignó turnos fijos de ${serviceIdentity.serviceName} a ${targetName}: ${scheduleLabel}.`;
+
+    const updatedUser = await appendSingleAssignmentHistory({
+      userId,
+      action: "turnos_fijos_asignados_por_admin",
+      title: "Turnos fijos asignados por administración.",
+      message,
+      serviceKey: serviceIdentity.serviceKey,
+      serviceName: serviceIdentity.serviceName,
+      qty: cleanItems.length,
+    });
+
+    await logActivity({
+      req,
+      category: "appointments",
+      action: "fixed_schedule_assigned_by_admin",
+      entity: "fixedSchedule",
+      entityId: String(fixed._id),
+      title: "Turnos fijos asignados",
+      description: message,
+      subject: buildUserSubject(updatedUser || targetUser || { _id: userId }),
+      meta: {
+        assignedBy: actorName,
+        assignedTo: targetName,
+        userId,
+        fixedScheduleId: String(fixed._id),
+        serviceName: serviceIdentity.serviceName,
+        serviceKey: serviceIdentity.serviceKey,
+        schedule: scheduleLabel,
+        fixedItems: cleanItems.map((x) => ({
+          weekday: x.weekday,
+          weekdayName: WEEKDAY_NAMES[x.weekday] || "",
+          time: x.time,
+        })),
+        startDate,
+        endDate,
+        months,
+        generatedAppointmentsCount: created.length,
+        conflictsCount: conflicts.length,
+        generatedAppointments: created.map((x) => ({
+          id: x.id,
+          date: x.date,
+          time: x.time,
+          serviceName: x.service,
+          serviceKey: x.serviceKey,
+        })),
+        notes,
+      },
+    });
 
     return res.status(201).json({
       ok: true,
@@ -3531,17 +3510,20 @@ router.delete("/:id", async (req, res) => {
         lots: lotsDebug(user),
       });
 
-      let historyMeta = buildCancellationHistoryMeta({
+      const historyMeta = buildCancellationHistoryMeta({
         appointment: ap,
         decision,
         now,
       });
 
       let updatedUser = user;
-      let fixedDebtRefund = null;
 
       if (decision.refund) {
-        if (ap.creditLotId) {
+        if (ap.fixedScheduleId && !ap.creditLotId) {
+          decision.refund = false;
+          decision.refundMode = "none";
+          decision.reason = "Turno fijo sin crédito consumido: no corresponde reintegro automático.";
+        } else if (ap.creditLotId) {
           updatedUser = await refundCreditAtomicToOriginalLot({
             userId: user._id,
             lotId: ap.creditLotId,
@@ -3556,17 +3538,7 @@ router.delete("/:id", async (req, res) => {
             },
             session,
           });
-        } else if (isFixedMonthlyDebtAppointment(ap)) {
-          fixedDebtRefund = await refundFixedMonthlyDebtAtomic({
-            user,
-            appointment: ap,
-            decision,
-            historyMeta,
-            session,
-          });
-          updatedUser = fixedDebtRefund.user;
-        } else if (!ap.fixedScheduleId && !ap.assignedManually) {
-          // Compatibilidad con turnos legacy que no tenían creditLotId guardado.
+        } else {
           const refunded = await refundCreditAtomicNewLot({
             userId: user._id,
             apService: ap.service,
@@ -3581,36 +3553,6 @@ router.delete("/:id", async (req, res) => {
             session,
           });
           updatedUser = refunded.user;
-        } else {
-          markDecisionWithoutBalanceRefund(
-            decision,
-            ap.fixedScheduleId
-              ? "Turno fijo sin crédito consumido ni deuda mensual pendiente para reintegrar."
-              : "Turno asignado manualmente sin crédito consumido ni deuda pendiente para reintegrar."
-          );
-
-          historyMeta = buildCancellationHistoryMeta({
-            appointment: ap,
-            decision,
-            now,
-          });
-
-          updatedUser.history = Array.isArray(updatedUser.history)
-            ? updatedUser.history
-            : [];
-
-          updatedUser.history.push({
-            action: decision.historyAction,
-            date: ap.date,
-            time: ap.time,
-            service: ap.service,
-            serviceName: ap.service,
-            ...historyMeta,
-            createdAt: new Date(),
-          });
-
-          recalcUserCredits(updatedUser);
-          await updatedUser.save({ session });
         }
       } else {
         updatedUser.history = Array.isArray(updatedUser.history)
@@ -3663,8 +3605,6 @@ router.delete("/:id", async (req, res) => {
         cancellationPolicy: cancellationCounters,
         userCredits: Number(updatedUser.credits || 0),
         userCreditLots: serializeUserCreditLots(updatedUser),
-        fixedScheduleDebt: updatedUser.fixedScheduleDebt || {},
-        fixedDebtRefund,
       };
 
       mailUser = { ...updatedUser.toObject(), _id: updatedUser._id };
@@ -3880,8 +3820,6 @@ router.get("/admin/fixed-schedules", ensureStaff, async (_req, res) => {
             }
           : null,
         service: it.service || "",
-        serviceKey: it.serviceKey || "",
-        isInfinite: it.isInfinite !== false,
         items: Array.isArray(it.items)
           ? it.items.map((x) => ({
               weekday: Number(x?.weekday || 0),
