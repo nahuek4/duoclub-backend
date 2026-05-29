@@ -827,12 +827,12 @@ function serializeAppointment(ap) {
     userEmail: userObj?.email || "",
     creditExpiresAt: json?.creditExpiresAt || null,
     completedAt: json?.completedAt || null,
-    fixedScheduleId: json?.fixedScheduleId?.toString?.() || json?.fixedScheduleId || null,
-    isFixedSchedule: !!json?.fixedScheduleId,
-    isFixedSchedulePreview: !!json?.isFixedSchedulePreview,
-    isVirtualFixedSchedule: !!json?.isVirtualFixedSchedule,
+    fixedScheduleId: json?.fixedScheduleId?.toString?.() || json?.fixedScheduleId || "",
+    monthlyRolloverMonthKey: json?.monthlyRolloverMonthKey || "",
     creditDebitStatus: json?.creditDebitStatus || "",
-    fixedDebitProcessedAt: json?.fixedDebitProcessedAt || null,
+    isFixedSchedule: Boolean(json?.fixedScheduleId),
+    isFixedSchedulePreview: Boolean(json?.isFixedSchedulePreview),
+    isVirtualFixedSchedule: Boolean(json?.isVirtualFixedSchedule),
   };
 }
 
@@ -1203,10 +1203,6 @@ function getMonthlyCancellationCounters(user, serviceName, refDate = new Date())
 function buildCancellationClientMessage({ appointment, decision, counters }) {
   const sk = serviceToKey(appointment?.service || "");
 
-  if (appointment?.fixedScheduleId || decision?.refundMode === "fixed-schedule") {
-    return "Cancelaste un turno fijo. No se devuelve crédito por ser turno fijo. Si lo cancelaste antes del horario de inicio, no se consume ninguna sesión; si el turno ya había sido procesado, la sesión queda tomada según la regla de turno fijo.";
-  }
-
   if (decision?.refundMode === "timely") {
     if (["RA", "RF", "KD"].includes(sk)) {
       if (counters.timelyRemaining > 0) {
@@ -1516,109 +1512,17 @@ function buildOccurrencesForFixedSchedule({ startDate, months, items }) {
   });
 }
 
-function monthKeyYmd(dateStr = ymdAR(new Date())) {
-  return String(dateStr || "").slice(0, 7);
-}
-
-function monthStartEndYmd(monthKey = monthKeyYmd()) {
-  const [year, month] = String(monthKey || "").split("-").map(Number);
-  const start = new Date(year, (month || 1) - 1, 1, 12, 0, 0, 0);
-  const end = new Date(year, month || 1, 0, 12, 0, 0, 0);
-  return { startYmd: ymdAR(start), endYmd: ymdAR(end) };
-}
-
-function currentHmAR(now = new Date()) {
-  const hh = String(now.getHours()).padStart(2, "0");
-  const mm = String(now.getMinutes()).padStart(2, "0");
-  return `${hh}:${mm}`;
-}
-
-function isPastOccurrence(date, time, now = new Date()) {
-  const today = ymdAR(now);
-  const d = String(date || "").slice(0, 10);
-  const t = String(time || "").slice(0, 5);
-  if (d < today) return true;
-  if (d > today) return false;
-  return t <= currentHmAR(now);
-}
-
-function buildCurrentMonthFixedOccurrences({ startDate, items, now = new Date() }) {
-  const monthKey = monthKeyYmd(ymdAR(now));
-  const { startYmd, endYmd } = monthStartEndYmd(monthKey);
-  const realStart = String(startDate || startYmd).slice(0, 10) > startYmd ? String(startDate).slice(0, 10) : startYmd;
-  const out = [];
-  const cursor = buildSlotDate(realStart, "12:00");
-  const end = buildSlotDate(endYmd, "12:00");
-  if (!cursor || !end) return out;
-
-  while (cursor <= end) {
-    const date = ymdAR(cursor);
-    const weekday = getWeekdayMondayFirst(date);
-    for (const it of items || []) {
-      const time = String(it?.time || "").slice(0, 5);
-      if (Number(it?.weekday) === weekday && /^\d{2}:\d{2}$/.test(time) && !isPastOccurrence(date, time, now)) {
-        out.push({ date, time });
-      }
-    }
-    cursor.setDate(cursor.getDate() + 1);
-  }
-
-  return out.sort((a, b) => `${a.date} ${a.time}`.localeCompare(`${b.date} ${b.time}`));
-}
-
-async function addFixedMonthlyDebt({ userId, serviceKey, serviceName, count, monthKey, actorReq, reason = "fixed_schedule_monthly_reserved" }) {
-  const qty = Math.max(0, Math.trunc(Number(count || 0)));
-  if (!userId || !qty) return { added: 0 };
-
-  const sk = String(serviceKey || "").toUpperCase().trim();
-  if (!["EP", "RA", "RF", "KD"].includes(sk)) return { added: 0 };
-
-  const user = await User.findById(userId);
-  if (!user) return { added: 0 };
-
-  user.fixedScheduleDebt = user.fixedScheduleDebt || {};
-  user.fixedScheduleDebt[sk] = Math.max(0, Number(user.fixedScheduleDebt?.[sk] || 0)) + qty;
-  user.markModified?.("fixedScheduleDebt");
-  user.history = Array.isArray(user.history) ? user.history : [];
-  user.history.push({
-    action: reason,
-    title: `Deuda mensual de turnos fijos ${sk}`,
-    message: `Se reservaron ${qty} turno${qty === 1 ? "" : "s"} fijo${qty === 1 ? "" : "s"} de ${serviceName || sk} para ${monthKey}. Se generó deuda mensual de ${qty} sesión${qty === 1 ? "" : "es"}.`,
-    serviceKey: sk,
-    serviceName: serviceName || sk,
-    service: serviceName || sk,
-    qty: -qty,
-    createdAt: new Date(),
-  });
-  recalcUserCredits(user);
-  await user.save();
-
-  await logActivity({
-    req: actorReq,
-    category: "credits",
-    action: "fixed_schedule_monthly_debt_added",
-    entity: "user",
-    entityId: String(user._id),
-    title: "Deuda mensual por turnos fijos",
-    description: `Se generó deuda mensual de ${qty} sesiones por turnos fijos.`,
-    subject: buildUserSubject(user),
-    meta: { serviceKey: sk, qty, monthKey },
-  }).catch?.(() => {});
-
-  return { added: qty };
-}
-
 function parseYmdDateLocal(dateStr) {
   const [y, m, d] = String(dateStr || "").slice(0, 10).split("-").map(Number);
   if (!y || !m || !d) return null;
-  return new Date(y, (m || 1) - 1, d || 1, 12, 0, 0, 0);
+  return new Date(y, m - 1, d, 12, 0, 0, 0);
 }
 
 function addDaysToYmd(dateStr, amount) {
-  const dt = parseYmdDateLocal(dateStr);
-  if (!dt) return "";
-  dt.setDate(dt.getDate() + Number(amount || 0));
-  return ymdAR(dt);
+  const d = parseYmdDateLocal(dateStr);
+  if (!d) return "";
+  d.setDate(d.getDate() + Number(amount || 0));
+  return ymdAR(d);
 }
 
 function maxYmd(a, b) {
@@ -1639,19 +1543,12 @@ function minYmd(a, b) {
 
 function fixedScheduleUserId(schedule = {}) {
   const user = schedule?.user;
-  return (
-    user?._id?.toString?.() ||
-    user?.id ||
-    user?.toString?.() ||
-    ""
-  );
+  return user?._id?.toString?.() || user?.id || user?.toString?.() || "";
 }
 
 function fixedScheduleUserObject(schedule = {}) {
   const user = schedule?.user;
-  if (user && typeof user === "object" && user._id) {
-    return user;
-  }
+  if (user && typeof user === "object" && user._id) return user;
   const uid = fixedScheduleUserId(schedule);
   return uid ? { _id: uid } : null;
 }
@@ -1687,7 +1584,8 @@ function buildFixedSchedulePreviewAppointments({ schedules = [], existingAppoint
     if (!scheduleId || !userId || !serviceKey || !["EP", "RA", "RF", "KD"].includes(serviceKey)) continue;
 
     const startYmd = maxYmd(from, schedule?.startDate || from);
-    const hardEnd = schedule?.isInfinite === false ? minYmd(rangeEndInclusive, schedule?.endDate || rangeEndInclusive) : rangeEndInclusive;
+    const scheduleEnds = schedule?.isInfinite === false ? schedule?.endDate : "";
+    const hardEnd = scheduleEnds ? minYmd(rangeEndInclusive, scheduleEnds) : rangeEndInclusive;
 
     const startDate = parseYmdDateLocal(startYmd);
     const endDate = parseYmdDateLocal(hardEnd);
@@ -1898,9 +1796,6 @@ async function createAppointmentForTargetUser({
     assignedManually: true,
     fixedScheduleId: fixedScheduleId || null,
     monthlyRolloverMonthKey: monthlyRolloverMonthKey || "",
-    creditDebitStatus: fixedScheduleId ? "debt" : (usedLotId ? "debited" : ""),
-    fixedDebtAmount: fixedScheduleId ? 1 : 0,
-    notes,
   });
 
   const populated = await Appointment.findById(created._id)
@@ -2723,7 +2618,7 @@ router.get("/", async (req, res) => {
 
       fullList.sort((a, b) => `${a?.date || ""} ${a?.time || ""}`.localeCompare(`${b?.date || ""} ${b?.time || ""}`));
 
-      return res.json(fullList.map(serializeAppointment));
+      return res.json((fullList || []).map(serializeAppointment));
     }
 
     await syncPastAppointmentsForUserId(tokenUserId);
@@ -2748,10 +2643,6 @@ router.get("/", async (req, res) => {
         coach: a?.coach || "",
         creditExpiresAt: a?.creditExpiresAt || null,
         completedAt: a?.completedAt || null,
-        fixedScheduleId: a?.fixedScheduleId?.toString?.() || a?.fixedScheduleId || null,
-        isFixedSchedule: !!a?.fixedScheduleId,
-        creditDebitStatus: a?.creditDebitStatus || "",
-        fixedDebitProcessedAt: a?.fixedDebitProcessedAt || null,
         userId: String(a?.user || ""),
       }))
     );
@@ -2856,14 +2747,12 @@ router.post("/admin/fixed-schedules", async (req, res) => {
     const service = String(req.body?.service || "").trim();
     const serviceKey = String(req.body?.serviceKey || "").trim();
     const notes = String(req.body?.notes || "").trim();
+    const months = Math.max(1, Math.min(12, Number(req.body?.months || 1)));
     const items = Array.isArray(req.body?.items) ? req.body.items : [];
 
     if (!userId) return res.status(400).json({ error: "Falta userId." });
     const serviceIdentity = normalizeServiceIdentity({ service, serviceKey });
     if (!serviceIdentity?.serviceKey) return res.status(400).json({ error: "Falta service." });
-    if (!["EP", "RA", "RF", "KD"].includes(serviceIdentity.serviceKey)) {
-      return res.status(400).json({ error: "Los turnos fijos solo están habilitados para EP, RA, RF o KD." });
-    }
     if (!items.length) return res.status(400).json({ error: "Faltan días fijos." });
 
     const cleanItems = items
@@ -2877,10 +2766,8 @@ router.post("/admin/fixed-schedules", async (req, res) => {
       return res.status(400).json({ error: "No hay items válidos para guardar." });
     }
 
-    const now = new Date();
-    const startDate = ymdAR(now);
-    const endDate = "2099-12-31";
-    const monthKey = monthKeyYmd(startDate);
+    const startDate = ymdAR(new Date());
+    const endDate = addMonthsYmd(startDate, months);
 
     const fixed = await FixedSchedule.create({
       user: userId,
@@ -2888,18 +2775,17 @@ router.post("/admin/fixed-schedules", async (req, res) => {
       serviceKey: serviceIdentity.serviceKey,
       service: serviceIdentity.serviceName,
       items: cleanItems,
-      months: 1,
-      isInfinite: true,
+      months,
       startDate,
       endDate,
       notes,
       active: true,
     });
 
-    const occurrences = buildCurrentMonthFixedOccurrences({
+    const occurrences = buildOccurrencesForFixedSchedule({
       startDate,
+      months,
       items: cleanItems,
-      now,
     });
 
     const created = [];
@@ -2918,7 +2804,6 @@ router.post("/admin/fixed-schedules", async (req, res) => {
           bypassWindow: true,
           bypassCredits: true,
           fixedScheduleId: fixed._id,
-          monthlyRolloverMonthKey: monthKey,
         });
         created.push(ap);
       } catch (e) {
@@ -2932,23 +2817,10 @@ router.post("/admin/fixed-schedules", async (req, res) => {
       }
     }
 
-    const monthlyDebt = await addFixedMonthlyDebt({
-      userId,
-      serviceKey: serviceIdentity.serviceKey,
-      serviceName: serviceIdentity.serviceName,
-      count: created.length,
-      monthKey,
-      actorReq: req,
-      reason: "fixed_schedule_monthly_reserved_by_admin",
-    });
-
     return res.status(201).json({
       ok: true,
       fixedScheduleId: String(fixed._id),
-      infinite: true,
-      monthKey,
       createdCount: created.length,
-      monthlyDebtAdded: monthlyDebt.added || 0,
       conflictsCount: conflicts.length,
       items: created,
       conflicts,
@@ -3571,13 +3443,6 @@ router.delete("/:id", async (req, res) => {
         hoursToStart,
       });
 
-      if (ap.fixedScheduleId) {
-        decision.refund = false;
-        decision.refundMode = "fixed-schedule";
-        decision.reason = "FIXED_SCHEDULE_NO_REFUND";
-        decision.historyAction = "turno_fijo_cancelado_sin_reintegro";
-      }
-
       console.log("[CANCEL DEBUG]", {
         appointmentId: String(ap._id),
         service: ap.service,
@@ -3689,8 +3554,6 @@ router.delete("/:id", async (req, res) => {
         cancelReason: decision.reason || "",
         cancellationMessage,
         cancellationPolicy: cancellationCounters,
-        fixedScheduleId: ap.fixedScheduleId?.toString?.() || ap.fixedScheduleId || null,
-        isFixedSchedule: !!ap.fixedScheduleId,
         userCredits: Number(updatedUser.credits || 0),
         userCreditLots: serializeUserCreditLots(updatedUser),
       };
@@ -3707,9 +3570,6 @@ router.delete("/:id", async (req, res) => {
         refundMode: decision.refundMode || "none",
         refundCutoffHours: Number(decision.refundCutoffHours || 0),
         cancelReason: decision.reason || "",
-        cancellationMessage,
-        fixedScheduleId: ap.fixedScheduleId?.toString?.() || ap.fixedScheduleId || null,
-        isFixedSchedule: !!ap.fixedScheduleId,
       };
 
       console.log("[CANCEL MAIL PAYLOAD]", {
@@ -3917,8 +3777,7 @@ router.get("/admin/fixed-schedules", ensureStaff, async (_req, res) => {
               time: String(x?.time || "").slice(0, 5),
             }))
           : [],
-        months: it.isInfinite ? null : Number(it.months || 1),
-        isInfinite: it.isInfinite !== false,
+        months: Number(it.months || 1),
         startDate: it.startDate || null,
         endDate: it.endDate || null,
         notes: it.notes || "",
