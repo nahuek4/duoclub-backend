@@ -3771,6 +3771,8 @@ router.get("/admin/fixed-schedules", ensureStaff, async (_req, res) => {
             }
           : null,
         service: it.service || "",
+        serviceKey: it.serviceKey || "",
+        isInfinite: it.isInfinite !== false,
         items: Array.isArray(it.items)
           ? it.items.map((x) => ({
               weekday: Number(x?.weekday || 0),
