@@ -2546,15 +2546,55 @@ router.get("/", async (req, res) => {
     if (scope === "all") {
       if (!isStaff) return res.status(403).json({ error: "No autorizado." });
 
+      const userFilterId = String(req.query?.userId || req.query?.user || "").trim();
+
       const q = {};
       if (hasFrom && hasTo) q.date = { $gte: from, $lt: to };
       else if (hasFrom) q.date = { $gte: from };
+      if (userFilterId) q.user = userFilterId;
 
       const list = await Appointment.find(q)
         .populate("user", "name lastName email")
         .lean();
 
-      return res.json((list || []).map(serializeAppointment));
+      let fullList = Array.isArray(list) ? [...list] : [];
+      const includeFixedSchedulePreview = ["1", "true", "yes", "si"].includes(
+        String(req.query?.includeFixedSchedulePreview || req.query?.includeFixedPreview || "")
+          .toLowerCase()
+          .trim()
+      );
+
+      if (includeFixedSchedulePreview && hasFrom && hasTo) {
+        const rangeEndInclusive = addDaysToYmd(to, -1);
+        const scheduleQuery = {
+          active: true,
+          startDate: { $lte: rangeEndInclusive },
+          $or: [
+            { isInfinite: true },
+            { isInfinite: { $exists: false } },
+            { endDate: { $gte: from } },
+          ],
+        };
+
+        if (userFilterId) scheduleQuery.user = userFilterId;
+
+        const schedules = await FixedSchedule.find(scheduleQuery)
+          .populate("user", "name lastName email")
+          .lean();
+
+        const previews = buildFixedSchedulePreviewAppointments({
+          schedules,
+          existingAppointments: fullList,
+          from,
+          to,
+        });
+
+        fullList = [...fullList, ...previews];
+      }
+
+      fullList.sort((a, b) => `${a?.date || ""} ${a?.time || ""}`.localeCompare(`${b?.date || ""} ${b?.time || ""}`));
+
+      return res.json((fullList || []).map(serializeAppointment));
     }
 
     await syncPastAppointmentsForUserId(tokenUserId);
