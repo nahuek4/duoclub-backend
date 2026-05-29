@@ -2,15 +2,9 @@
 import { BRAND_NAME } from "./core.js";
 import { EMAIL_FONT, escapeHtml } from "./helpers.js";
 
-const MAIL_BG_URL = "https://api.duoclub.ar/images/fondoMailing.png";
-
-const MAIL_BG_STYLE = [
-  "background-color:#000000",
-  `background-image:url('${MAIL_BG_URL}')`,
-  "background-repeat:repeat-y",
-  "background-position:top center",
-  "background-size:430px auto",
-].join("; ");
+const IMG_BASE = "https://api.duoclub.ar/images";
+const MAIL_BG_URL = `${IMG_BASE}/fondoMailing.png`;
+const MAIL_BG_STYLE = `background-color:#000000; background-image:url('${MAIL_BG_URL}'); background-repeat:repeat-y; background-position:top center; background-size:430px auto;`;
 
 export function buildEmailLayout({ title, preheader, bodyHtml, footerNote }) {
   const _title = escapeHtml(title || BRAND_NAME);
@@ -40,63 +34,33 @@ export function buildEmailLayout({ title, preheader, bodyHtml, footerNote }) {
     <meta http-equiv="Content-Type" content="text/html; charset=UTF-8" />
     <meta name="x-apple-disable-message-reformatting" />
     <title>${_title}</title>
-    <style>
-      @media only screen and (min-width: 561px) {
-        .duo-mail-bg .mail-wrap,
-        .duo-mail-bg .duo-verify-wrap,
-        .duo-mail-bg .duo-reg-wrap,
-        .duo-mail-bg .duo-account-wrap,
-        .duo-mail-bg .duo-admin-wrap,
-        .duo-mail-bg .duo-admin-reg-wrap,
-        .duo-mail-bg .duo-pay-wrap {
-          max-width: 390px !important;
-        }
-      }
-
-      @media only screen and (max-width: 560px) {
-        .duo-mail-bg-shell {
-          width: 100% !important;
-          max-width: 430px !important;
-        }
-      }
-    </style>
   </head>
-  <body style="margin:0; padding:0; background:#ffffff;">
+  <body background="${MAIL_BG_URL}" style="margin:0; padding:0; ${MAIL_BG_STYLE}">
     ${preheaderHtml}
 
-    <div style="margin:0; padding:24px 0; background:#ffffff;">
+    <div style="margin:0; padding:32px 0; ${MAIL_BG_STYLE}">
       <table
         role="presentation"
         cellpadding="0"
         cellspacing="0"
         width="100%"
-        style="border-collapse:collapse; background:#ffffff;"
+        background="${MAIL_BG_URL}" style="border-collapse:collapse; ${MAIL_BG_STYLE}"
       >
         <tr>
-          <td align="center" style="padding:0 10px; background:#ffffff;">
+          <td align="center" style="padding:0 10px;">
             <table
               role="presentation"
               cellpadding="0"
               cellspacing="0"
-              width="430"
-              class="duo-mail-bg-shell"
-              background="${MAIL_BG_URL}"
-              style="width:430px; max-width:430px; border-collapse:collapse; ${MAIL_BG_STYLE};"
+              width="100%"
+              style="max-width:560px; border-collapse:collapse;"
             >
               <tr>
-                <td
-                  align="center"
-                  background="${MAIL_BG_URL}"
-                  style="padding:28px 20px 0; ${MAIL_BG_STYLE};"
-                  class="duo-mail-bg"
-                >
+                <td style="background:#ffffff; padding:8px 0 16px;">
                   <div style="
                     font-family:${EMAIL_FONT};
                     color:#111111;
                     text-align:center;
-                    width:100%;
-                    max-width:390px;
-                    margin:0 auto;
                   ">
                     ${String(bodyHtml || "")}
                   </div>
@@ -108,18 +72,12 @@ export function buildEmailLayout({ title, preheader, bodyHtml, footerNote }) {
                   ? ""
                   : `
               <tr>
-                <td
-                  align="center"
-                  background="${MAIL_BG_URL}"
-                  style="padding:12px 20px 24px; ${MAIL_BG_STYLE};"
-                >
+                <td align="center" style="padding:8px 14px 0;">
                   <div style="
                     font-family:${EMAIL_FONT};
                     font-size:12px;
                     line-height:18px;
                     color:#ffffff;
-                    max-width:390px;
-                    margin:0 auto;
                   ">
                     ${_footer}
                   </div>
