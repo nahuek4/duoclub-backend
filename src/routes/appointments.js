@@ -1308,6 +1308,76 @@ function resolveCancellationPolicy({ user, appointment, hoursToStart }) {
   };
 }
 
+
+function ensureFixedScheduleDebtForUser(user) {
+  user.fixedScheduleDebt = user.fixedScheduleDebt || {};
+  for (const key of ["EP", "RA", "RF", "KD"]) {
+    const n = Number(user.fixedScheduleDebt?.[key] || 0);
+    user.fixedScheduleDebt[key] = Number.isFinite(n) ? Math.max(0, Math.trunc(n)) : 0;
+  }
+}
+
+function isFixedMonthlyDebtAppointment(ap) {
+  return Boolean(
+    ap?.fixedScheduleId &&
+      String(ap?.creditDebitStatus || "") === "debt" &&
+      Number(ap?.fixedDebtAmount || 0) > 0
+  );
+}
+
+async function refundFixedMonthlyDebtAtomic({ user, appointment, decision, historyMeta, session }) {
+  const sk = serviceToKey(appointment?.serviceKey || appointment?.service || "");
+  if (!sk || !["EP", "RA", "RF", "KD"].includes(sk)) {
+    throw new Error("INVALID_FIXED_DEBT_SERVICE");
+  }
+
+  ensureFixedScheduleDebtForUser(user);
+
+  const amount = Math.max(1, Math.trunc(Number(appointment?.fixedDebtAmount || 1)));
+  const currentDebt = Math.max(0, Number(user.fixedScheduleDebt?.[sk] || 0));
+  const toRemove = Math.min(currentDebt, amount);
+
+  if (toRemove <= 0) {
+    return { user, removed: 0, serviceKey: sk };
+  }
+
+  user.fixedScheduleDebt[sk] = currentDebt - toRemove;
+  user.markModified?.("fixedScheduleDebt");
+
+  user.history = Array.isArray(user.history) ? user.history : [];
+  user.history.push({
+    action: decision?.historyAction || "cancelado_con_reintegro",
+    title: `Cancelación de turno fijo con ajuste de deuda ${sk}`,
+    message: `Se canceló el turno fijo de ${serviceKeyToName(sk) || sk} (${appointment.date} ${appointment.time} hs) respetando la política del servicio. Se descontó ${toRemove} sesión de la deuda mensual.`,
+    date: appointment.date,
+    time: appointment.time,
+    service: serviceKeyToName(sk) || appointment.service,
+    serviceName: serviceKeyToName(sk) || appointment.service,
+    serviceKey: sk,
+    qty: toRemove,
+    ...historyMeta,
+    createdAt: new Date(),
+  });
+
+  recalcUserCredits(user);
+  await user.save({ session });
+
+  appointment.fixedDebtAmount = Math.max(0, Number(appointment.fixedDebtAmount || 0) - toRemove);
+  if (appointment.fixedDebtAmount <= 0) {
+    appointment.creditDebitStatus = "skipped";
+  }
+
+  return { user, removed: toRemove, serviceKey: sk };
+}
+
+function markDecisionWithoutBalanceRefund(decision, reason) {
+  decision.refund = false;
+  decision.refundMode = "none";
+  decision.reason = reason || "El turno no tenía crédito ni deuda pendiente para reintegrar.";
+  decision.historyAction = "cancelado_sin_reintegro";
+  return decision;
+}
+
 function lotsDebug(user) {
   return (Array.isArray(user?.creditLots) ? user.creditLots : []).map((lot) => ({
     id: String(lot?._id || ""),
@@ -3461,20 +3531,17 @@ router.delete("/:id", async (req, res) => {
         lots: lotsDebug(user),
       });
 
-      const historyMeta = buildCancellationHistoryMeta({
+      let historyMeta = buildCancellationHistoryMeta({
         appointment: ap,
         decision,
         now,
       });
 
       let updatedUser = user;
+      let fixedDebtRefund = null;
 
       if (decision.refund) {
-        if (ap.fixedScheduleId && !ap.creditLotId) {
-          decision.refund = false;
-          decision.refundMode = "none";
-          decision.reason = "Turno fijo sin crédito consumido: no corresponde reintegro automático.";
-        } else if (ap.creditLotId) {
+        if (ap.creditLotId) {
           updatedUser = await refundCreditAtomicToOriginalLot({
             userId: user._id,
             lotId: ap.creditLotId,
@@ -3489,7 +3556,17 @@ router.delete("/:id", async (req, res) => {
             },
             session,
           });
-        } else {
+        } else if (isFixedMonthlyDebtAppointment(ap)) {
+          fixedDebtRefund = await refundFixedMonthlyDebtAtomic({
+            user,
+            appointment: ap,
+            decision,
+            historyMeta,
+            session,
+          });
+          updatedUser = fixedDebtRefund.user;
+        } else if (!ap.fixedScheduleId && !ap.assignedManually) {
+          // Compatibilidad con turnos legacy que no tenían creditLotId guardado.
           const refunded = await refundCreditAtomicNewLot({
             userId: user._id,
             apService: ap.service,
@@ -3504,6 +3581,36 @@ router.delete("/:id", async (req, res) => {
             session,
           });
           updatedUser = refunded.user;
+        } else {
+          markDecisionWithoutBalanceRefund(
+            decision,
+            ap.fixedScheduleId
+              ? "Turno fijo sin crédito consumido ni deuda mensual pendiente para reintegrar."
+              : "Turno asignado manualmente sin crédito consumido ni deuda pendiente para reintegrar."
+          );
+
+          historyMeta = buildCancellationHistoryMeta({
+            appointment: ap,
+            decision,
+            now,
+          });
+
+          updatedUser.history = Array.isArray(updatedUser.history)
+            ? updatedUser.history
+            : [];
+
+          updatedUser.history.push({
+            action: decision.historyAction,
+            date: ap.date,
+            time: ap.time,
+            service: ap.service,
+            serviceName: ap.service,
+            ...historyMeta,
+            createdAt: new Date(),
+          });
+
+          recalcUserCredits(updatedUser);
+          await updatedUser.save({ session });
         }
       } else {
         updatedUser.history = Array.isArray(updatedUser.history)
@@ -3556,6 +3663,8 @@ router.delete("/:id", async (req, res) => {
         cancellationPolicy: cancellationCounters,
         userCredits: Number(updatedUser.credits || 0),
         userCreditLots: serializeUserCreditLots(updatedUser),
+        fixedScheduleDebt: updatedUser.fixedScheduleDebt || {},
+        fixedDebtRefund,
       };
 
       mailUser = { ...updatedUser.toObject(), _id: updatedUser._id };
