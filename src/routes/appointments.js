@@ -868,8 +868,10 @@ function requiresApto(user) {
 /* =========================
    Cupos + horarios por servicio
 ========================= */
+const PE_CAP_PER_SLOT = 1;
 const EP_CAP_PER_SLOT = 12;
 const THERAPY_SHARED_CAP_PER_SLOT = 8;
+const NUT_CAP_PER_SLOT = 1;
 
 const PE_NAME = "Primera evaluación presencial";
 const EP_NAME = "Entrenamiento Personal";
@@ -950,6 +952,7 @@ function getNutCapForSlot(dateStr, time) {
 function getSlotReservationStats(existing, dateStr, time) {
   const list = Array.isArray(existing) ? existing : [];
 
+  const peReserved = list.filter((a) => appointmentServiceKey(a) === "PE").length;
   const epReserved = list.filter((a) => appointmentServiceKey(a) === "EP").length;
   const raReserved = list.filter((a) => appointmentServiceKey(a) === "RA").length;
   const rfReserved = list.filter((a) => appointmentServiceKey(a) === "RF").length;
@@ -959,6 +962,8 @@ function getSlotReservationStats(existing, dateStr, time) {
 
   return {
     totalReserved: list.length,
+    peReserved,
+    peCap: PE_CAP_PER_SLOT,
     epReserved,
     raReserved,
     rfReserved,
