@@ -3332,6 +3332,185 @@ router.post("/batch", async (req, res) => {
   }
 });
 
+
+/* =========================
+   POST /appointments/admin/cancel/:id
+   Cancelación administrativa sin afectar políticas
+========================= */
+router.post("/admin/cancel/:id", ensureStaff, async (req, res) => {
+  const session = await mongoose.startSession();
+
+  let mailUser = null;
+  let mailAp = null;
+  let responsePayload = null;
+
+  try {
+    const appointmentId = String(req.params?.id || "").trim();
+    const mode = String(req.body?.mode || "admin_no_policy").toLowerCase().trim();
+
+    if (!mongoose.Types.ObjectId.isValid(appointmentId)) {
+      return res.status(400).json({ error: "ID de turno inválido." });
+    }
+
+    if (!["admin_no_policy", "no_policy", "sin_politica", "sin_termino"].includes(mode)) {
+      return res.status(400).json({ error: "Modo de cancelación inválido." });
+    }
+
+    const tokenUserId = req.user?._id || req.user?.id;
+    const role = String(req.user?.role || "admin").toLowerCase();
+
+    await session.withTransaction(async () => {
+      const ap = await Appointment.findById(appointmentId).session(session);
+      if (!ap) throw new Error("APPOINTMENT_NOT_FOUND");
+
+      if (String(ap.status || "") !== "reserved") {
+        throw new Error("APPOINTMENT_NOT_RESERVED");
+      }
+
+      const user = await User.findById(ap.user).session(session);
+      if (!user) throw new Error("USER_NOT_FOUND");
+
+      const historyItem = {
+        action: "cancelado_por_admin_sin_politica",
+        title: "Cancelación administrativa sin política",
+        message: "Cancelado por administración. No afecta políticas de cancelación del usuario.",
+        date: ap.date,
+        time: ap.time,
+        service: ap.service,
+        serviceName: ap.service,
+        serviceKey: serviceToKey(ap.service),
+      };
+
+      let updatedUser = user;
+      let refundApplied = false;
+      let refundMode = "none";
+      let refundReason = "ADMIN_NO_POLICY";
+
+      if (ap.creditLotId) {
+        updatedUser = await refundCreditAtomicToOriginalLot({
+          userId: user._id,
+          lotId: ap.creditLotId,
+          apService: ap.service,
+          historyItem,
+          session,
+        });
+        refundApplied = true;
+        refundMode = "admin-no-policy";
+      } else if (!ap.assignedManually && !ap.fixedScheduleId) {
+        const refunded = await refundCreditAtomicNewLot({
+          userId: user._id,
+          apService: ap.service,
+          historyItem,
+          session,
+        });
+        updatedUser = refunded.user;
+        refundApplied = true;
+        refundMode = "admin-no-policy-new-lot";
+      } else {
+        updatedUser.history = Array.isArray(updatedUser.history) ? updatedUser.history : [];
+        updatedUser.history.push({
+          ...historyItem,
+          createdAt: new Date(),
+        });
+        recalcUserCredits(updatedUser);
+        await updatedUser.save({ session });
+      }
+
+      ap.status = "cancelled";
+      ap.cancelledAt = new Date();
+      ap.cancelledByRole = role || "admin";
+      ap.cancelledByUser = tokenUserId || null;
+      ap.cancelReason = refundReason;
+      ap.refundApplied = refundApplied;
+      ap.refundMode = refundMode;
+      await ap.save({ session });
+
+      responsePayload = {
+        ok: true,
+        id: String(ap._id),
+        adminNoPolicy: true,
+        refundApplied,
+        refundMode,
+        refundReason,
+        cancelReason: refundReason,
+        cancellationMessage: refundApplied
+          ? "Cancelación administrativa realizada sin afectar políticas. Se devolvió el crédito."
+          : "Cancelación administrativa realizada sin afectar políticas.",
+        userCredits: Number(updatedUser.credits || 0),
+        userCreditLots: serializeUserCreditLots(updatedUser),
+      };
+
+      mailUser = { ...updatedUser.toObject(), _id: updatedUser._id };
+      mailAp = {
+        id: String(ap._id),
+        date: ap.date,
+        time: ap.time,
+        service: ap.service,
+        serviceName: ap.service,
+        refund: refundApplied,
+        refundApplied,
+        refundMode,
+        refundCutoffHours: 0,
+        cancelReason: refundReason,
+      };
+    });
+
+    await logActivity({
+      req,
+      category: "appointments",
+      action: "appointment_cancelled_admin_no_policy",
+      entity: "appointment",
+      entityId: appointmentId,
+      title: "Turno cancelado sin política",
+      description: "Se canceló un turno desde administración sin afectar las políticas de cancelación del usuario.",
+      subject: buildUserSubject(mailUser || req.user),
+      meta: {
+        refundApplied: !!responsePayload?.refundApplied,
+        refundMode: responsePayload?.refundMode || "none",
+        adminNoPolicy: true,
+      },
+    });
+
+    res.json(responsePayload);
+
+    if (mailUser && mailAp) {
+      fireAndForget(async () => {
+        try {
+          await sendAppointmentCancelledEmail(mailUser, mailAp);
+        } catch (e) {
+          console.log("[MAIL] admin no-policy cancelled error:", e?.message || e);
+          await sendAdminCopy({ kind: "cancelled_admin_no_policy", user: mailUser, ap: mailAp });
+        }
+      }, "MAIL_CANCELLED_ADMIN_NO_POLICY");
+    }
+  } catch (err) {
+    console.error("Error en POST /appointments/admin/cancel/:id:", err);
+    const msg = String(err?.message || "");
+
+    if (msg === "APPOINTMENT_NOT_FOUND") {
+      return res.status(404).json({ error: "Turno no encontrado." });
+    }
+    if (msg === "APPOINTMENT_NOT_RESERVED") {
+      return res.status(409).json({ error: "El turno ya no está reservado." });
+    }
+    if (msg === "USER_NOT_FOUND") {
+      return res.status(404).json({ error: "Usuario no encontrado." });
+    }
+    if (msg === "REFUND_FAILED") {
+      return res.status(500).json({ error: "No se pudo devolver el crédito al lote original." });
+    }
+    if (msg === "ORIGINAL_LOT_ALREADY_FULL_ON_REFUND") {
+      return res.status(409).json({
+        error: "El lote original ya estaba completo. No se canceló el turno para evitar duplicar créditos.",
+      });
+    }
+
+    return res.status(500).json({ error: "No se pudo cancelar el turno sin política." });
+  } finally {
+    await session.endSession();
+  }
+});
+
 /* =========================
    DELETE /appointments/:id
 ========================= */
