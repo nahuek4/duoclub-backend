@@ -332,7 +332,13 @@ function sumCreditLotsForService(user, serviceKey = "", slotDate = null) {
     const exp = lot.expiresAt ? new Date(lot.expiresAt) : null;
     if (exp && exp <= now) return acc;
     if (wanted && normalizeLotServiceKey(lot) !== wanted) return acc;
-    if (slotDate && !ensureSlotBeforeCreditExpiry(slotDate, lot.expiresAt).ok) return acc;
+
+    // PE se puede reservar para una fecha futura aunque el crédito venza antes
+    // de la fecha del turno. Lo importante es que el crédito esté vigente al
+    // momento de hacer la reserva. Esto evita que una PE comprada a fin de mes
+    // quede sin horarios disponibles si el próximo día hábil cae en el mes siguiente.
+    if (wanted !== "PE" && slotDate && !ensureSlotBeforeCreditExpiry(slotDate, lot.expiresAt).ok) return acc;
+
     return acc + Number(lot.remaining || 0);
   }, 0);
 }
@@ -467,6 +473,10 @@ function pickLotToConsumeForSlot(user, wantedServiceKey, slotDate) {
     });
 
   for (const lot of sorted) {
+    // PE: si el crédito está vigente ahora, alcanza para tomar el turno.
+    // No bloqueamos por la fecha futura del turno.
+    if (want === "PE") return lot;
+
     const check = ensureSlotBeforeCreditExpiry(slotDate, lot.expiresAt);
     if (check.ok) return lot;
   }
