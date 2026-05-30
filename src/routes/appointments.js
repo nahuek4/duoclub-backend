@@ -35,6 +35,7 @@ const DEFAULT_MIN_BOOKING_MINUTES = Number(
 );
 
 const MIN_BOOKING_MINUTES_BY_SERVICE = {
+  PE: 30,
   EP: 30,
   RA: 24 * 60,
   RF: 24 * 60,
@@ -868,6 +869,7 @@ function requiresApto(user) {
 /* =========================
    Cupos + horarios por servicio
 ========================= */
+const PE_CAP_PER_SLOT = 1;
 const EP_CAP_PER_SLOT = 12;
 const THERAPY_SHARED_CAP_PER_SLOT = 8;
 
@@ -946,6 +948,7 @@ function getEpCapForSlot(dateStr, time) {
 function getSlotReservationStats(existing, dateStr, time) {
   const list = Array.isArray(existing) ? existing : [];
 
+  const peReserved = list.filter((a) => appointmentServiceKey(a) === "PE").length;
   const epReserved = list.filter((a) => appointmentServiceKey(a) === "EP").length;
   const raReserved = list.filter((a) => appointmentServiceKey(a) === "RA").length;
   const rfReserved = list.filter((a) => appointmentServiceKey(a) === "RF").length;
@@ -954,6 +957,8 @@ function getSlotReservationStats(existing, dateStr, time) {
 
   return {
     totalReserved: list.length,
+    peReserved,
+    peCap: PE_CAP_PER_SLOT,
     epReserved,
     raReserved,
     rfReserved,
@@ -1357,12 +1362,14 @@ function validateBasicSlotRules({ date, time, service, serviceKey }) {
   const adv = validateMinAdvance(slotDate, normalizedServiceKey);
   if (!adv.ok) return adv;
 
+  const isPeService = normalizedServiceKey === "PE";
   const isEpService = normalizedServiceKey === "EP";
 
   return {
     ok: true,
     turno,
     slotDate,
+    isPeService,
     isEpService,
     timeNorm,
     serviceKey: normalizedServiceKey,
@@ -1413,12 +1420,14 @@ function validateBasicSlotRulesAdmin({ date, time, service, serviceKey, bypassWi
     if (!adv.ok) return adv;
   }
 
+  const isPeService = normalizedServiceKey === "PE";
   const isEpService = normalizedServiceKey === "EP";
 
   return {
     ok: true,
     turno,
     slotDate,
+    isPeService,
     isEpService,
     timeNorm,
     serviceKey: normalizedServiceKey,
@@ -1736,14 +1745,19 @@ async function createAppointmentForTargetUser({
 
   const stats = getSlotReservationStats(existingAtSlot, date, t);
 
-  if (basic.isEpService) {
+  if (basic.isPeService) {
+    if (stats.peReserved >= stats.peCap) {
+      const e = new Error("SERVICE_CAP_REACHED");
+      e.http = 409;
+      throw e;
+    }
+  } else if (basic.isEpService) {
     if (stats.epReserved >= stats.epCap) {
       const e = new Error("SERVICE_CAP_REACHED");
       e.http = 409;
       throw e;
     }
   } else if (isTherapyService(requestedSk)) {
-
     if (stats.therapyReserved >= stats.therapyCap) {
       const e = new Error("SERVICE_CAP_REACHED");
       e.http = 409;
@@ -2471,7 +2485,31 @@ router.get("/availability", async (req, res) => {
       const stats = getSlotReservationStats(existing, date, t);
       const isTherapy = isTherapyService(normalizedServiceKey);
 
-      if (basic.isEpService) {
+      if (basic.isPeService) {
+        if (stats.peReserved >= stats.peCap) {
+          out.push({
+            time: t,
+            state: "full",
+            reason: "Primera evaluación ocupada",
+            totalReserved: stats.totalReserved,
+            peReserved: stats.peReserved,
+            peCap: stats.peCap,
+            epReserved: stats.epReserved,
+            epCap: stats.epCap,
+            therapyReserved: stats.therapyReserved,
+            therapyCap: stats.therapyCap,
+            raReserved: stats.raReserved,
+            rfReserved: stats.rfReserved,
+            kdReserved: stats.kdReserved,
+            capacity: stats.peCap,
+            reserved: stats.peReserved,
+            available: 0,
+            availableVacancies: 0,
+            slotGroup: "PE",
+          });
+          continue;
+        }
+      } else if (basic.isEpService) {
         if (stats.epReserved >= stats.epCap) {
           const waitlistCheck = validateWaitlistOpen(basic.slotDate, normalizedServiceKey);
 
@@ -2480,6 +2518,8 @@ router.get("/availability", async (req, res) => {
             state: waitlistCheck.ok ? "waitlist" : "waitlist_closed",
             reason: waitlistCheck.ok ? "" : waitlistCheck.error,
             totalReserved: stats.totalReserved,
+            peReserved: stats.peReserved,
+            peCap: stats.peCap,
             epReserved: stats.epReserved,
             epCap: stats.epCap,
             therapyReserved: stats.therapyReserved,
@@ -2504,6 +2544,8 @@ router.get("/availability", async (req, res) => {
             state: waitlistCheck.ok ? "waitlist" : "waitlist_closed",
             reason: waitlistCheck.ok ? "" : waitlistCheck.error,
             totalReserved: stats.totalReserved,
+            peReserved: stats.peReserved,
+            peCap: stats.peCap,
             epReserved: stats.epReserved,
             epCap: stats.epCap,
             therapyReserved: stats.therapyReserved,
@@ -2521,22 +2563,28 @@ router.get("/availability", async (req, res) => {
         }
       }
 
-      const slotCapacity = basic.isEpService
-        ? stats.epCap
-        : isTherapy
-          ? stats.therapyCap
-          : 0;
-      const slotReserved = basic.isEpService
-        ? stats.epReserved
-        : isTherapy
-          ? stats.therapyReserved
-          : stats.totalReserved;
+      const slotCapacity = basic.isPeService
+        ? stats.peCap
+        : basic.isEpService
+          ? stats.epCap
+          : isTherapy
+            ? stats.therapyCap
+            : 0;
+      const slotReserved = basic.isPeService
+        ? stats.peReserved
+        : basic.isEpService
+          ? stats.epReserved
+          : isTherapy
+            ? stats.therapyReserved
+            : stats.totalReserved;
       const availableVacancies = Math.max(0, slotCapacity - slotReserved);
 
       out.push({
         time: t,
         state: "available",
         totalReserved: stats.totalReserved,
+        peReserved: stats.peReserved,
+        peCap: stats.peCap,
         epReserved: stats.epReserved,
         epCap: stats.epCap,
         therapyReserved: stats.therapyReserved,
@@ -2548,7 +2596,7 @@ router.get("/availability", async (req, res) => {
         reserved: slotReserved,
         available: availableVacancies,
         availableVacancies,
-        slotGroup: basic.isEpService ? "EP" : isTherapy ? "THERAPY_SHARED" : "OTHER",
+        slotGroup: basic.isPeService ? "PE" : basic.isEpService ? "EP" : isTherapy ? "THERAPY_SHARED" : "OTHER",
       });
     }
 
@@ -3092,7 +3140,11 @@ router.post("/", async (req, res) => {
       let willWaitlist = false;
       const stats = getSlotReservationStats(existingAtSlot, date, t);
 
-      if (basic.isEpService) {
+      if (basic.isPeService) {
+        if (stats.peReserved >= stats.peCap) {
+          throw new Error("SERVICE_CAP_REACHED");
+        }
+      } else if (basic.isEpService) {
         if (stats.epReserved >= stats.epCap) {
           willWaitlist = true;
         }
@@ -3430,7 +3482,11 @@ router.post("/batch", async (req, res) => {
 
         const stats = getSlotReservationStats(existingAtSlot, it.date, it.time);
 
-        if (it.isEpService) {
+        if (it.isPeService) {
+          if (stats.peReserved >= stats.peCap) {
+            throw new Error("SERVICE_CAP_REACHED");
+          }
+        } else if (it.isEpService) {
           if (stats.epReserved >= stats.epCap) {
             throw new Error("SERVICE_CAP_REACHED");
           }
