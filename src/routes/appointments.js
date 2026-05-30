@@ -945,10 +945,6 @@ function getEpCapForSlot(dateStr, time) {
   return EP_CAP_PER_SLOT;
 }
 
-function getPeCapForSlot(dateStr, time) {
-  return PE_CAP_PER_SLOT;
-}
-
 function getSlotReservationStats(existing, dateStr, time) {
   const list = Array.isArray(existing) ? existing : [];
 
@@ -962,7 +958,7 @@ function getSlotReservationStats(existing, dateStr, time) {
   return {
     totalReserved: list.length,
     peReserved,
-    peCap: getPeCapForSlot(dateStr, time),
+    peCap: PE_CAP_PER_SLOT,
     epReserved,
     raReserved,
     rfReserved,
@@ -2347,14 +2343,21 @@ router.get("/availability", async (req, res) => {
           out.push({
             time: t,
             state: "full",
-            reason: "Sin cupo para primera evaluación",
+            reason: "Sin cupo disponible",
             totalReserved: stats.totalReserved,
             peReserved: stats.peReserved,
             peCap: stats.peCap,
+            epReserved: stats.epReserved,
+            epCap: stats.epCap,
+            therapyReserved: stats.therapyReserved,
+            therapyCap: stats.therapyCap,
+            raReserved: stats.raReserved,
+            rfReserved: stats.rfReserved,
+            kdReserved: stats.kdReserved,
             capacity: stats.peCap,
             reserved: stats.peReserved,
-            available: 0,
-            availableVacancies: 0,
+            available: Math.max(0, stats.peCap - stats.peReserved),
+            availableVacancies: Math.max(0, stats.peCap - stats.peReserved),
             slotGroup: "PE",
           });
           continue;
@@ -2368,8 +2371,6 @@ router.get("/availability", async (req, res) => {
             state: waitlistCheck.ok ? "waitlist" : "waitlist_closed",
             reason: waitlistCheck.ok ? "" : waitlistCheck.error,
             totalReserved: stats.totalReserved,
-            peReserved: stats.peReserved,
-            peCap: stats.peCap,
             epReserved: stats.epReserved,
             epCap: stats.epCap,
             therapyReserved: stats.therapyReserved,
@@ -2394,8 +2395,6 @@ router.get("/availability", async (req, res) => {
             state: waitlistCheck.ok ? "waitlist" : "waitlist_closed",
             reason: waitlistCheck.ok ? "" : waitlistCheck.error,
             totalReserved: stats.totalReserved,
-            peReserved: stats.peReserved,
-            peCap: stats.peCap,
             epReserved: stats.epReserved,
             epCap: stats.epCap,
             therapyReserved: stats.therapyReserved,
@@ -2433,8 +2432,6 @@ router.get("/availability", async (req, res) => {
         time: t,
         state: "available",
         totalReserved: stats.totalReserved,
-        peReserved: stats.peReserved,
-        peCap: stats.peCap,
         epReserved: stats.epReserved,
         epCap: stats.epCap,
         therapyReserved: stats.therapyReserved,
