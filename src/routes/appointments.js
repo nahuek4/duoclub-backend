@@ -3522,17 +3522,25 @@ router.delete("/:id", async (req, res) => {
   let responsePayload = null;
 
   try {
+    const appointmentId = String(req.params?.id || "").trim();
+
     console.log("[DELETE APPOINTMENT HIT]", {
-      appointmentId: String(req.params?.id || ""),
+      appointmentId,
       userId: String(req.user?._id || req.user?.id || ""),
       role: String(req.user?.role || ""),
     });
+
+    if (!mongoose.Types.ObjectId.isValid(appointmentId)) {
+      return res.status(400).json({
+        error: "ID de turno inválido. No se puede cancelar un preview de turno fijo.",
+      });
+    }
 
     const tokenUserId = req.user?._id || req.user?.id;
     const role = String(req.user?.role || "").toLowerCase();
 
     await session.withTransaction(async () => {
-      const ap = await Appointment.findById(req.params.id).session(session);
+      const ap = await Appointment.findById(appointmentId).session(session);
       if (!ap) throw new Error("APPOINTMENT_NOT_FOUND");
 
       const isOwner = String(ap.user) === String(tokenUserId);
@@ -3713,7 +3721,7 @@ router.delete("/:id", async (req, res) => {
       category: "appointments",
       action: "appointment_cancelled",
       entity: "appointment",
-      entityId: String(req.params.id),
+      entityId: String(appointmentId),
       title: "Turno cancelado",
       description: "Se canceló un turno.",
       subject: buildUserSubject(req.user),
