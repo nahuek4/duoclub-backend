@@ -1369,12 +1369,14 @@ function validateBasicSlotRules({ date, time, service, serviceKey }) {
   const adv = validateMinAdvance(slotDate, normalizedServiceKey);
   if (!adv.ok) return adv;
 
+  const isPeService = normalizedServiceKey === "PE";
   const isEpService = normalizedServiceKey === "EP";
 
   return {
     ok: true,
     turno,
     slotDate,
+    isPeService,
     isEpService,
     timeNorm,
     serviceKey: normalizedServiceKey,
@@ -1425,12 +1427,14 @@ function validateBasicSlotRulesAdmin({ date, time, service, serviceKey, bypassWi
     if (!adv.ok) return adv;
   }
 
+  const isPeService = normalizedServiceKey === "PE";
   const isEpService = normalizedServiceKey === "EP";
 
   return {
     ok: true,
     turno,
     slotDate,
+    isPeService,
     isEpService,
     timeNorm,
     serviceKey: normalizedServiceKey,
