@@ -1369,12 +1369,14 @@ function validateBasicSlotRules({ date, time, service, serviceKey }) {
   const adv = validateMinAdvance(slotDate, normalizedServiceKey);
   if (!adv.ok) return adv;
 
+  const isPeService = normalizedServiceKey === "PE";
   const isEpService = normalizedServiceKey === "EP";
 
   return {
     ok: true,
     turno,
     slotDate,
+    isPeService,
     isEpService,
     timeNorm,
     serviceKey: normalizedServiceKey,
@@ -1425,12 +1427,14 @@ function validateBasicSlotRulesAdmin({ date, time, service, serviceKey, bypassWi
     if (!adv.ok) return adv;
   }
 
+  const isPeService = normalizedServiceKey === "PE";
   const isEpService = normalizedServiceKey === "EP";
 
   return {
     ok: true,
     turno,
     slotDate,
+    isPeService,
     isEpService,
     timeNorm,
     serviceKey: normalizedServiceKey,
@@ -4002,8 +4006,53 @@ router.get("/admin/fixed-schedules", ensureStaff, async (req, res) => {
       .sort({ serviceKey: 1, createdAt: -1 })
       .lean();
 
-    return res.json(
-      items.map((it) => ({
+    const today = ymdAR(new Date());
+
+    async function deriveFixedItemsFromAppointments(schedule) {
+      const rawItems = Array.isArray(schedule?.items) ? schedule.items : [];
+      const cleanRawItems = rawItems
+        .map((x) => ({
+          weekday: Number(x?.weekday || 0),
+          time: String(x?.time || "").slice(0, 5),
+        }))
+        .filter((x) => x.weekday >= 1 && x.weekday <= 5 && !!x.time);
+
+      if (cleanRawItems.length) return cleanRawItems;
+
+      // Compatibilidad con turnos fijos viejos: si el FixedSchedule quedó activo
+      // pero no tiene items guardados, reconstruimos el patrón desde los turnos
+      // futuros reservados asociados al fixedScheduleId.
+      const fixedId = schedule?._id;
+      if (!fixedId) return [];
+
+      const aps = await Appointment.find({
+        fixedScheduleId: fixedId,
+        status: "reserved",
+        date: { $gte: today },
+      })
+        .select("date time")
+        .sort({ date: 1, time: 1 })
+        .lean();
+
+      const byWeekday = new Map();
+      for (const ap of aps || []) {
+        const day = String(ap?.date || "").slice(0, 10);
+        const time = String(ap?.time || "").slice(0, 5);
+        if (!day || !time) continue;
+        const weekday = getWeekdayMondayFirst(day);
+        if (weekday < 1 || weekday > 5) continue;
+        if (!byWeekday.has(weekday)) byWeekday.set(weekday, time);
+      }
+
+      return [...byWeekday.entries()]
+        .map(([weekday, time]) => ({ weekday, time }))
+        .sort((a, b) => a.weekday - b.weekday);
+    }
+
+    const payload = [];
+    for (const it of items) {
+      const normalizedItems = await deriveFixedItemsFromAppointments(it);
+      payload.push({
         id: String(it._id),
         user: it.user
           ? {
@@ -4015,12 +4064,7 @@ router.get("/admin/fixed-schedules", ensureStaff, async (req, res) => {
           : null,
         service: it.service || "",
         serviceKey: String(it.serviceKey || "").toUpperCase().trim(),
-        items: Array.isArray(it.items)
-          ? it.items.map((x) => ({
-              weekday: Number(x?.weekday || 0),
-              time: String(x?.time || "").slice(0, 5),
-            }))
-          : [],
+        items: normalizedItems,
         months: Number(it.months || 1),
         startDate: it.startDate || null,
         endDate: it.endDate || null,
@@ -4028,8 +4072,10 @@ router.get("/admin/fixed-schedules", ensureStaff, async (req, res) => {
         active: !!it.active,
         createdAt: it.createdAt || null,
         updatedAt: it.updatedAt || null,
-      }))
-    );
+      });
+    }
+
+    return res.json(payload);
   } catch (err) {
     console.error("Error en GET /appointments/admin/fixed-schedules:", err);
     return res.status(500).json({ error: "No se pudieron cargar los turnos fijos." });
