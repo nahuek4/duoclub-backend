@@ -24,6 +24,7 @@ const router = express.Router();
    - Idempotente: no duplica créditos si MP reintenta.
    - Transaccional: evita carreras entre webhooks/jobs.
    - Mails sin save() paralelo sobre el mismo documento.
+   - Mails idempotentes con claim atómico para evitar duplicados por reintentos.
 ========================================================= */
 
 /* =======================
@@ -553,55 +554,79 @@ async function getOrderAndUserLean(orderId) {
   return { order, user: fallbackUser };
 }
 
+async function claimNotificationField(orderId, fieldName) {
+  const claimedAt = new Date();
+
+  const result = await Order.updateOne(
+    {
+      _id: orderId,
+      $or: [{ [fieldName]: null }, { [fieldName]: { $exists: false } }],
+    },
+    { $set: { [fieldName]: claimedAt } }
+  );
+
+  const modified = Number(result?.modifiedCount || result?.nModified || 0);
+  return modified > 0 ? claimedAt : null;
+}
+
+async function releaseNotificationField(orderId, fieldName, claimedAt) {
+  if (!claimedAt) return;
+
+  await Order.updateOne(
+    { _id: orderId, [fieldName]: claimedAt },
+    { $set: { [fieldName]: null } }
+  ).catch(() => null);
+}
+
 async function notifyAdminNewIfNeeded(orderId) {
-  const { order, user } = await getOrderAndUserLean(orderId);
-  if (!order || order.adminNotifiedAt) return;
+  const claimedAt = await claimNotificationField(orderId, "adminNotifiedAt");
+  if (!claimedAt) return;
 
   try {
+    const { order, user } = await getOrderAndUserLean(orderId);
+    if (!order) return;
     await sendAdminNewOrderEmail(order, user);
-    await Order.updateOne(
-      { _id: orderId, adminNotifiedAt: null },
-      { $set: { adminNotifiedAt: new Date() } }
-    );
   } catch (e) {
+    await releaseNotificationField(orderId, "adminNotifiedAt", claimedAt);
     console.warn("MP webhook: no se pudo enviar mail admin NEW:", e?.message || e);
   }
 }
 
 async function notifyAdminPaidIfNeeded(orderId) {
-  const { order, user } = await getOrderAndUserLean(orderId);
-  if (!order || order.adminPaidNotifiedAt) return;
+  const claimedAt = await claimNotificationField(orderId, "adminPaidNotifiedAt");
+  if (!claimedAt) return;
 
   try {
+    const { order, user } = await getOrderAndUserLean(orderId);
+    if (!order) return;
     await sendAdminOrderPaidEmail(order, user);
-    await Order.updateOne(
-      { _id: orderId, adminPaidNotifiedAt: null },
-      { $set: { adminPaidNotifiedAt: new Date() } }
-    );
   } catch (e) {
+    await releaseNotificationField(orderId, "adminPaidNotifiedAt", claimedAt);
     console.warn("MP webhook: no se pudo enviar mail admin PAID:", e?.message || e);
   }
 }
 
 async function notifyUserPaidIfNeeded(orderId) {
-  const { order, user } = await getOrderAndUserLean(orderId);
-  if (!order || order.userPaidNotifiedAt) return;
-
-  const email = String(user?.email || order?.customerEmail || "").trim();
-  if (!email) return;
+  const claimedAt = await claimNotificationField(orderId, "userPaidNotifiedAt");
+  if (!claimedAt) return;
 
   try {
+    const { order, user } = await getOrderAndUserLean(orderId);
+    if (!order) return;
+
+    const email = String(user?.email || order?.customerEmail || "").trim();
+    if (!email) return;
+
     await sendUserOrderPaidEmail(order, user);
-    await Order.updateOne(
-      { _id: orderId, userPaidNotifiedAt: null },
-      { $set: { userPaidNotifiedAt: new Date() } }
-    );
   } catch (e) {
+    await releaseNotificationField(orderId, "userPaidNotifiedAt", claimedAt);
     console.warn("MP webhook: no se pudo enviar mail user PAID:", e?.message || e);
   }
 }
 
 function sendPaidNotifications(orderId, label = "MP") {
+  // Cada envío se reclama con updateOne atómico. Si Mercado Pago reintenta el webhook,
+  // o llegan dos webhooks casi juntos, solo uno gana el claim y evita emails duplicados.
   fireAndForget(() => notifyAdminNewIfNeeded(orderId), `MAIL_ADMIN_NEW_ORDER_${label}`);
   fireAndForget(() => notifyAdminPaidIfNeeded(orderId), `MAIL_ADMIN_PAID_ORDER_${label}`);
   fireAndForget(() => notifyUserPaidIfNeeded(orderId), `MAIL_USER_PAID_ORDER_${label}`);
@@ -764,7 +789,9 @@ router.post("/mercadopago/webhook", async (req, res) => {
       return res.status(200).json({ ok: true });
     }
 
-    sendPaidNotifications(String(order._id), applied.manual ? "MP_PUBLIC" : "MP");
+    if (!applied.alreadyApplied) {
+      sendPaidNotifications(String(order._id), applied.manual ? "MP_PUBLIC" : "MP");
+    }
 
     console.log("[MP WEBHOOK] approved payment processed", {
       orderId: String(order._id),
