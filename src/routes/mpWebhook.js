@@ -625,9 +625,11 @@ async function notifyUserPaidIfNeeded(orderId) {
 }
 
 function sendPaidNotifications(orderId, label = "MP") {
+  // Para Mercado Pago NO enviamos "Nuevo pedido" al admin.
+  // Solo avisamos cuando el pago fue aprobado. Las órdenes CASH siguen enviando
+  // "Nuevo pedido" desde orders.js al generarse, porque quedan pendientes de cobro.
   // Cada envío se reclama con updateOne atómico. Si Mercado Pago reintenta el webhook,
   // o llegan dos webhooks casi juntos, solo uno gana el claim y evita emails duplicados.
-  fireAndForget(() => notifyAdminNewIfNeeded(orderId), `MAIL_ADMIN_NEW_ORDER_${label}`);
   fireAndForget(() => notifyAdminPaidIfNeeded(orderId), `MAIL_ADMIN_PAID_ORDER_${label}`);
   fireAndForget(() => notifyUserPaidIfNeeded(orderId), `MAIL_USER_PAID_ORDER_${label}`);
 }
