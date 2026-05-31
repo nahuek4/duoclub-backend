@@ -1369,14 +1369,12 @@ function validateBasicSlotRules({ date, time, service, serviceKey }) {
   const adv = validateMinAdvance(slotDate, normalizedServiceKey);
   if (!adv.ok) return adv;
 
-  const isPeService = normalizedServiceKey === "PE";
   const isEpService = normalizedServiceKey === "EP";
 
   return {
     ok: true,
     turno,
     slotDate,
-    isPeService,
     isEpService,
     timeNorm,
     serviceKey: normalizedServiceKey,
@@ -1427,14 +1425,12 @@ function validateBasicSlotRulesAdmin({ date, time, service, serviceKey, bypassWi
     if (!adv.ok) return adv;
   }
 
-  const isPeService = normalizedServiceKey === "PE";
   const isEpService = normalizedServiceKey === "EP";
 
   return {
     ok: true,
     turno,
     slotDate,
-    isPeService,
     isEpService,
     timeNorm,
     serviceKey: normalizedServiceKey,
@@ -2680,18 +2676,23 @@ router.post("/admin/fixed-schedules", async (req, res) => {
     const role = String(req.user?.role || "").toLowerCase();
     if (!["admin", "profesor", "staff"].includes(role)) {
       return res.status(403).json({
-        error: "Solo staff, profesor o admin pueden crear turnos fijos.",
+        error: "Solo staff, profesor o admin pueden crear o actualizar turnos fijos.",
       });
     }
 
     const userId = String(req.body?.userId || "").trim();
     const service = String(req.body?.service || "").trim();
     const serviceKey = String(req.body?.serviceKey || "").trim();
+    const fixedScheduleId = String(req.body?.fixedScheduleId || "").trim();
     const notes = String(req.body?.notes || "").trim();
     const months = Math.max(1, Math.min(12, Number(req.body?.months || 1)));
     const items = Array.isArray(req.body?.items) ? req.body.items : [];
 
     if (!userId) return res.status(400).json({ error: "Falta userId." });
+    if (!mongoose.Types.ObjectId.isValid(userId)) {
+      return res.status(400).json({ error: "userId inválido." });
+    }
+
     const serviceIdentity = normalizeServiceIdentity({ service, serviceKey });
     if (!serviceIdentity?.serviceKey) return res.status(400).json({ error: "Falta service." });
     if (!items.length) return res.status(400).json({ error: "Faltan días fijos." });
@@ -2701,27 +2702,93 @@ router.post("/admin/fixed-schedules", async (req, res) => {
         weekday: Number(it?.weekday || 0),
         time: String(it?.time || "").slice(0, 5),
       }))
-      .filter((it) => it.weekday >= 1 && it.weekday <= 5 && !!it.time);
+      .filter((it) => it.weekday >= 1 && it.weekday <= 5 && !!it.time)
+      .sort((a, b) => a.weekday - b.weekday);
 
     if (!cleanItems.length) {
       return res.status(400).json({ error: "No hay items válidos para guardar." });
     }
 
+    const seenWeekdays = new Set();
+    for (const it of cleanItems) {
+      if (seenWeekdays.has(it.weekday)) {
+        return res.status(400).json({
+          error: "Para turnos fijos solo puede haber un horario por día de la semana.",
+        });
+      }
+      seenWeekdays.add(it.weekday);
+    }
+
     const startDate = ymdAR(new Date());
     const endDate = addMonthsYmd(startDate, months);
 
-    const fixed = await FixedSchedule.create({
-      user: userId,
-      createdBy: req.user?._id || req.user?.id,
-      serviceKey: serviceIdentity.serviceKey,
-      service: serviceIdentity.serviceName,
-      items: cleanItems,
-      months,
-      startDate,
-      endDate,
-      notes,
-      active: true,
-    });
+    let fixed = null;
+
+    if (fixedScheduleId && mongoose.Types.ObjectId.isValid(fixedScheduleId)) {
+      fixed = await FixedSchedule.findOne({
+        _id: fixedScheduleId,
+        user: userId,
+        serviceKey: serviceIdentity.serviceKey,
+      });
+    }
+
+    if (!fixed) {
+      fixed = await FixedSchedule.findOne({
+        user: userId,
+        serviceKey: serviceIdentity.serviceKey,
+        active: true,
+      }).sort({ createdAt: -1 });
+    }
+
+    const updated = !!fixed;
+    let cancelledOldCount = 0;
+
+    if (fixed) {
+      const cancelled = await Appointment.updateMany(
+        {
+          fixedScheduleId: fixed._id,
+          status: "reserved",
+          date: { $gte: startDate },
+        },
+        {
+          $set: {
+            status: "cancelled",
+            cancelledAt: new Date(),
+            cancelledByRole: role || "admin",
+            cancelledByUser: req.user?._id || req.user?.id || null,
+            cancelReason: "FIXED_SCHEDULE_UPDATED",
+            refundApplied: false,
+            refundMode: "none",
+          },
+        }
+      );
+      cancelledOldCount = Number(cancelled?.modifiedCount || 0);
+
+      fixed.serviceKey = serviceIdentity.serviceKey;
+      fixed.service = serviceIdentity.serviceName;
+      fixed.items = cleanItems;
+      fixed.months = months;
+      fixed.startDate = fixed.startDate || startDate;
+      fixed.endDate = endDate;
+      fixed.notes = notes;
+      fixed.active = true;
+      fixed.updatedBy = req.user?._id || req.user?.id || null;
+      fixed.updatedAt = new Date();
+      await fixed.save();
+    } else {
+      fixed = await FixedSchedule.create({
+        user: userId,
+        createdBy: req.user?._id || req.user?.id,
+        serviceKey: serviceIdentity.serviceKey,
+        service: serviceIdentity.serviceName,
+        items: cleanItems,
+        months,
+        startDate,
+        endDate,
+        notes,
+        active: true,
+      });
+    }
 
     const occurrences = buildOccurrencesForFixedSchedule({
       startDate,
@@ -2734,6 +2801,16 @@ router.post("/admin/fixed-schedules", async (req, res) => {
 
     for (const occ of occurrences) {
       try {
+        const existingSameFixed = await Appointment.findOne({
+          user: userId,
+          fixedScheduleId: fixed._id,
+          date: occ.date,
+          time: occ.time,
+          status: "reserved",
+        }).lean();
+
+        if (existingSameFixed) continue;
+
         const ap = await createAppointmentForTargetUser({
           userId,
           actorReq: req,
@@ -2758,13 +2835,27 @@ router.post("/admin/fixed-schedules", async (req, res) => {
       }
     }
 
-    return res.status(201).json({
+    return res.status(updated ? 200 : 201).json({
       ok: true,
+      updated,
       fixedScheduleId: String(fixed._id),
+      cancelledOldCount,
       createdCount: created.length,
       conflictsCount: conflicts.length,
       items: created,
       conflicts,
+      fixedSchedule: {
+        id: String(fixed._id),
+        user: String(fixed.user),
+        service: fixed.service || serviceIdentity.serviceName,
+        serviceKey: fixed.serviceKey || serviceIdentity.serviceKey,
+        items: fixed.items || cleanItems,
+        months: Number(fixed.months || months),
+        startDate: fixed.startDate || startDate,
+        endDate: fixed.endDate || endDate,
+        notes: fixed.notes || "",
+        active: !!fixed.active,
+      },
     });
   } catch (err) {
     console.error("Error en POST /appointments/admin/fixed-schedules:", err);
@@ -3888,11 +3979,27 @@ router.post("/waitlist/claim", ensureStaff, async (req, res) => {
 /* =========================
    GET /appointments/admin/fixed-schedules
 ========================= */
-router.get("/admin/fixed-schedules", ensureStaff, async (_req, res) => {
+router.get("/admin/fixed-schedules", ensureStaff, async (req, res) => {
   try {
-    const items = await FixedSchedule.find({ active: true })
+    const userId = String(req.query?.userId || "").trim();
+    const activeParam = String(req.query?.active ?? "1").trim();
+
+    const q = {};
+
+    if (activeParam !== "all") {
+      q.active = activeParam === "0" || activeParam === "false" ? false : true;
+    }
+
+    if (userId) {
+      if (!mongoose.Types.ObjectId.isValid(userId)) {
+        return res.status(400).json({ error: "userId inválido." });
+      }
+      q.user = userId;
+    }
+
+    const items = await FixedSchedule.find(q)
       .populate("user", "name lastName email")
-      .sort({ createdAt: -1 })
+      .sort({ serviceKey: 1, createdAt: -1 })
       .lean();
 
     return res.json(
@@ -3900,13 +4007,14 @@ router.get("/admin/fixed-schedules", ensureStaff, async (_req, res) => {
         id: String(it._id),
         user: it.user
           ? {
-              _id: String(it.user._id),
+              _id: String(it.user._id || it.user),
               name: it.user.name || "",
               lastName: it.user.lastName || "",
               email: it.user.email || "",
             }
           : null,
         service: it.service || "",
+        serviceKey: String(it.serviceKey || "").toUpperCase().trim(),
         items: Array.isArray(it.items)
           ? it.items.map((x) => ({
               weekday: Number(x?.weekday || 0),
@@ -3919,6 +4027,7 @@ router.get("/admin/fixed-schedules", ensureStaff, async (_req, res) => {
         notes: it.notes || "",
         active: !!it.active,
         createdAt: it.createdAt || null,
+        updatedAt: it.updatedAt || null,
       }))
     );
   } catch (err) {
