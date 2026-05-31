@@ -4087,20 +4087,58 @@ router.get("/admin/fixed-schedules", ensureStaff, async (req, res) => {
 ========================= */
 router.delete("/admin/fixed-schedules/:id", ensureStaff, async (req, res) => {
   try {
-    const schedule = await FixedSchedule.findById(req.params.id);
+    const scheduleId = String(req.params?.id || "").trim();
+
+    if (!mongoose.Types.ObjectId.isValid(scheduleId)) {
+      return res.status(400).json({ error: "ID de turno fijo inválido." });
+    }
+
+    const role = String(req.user?.role || "admin").toLowerCase();
+    const actorId = req.user?._id || req.user?.id || null;
+    const today = ymdAR(new Date());
+
+    const schedule = await FixedSchedule.findById(scheduleId);
     if (!schedule) {
       return res.status(404).json({ error: "Turno fijo no encontrado." });
     }
 
+    const cancelled = await Appointment.updateMany(
+      {
+        fixedScheduleId: schedule._id,
+        status: "reserved",
+        date: { $gte: today },
+      },
+      {
+        $set: {
+          status: "cancelled",
+          cancelledAt: new Date(),
+          cancelledByRole: role || "admin",
+          cancelledByUser: actorId,
+          cancelReason: "FIXED_SCHEDULE_DELETED",
+          refundApplied: false,
+          refundMode: "none",
+        },
+      }
+    );
+
     schedule.active = false;
+    schedule.items = [];
     schedule.deactivatedAt = new Date();
-    schedule.deactivatedBy = req.user?._id || req.user?.id || null;
+    schedule.deactivatedBy = actorId;
+    schedule.deactivationReason = "FIXED_SCHEDULE_DELETED";
+    schedule.updatedBy = actorId;
+    schedule.updatedAt = new Date();
     await schedule.save();
 
-    return res.json({ ok: true });
+    return res.json({
+      ok: true,
+      deactivated: true,
+      fixedScheduleId: String(schedule._id),
+      cancelledAppointmentsCount: Number(cancelled?.modifiedCount || 0),
+    });
   } catch (err) {
-    console.error("Error nn DELETE /appointments/admin/fixed-schedules/:id:", err);
-    return res.status(500).json({ error: "No se pudo desactivar el turno fijo." });
+    console.error("Error en DELETE /appointments/admin/fixed-schedules/:id:", err);
+    return res.status(500).json({ error: "No se pudo eliminar el turno fijo." });
   }
 });
 
