@@ -783,6 +783,97 @@ async function refundCreditAtomicNewLot({
   return { user: freshUser, sk, expiresAt: exp };
 }
 
+
+function ensureFixedScheduleDebt(user) {
+  user.fixedScheduleDebt = user.fixedScheduleDebt || {};
+
+  for (const k of ["EP", "RA", "RF", "KD"]) {
+    const n = Number(user.fixedScheduleDebt?.[k] || 0);
+    user.fixedScheduleDebt[k] = Number.isFinite(n) ? Math.max(0, Math.trunc(n)) : 0;
+  }
+}
+
+async function releaseFixedScheduleDebtForAppointment({
+  user,
+  appointment,
+  historyItem,
+  session,
+}) {
+  if (!user?._id || !appointment?.fixedScheduleId) {
+    return { user, releasedDebt: 0 };
+  }
+
+  const sk = serviceToKey(
+    appointment.serviceKey || appointment.service || appointment.serviceName || ""
+  );
+
+  if (!["EP", "RA", "RF", "KD"].includes(sk)) {
+    return { user, releasedDebt: 0 };
+  }
+
+  const debitStatus = String(appointment.creditDebitStatus || "").trim();
+  const fixedDebtAmount = Math.max(0, Math.trunc(Number(appointment.fixedDebtAmount || 0)));
+
+  // Solo libera deuda cuando ese turno fijo efectivamente había quedado como deuda.
+  // Si el turno fijo consumió crédito real, se maneja con refundCreditAtomicToOriginalLot().
+  if (debitStatus !== "debt" && fixedDebtAmount <= 0) {
+    return { user, releasedDebt: 0 };
+  }
+
+  ensureFixedScheduleDebt(user);
+
+  const currentDebt = Math.max(0, Math.trunc(Number(user.fixedScheduleDebt?.[sk] || 0)));
+  if (!currentDebt) {
+    user.history = Array.isArray(user.history) ? user.history : [];
+    user.history.push({
+      ...historyItem,
+      action: historyItem?.action || "fixed_schedule_cancelled_without_debt",
+      title: historyItem?.title || "Turno fijo cancelado",
+      message:
+        historyItem?.message ||
+        "Se canceló un turno fijo. No había deuda pendiente para liberar.",
+      serviceKey: sk,
+      serviceName: serviceKeyToName(sk),
+      service: serviceKeyToName(sk),
+      fixedScheduleId: appointment.fixedScheduleId,
+      appointmentId: appointment._id,
+      fixedDebtReleased: 0,
+      createdAt: new Date(),
+    });
+    recalcUserCredits(user);
+    await user.save({ session });
+    return { user, releasedDebt: 0 };
+  }
+
+  const amountToRelease = Math.max(1, fixedDebtAmount || 1);
+  const releasedDebt = Math.min(currentDebt, amountToRelease);
+
+  user.fixedScheduleDebt[sk] = currentDebt - releasedDebt;
+  user.markModified?.("fixedScheduleDebt");
+
+  user.history = Array.isArray(user.history) ? user.history : [];
+  user.history.push({
+    ...historyItem,
+    action: "fixed_schedule_debt_released_by_cancellation",
+    title: `Deuda de turno fijo liberada ${sk}`,
+    message: `Se liberó ${releasedDebt} crédito(s) de deuda por cancelar un turno fijo.`,
+    serviceKey: sk,
+    serviceName: serviceKeyToName(sk),
+    service: serviceKeyToName(sk),
+    fixedScheduleId: appointment.fixedScheduleId,
+    appointmentId: appointment._id,
+    fixedDebtReleased: releasedDebt,
+    previousDebt: currentDebt,
+    nextDebt: user.fixedScheduleDebt[sk],
+    createdAt: new Date(),
+  });
+
+  recalcUserCredits(user);
+  await user.save({ session });
+
+  return { user, releasedDebt };
+}
+
 function serializeUserCreditLots(user) {
   return (Array.isArray(user?.creditLots) ? user.creditLots : []).map((lot) => ({
     _id: String(lot?._id || ""),
@@ -1520,196 +1611,6 @@ function buildOccurrencesForFixedSchedule({ startDate, months, items }) {
     const bk = `${b.date} ${b.time}`;
     return ak.localeCompare(bk);
   });
-}
-
-
-function currentMonthRangeYmd(refDate = new Date()) {
-  const y = refDate.getFullYear();
-  const m = refDate.getMonth();
-  return {
-    monthKey: `${y}-${String(m + 1).padStart(2, "0")}`,
-    from: ymdAR(new Date(y, m, 1)),
-    to: ymdAR(new Date(y, m + 1, 0)),
-  };
-}
-
-function canDebtFixedScheduleService(serviceKey) {
-  const sk = normalizeServiceKey(serviceKey) || serviceToKey(serviceKey);
-  return ["EP", "RA", "RF", "KD"].includes(sk);
-}
-
-function ensureFixedScheduleDebtForUser(user) {
-  user.fixedScheduleDebt = user.fixedScheduleDebt || {};
-  for (const key of ["EP", "RA", "RF", "KD"]) {
-    const current = Number(user.fixedScheduleDebt?.[key] || 0);
-    user.fixedScheduleDebt[key] = Number.isFinite(current)
-      ? Math.max(0, Math.trunc(current))
-      : 0;
-  }
-}
-
-async function applyCurrentMonthFixedScheduleBilling({
-  fixedScheduleId,
-  userId,
-  serviceKey,
-  actorReq = null,
-}) {
-  const fixedId = String(fixedScheduleId || "").trim();
-  const targetUserId = String(userId || "").trim();
-  const sk = normalizeServiceKey(serviceKey) || serviceToKey(serviceKey);
-
-  if (!fixedId || !targetUserId || !sk || !canDebtFixedScheduleService(sk)) {
-    return {
-      ok: true,
-      skipped: true,
-      reason: "SERVICE_NOT_BILLABLE_FOR_FIXED_SCHEDULE",
-      processed: 0,
-      debited: 0,
-      debt: 0,
-    };
-  }
-
-  const { monthKey, from, to } = currentMonthRangeYmd(new Date());
-  const now = new Date();
-
-  const appointments = await Appointment.find({
-    fixedScheduleId: fixedId,
-    user: targetUserId,
-    serviceKey: sk,
-    status: "reserved",
-    date: { $gte: from, $lte: to },
-    $or: [
-      { creditDebitStatus: { $exists: false } },
-      { creditDebitStatus: "" },
-      { creditDebitStatus: "pending" },
-    ],
-  }).sort({ date: 1, time: 1 });
-
-  if (!appointments.length) {
-    return {
-      ok: true,
-      skipped: false,
-      monthKey,
-      processed: 0,
-      debited: 0,
-      debt: 0,
-      userCredits: null,
-    };
-  }
-
-  const user = await User.findById(targetUserId);
-  if (!user) {
-    return {
-      ok: false,
-      skipped: true,
-      reason: "USER_NOT_FOUND",
-      monthKey,
-      processed: 0,
-      debited: 0,
-      debt: 0,
-    };
-  }
-
-  ensureFixedScheduleDebtForUser(user);
-  user.history = Array.isArray(user.history) ? user.history : [];
-
-  let debited = 0;
-  let debt = 0;
-  const processedAppointments = [];
-
-  for (const ap of appointments) {
-    const slotDate = buildSlotDate(ap.date, ap.time) || now;
-    const lot = pickLotToConsumeForSlot(user, sk, slotDate);
-
-    if (lot) {
-      lot.remaining = Math.max(0, Number(lot.remaining || 0) - 1);
-
-      ap.creditLotId = lot._id;
-      ap.creditExpiresAt = lot.expiresAt || null;
-      ap.creditDebitStatus = "monthly_reserved";
-      ap.creditDebitedAt = now;
-      ap.fixedDebitProcessedAt = now;
-      ap.fixedDebtAmount = 0;
-
-      user.history.push({
-        action: "fixed_schedule_credit_reserved",
-        title: `Turno fijo debitado ${sk}`,
-        message: "Se debitó 1 crédito por turno fijo del mes en curso.",
-        date: ap.date,
-        time: ap.time,
-        service: ap.service,
-        serviceName: ap.service,
-        serviceKey: sk,
-        qty: 1,
-        createdAt: now,
-      });
-
-      debited += 1;
-    } else {
-      user.fixedScheduleDebt[sk] = Math.max(0, Number(user.fixedScheduleDebt?.[sk] || 0)) + 1;
-      user.markModified?.("fixedScheduleDebt");
-
-      ap.creditDebitStatus = "debt";
-      ap.fixedDebitProcessedAt = now;
-      ap.fixedDebtAmount = 1;
-
-      user.history.push({
-        action: "fixed_schedule_debt_added",
-        title: `Deuda de turno fijo ${sk}`,
-        message: "Se generó 1 crédito adeudado por turno fijo del mes en curso.",
-        date: ap.date,
-        time: ap.time,
-        service: ap.service,
-        serviceName: ap.service,
-        serviceKey: sk,
-        qty: 1,
-        createdAt: now,
-      });
-
-      debt += 1;
-    }
-
-    await ap.save();
-    processedAppointments.push(String(ap._id));
-  }
-
-  recalcUserCredits(user);
-  await user.save();
-
-  try {
-    await logActivity({
-      req: actorReq || { user: null },
-      category: "appointments",
-      action: "fixed_schedule_month_billing_applied",
-      entity: "fixedSchedule",
-      entityId: fixedId,
-      title: "Débito mensual de turnos fijos",
-      description: "Se aplicó el débito/deuda del mes actual para turnos fijos.",
-      subject: buildUserSubject(user),
-      meta: {
-        monthKey,
-        serviceKey: sk,
-        processed: appointments.length,
-        debited,
-        debt,
-      },
-    });
-  } catch (e) {
-    console.warn("[FIXED BILLING] logActivity error:", e?.message || e);
-  }
-
-  return {
-    ok: true,
-    skipped: false,
-    monthKey,
-    processed: appointments.length,
-    debited,
-    debt,
-    appointmentIds: processedAppointments,
-    userCredits: Number(user.credits || 0),
-    userCreditLots: serializeUserCreditLots(user),
-    fixedScheduleDebt: user.fixedScheduleDebt || {},
-  };
 }
 
 async function createAppointmentForTargetUser({
@@ -3017,13 +2918,6 @@ router.post("/admin/fixed-schedules", async (req, res) => {
       }
     }
 
-    const fixedScheduleMonthlyBilling = await applyCurrentMonthFixedScheduleBilling({
-      fixedScheduleId: fixed._id,
-      userId,
-      serviceKey: serviceIdentity.serviceKey,
-      actorReq: req,
-    });
-
     return res.status(updated ? 200 : 201).json({
       ok: true,
       updated,
@@ -3031,7 +2925,6 @@ router.post("/admin/fixed-schedules", async (req, res) => {
       cancelledOldCount,
       createdCount: created.length,
       conflictsCount: conflicts.length,
-      fixedScheduleMonthlyBilling,
       items: created,
       conflicts,
       fixedSchedule: {
@@ -3663,7 +3556,22 @@ router.post("/admin/cancel/:id", ensureStaff, async (req, res) => {
         });
         refundApplied = true;
         refundMode = "admin-no-policy";
-      } else if (!ap.assignedManually && !ap.fixedScheduleId) {
+      } else if (ap.fixedScheduleId) {
+        const released = await releaseFixedScheduleDebtForAppointment({
+          user: updatedUser,
+          appointment: ap,
+          historyItem,
+          session,
+        });
+
+        updatedUser = released.user;
+
+        if (released.releasedDebt > 0) {
+          refundApplied = true;
+          refundMode = "fixed-debt-release";
+          refundReason = "FIXED_SCHEDULE_DEBT_RELEASED";
+        }
+      } else if (!ap.assignedManually) {
         const refunded = await refundCreditAtomicNewLot({
           userId: user._id,
           apService: ap.service,
@@ -3705,6 +3613,7 @@ router.post("/admin/cancel/:id", ensureStaff, async (req, res) => {
           : "Cancelación administrativa realizada sin afectar políticas.",
         userCredits: Number(updatedUser.credits || 0),
         userCreditLots: serializeUserCreditLots(updatedUser),
+        fixedScheduleDebt: updatedUser.fixedScheduleDebt || {},
       };
 
       mailUser = { ...updatedUser.toObject(), _id: updatedUser._id };
@@ -3869,11 +3778,7 @@ router.delete("/:id", async (req, res) => {
       let updatedUser = user;
 
       if (decision.refund) {
-        if (ap.fixedScheduleId && !ap.creditLotId) {
-          decision.refund = false;
-          decision.refundMode = "none";
-          decision.reason = "Turno fijo sin crédito consumido: no corresponde reintegro automático.";
-        } else if (ap.creditLotId) {
+        if (ap.creditLotId) {
           updatedUser = await refundCreditAtomicToOriginalLot({
             userId: user._id,
             lotId: ap.creditLotId,
@@ -3888,6 +3793,32 @@ router.delete("/:id", async (req, res) => {
             },
             session,
           });
+        } else if (ap.fixedScheduleId) {
+          const released = await releaseFixedScheduleDebtForAppointment({
+            user: updatedUser,
+            appointment: ap,
+            historyItem: {
+              action: decision.historyAction,
+              date: ap.date,
+              time: ap.time,
+              service: ap.service,
+              serviceName: ap.service,
+              ...historyMeta,
+            },
+            session,
+          });
+
+          updatedUser = released.user;
+
+          if (released.releasedDebt > 0) {
+            decision.refund = true;
+            decision.refundMode = "fixed-debt-release";
+            decision.reason = "FIXED_SCHEDULE_DEBT_RELEASED";
+          } else {
+            decision.refund = false;
+            decision.refundMode = "none";
+            decision.reason = "Turno fijo sin crédito consumido ni deuda pendiente.";
+          }
         } else {
           const refunded = await refundCreditAtomicNewLot({
             userId: user._id,
@@ -3955,6 +3886,7 @@ router.delete("/:id", async (req, res) => {
         cancellationPolicy: cancellationCounters,
         userCredits: Number(updatedUser.credits || 0),
         userCreditLots: serializeUserCreditLots(updatedUser),
+        fixedScheduleDebt: updatedUser.fixedScheduleDebt || {},
       };
 
       mailUser = { ...updatedUser.toObject(), _id: updatedUser._id };
