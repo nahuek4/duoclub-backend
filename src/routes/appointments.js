@@ -4204,16 +4204,13 @@ router.delete("/:id", async (req, res) => {
 
       if (decision.refund) {
         if (ap.fixedScheduleId && !ap.creditLotId) {
-          decision.refund = false;
-          decision.refundMode = "none";
-          decision.reason = "Turno fijo sin crédito consumido: no corresponde reintegro automático.";
-        } else if (ap.creditLotId) {
-          updatedUser = await refundCreditAtomicToOriginalLot({
-            userId: user._id,
-            lotId: ap.creditLotId,
-            apService: ap.service,
+          const debtRelease = await releaseFixedAppointmentDebtOnCancel({
+            user: updatedUser,
+            appointment: ap,
             historyItem: {
-              action: decision.historyAction,
+              action: "fixed_schedule_debt_released_by_cancel",
+              title: "Deuda de turno fijo liberada",
+              message: "Se canceló un turno fijo que estaba marcado como deuda. Se bajó la deuda antes de generar crédito positivo.",
               date: ap.date,
               time: ap.time,
               service: ap.service,
@@ -4222,6 +4219,56 @@ router.delete("/:id", async (req, res) => {
             },
             session,
           });
+
+          if (debtRelease.released) {
+            decision.refund = true;
+            decision.refundMode = "fixed-debt-release";
+            decision.reason = "FIXED_SCHEDULE_DEBT_RELEASED_BY_CANCEL";
+            updatedUser = user;
+          } else {
+            decision.refund = false;
+            decision.refundMode = "none";
+            decision.reason = "Turno fijo sin crédito consumido: no corresponde reintegro automático.";
+          }
+        } else if (ap.creditLotId) {
+          const fixedDebtSettlement = await settleFixedScheduleDebtWithCancelledCreditOnCancel({
+            user: updatedUser,
+            appointment: ap,
+            historyItem: {
+              action: "fixed_schedule_debt_settled_by_cancelled_credit",
+              title: "Deuda de turno fijo compensada",
+              message:
+                "Se canceló un turno fijo ya debitado. Como existía deuda del mismo servicio, no se generó crédito positivo: se compensó la deuda pendiente.",
+              date: ap.date,
+              time: ap.time,
+              service: ap.service,
+              serviceName: ap.service,
+              ...historyMeta,
+            },
+            session,
+          });
+
+          if (fixedDebtSettlement.settled) {
+            updatedUser = fixedDebtSettlement.user;
+            decision.refund = true;
+            decision.refundMode = "fixed-debt-settlement";
+            decision.reason = "FIXED_SCHEDULE_DEBT_SETTLED_BY_CANCEL";
+          } else {
+            updatedUser = await refundCreditAtomicToOriginalLot({
+              userId: user._id,
+              lotId: ap.creditLotId,
+              apService: ap.service,
+              historyItem: {
+                action: decision.historyAction,
+                date: ap.date,
+                time: ap.time,
+                service: ap.service,
+                serviceName: ap.service,
+                ...historyMeta,
+              },
+              session,
+            });
+          }
         } else {
           const refunded = await refundCreditAtomicNewLot({
             userId: user._id,
