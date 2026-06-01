@@ -1355,6 +1355,19 @@ function isYmdInsideRange(day, startYmd, endYmd) {
   return ymd >= startYmd && ymd <= endYmd;
 }
 
+function isSlotStrictlyAfterMoment(date, time, moment = new Date()) {
+  const slotDate = buildSlotDate(String(date || "").slice(0, 10), String(time || "").slice(0, 5));
+  if (!slotDate) return false;
+
+  const ref = moment instanceof Date ? moment : new Date(moment);
+  if (Number.isNaN(ref.getTime())) return false;
+
+  // Turnos fijos: solo se generan/debitan/cancelan por plan si el horario
+  // todavía es posterior al momento exacto de la acción del admin.
+  // Ej: si son 10:01, el turno de hoy 10:00 ya no entra.
+  return slotDate.getTime() > ref.getTime();
+}
+
 function ensureFixedScheduleDebtObject(user) {
   user.fixedScheduleDebt = user.fixedScheduleDebt || {};
 
@@ -3118,6 +3131,7 @@ router.post("/admin/fixed-schedules", async (req, res) => {
     const notes = String(req.body?.notes || "").trim();
     const months = Math.max(1, Math.min(12, Number(req.body?.months || 1)));
     const items = Array.isArray(req.body?.items) ? req.body.items : [];
+    const assignmentMoment = new Date();
 
     if (!userId) return res.status(400).json({ error: "Falta userId." });
     if (!mongoose.Types.ObjectId.isValid(userId)) {
@@ -3150,7 +3164,7 @@ router.post("/admin/fixed-schedules", async (req, res) => {
       seenWeekdays.add(it.weekday);
     }
 
-    const startDate = ymdAR(new Date());
+    const startDate = ymdAR(assignmentMoment);
     const endDate = addMonthsYmd(startDate, months);
 
     let fixed = null;
@@ -3175,25 +3189,25 @@ router.post("/admin/fixed-schedules", async (req, res) => {
     let cancelledOldCount = 0;
 
     if (fixed) {
-      const cancelled = await Appointment.updateMany(
-        {
-          fixedScheduleId: fixed._id,
-          status: "reserved",
-          date: { $gte: startDate },
-        },
-        {
-          $set: {
-            status: "cancelled",
-            cancelledAt: new Date(),
-            cancelledByRole: role || "admin",
-            cancelledByUser: req.user?._id || req.user?.id || null,
-            cancelReason: "FIXED_SCHEDULE_UPDATED",
-            refundApplied: false,
-            refundMode: "none",
-          },
-        }
-      );
-      cancelledOldCount = Number(cancelled?.modifiedCount || 0);
+      const oldAppointmentsToCancel = await Appointment.find({
+        fixedScheduleId: fixed._id,
+        status: "reserved",
+        date: { $gte: startDate },
+      }).sort({ date: 1, time: 1 });
+
+      for (const oldAp of oldAppointmentsToCancel) {
+        if (!isSlotStrictlyAfterMoment(oldAp.date, oldAp.time, assignmentMoment)) continue;
+
+        oldAp.status = "cancelled";
+        oldAp.cancelledAt = new Date();
+        oldAp.cancelledByRole = role || "admin";
+        oldAp.cancelledByUser = req.user?._id || req.user?.id || null;
+        oldAp.cancelReason = "FIXED_SCHEDULE_UPDATED";
+        oldAp.refundApplied = false;
+        oldAp.refundMode = "none";
+        await oldAp.save();
+        cancelledOldCount += 1;
+      }
 
       fixed.serviceKey = serviceIdentity.serviceKey;
       fixed.service = serviceIdentity.serviceName;
@@ -3221,13 +3235,14 @@ router.post("/admin/fixed-schedules", async (req, res) => {
       });
     }
 
-    const currentMonthRange = getCurrentMonthRangeYmd(new Date());
+    const currentMonthRange = getCurrentMonthRangeYmd(assignmentMoment);
     const occurrences = buildOccurrencesForFixedSchedule({
       startDate,
       months,
       items: cleanItems,
     }).filter((occ) =>
-      isYmdInsideRange(occ.date, currentMonthRange.startYmd, currentMonthRange.endYmd)
+      isYmdInsideRange(occ.date, currentMonthRange.startYmd, currentMonthRange.endYmd) &&
+      isSlotStrictlyAfterMoment(occ.date, occ.time, assignmentMoment)
     );
 
     const created = [];
@@ -4646,7 +4661,8 @@ router.delete("/admin/fixed-schedules/:id", ensureStaff, async (req, res) => {
 
     const role = String(req.user?.role || "admin").toLowerCase();
     const actorId = req.user?._id || req.user?.id || null;
-    const today = ymdAR(new Date());
+    const deletionMoment = new Date();
+    const today = ymdAR(deletionMoment);
 
     let responsePayload = null;
     let activityMeta = null;
@@ -4663,13 +4679,17 @@ router.delete("/admin/fixed-schedules/:id", ensureStaff, async (req, res) => {
         throw new Error("USER_NOT_FOUND");
       }
 
-      const appointmentsToCancel = await Appointment.find({
+      const appointmentsToCancelRaw = await Appointment.find({
         fixedScheduleId: schedule._id,
         status: "reserved",
         date: { $gte: today },
       })
         .sort({ date: 1, time: 1 })
         .session(session);
+
+      const appointmentsToCancel = appointmentsToCancelRaw.filter((ap) =>
+        isSlotStrictlyAfterMoment(ap.date, ap.time, deletionMoment)
+      );
 
       let currentUser = targetUser;
       const cancelledItems = [];
