@@ -66,6 +66,11 @@ function buildDateMatch(field, from, to) {
 function buildActivityFilters(query, from, to) {
   const match = buildDateMatch("createdAt", from, to);
 
+  // Los turnos asignados por admin ahora se agrupan en una sola actividad
+  // con meta.items. Ocultamos el log legacy por turno para que el dashboard
+  // no muestre 8/9 notificaciones separadas por una misma asignación.
+  match.action = { $ne: "appointment_assigned_by_admin" };
+
   if (query.category) match.category = String(query.category).trim();
   if (query.action) match.action = String(query.action).trim();
   if (query.actorRole) match["actor.role"] = String(query.actorRole).trim();

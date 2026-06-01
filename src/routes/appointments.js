@@ -1808,6 +1808,7 @@ async function createAppointmentForTargetUser({
   bypassCredits = false,
   fixedScheduleId = null,
   monthlyRolloverMonthKey = "",
+  skipActivityLog = false,
 }) {
   const basic = validateBasicSlotRulesAdmin({
     date,
@@ -1979,22 +1980,26 @@ async function createAppointmentForTargetUser({
   const populated = await Appointment.findById(created._id)
     .populate("user", "name lastName email");
 
-  await logActivity({
-    req: actorReq,
-    category: "appointments",
-    action: "appointment_assigned_by_admin",
-    entity: "appointment",
-    entityId: String(created._id),
-    title: "Turno asignado por admin",
-    description: "Se asignó un turno a un usuario desde administración.",
-    subject: buildUserSubject(targetUser),
-    meta: {
-      date,
-      time: t,
-      serviceName: basic.serviceName,
-      assignedByAdmin: true,
-    },
-  });
+  if (!skipActivityLog) {
+    await logActivity({
+      req: actorReq,
+      category: "appointments",
+      action: "appointment_assigned_by_admin",
+      entity: "appointment",
+      entityId: String(created._id),
+      title: "Turno asignado por admin",
+      description: "Se asignó un turno a un usuario desde administración.",
+      subject: buildUserSubject(targetUser),
+      meta: {
+        date,
+        time: t,
+        serviceName: basic.serviceName,
+        serviceKey: basic.serviceKey,
+        assignedByAdmin: true,
+        fixedScheduleId: fixedScheduleId ? String(fixedScheduleId) : "",
+      },
+    });
+  }
 
   const serialized = serializeAppointment(populated);
   serialized.userCredits = Number(effectiveUser.credits || 0);
@@ -2900,6 +2905,7 @@ router.post("/admin/assign", async (req, res) => {
           notes,
           bypassWindow: true,
           bypassCredits: true,
+          skipActivityLog: true,
         });
         created.push(ap);
       } catch (e) {
@@ -2918,6 +2924,44 @@ router.post("/admin/assign", async (req, res) => {
         createdCount: 0,
         conflictsCount: conflicts.length,
         conflicts,
+      });
+    }
+
+    if (created.length) {
+      const targetUser = await User.findById(userId).lean().catch(() => null);
+      await logActivity({
+        req,
+        category: "appointments",
+        action: "appointments_assigned_by_admin_batch",
+        entity: "appointments",
+        entityId: created.map((x) => x.id).filter(Boolean).join(","),
+        title: created.length === 1 ? "Turno asignado por admin" : "Turnos asignados por admin",
+        description:
+          created.length === 1
+            ? "Se asignó 1 turno a un usuario desde administración."
+            : `Se asignaron ${created.length} turnos a un usuario desde administración.`,
+        subject: buildUserSubject(targetUser || { _id: userId }),
+        meta: {
+          assignedByAdmin: true,
+          createdCount: created.length,
+          conflictsCount: conflicts.length,
+          userId,
+          userFullName:
+            created[0]?.userFullName ||
+            [targetUser?.name, targetUser?.lastName].filter(Boolean).join(" ").trim(),
+          items: created.map((x) => ({
+            id: x.id,
+            date: x.date,
+            time: x.time,
+            serviceName: x.service,
+            serviceKey: x.serviceKey,
+            userId: x.userId || userId,
+            userFullName:
+              x.userFullName ||
+              [targetUser?.name, targetUser?.lastName].filter(Boolean).join(" ").trim(),
+            userEmail: x.userEmail || targetUser?.email || "",
+          })),
+        },
       });
     }
 
@@ -3089,6 +3133,7 @@ router.post("/admin/fixed-schedules", async (req, res) => {
           bypassWindow: true,
           bypassCredits: true,
           fixedScheduleId: fixed._id,
+          skipActivityLog: true,
         });
         created.push(ap);
 
@@ -3109,6 +3154,58 @@ router.post("/admin/fixed-schedules", async (req, res) => {
           error: e?.message || "No se pudo crear.",
         });
       }
+    }
+
+    if (created.length || updated || conflicts.length || cancelledOldCount) {
+      const targetUser = await User.findById(userId).lean().catch(() => null);
+      const userFullName =
+        created[0]?.userFullName ||
+        [targetUser?.name, targetUser?.lastName].filter(Boolean).join(" ").trim();
+
+      await logActivity({
+        req,
+        category: "appointments",
+        action: "fixed_schedule_assigned_by_admin",
+        entity: "fixedSchedule",
+        entityId: String(fixed._id),
+        title: updated ? "Turnos fijos actualizados por admin" : "Turnos fijos asignados por admin",
+        description: updated
+          ? `Se actualizó un turno fijo y se generaron ${created.length} turnos.`
+          : `Se asignó un turno fijo y se generaron ${created.length} turnos.`,
+        subject: buildUserSubject(targetUser || { _id: userId }),
+        meta: {
+          fixedScheduleId: String(fixed._id),
+          updated,
+          assignedByAdmin: true,
+          createdCount: created.length,
+          conflictsCount: conflicts.length,
+          cancelledOldCount,
+          billingSummary: {
+            debited: billingResults.filter((x) => x?.action === "debited").length,
+            debt: billingResults.filter((x) => x?.action === "debt").length,
+            skipped: billingResults.filter((x) => x?.skipped).length,
+          },
+          userId,
+          userFullName,
+          serviceName: serviceIdentity.serviceName,
+          serviceKey: serviceIdentity.serviceKey,
+          months,
+          startDate,
+          endDate,
+          fixedItems: cleanItems,
+          items: created.map((x) => ({
+            id: x.id,
+            date: x.date,
+            time: x.time,
+            serviceName: x.service,
+            serviceKey: x.serviceKey,
+            userId: x.userId || userId,
+            userFullName: x.userFullName || userFullName,
+            userEmail: x.userEmail || targetUser?.email || "",
+          })),
+          conflicts,
+        },
+      });
     }
 
     return res.status(updated ? 200 : 201).json({
