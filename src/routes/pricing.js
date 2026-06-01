@@ -36,13 +36,6 @@ function normalizePrice(value) {
   return n;
 }
 
-function normalizeOptionalPrice(value) {
-  if (value === null || value === undefined || String(value).trim() === "") return null;
-  const n = Number(value);
-  if (!Number.isFinite(n)) return NaN;
-  return n;
-}
-
 function cleanString(value) {
   return String(value || "").trim();
 }
@@ -56,6 +49,87 @@ function validObjectId(value) {
 ========================= */
 const KD_SERVICE_KEY = "KD";
 const KD_SEED_SOURCE_KEYS = ["RA", "RF"];
+
+
+/* =========================
+   AUTO-SEED EVALUACIONES PE
+   Se mantienen como créditos PE, pero se muestran como 2 variantes comerciales.
+========================= */
+const PE_EVALUATION_VARIANT_PLANS = [
+  {
+    customTitle: "Evaluación Performance",
+    label: "Evaluación Performance",
+    payMethod: "CASH",
+    price: 20000,
+  },
+  {
+    customTitle: "Evaluación Performance",
+    label: "Evaluación Performance",
+    payMethod: "MP",
+    price: 23000,
+  },
+  {
+    customTitle: "Evaluación Training",
+    label: "Evaluación Training",
+    payMethod: "CASH",
+    price: 15000,
+  },
+  {
+    customTitle: "Evaluación Training",
+    label: "Evaluación Training",
+    payMethod: "MP",
+    price: 18000,
+  },
+];
+
+async function ensurePEEvaluationVariantPlans() {
+  // Evitamos que conviva la tarjeta estándar genérica PE + 1 crédito
+  // con las dos variantes nuevas. No se borra: solo se desactiva.
+  const disabledStandard = await PricingPlan.updateMany(
+    {
+      serviceKey: "PE",
+      credits: 1,
+      isCustom: { $ne: true },
+      active: { $ne: false },
+    },
+    {
+      $set: { active: false },
+    }
+  );
+
+  const operations = PE_EVALUATION_VARIANT_PLANS.map((variant) => ({
+    updateOne: {
+      filter: {
+        serviceKey: "PE",
+        payMethod: variant.payMethod,
+        credits: 1,
+        isCustom: true,
+        customTitle: variant.customTitle,
+      },
+      update: {
+        $set: {
+          serviceKey: "PE",
+          payMethod: variant.payMethod,
+          credits: 1,
+          price: variant.price,
+          label: variant.label,
+          customTitle: variant.customTitle,
+          isCustom: true,
+          active: true,
+        },
+      },
+      upsert: true,
+    },
+  }));
+
+  const result = await PricingPlan.bulkWrite(operations, { ordered: false });
+
+  return {
+    disabledStandard: Number(disabledStandard?.modifiedCount || 0),
+    created: Number(result?.upsertedCount || 0),
+    modified: Number(result?.modifiedCount || 0),
+  };
+}
 
 function pricingIdentityKey(plan) {
   return [
@@ -71,15 +145,13 @@ function planIsUsableForSeed(plan) {
   const payMethod = normalizePayMethod(plan?.payMethod);
   const credits = normalizeCredits(plan?.credits);
   const price = normalizePrice(plan?.price);
-  const coveragePrice = normalizeOptionalPrice(plan?.coveragePrice);
 
   return (
     ["CASH", "MP"].includes(payMethod) &&
     Number.isFinite(credits) &&
     credits > 0 &&
     Number.isFinite(price) &&
-    price >= 0 &&
-    (coveragePrice === null || (Number.isFinite(coveragePrice) && coveragePrice >= 0))
+    price >= 0
   );
 }
 
@@ -180,10 +252,6 @@ async function ensureKDPricingPlans() {
             payMethod,
             credits,
             price,
-            coveragePrice:
-              source.coveragePrice === null || source.coveragePrice === undefined
-                ? null
-                : Number(source.coveragePrice),
             label: labelForKDPlan(source),
             isCustom: false,
             customTitle: "",
@@ -221,6 +289,7 @@ router.use(protect);
 // GET /pricing?active=1
 router.get("/", async (req, res) => {
   try {
+    await ensurePEEvaluationVariantPlans();
     await ensureKDPricingPlans();
 
     const active = String(req.query.active ?? "1") === "1";
@@ -251,7 +320,6 @@ router.post("/upsert", adminOnly, async (req, res) => {
       payMethod,
       credits,
       price,
-      coveragePrice,
       label,
       active,
       isCustom,
@@ -262,7 +330,6 @@ router.post("/upsert", adminOnly, async (req, res) => {
     const normalizedPayMethod = normalizePayMethod(payMethod);
     const normalizedCredits = normalizeCredits(credits);
     const normalizedPrice = normalizePrice(price);
-    const normalizedCoveragePrice = normalizeOptionalPrice(coveragePrice);
     const custom = Boolean(isCustom);
     const title = cleanString(customTitle || label);
     const cleanLabel = cleanString(label || customTitle);
@@ -271,8 +338,7 @@ router.post("/upsert", adminOnly, async (req, res) => {
       !normalizedServiceKey ||
       !["CASH", "MP"].includes(normalizedPayMethod) ||
       !Number.isFinite(normalizedCredits) ||
-      !Number.isFinite(normalizedPrice) ||
-      (normalizedCoveragePrice !== null && !Number.isFinite(normalizedCoveragePrice))
+      !Number.isFinite(normalizedPrice)
     ) {
       return res.status(400).json({
         error: "Datos inválidos. Revisá serviceKey, payMethod, credits y price.",
@@ -285,10 +351,6 @@ router.post("/upsert", adminOnly, async (req, res) => {
 
     if (normalizedPrice < 0) {
       return res.status(400).json({ error: "El precio no puede ser negativo." });
-    }
-
-    if (normalizedCoveragePrice !== null && normalizedCoveragePrice < 0) {
-      return res.status(400).json({ error: "El precio con obra social no puede ser negativo." });
     }
 
     if (custom && !title) {
@@ -312,7 +374,6 @@ router.post("/upsert", adminOnly, async (req, res) => {
               payMethod: normalizedPayMethod,
               credits: normalizedCredits,
               price: normalizedPrice,
-              coveragePrice: normalizedCoveragePrice,
               label: cleanLabel || title,
               customTitle: title,
               isCustom: true,
@@ -351,7 +412,6 @@ router.post("/upsert", adminOnly, async (req, res) => {
             payMethod: normalizedPayMethod,
             credits: normalizedCredits,
             price: normalizedPrice,
-            coveragePrice: normalizedCoveragePrice,
             label: cleanLabel,
             isCustom: false,
             customTitle: "",
@@ -375,7 +435,6 @@ router.post("/upsert", adminOnly, async (req, res) => {
         payMethod: doc.payMethod,
         credits: doc.credits,
         price: doc.price,
-        coveragePrice: doc.coveragePrice,
         active: doc.active,
         isCustom: doc.isCustom,
         customTitle: doc.customTitle,
@@ -416,7 +475,6 @@ router.delete("/:id", adminOnly, async (req, res) => {
         payMethod: existing.payMethod,
         credits: existing.credits,
         price: existing.price,
-        coveragePrice: existing.coveragePrice,
         active: existing.active,
         isCustom: existing.isCustom,
         customTitle: existing.customTitle,
