@@ -44,6 +44,55 @@ function validObjectId(value) {
   return mongoose.Types.ObjectId.isValid(String(value || ""));
 }
 
+
+function sameIndexKey(indexKey = {}, expectedKey = {}) {
+  const a = JSON.stringify(indexKey || {});
+  const b = JSON.stringify(expectedKey || {});
+  return a === b;
+}
+
+async function ensurePricingIndexesForCustomCards() {
+  try {
+    const expectedKey = { serviceKey: 1, payMethod: 1, credits: 1 };
+    const indexes = await PricingPlan.collection.indexes();
+
+    for (const idx of indexes) {
+      if (!idx?.unique) continue;
+      if (!sameIndexKey(idx.key, expectedKey)) continue;
+
+      const hasCustomPartial =
+        idx?.partialFilterExpression &&
+        JSON.stringify(idx.partialFilterExpression) ===
+          JSON.stringify({ isCustom: { $ne: true } });
+
+      if (!hasCustomPartial) {
+        await PricingPlan.collection.dropIndex(idx.name);
+        console.log("[PRICING][INDEX] Índice único legacy eliminado:", idx.name);
+      }
+    }
+
+    await PricingPlan.collection.createIndex(expectedKey, {
+      unique: true,
+      partialFilterExpression: { isCustom: { $ne: true } },
+      name: "uniq_standard_pricing_plan",
+    });
+  } catch (err) {
+    // Si el índice ya existe con la configuración correcta o Mongo devuelve una carrera
+    // de creación, no frenamos la carga de precios.
+    const msg = String(err?.message || "");
+    const codeName = String(err?.codeName || "");
+    const ignorable =
+      msg.includes("already exists") ||
+      msg.includes("IndexOptionsConflict") ||
+      codeName === "IndexOptionsConflict";
+
+    if (!ignorable) {
+      console.error("[PRICING][INDEX] No se pudo preparar índices de precios:", err);
+      throw err;
+    }
+  }
+}
+
 /* =========================
    AUTO-SEED KD PRICING
 ========================= */
@@ -289,6 +338,7 @@ router.use(protect);
 // GET /pricing?active=1
 router.get("/", async (req, res) => {
   try {
+    await ensurePricingIndexesForCustomCards();
     await ensurePEEvaluationVariantPlans();
     await ensureKDPricingPlans();
 
@@ -314,6 +364,8 @@ router.get("/", async (req, res) => {
  */
 router.post("/upsert", adminOnly, async (req, res) => {
   try {
+    await ensurePricingIndexesForCustomCards();
+
     const {
       id,
       serviceKey,

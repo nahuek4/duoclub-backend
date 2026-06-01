@@ -90,20 +90,6 @@ const pricingPlanSchema = new mongoose.Schema(
       },
     },
 
-    // Precio opcional para usuarios marcados con cobertura / obra social.
-    // Si está vacío/null, el usuario ve y paga el precio normal.
-    coveragePrice: {
-      type: Number,
-      default: null,
-      min: 0,
-      validate: {
-        validator(value) {
-          return value === null || value === undefined || value === "" || Number.isFinite(Number(value));
-        },
-        message: "coveragePrice inválido.",
-      },
-    },
-
     // label se usa como texto visible para las tarjetas estándar.
     label: { type: String, default: "", trim: true },
 
@@ -121,13 +107,6 @@ pricingPlanSchema.pre("validate", function normalizeBeforeValidate() {
   this.payMethod = String(this.payMethod || "").toUpperCase().trim();
   this.credits = Number(this.credits || 0);
   this.price = Number(this.price || 0);
-
-  if (this.coveragePrice === "" || this.coveragePrice === undefined) {
-    this.coveragePrice = null;
-  } else if (this.coveragePrice !== null) {
-    this.coveragePrice = Number(this.coveragePrice);
-  }
-
   this.label = String(this.label || "").trim();
   this.customTitle = String(this.customTitle || "").trim();
   this.isCustom = Boolean(this.isCustom);
