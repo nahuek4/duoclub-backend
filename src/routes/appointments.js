@@ -1327,7 +1327,7 @@ function lotsDebug(user) {
 
 
 /* =========================
-   Turnos fijos: débito/deuda mensual
+   Turnos fijos: débito/deuda mensual y reversa por baja de plan
 ========================= */
 const FIXED_BILLING_SERVICE_KEYS = new Set(["EP", "RA", "RF", "KD"]);
 const FIXED_BILLING_DONE_STATUSES = new Set(["monthly_reserved", "debited", "debt", "skipped"]);
@@ -1501,7 +1501,6 @@ async function applyFixedAppointmentMonthlyBilling({ appointment, actorReq = nul
   };
 }
 
-
 async function settleFixedScheduleDebtWithCancelledCreditOnCancel({ user, appointment, historyItem = {}, session = null } = {}) {
   const ap = appointment;
   const serviceKey = serviceToKey(ap?.serviceKey || ap?.service || "");
@@ -1597,6 +1596,118 @@ async function releaseFixedAppointmentDebtOnCancel({ user, appointment, historyI
   ap.creditDebitStatus = "skipped";
 
   return { released: true, amount: released || amount, serviceKey };
+}
+
+async function reverseFixedAppointmentBillingForPlanDelete({ user, appointment, req, session = null } = {}) {
+  const ap = appointment;
+  const serviceKey = serviceToKey(ap?.serviceKey || ap?.service || "");
+
+  if (!user?._id || !ap?._id || !ap?.fixedScheduleId || !isFixedBillingServiceKey(serviceKey)) {
+    return {
+      changed: false,
+      refundApplied: false,
+      refundMode: "none",
+      refundReason: "FIXED_SCHEDULE_DELETE_NO_BILLING",
+      user,
+      serviceKey,
+    };
+  }
+
+  const baseHistory = {
+    date: ap.date,
+    time: ap.time,
+    service: serviceKeyToName(serviceKey) || ap.service,
+    serviceName: serviceKeyToName(serviceKey) || ap.service,
+    serviceKey,
+    fixedScheduleId: ap.fixedScheduleId,
+    appointmentId: ap._id,
+    createdAt: new Date(),
+  };
+
+  if (ap.creditLotId) {
+    const debtSettlement = await settleFixedScheduleDebtWithCancelledCreditOnCancel({
+      user,
+      appointment: ap,
+      historyItem: {
+        ...baseHistory,
+        action: "fixed_schedule_debt_settled_by_plan_delete",
+        title: `Deuda de turno fijo compensada ${serviceKey}`,
+        message:
+          "El admin dio de baja el plan de turnos fijos. Este turno ya estaba debitado y se usó para compensar deuda pendiente del mismo servicio.",
+      },
+      session,
+    });
+
+    if (debtSettlement.settled) {
+      return {
+        changed: true,
+        refundApplied: true,
+        refundMode: "fixed-debt-settlement",
+        refundReason: "FIXED_SCHEDULE_DEBT_SETTLED_BY_PLAN_DELETE",
+        user: debtSettlement.user,
+        serviceKey,
+        amount: Number(debtSettlement.amount || 0),
+      };
+    }
+
+    const refundedUser = await refundCreditAtomicToOriginalLot({
+      userId: user._id,
+      lotId: ap.creditLotId,
+      apService: ap.service,
+      historyItem: {
+        ...baseHistory,
+        action: "fixed_schedule_credit_refunded_by_plan_delete",
+        title: `Crédito devuelto por baja de turno fijo ${serviceKey}`,
+        message:
+          "El admin dio de baja el plan de turnos fijos. Se devolvió 1 crédito porque no había deuda pendiente para compensar.",
+      },
+      session,
+    });
+
+    return {
+      changed: true,
+      refundApplied: true,
+      refundMode: "fixed-plan-delete-refund",
+      refundReason: "FIXED_SCHEDULE_CREDIT_REFUNDED_BY_PLAN_DELETE",
+      user: refundedUser,
+      serviceKey,
+      amount: 1,
+    };
+  }
+
+  const debtRelease = await releaseFixedAppointmentDebtOnCancel({
+    user,
+    appointment: ap,
+    historyItem: {
+      ...baseHistory,
+      action: "fixed_schedule_debt_released_by_plan_delete",
+      title: `Deuda liberada por baja de turno fijo ${serviceKey}`,
+      message:
+        "El admin dio de baja el plan de turnos fijos. Se liberó la deuda asociada a este turno futuro.",
+    },
+    session,
+  });
+
+  if (debtRelease.released) {
+    return {
+      changed: true,
+      refundApplied: true,
+      refundMode: "fixed-debt-release",
+      refundReason: "FIXED_SCHEDULE_DEBT_RELEASED_BY_PLAN_DELETE",
+      user,
+      serviceKey,
+      amount: Number(debtRelease.amount || 0),
+    };
+  }
+
+  return {
+    changed: false,
+    refundApplied: false,
+    refundMode: "none",
+    refundReason: "FIXED_SCHEDULE_DELETE_UNBILLED_FUTURE_APPOINTMENT",
+    user,
+    serviceKey,
+  };
 }
 
 /* =========================
@@ -1994,9 +2105,7 @@ async function createAppointmentForTargetUser({
         date,
         time: t,
         serviceName: basic.serviceName,
-        serviceKey: basic.serviceKey,
         assignedByAdmin: true,
-        fixedScheduleId: fixedScheduleId ? String(fixedScheduleId) : "",
       },
     });
   }
@@ -2270,7 +2379,7 @@ router.post("/admin/:userId/complete-first-evaluation", ensureStaff, async (req,
 
         user.history = Array.isArray(user.history) ? user.history : [];
         user.history.push({
-          action: "primera_evaluacion_completada_por_admin",
+          action: "evaluacion_obligatoria_completada_por_admin",
           service: PE_NAME,
           serviceName: PE_NAME,
           createdAt: new Date(),
@@ -2301,8 +2410,8 @@ router.post("/admin/:userId/complete-first-evaluation", ensureStaff, async (req,
       action: "first_evaluation_completed_by_admin",
       entity: "user",
       entityId: String(activityUser?._id || userId),
-      title: "Primera evaluación completada",
-      description: "Se marcó manualmente la primera evaluación como completada.",
+      title: "Evaluación obligatoria completada",
+      description: "Se marcó manualmente la evaluación obligatoria como completada.",
       subject: buildUserSubject(activityUser || { _id: userId }),
       meta: {
         firstEvaluationCompleted: true,
@@ -2329,7 +2438,7 @@ router.post("/admin/:userId/complete-first-evaluation", ensureStaff, async (req,
     }
 
     return res.status(500).json({
-      error: "No se pudo completar la primera evaluación.",
+      error: "No se pudo completar la evaluación obligatoria.",
     });
   } finally {
     await session.endSession();
@@ -2547,6 +2656,18 @@ router.get("/availability", async (req, res) => {
         });
       }
 
+      if (!me.firstEvaluationCompleted && normalizedServiceKey !== "PE") {
+        return res.json({
+          date,
+          service: normalizedServiceName,
+          serviceKey: normalizedServiceKey,
+          slots: times.map((t) => ({
+            time: t,
+            state: "closed",
+            reason: "Primero debés completar tu primera evaluación presencial.",
+          })),
+        });
+      }
     }
 
     if (isSaturday(date) || isSunday(date)) {
@@ -2928,38 +3049,38 @@ router.post("/admin/assign", async (req, res) => {
     }
 
     if (created.length) {
-      const targetUser = await User.findById(userId).lean().catch(() => null);
+      const targetUserForLog = await User.findById(userId)
+        .select("name lastName email role")
+        .lean()
+        .catch(() => null);
+
       await logActivity({
         req,
         category: "appointments",
         action: "appointments_assigned_by_admin_batch",
-        entity: "appointments",
+        entity: "appointment",
         entityId: created.map((x) => x.id).filter(Boolean).join(","),
-        title: created.length === 1 ? "Turno asignado por admin" : "Turnos asignados por admin",
-        description:
-          created.length === 1
-            ? "Se asignó 1 turno a un usuario desde administración."
-            : `Se asignaron ${created.length} turnos a un usuario desde administración.`,
-        subject: buildUserSubject(targetUser || { _id: userId }),
+        title: "Turnos asignados por admin",
+        description: `Se asignaron ${created.length} turno(s) a un usuario desde administración.`,
+        subject: buildUserSubject(targetUserForLog || { _id: userId }),
         meta: {
           assignedByAdmin: true,
           createdCount: created.length,
           conflictsCount: conflicts.length,
-          userId,
-          userFullName:
-            created[0]?.userFullName ||
-            [targetUser?.name, targetUser?.lastName].filter(Boolean).join(" ").trim(),
+          user: {
+            id: String(targetUserForLog?._id || userId),
+            name: [targetUserForLog?.name, targetUserForLog?.lastName].filter(Boolean).join(" ").trim(),
+            email: targetUserForLog?.email || "",
+          },
           items: created.map((x) => ({
             id: x.id,
             date: x.date,
             time: x.time,
-            serviceName: x.service,
+            service: x.service,
             serviceKey: x.serviceKey,
-            userId: x.userId || userId,
-            userFullName:
-              x.userFullName ||
-              [targetUser?.name, targetUser?.lastName].filter(Boolean).join(" ").trim(),
-            userEmail: x.userEmail || targetUser?.email || "",
+            userId: x.userId || String(targetUserForLog?._id || userId),
+            userFullName: x.userFullName || [targetUserForLog?.name, targetUserForLog?.lastName].filter(Boolean).join(" ").trim(),
+            userEmail: x.userEmail || targetUserForLog?.email || "",
           })),
         },
       });
@@ -3100,11 +3221,14 @@ router.post("/admin/fixed-schedules", async (req, res) => {
       });
     }
 
+    const currentMonthRange = getCurrentMonthRangeYmd(new Date());
     const occurrences = buildOccurrencesForFixedSchedule({
       startDate,
       months,
       items: cleanItems,
-    });
+    }).filter((occ) =>
+      isYmdInsideRange(occ.date, currentMonthRange.startYmd, currentMonthRange.endYmd)
+    );
 
     const created = [];
     const conflicts = [];
@@ -3156,11 +3280,11 @@ router.post("/admin/fixed-schedules", async (req, res) => {
       }
     }
 
-    if (created.length || updated || conflicts.length || cancelledOldCount) {
-      const targetUser = await User.findById(userId).lean().catch(() => null);
-      const userFullName =
-        created[0]?.userFullName ||
-        [targetUser?.name, targetUser?.lastName].filter(Boolean).join(" ").trim();
+    if (created.length || cancelledOldCount) {
+      const targetUserForLog = await User.findById(userId)
+        .select("name lastName email role")
+        .lean()
+        .catch(() => null);
 
       await logActivity({
         req,
@@ -3168,42 +3292,42 @@ router.post("/admin/fixed-schedules", async (req, res) => {
         action: "fixed_schedule_assigned_by_admin",
         entity: "fixedSchedule",
         entityId: String(fixed._id),
-        title: updated ? "Turnos fijos actualizados por admin" : "Turnos fijos asignados por admin",
-        description: updated
-          ? `Se actualizó un turno fijo y se generaron ${created.length} turnos.`
-          : `Se asignó un turno fijo y se generaron ${created.length} turnos.`,
-        subject: buildUserSubject(targetUser || { _id: userId }),
+        title: "Turnos fijos asignados por admin",
+        description: `Se ${updated ? "actualizó" : "asignó"} un plan de turnos fijos con ${created.length} turno(s) del mes actual.`,
+        subject: buildUserSubject(targetUserForLog || { _id: userId }),
         meta: {
           fixedScheduleId: String(fixed._id),
           updated,
-          assignedByAdmin: true,
+          service: serviceIdentity.serviceName,
+          serviceKey: serviceIdentity.serviceKey,
+          months,
+          currentMonthKey: currentMonthRange.monthKey,
+          generatedFrom: currentMonthRange.startYmd,
+          generatedTo: currentMonthRange.endYmd,
           createdCount: created.length,
-          conflictsCount: conflicts.length,
           cancelledOldCount,
+          conflictsCount: conflicts.length,
           billingSummary: {
             debited: billingResults.filter((x) => x?.action === "debited").length,
             debt: billingResults.filter((x) => x?.action === "debt").length,
             skipped: billingResults.filter((x) => x?.skipped).length,
           },
-          userId,
-          userFullName,
-          serviceName: serviceIdentity.serviceName,
-          serviceKey: serviceIdentity.serviceKey,
-          months,
-          startDate,
-          endDate,
+          user: {
+            id: String(targetUserForLog?._id || userId),
+            name: [targetUserForLog?.name, targetUserForLog?.lastName].filter(Boolean).join(" ").trim(),
+            email: targetUserForLog?.email || "",
+          },
           fixedItems: cleanItems,
           items: created.map((x) => ({
             id: x.id,
             date: x.date,
             time: x.time,
-            serviceName: x.service,
+            service: x.service,
             serviceKey: x.serviceKey,
-            userId: x.userId || userId,
-            userFullName: x.userFullName || userFullName,
-            userEmail: x.userEmail || targetUser?.email || "",
+            userId: x.userId || String(targetUserForLog?._id || userId),
+            userFullName: x.userFullName || [targetUserForLog?.name, targetUserForLog?.lastName].filter(Boolean).join(" ").trim(),
+            userEmail: x.userEmail || targetUserForLog?.email || "",
           })),
-          conflicts,
         },
       });
     }
@@ -3215,6 +3339,9 @@ router.post("/admin/fixed-schedules", async (req, res) => {
       cancelledOldCount,
       createdCount: created.length,
       conflictsCount: conflicts.length,
+      generatedMonthKey: currentMonthRange.monthKey,
+      generatedFrom: currentMonthRange.startYmd,
+      generatedTo: currentMonthRange.endYmd,
       billingResults,
       billingSummary: {
         debited: billingResults.filter((x) => x?.action === "debited").length,
@@ -3268,6 +3395,9 @@ router.post("/", async (req, res) => {
 
       if (user.suspended) throw new Error("USER_SUSPENDED");
       if (requiresApto(user)) throw new Error("APTO_REQUIRED");
+      if (!user.firstEvaluationCompleted && basic.serviceKey !== "PE") {
+        throw new Error("FIRST_EVALUATION_REQUIRED");
+      }
 
       recalcUserCredits(user);
 
@@ -3509,6 +3639,11 @@ router.post("/", async (req, res) => {
     if (msg === "APTO_REQUIRED") {
       return res.status(403).json({ error: "Falta apto médico." });
     }
+    if (msg === "FIRST_EVALUATION_REQUIRED") {
+      return res.status(403).json({
+        error: "Primero debés completar tu primera evaluación presencial.",
+      });
+    }
     if (msg === "NO_CREDITS") {
       return res.status(403).json({ error: "Sin créditos disponibles." });
     }
@@ -3595,6 +3730,11 @@ router.post("/batch", async (req, res) => {
         };
       });
 
+      for (const it of basicItems) {
+        if (!user.firstEvaluationCompleted && it.serviceKey !== "PE") {
+          throw new Error("FIRST_EVALUATION_REQUIRED");
+        }
+      }
 
       recalcUserCredits(user);
       const needed = basicItems.length;
@@ -3756,6 +3896,11 @@ router.post("/batch", async (req, res) => {
     if (msg === "APTO_REQUIRED") {
       return res.status(403).json({ error: "Falta apto médico." });
     }
+    if (msg === "FIRST_EVALUATION_REQUIRED") {
+      return res.status(403).json({
+        error: "Primero debés completar tu primera evaluación presencial.",
+      });
+    }
     if (msg === "NO_CREDITS") {
       return res.status(403).json({ error: "Sin créditos suficientes." });
     }
@@ -3843,35 +3988,15 @@ router.post("/admin/cancel/:id", ensureStaff, async (req, res) => {
       let refundReason = "ADMIN_NO_POLICY";
 
       if (ap.creditLotId) {
-        const fixedDebtSettlement = await settleFixedScheduleDebtWithCancelledCreditOnCancel({
-          user: updatedUser,
-          appointment: ap,
-          historyItem: {
-            ...historyItem,
-            action: "fixed_schedule_debt_settled_by_admin_cancel",
-            title: "Deuda de turno fijo compensada",
-            message:
-              "Cancelación administrativa de un turno fijo ya debitado. Se usó ese crédito para compensar deuda pendiente del mismo servicio.",
-          },
+        updatedUser = await refundCreditAtomicToOriginalLot({
+          userId: user._id,
+          lotId: ap.creditLotId,
+          apService: ap.service,
+          historyItem,
           session,
         });
-
-        if (fixedDebtSettlement.settled) {
-          updatedUser = fixedDebtSettlement.user;
-          refundApplied = true;
-          refundMode = "fixed-debt-settlement";
-          refundReason = "FIXED_SCHEDULE_DEBT_SETTLED_BY_CANCEL";
-        } else {
-          updatedUser = await refundCreditAtomicToOriginalLot({
-            userId: user._id,
-            lotId: ap.creditLotId,
-            apService: ap.service,
-            historyItem,
-            session,
-          });
-          refundApplied = true;
-          refundMode = "admin-no-policy";
-        }
+        refundApplied = true;
+        refundMode = "admin-no-policy";
       } else if (!ap.assignedManually && !ap.fixedScheduleId) {
         const refunded = await refundCreditAtomicNewLot({
           userId: user._id,
@@ -3883,31 +4008,13 @@ router.post("/admin/cancel/:id", ensureStaff, async (req, res) => {
         refundApplied = true;
         refundMode = "admin-no-policy-new-lot";
       } else {
-        const debtRelease = await releaseFixedAppointmentDebtOnCancel({
-          user: updatedUser,
-          appointment: ap,
-          historyItem: {
-            ...historyItem,
-            action: "fixed_schedule_debt_released_by_admin_cancel",
-            title: "Deuda de turno fijo liberada",
-            message: "Cancelación administrativa de un turno fijo que estaba en deuda.",
-          },
-          session,
+        updatedUser.history = Array.isArray(updatedUser.history) ? updatedUser.history : [];
+        updatedUser.history.push({
+          ...historyItem,
+          createdAt: new Date(),
         });
-
-        if (debtRelease.released) {
-          refundApplied = true;
-          refundMode = "fixed-debt-release";
-          refundReason = "FIXED_SCHEDULE_DEBT_RELEASED";
-        } else {
-          updatedUser.history = Array.isArray(updatedUser.history) ? updatedUser.history : [];
-          updatedUser.history.push({
-            ...historyItem,
-            createdAt: new Date(),
-          });
-          recalcUserCredits(updatedUser);
-          await updatedUser.save({ session });
-        }
+        recalcUserCredits(updatedUser);
+        await updatedUser.save({ session });
       }
 
       ap.status = "cancelled";
@@ -4097,39 +4204,16 @@ router.delete("/:id", async (req, res) => {
 
       if (decision.refund) {
         if (ap.fixedScheduleId && !ap.creditLotId) {
-          const debtRelease = await releaseFixedAppointmentDebtOnCancel({
-            user: updatedUser,
-            appointment: ap,
-            historyItem: {
-              action: "fixed_schedule_debt_released_by_cancel",
-              date: ap.date,
-              time: ap.time,
-              service: ap.service,
-              serviceName: ap.service,
-              ...historyMeta,
-            },
-            session,
-          });
-
-          if (debtRelease.released) {
-            decision.refund = true;
-            decision.refundMode = "fixed-debt-release";
-            decision.reason = "FIXED_SCHEDULE_DEBT_RELEASED";
-            updatedUser = user;
-          } else {
-            decision.refund = false;
-            decision.refundMode = "none";
-            decision.reason = "Turno fijo sin crédito consumido: no corresponde reintegro automático.";
-          }
+          decision.refund = false;
+          decision.refundMode = "none";
+          decision.reason = "Turno fijo sin crédito consumido: no corresponde reintegro automático.";
         } else if (ap.creditLotId) {
-          const fixedDebtSettlement = await settleFixedScheduleDebtWithCancelledCreditOnCancel({
-            user: updatedUser,
-            appointment: ap,
+          updatedUser = await refundCreditAtomicToOriginalLot({
+            userId: user._id,
+            lotId: ap.creditLotId,
+            apService: ap.service,
             historyItem: {
-              action: "fixed_schedule_debt_settled_by_cancelled_credit",
-              title: "Deuda de turno fijo compensada",
-              message:
-                "Se canceló un turno fijo ya debitado. Como existía deuda del mismo servicio, no se generó crédito positivo: se compensó la deuda pendiente.",
+              action: decision.historyAction,
               date: ap.date,
               time: ap.time,
               service: ap.service,
@@ -4138,28 +4222,6 @@ router.delete("/:id", async (req, res) => {
             },
             session,
           });
-
-          if (fixedDebtSettlement.settled) {
-            updatedUser = fixedDebtSettlement.user;
-            decision.refund = true;
-            decision.refundMode = "fixed-debt-settlement";
-            decision.reason = "FIXED_SCHEDULE_DEBT_SETTLED_BY_CANCEL";
-          } else {
-            updatedUser = await refundCreditAtomicToOriginalLot({
-              userId: user._id,
-              lotId: ap.creditLotId,
-              apService: ap.service,
-              historyItem: {
-                action: decision.historyAction,
-                date: ap.date,
-                time: ap.time,
-                service: ap.service,
-                serviceName: ap.service,
-                ...historyMeta,
-              },
-              session,
-            });
-          }
         } else {
           const refunded = await refundCreditAtomicNewLot({
             userId: user._id,
@@ -4491,11 +4553,6 @@ router.get("/admin/fixed-schedules", ensureStaff, async (req, res) => {
 
     const payload = [];
     for (const it of items) {
-      // Seguridad: si quedó un turno fijo huérfano por un usuario eliminado,
-      // no lo devolvemos al frontend para que no aparezca como "Usuario".
-      // El cleanup definitivo se hace al eliminar el usuario.
-      if (!it?.user) continue;
-
       const normalizedItems = await deriveFixedItemsFromAppointments(it);
       payload.push({
         id: String(it._id),
@@ -4531,6 +4588,8 @@ router.get("/admin/fixed-schedules", ensureStaff, async (req, res) => {
    DELETE /appointments/admin/fixed-schedules/:id
 ========================= */
 router.delete("/admin/fixed-schedules/:id", ensureStaff, async (req, res) => {
+  const session = await mongoose.startSession();
+
   try {
     const scheduleId = String(req.params?.id || "").trim();
 
@@ -4542,46 +4601,165 @@ router.delete("/admin/fixed-schedules/:id", ensureStaff, async (req, res) => {
     const actorId = req.user?._id || req.user?.id || null;
     const today = ymdAR(new Date());
 
-    const schedule = await FixedSchedule.findById(scheduleId);
-    if (!schedule) {
-      return res.status(404).json({ error: "Turno fijo no encontrado." });
-    }
+    let responsePayload = null;
+    let activityMeta = null;
+    let activitySubject = null;
 
-    const cancelled = await Appointment.updateMany(
-      {
+    await session.withTransaction(async () => {
+      const schedule = await FixedSchedule.findById(scheduleId).session(session);
+      if (!schedule) {
+        throw new Error("FIXED_SCHEDULE_NOT_FOUND");
+      }
+
+      const targetUser = await User.findById(schedule.user).session(session);
+      if (!targetUser) {
+        throw new Error("USER_NOT_FOUND");
+      }
+
+      const appointmentsToCancel = await Appointment.find({
         fixedScheduleId: schedule._id,
         status: "reserved",
         date: { $gte: today },
-      },
-      {
-        $set: {
-          status: "cancelled",
-          cancelledAt: new Date(),
-          cancelledByRole: role || "admin",
-          cancelledByUser: actorId,
-          cancelReason: "FIXED_SCHEDULE_DELETED",
-          refundApplied: false,
-          refundMode: "none",
-        },
+      })
+        .sort({ date: 1, time: 1 })
+        .session(session);
+
+      let currentUser = targetUser;
+      const cancelledItems = [];
+      const financialResults = [];
+
+      for (const ap of appointmentsToCancel) {
+        const financial = await reverseFixedAppointmentBillingForPlanDelete({
+          user: currentUser,
+          appointment: ap,
+          req,
+          session,
+        });
+
+        if (financial.user) currentUser = financial.user;
+        financialResults.push({
+          appointmentId: String(ap._id),
+          date: ap.date,
+          time: ap.time,
+          service: ap.service,
+          serviceKey: serviceToKey(ap.serviceKey || ap.service || ""),
+          changed: !!financial.changed,
+          refundApplied: !!financial.refundApplied,
+          refundMode: financial.refundMode || "none",
+          refundReason: financial.refundReason || "",
+          amount: Number(financial.amount || 0),
+        });
+
+        ap.status = "cancelled";
+        ap.cancelledAt = new Date();
+        ap.cancelledByRole = role || "admin";
+        ap.cancelledByUser = actorId;
+        ap.cancelReason = financial.refundReason || "FIXED_SCHEDULE_DELETED";
+        ap.refundApplied = !!financial.refundApplied;
+        ap.refundMode = financial.refundMode || "none";
+        await ap.save({ session });
+
+        cancelledItems.push({
+          id: String(ap._id),
+          date: ap.date,
+          time: ap.time,
+          service: ap.service,
+          serviceKey: serviceToKey(ap.serviceKey || ap.service || ""),
+          refundApplied: !!financial.refundApplied,
+          refundMode: financial.refundMode || "none",
+          refundReason: financial.refundReason || "",
+        });
       }
-    );
 
-    // No vaciamos schedule.items: el schema exige al menos un ítem.
-    // Vaciarlo hacía fallar la validación y devolvía 500 al borrar turnos fijos.
-    schedule.active = false;
-    schedule.deactivatedAt = new Date();
-    schedule.deactivatedBy = actorId;
-    await schedule.save();
+      // No vaciamos schedule.items: el schema exige al menos un ítem.
+      // Vaciarlo hacía fallar la validación y devolvía 500 al borrar turnos fijos.
+      schedule.active = false;
+      schedule.deactivatedAt = new Date();
+      schedule.deactivatedBy = actorId;
+      await schedule.save({ session });
 
-    return res.json({
-      ok: true,
-      deactivated: true,
-      fixedScheduleId: String(schedule._id),
-      cancelledAppointmentsCount: Number(cancelled?.modifiedCount || 0),
+      const finalUser = await User.findById(schedule.user).session(session);
+      if (finalUser) {
+        recalcUserCredits(finalUser);
+        await finalUser.save({ session });
+        currentUser = finalUser;
+      }
+
+      const refundCount = financialResults.filter((x) => x.refundMode === "fixed-plan-delete-refund").length;
+      const debtSettledCount = financialResults.filter((x) => x.refundMode === "fixed-debt-settlement").length;
+      const debtReleasedCount = financialResults.filter((x) => x.refundMode === "fixed-debt-release").length;
+      const noFinancialImpactCount = financialResults.filter((x) => !x.changed).length;
+
+      activitySubject = currentUser;
+      activityMeta = {
+        fixedScheduleId: String(schedule._id),
+        service: schedule.service || serviceKeyToName(schedule.serviceKey),
+        serviceKey: String(schedule.serviceKey || "").toUpperCase().trim(),
+        cancelledAppointmentsCount: cancelledItems.length,
+        refundCount,
+        debtSettledCount,
+        debtReleasedCount,
+        noFinancialImpactCount,
+        userCredits: Number(currentUser?.credits || 0),
+        fixedScheduleDebt: currentUser?.fixedScheduleDebt || {},
+        items: cancelledItems,
+        financialResults,
+      };
+
+      responsePayload = {
+        ok: true,
+        deactivated: true,
+        fixedScheduleId: String(schedule._id),
+        cancelledAppointmentsCount: cancelledItems.length,
+        financialSummary: {
+          refundCount,
+          debtSettledCount,
+          debtReleasedCount,
+          noFinancialImpactCount,
+        },
+        userCredits: Number(currentUser?.credits || 0),
+        fixedScheduleDebt: currentUser?.fixedScheduleDebt || {},
+        cancelledItems,
+      };
     });
+
+    await logActivity({
+      req,
+      category: "appointments",
+      action: "fixed_schedule_deleted_by_admin",
+      entity: "fixedSchedule",
+      entityId: scheduleId,
+      title: "Plan de turnos fijos dado de baja",
+      description: "Se dio de baja un plan de turnos fijos y se ajustaron créditos/deuda de sus turnos futuros.",
+      subject: buildUserSubject(activitySubject || { _id: "" }),
+      meta: activityMeta || {},
+    });
+
+    return res.json(responsePayload);
   } catch (err) {
     console.error("Error en DELETE /appointments/admin/fixed-schedules/:id:", err);
+
+    if (String(err?.message || "") === "FIXED_SCHEDULE_NOT_FOUND") {
+      return res.status(404).json({ error: "Turno fijo no encontrado." });
+    }
+
+    if (String(err?.message || "") === "USER_NOT_FOUND") {
+      return res.status(404).json({ error: "Usuario del turno fijo no encontrado." });
+    }
+
+    if (String(err?.message || "") === "REFUND_FAILED") {
+      return res.status(500).json({ error: "No se pudo devolver el crédito al lote original." });
+    }
+
+    if (String(err?.message || "") === "ORIGINAL_LOT_ALREADY_FULL_ON_REFUND") {
+      return res.status(409).json({
+        error: "El lote original ya estaba completo. No se dio de baja el plan para evitar duplicar créditos.",
+      });
+    }
+
     return res.status(500).json({ error: "No se pudo eliminar el turno fijo." });
+  } finally {
+    await session.endSession();
   }
 });
 
