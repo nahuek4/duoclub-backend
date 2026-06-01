@@ -68,7 +68,18 @@ const orderItemSchema = new mongoose.Schema(
     // qty + precios por item (server authority)
     qty: { type: Number, default: 1, min: 1 },
     basePrice: { type: Number, default: 0, min: 0 },
+
+    // Precio especial por obra social / cobertura aplicado al item.
+    coveragePrice: { type: Number, default: null },
+
+    // Precio final del item.
     price: { type: Number, default: 0, min: 0 },
+
+    // Auditoría de descuento por item.
+    discountAmount: { type: Number, default: 0, min: 0 },
+    discountReason: { type: String, default: "", trim: true },
+    discountType: { type: String, default: "", trim: true, uppercase: true },
+    coverageApplied: { type: Boolean, default: false },
   },
   { _id: false }
 );
@@ -92,9 +103,19 @@ const orderSchema = new mongoose.Schema(
     totalBase: { type: Number, default: 0, min: 0 },
     total: { type: Number, default: 0, min: 0 },
 
-    // descuento DUO+
+    // descuentos aplicados a la orden
+    // discountAmount queda como total de descuentos. Puede incluir DUO+ y obra social.
     discountPercent: { type: Number, default: 0, min: 0 },
     discountAmount: { type: Number, default: 0, min: 0 },
+
+    // Descuento específico por obra social / cobertura.
+    coverageDiscountAmount: { type: Number, default: 0, min: 0 },
+    coverageApplied: { type: Boolean, default: false },
+
+    // Motivo visible en AdminOrdenes. Ej: "Obra social / cobertura" o proveedor.
+    discountReason: { type: String, default: "", trim: true },
+    discountType: { type: String, default: "", trim: true, uppercase: true },
+
     totalFinal: { type: Number, default: 0, min: 0 },
 
     status: {
@@ -178,6 +199,21 @@ orderSchema.pre("validate", function () {
         item.serviceKey = "";
       }
 
+      item.qty = Math.max(1, Number(item.qty || 1));
+      item.basePrice = Math.max(0, Number(item.basePrice || 0));
+      item.price = Math.max(0, Number(item.price || 0));
+      item.discountAmount = Math.max(0, Number(item.discountAmount || 0));
+      item.discountReason = String(item.discountReason || "").trim();
+      item.discountType = String(item.discountType || "").toUpperCase().trim();
+      item.coverageApplied = Boolean(item.coverageApplied);
+
+      if (item.coveragePrice === null || item.coveragePrice === undefined || item.coveragePrice === "") {
+        item.coveragePrice = null;
+      } else {
+        const coveragePrice = Number(item.coveragePrice);
+        item.coveragePrice = Number.isFinite(coveragePrice) && coveragePrice >= 0 ? coveragePrice : null;
+      }
+
       return item;
     });
   }
@@ -215,6 +251,11 @@ orderSchema.pre("validate", function () {
 
   this.discountPercent = Math.max(0, Number(this.discountPercent || 0));
   this.discountAmount = Math.max(0, Number(this.discountAmount || 0));
+  this.coverageDiscountAmount = Math.max(0, Number(this.coverageDiscountAmount || 0));
+  this.coverageApplied = Boolean(this.coverageApplied);
+  this.discountReason = String(this.discountReason || "").trim();
+  this.discountType = String(this.discountType || "").toUpperCase().trim();
+
   this.totalBase = Math.max(0, Number(this.totalBase || 0));
   this.total = Math.max(0, Number(this.total || 0));
   this.totalFinal = Math.max(0, Number(this.totalFinal || 0));

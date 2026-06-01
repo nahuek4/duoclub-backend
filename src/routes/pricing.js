@@ -36,6 +36,13 @@ function normalizePrice(value) {
   return n;
 }
 
+function normalizeOptionalPrice(value) {
+  if (value === null || value === undefined || String(value).trim() === "") return null;
+  const n = Number(value);
+  if (!Number.isFinite(n)) return NaN;
+  return n;
+}
+
 function cleanString(value) {
   return String(value || "").trim();
 }
@@ -64,13 +71,15 @@ function planIsUsableForSeed(plan) {
   const payMethod = normalizePayMethod(plan?.payMethod);
   const credits = normalizeCredits(plan?.credits);
   const price = normalizePrice(plan?.price);
+  const coveragePrice = normalizeOptionalPrice(plan?.coveragePrice);
 
   return (
     ["CASH", "MP"].includes(payMethod) &&
     Number.isFinite(credits) &&
     credits > 0 &&
     Number.isFinite(price) &&
-    price >= 0
+    price >= 0 &&
+    (coveragePrice === null || (Number.isFinite(coveragePrice) && coveragePrice >= 0))
   );
 }
 
@@ -171,6 +180,10 @@ async function ensureKDPricingPlans() {
             payMethod,
             credits,
             price,
+            coveragePrice:
+              source.coveragePrice === null || source.coveragePrice === undefined
+                ? null
+                : Number(source.coveragePrice),
             label: labelForKDPlan(source),
             isCustom: false,
             customTitle: "",
@@ -238,6 +251,7 @@ router.post("/upsert", adminOnly, async (req, res) => {
       payMethod,
       credits,
       price,
+      coveragePrice,
       label,
       active,
       isCustom,
@@ -248,6 +262,7 @@ router.post("/upsert", adminOnly, async (req, res) => {
     const normalizedPayMethod = normalizePayMethod(payMethod);
     const normalizedCredits = normalizeCredits(credits);
     const normalizedPrice = normalizePrice(price);
+    const normalizedCoveragePrice = normalizeOptionalPrice(coveragePrice);
     const custom = Boolean(isCustom);
     const title = cleanString(customTitle || label);
     const cleanLabel = cleanString(label || customTitle);
@@ -256,7 +271,8 @@ router.post("/upsert", adminOnly, async (req, res) => {
       !normalizedServiceKey ||
       !["CASH", "MP"].includes(normalizedPayMethod) ||
       !Number.isFinite(normalizedCredits) ||
-      !Number.isFinite(normalizedPrice)
+      !Number.isFinite(normalizedPrice) ||
+      (normalizedCoveragePrice !== null && !Number.isFinite(normalizedCoveragePrice))
     ) {
       return res.status(400).json({
         error: "Datos inválidos. Revisá serviceKey, payMethod, credits y price.",
@@ -269,6 +285,10 @@ router.post("/upsert", adminOnly, async (req, res) => {
 
     if (normalizedPrice < 0) {
       return res.status(400).json({ error: "El precio no puede ser negativo." });
+    }
+
+    if (normalizedCoveragePrice !== null && normalizedCoveragePrice < 0) {
+      return res.status(400).json({ error: "El precio con obra social no puede ser negativo." });
     }
 
     if (custom && !title) {
@@ -292,6 +312,7 @@ router.post("/upsert", adminOnly, async (req, res) => {
               payMethod: normalizedPayMethod,
               credits: normalizedCredits,
               price: normalizedPrice,
+              coveragePrice: normalizedCoveragePrice,
               label: cleanLabel || title,
               customTitle: title,
               isCustom: true,
@@ -330,6 +351,7 @@ router.post("/upsert", adminOnly, async (req, res) => {
             payMethod: normalizedPayMethod,
             credits: normalizedCredits,
             price: normalizedPrice,
+            coveragePrice: normalizedCoveragePrice,
             label: cleanLabel,
             isCustom: false,
             customTitle: "",
@@ -353,6 +375,7 @@ router.post("/upsert", adminOnly, async (req, res) => {
         payMethod: doc.payMethod,
         credits: doc.credits,
         price: doc.price,
+        coveragePrice: doc.coveragePrice,
         active: doc.active,
         isCustom: doc.isCustom,
         customTitle: doc.customTitle,
@@ -393,6 +416,7 @@ router.delete("/:id", adminOnly, async (req, res) => {
         payMethod: existing.payMethod,
         credits: existing.credits,
         price: existing.price,
+        coveragePrice: existing.coveragePrice,
         active: existing.active,
         isCustom: existing.isCustom,
         customTitle: existing.customTitle,

@@ -350,6 +350,11 @@ const userSchema = new mongoose.Schema(
 
     healthInsurance: {
       provider: { type: String, default: "", trim: true },
+      // Lo maneja el admin. Habilita precios con cobertura en /comprar.
+      coverageActive: { type: Boolean, default: false },
+      coverageReason: { type: String, default: "", trim: true },
+      coverageUpdatedAt: { type: Date, default: null },
+      coverageUpdatedBy: { type: String, default: "", trim: true },
     },
 
     birthDate: {
@@ -451,6 +456,14 @@ userSchema.pre("validate", function () {
 
   this.healthInsurance.provider = String(
     this.healthInsurance.provider || ""
+  ).trim();
+  this.healthInsurance.coverageActive = Boolean(this.healthInsurance.coverageActive);
+  this.healthInsurance.coverageReason = String(
+    this.healthInsurance.coverageReason ||
+      (this.healthInsurance.coverageActive ? "Obra social / cobertura" : "")
+  ).trim();
+  this.healthInsurance.coverageUpdatedBy = String(
+    this.healthInsurance.coverageUpdatedBy || ""
   ).trim();
 
   if (!this.birthDate || typeof this.birthDate !== "object") {

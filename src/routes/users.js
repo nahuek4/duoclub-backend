@@ -1420,6 +1420,71 @@ router.get("/:id", validateObjectIdParam, async (req, res) => {
   }
 });
 
+
+router.patch("/:id/health-insurance-coverage", adminOnly, validateObjectIdParam, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const coverageActive = Boolean(req.body?.coverageActive);
+    const provider = String(req.body?.provider ?? "").trim();
+    const coverageReason = String(
+      req.body?.coverageReason ||
+        (coverageActive ? "Obra social / cobertura" : "")
+    ).trim();
+
+    const user = await User.findById(id);
+    if (!user) return res.status(404).json({ error: "Usuario no encontrado." });
+
+    const prev = user.healthInsurance?.toObject?.() || user.healthInsurance || {};
+
+    user.healthInsurance = user.healthInsurance || {};
+    if (provider || req.body?.provider !== undefined) {
+      user.healthInsurance.provider = provider;
+    }
+    user.healthInsurance.coverageActive = coverageActive;
+    user.healthInsurance.coverageReason = coverageReason;
+    user.healthInsurance.coverageUpdatedAt = new Date();
+    user.healthInsurance.coverageUpdatedBy =
+      `${String(req.user?.name || "").trim()} ${String(req.user?.lastName || "").trim()}`.trim() ||
+      String(req.user?.email || "").trim() ||
+      "Admin";
+
+    pushUserHistory(user, {
+      action: "health_insurance_coverage_updated",
+      title: coverageActive
+        ? "Se habilitó precio con obra social / cobertura."
+        : "Se deshabilitó precio con obra social / cobertura.",
+      message: coverageReason ? `Motivo: ${coverageReason}` : "",
+      field: "healthInsurance.coverageActive",
+      createdAt: new Date(),
+    });
+
+    await user.save();
+
+    await logActivity({
+      req,
+      category: "users",
+      action: "health_insurance_coverage_updated",
+      entity: "user",
+      entityId: user._id,
+      title: "Cobertura de precios actualizada",
+      description: coverageActive
+        ? "Se habilitó al usuario para ver precios con obra social/cobertura."
+        : "Se deshabilitó al usuario para ver precios con obra social/cobertura.",
+      subject: buildUserSubject(user),
+      diff: buildDiff(prev, user.healthInsurance?.toObject?.() || user.healthInsurance || {}),
+    });
+
+    return res.json({
+      ok: true,
+      user: decorateUserForResponse(user.toObject()),
+    });
+  } catch (err) {
+    console.error("Error en PATCH /users/:id/health-insurance-coverage:", err);
+    return res.status(500).json({ error: err?.message || "No se pudo actualizar la cobertura." });
+  }
+});
+
+
 router.patch("/:id/role", adminOnly, validateObjectIdParam, async (req, res) => {
   try {
     const { id } = req.params;

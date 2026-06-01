@@ -356,6 +356,62 @@ function normalizeCustomerPhone(value) {
   return String(value || "").trim();
 }
 
+function hasHealthInsuranceCoverage(user = {}) {
+  return Boolean(user?.healthInsurance?.coverageActive);
+}
+
+function healthInsuranceDiscountReason(user = {}) {
+  const hi = user?.healthInsurance || {};
+  return String(hi.coverageReason || hi.provider || "Obra social / cobertura").trim();
+}
+
+function applyCoveragePrice(plan = {}, user = {}) {
+  const normalPrice = Number(plan?.price || 0);
+  const rawCoverage = plan?.coveragePrice;
+  const coveragePrice =
+    rawCoverage === null || rawCoverage === undefined || rawCoverage === ""
+      ? null
+      : Number(rawCoverage);
+
+  const canUseCoverage =
+    hasHealthInsuranceCoverage(user) &&
+    Number.isFinite(coveragePrice) &&
+    coveragePrice >= 0 &&
+    coveragePrice < normalPrice;
+
+  if (!canUseCoverage) {
+    return {
+      price: normalPrice,
+      regularPrice: normalPrice,
+      discountAmount: 0,
+      discountReason: "",
+      discountType: "",
+      coverageApplied: false,
+    };
+  }
+
+  return {
+    price: coveragePrice,
+    regularPrice: normalPrice,
+    discountAmount: Math.max(0, normalPrice - coveragePrice),
+    discountReason: healthInsuranceDiscountReason(user),
+    discountType: "HEALTH_INSURANCE",
+    coverageApplied: true,
+  };
+}
+
+function buildOrderDiscountSummary(items = [], plusDiscountAmount = 0) {
+  const parts = [];
+  const coverageDiscount = (Array.isArray(items) ? items : []).reduce(
+    (acc, it) => acc + Math.max(0, Number(it?.discountAmount || 0)),
+    0
+  );
+  if (coverageDiscount > 0) parts.push("Obra social / cobertura");
+  if (Number(plusDiscountAmount || 0) > 0) parts.push("DUO+");
+  return parts.join(" + ");
+}
+
+
 function getOrderCustomerName(order = {}) {
   const user = order?.user && typeof order.user === "object" ? order.user : null;
   const userName = [user?.name, user?.lastName].filter(Boolean).join(" ").trim();
@@ -440,6 +496,11 @@ function serializePublicPaymentOrder(order = {}) {
       label: label || (totalSessions > 0 && serviceName ? `${totalSessions} ${pluralizeSessions(totalSessions)} de ${serviceName}` : serviceName || kind),
       price: Number(it?.price || 0),
       basePrice: Number(it?.basePrice || 0),
+      regularPrice: Number(it?.regularPrice ?? it?.basePrice ?? 0),
+      discountAmount: Number(it?.discountAmount || 0),
+      discountReason: String(it?.discountReason || ""),
+      discountType: String(it?.discountType || ""),
+      coverageApplied: Boolean(it?.coverageApplied),
     };
   });
 
@@ -725,7 +786,7 @@ function isPerformanceCopayItem(input = {}) {
   );
 }
 
-async function resolveCreditsItem({ serviceKey, credits, payMethod, planCode, label, pricingPlanId, id, itemId }) {
+async function resolveCreditsItem({ serviceKey, credits, payMethod, planCode, label, pricingPlanId, id, itemId, user = null }) {
   const sk = normalizeServiceKey(serviceKey);
   const pm = String(payMethod || "").toUpperCase();
   const cr = Number(credits);
@@ -748,6 +809,12 @@ async function resolveCreditsItem({ serviceKey, credits, payMethod, planCode, la
       credits: 1,
       label: "Copago obra social",
       basePrice: PERFORMANCE_COPAY_PRICE,
+      regularPrice: PERFORMANCE_COPAY_PRICE,
+      coveragePrice: PERFORMANCE_COPAY_PRICE,
+      discountAmount: 0,
+      discountReason: "Copago obra social",
+      discountType: "COPAY",
+      coverageApplied: true,
     };
   }
 
@@ -782,6 +849,8 @@ async function resolveCreditsItem({ serviceKey, credits, payMethod, planCode, la
     ? String(plan.customTitle || plan.label || "").trim()
     : String(plan.label || "").trim();
 
+  const priceInfo = applyCoveragePrice(plan, user);
+
   return {
     kind: "CREDITS",
     serviceKey: sk,
@@ -789,7 +858,16 @@ async function resolveCreditsItem({ serviceKey, credits, payMethod, planCode, la
     label: visibleLabel,
     pricingPlanId: plan._id,
     isCustom: Boolean(plan.isCustom),
-    basePrice: Number(plan.price || 0),
+    basePrice: priceInfo.price,
+    regularPrice: priceInfo.regularPrice,
+    coveragePrice:
+      plan.coveragePrice === null || plan.coveragePrice === undefined
+        ? null
+        : Number(plan.coveragePrice),
+    discountAmount: priceInfo.discountAmount,
+    discountReason: priceInfo.discountReason,
+    discountType: priceInfo.discountType,
+    coverageApplied: priceInfo.coverageApplied,
   };
 }
 
@@ -836,6 +914,7 @@ router.post("/checkout", protect, async (req, res) => {
           pricingPlanId: it.pricingPlanId || it.planId || it.id || it.itemId || "",
           id: it.id || it.itemId || "",
           sku: it.sku || "",
+          user: freshUser,
         });
 
         items.push({
@@ -847,6 +926,12 @@ router.post("/checkout", protect, async (req, res) => {
           isCustom: Boolean(base.isCustom),
           qty,
           basePrice: base.basePrice,
+          regularPrice: Number(base.regularPrice ?? base.basePrice),
+          coveragePrice: base.coveragePrice ?? null,
+          discountAmount: Math.max(0, Number(base.discountAmount || 0)) * qty,
+          discountReason: base.discountReason || "",
+          discountType: base.discountType || "",
+          coverageApplied: Boolean(base.coverageApplied),
           price: base.basePrice * qty,
         });
       } else if (kind === "MEMBERSHIP") {
@@ -869,23 +954,31 @@ router.post("/checkout", protect, async (req, res) => {
     }
 
     const totalBase = items.reduce(
-      (acc, x) => acc + Number(x.basePrice || 0) * (Number(x.qty) || 1),
+      (acc, x) => acc + Number(x.regularPrice ?? x.basePrice ?? 0) * (Number(x.qty) || 1),
       0
     );
 
     const total = items.reduce((acc, x) => acc + Number(x.price || 0), 0);
+
+    const coverageDiscountAmount = items.reduce(
+      (acc, x) => acc + Math.max(0, Number(x.discountAmount || 0)),
+      0
+    );
 
     const shopSubtotal = items
       .filter((x) => String(x.kind || "").toUpperCase() === "SHOP")
       .reduce((acc, x) => acc + Number(x.price || 0), 0);
 
     const discountPercent = plusActiveNow && shopSubtotal > 0 ? PLUS_DISCOUNT_PCT : 0;
-    const discountAmount =
+    const plusDiscountAmount =
       plusActiveNow && shopSubtotal > 0
         ? Math.round(shopSubtotal * (PLUS_DISCOUNT_PCT / 100))
         : 0;
 
-    const totalFinal = Math.max(0, Math.round(total - discountAmount));
+    const discountAmount = coverageDiscountAmount + plusDiscountAmount;
+    const discountReason = buildOrderDiscountSummary(items, plusDiscountAmount);
+
+    const totalFinal = Math.max(0, Math.round(total - plusDiscountAmount));
 
     const order = await Order.create({
       user: req.user._id,
@@ -895,6 +988,9 @@ router.post("/checkout", protect, async (req, res) => {
       total,
       discountPercent,
       discountAmount,
+      coverageDiscountAmount,
+      plusDiscountAmount,
+      discountReason,
       totalFinal,
       status: "pending",
       applied: false,
@@ -939,6 +1035,7 @@ router.post("/checkout", protect, async (req, res) => {
         totalFinal,
         discountPercent,
         discountAmount,
+        discountReason,
         message: "Pedido generado correctamente. Coordiná el pago con el staff.",
       });
 
@@ -969,6 +1066,7 @@ router.post("/checkout", protect, async (req, res) => {
       totalFinal,
       discountPercent,
       discountAmount,
+      discountReason,
     });
   } catch (err) {
     console.error("POST /orders/checkout", err);
@@ -1005,7 +1103,11 @@ router.post("/", protect, async (req, res) => {
 
     if (!plan) return res.status(404).json({ error: "Plan inválido." });
 
-    const basePrice = Number(plan.price || 0);
+    const freshUser = await User.findById(req.user._id).lean();
+    const priceInfo = applyCoveragePrice(plan, freshUser);
+    const basePrice = Number(priceInfo.price || 0);
+    const regularPrice = Number(priceInfo.regularPrice || basePrice);
+    const coverageDiscountAmount = Math.max(0, Number(priceInfo.discountAmount || 0));
     const plusPrice = wantsPlus ? PLUS_PRICE : 0;
     const total = basePrice + plusPrice;
 
@@ -1015,6 +1117,13 @@ router.post("/", protect, async (req, res) => {
       serviceKey: sk,
       credits: cr,
       basePrice,
+      regularPrice,
+      coveragePrice: plan.coveragePrice ?? null,
+      discountAmount: coverageDiscountAmount,
+      coverageDiscountAmount,
+      discountReason: priceInfo.discountReason || "",
+      discountType: priceInfo.discountType || "",
+      coverageApplied: Boolean(priceInfo.coverageApplied),
       plusIncluded: wantsPlus,
       plusPrice,
       price: total,
