@@ -783,6 +783,55 @@ async function refundCreditAtomicNewLot({
   return { user: freshUser, sk, expiresAt: exp };
 }
 
+
+async function refundCreditAtomicToOriginalLotOrNewLot({
+  userId,
+  lotId,
+  apService,
+  historyItem,
+  session,
+}) {
+  try {
+    return await refundCreditAtomicToOriginalLot({
+      userId,
+      lotId,
+      apService,
+      historyItem,
+      session,
+    });
+  } catch (err) {
+    const code = String(err?.message || err || "");
+
+    // En turnos fijos puede pasar que el lote original ya esté lleno
+    // por cancelaciones previas del mismo plan. Si el turno tenía creditLotId,
+    // el crédito sí fue consumido; por eso no lo podemos perder.
+    // En ese caso devolvemos un crédito nuevo, manteniendo antes la prioridad
+    // de compensar deuda en el flujo que llama a este helper.
+    if (code !== "ORIGINAL_LOT_ALREADY_FULL_ON_REFUND" && code !== "REFUND_FAILED") {
+      throw err;
+    }
+
+    console.warn("[REFUND FALLBACK NEW LOT]", {
+      userId: String(userId || ""),
+      lotId: String(lotId || ""),
+      apService: String(apService || ""),
+      reason: code,
+    });
+
+    const refunded = await refundCreditAtomicNewLot({
+      userId,
+      apService,
+      historyItem: {
+        ...historyItem,
+        refundFallbackReason: code,
+      },
+      session,
+    });
+
+    return refunded.user;
+  }
+}
+
 function serializeUserCreditLots(user) {
   return (Array.isArray(user?.creditLots) ? user.creditLots : []).map((lot) => ({
     _id: String(lot?._id || ""),
@@ -1663,7 +1712,7 @@ async function reverseFixedAppointmentBillingForPlanDelete({ user, appointment, 
       };
     }
 
-    const refundedUser = await refundCreditAtomicToOriginalLot({
+    const refundedUser = await refundCreditAtomicToOriginalLotOrNewLot({
       userId: user._id,
       lotId: ap.creditLotId,
       apService: ap.service,
@@ -4037,7 +4086,7 @@ router.post("/admin/cancel/:id", ensureStaff, async (req, res) => {
       let refundReason = "ADMIN_NO_POLICY";
 
       if (ap.creditLotId) {
-        updatedUser = await refundCreditAtomicToOriginalLot({
+        updatedUser = await refundCreditAtomicToOriginalLotOrNewLot({
           userId: user._id,
           lotId: ap.creditLotId,
           apService: ap.service,
@@ -4303,7 +4352,7 @@ router.delete("/:id", async (req, res) => {
             decision.refundMode = "fixed-debt-settlement";
             decision.reason = "FIXED_SCHEDULE_DEBT_SETTLED_BY_CANCEL";
           } else {
-            updatedUser = await refundCreditAtomicToOriginalLot({
+            updatedUser = await refundCreditAtomicToOriginalLotOrNewLot({
               userId: user._id,
               lotId: ap.creditLotId,
               apService: ap.service,
