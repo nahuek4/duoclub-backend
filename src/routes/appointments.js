@@ -3187,6 +3187,7 @@ router.post("/admin/fixed-schedules", async (req, res) => {
 
     const updated = !!fixed;
     let cancelledOldCount = 0;
+    const cancelledOldFinancialResults = [];
 
     if (fixed) {
       const oldAppointmentsToCancel = await Appointment.find({
@@ -3195,16 +3196,45 @@ router.post("/admin/fixed-schedules", async (req, res) => {
         date: { $gte: startDate },
       }).sort({ date: 1, time: 1 });
 
+      // Al actualizar/reasignar un plan fijo, los turnos viejos que quedan por delante
+      // también deben revertir su impacto financiero. Antes se cancelaban sin devolver
+      // crédito ni liberar/compensar deuda, por eso algunos EP quedaban consumidos.
+      let currentUserForOldCancellations = await User.findById(userId);
+      if (!currentUserForOldCancellations) {
+        return res.status(404).json({ error: "Usuario no encontrado." });
+      }
+
       for (const oldAp of oldAppointmentsToCancel) {
         if (!isSlotStrictlyAfterMoment(oldAp.date, oldAp.time, assignmentMoment)) continue;
+
+        const financial = await reverseFixedAppointmentBillingForPlanDelete({
+          user: currentUserForOldCancellations,
+          appointment: oldAp,
+          req,
+        });
+
+        if (financial?.user) currentUserForOldCancellations = financial.user;
+
+        cancelledOldFinancialResults.push({
+          appointmentId: String(oldAp._id),
+          date: oldAp.date,
+          time: oldAp.time,
+          service: oldAp.service,
+          serviceKey: serviceToKey(oldAp.serviceKey || oldAp.service || ""),
+          changed: !!financial.changed,
+          refundApplied: !!financial.refundApplied,
+          refundMode: financial.refundMode || "none",
+          refundReason: financial.refundReason || "",
+          amount: Number(financial.amount || 0),
+        });
 
         oldAp.status = "cancelled";
         oldAp.cancelledAt = new Date();
         oldAp.cancelledByRole = role || "admin";
         oldAp.cancelledByUser = req.user?._id || req.user?.id || null;
-        oldAp.cancelReason = "FIXED_SCHEDULE_UPDATED";
-        oldAp.refundApplied = false;
-        oldAp.refundMode = "none";
+        oldAp.cancelReason = financial?.refundReason || "FIXED_SCHEDULE_UPDATED";
+        oldAp.refundApplied = !!financial?.refundApplied;
+        oldAp.refundMode = financial?.refundMode || "none";
         await oldAp.save();
         cancelledOldCount += 1;
       }
@@ -3326,7 +3356,11 @@ router.post("/admin/fixed-schedules", async (req, res) => {
             debited: billingResults.filter((x) => x?.action === "debited").length,
             debt: billingResults.filter((x) => x?.action === "debt").length,
             skipped: billingResults.filter((x) => x?.skipped).length,
+            oldRefunded: cancelledOldFinancialResults.filter((x) => x?.refundMode === "fixed-plan-delete-refund").length,
+            oldDebtSettled: cancelledOldFinancialResults.filter((x) => x?.refundMode === "fixed-debt-settlement").length,
+            oldDebtReleased: cancelledOldFinancialResults.filter((x) => x?.refundMode === "fixed-debt-release").length,
           },
+          cancelledOldFinancialResults,
           user: {
             id: String(targetUserForLog?._id || userId),
             name: [targetUserForLog?.name, targetUserForLog?.lastName].filter(Boolean).join(" ").trim(),
