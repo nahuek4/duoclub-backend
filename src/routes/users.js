@@ -390,24 +390,16 @@ function computeServiceAccessFromLots(u) {
   }
 
 
-  if (!u?.firstEvaluationCompleted) {
-    const peCredits = Number(byKey.PE || 0);
-
-    return {
-      allowedServices: peCredits > 0 ? ["Primera evaluación presencial"] : [],
-      serviceCredits:
-        peCredits > 0 ? { "Primera evaluación presencial": peCredits } : {},
-    };
-  }
-
+  // La primera evaluación ya NO bloquea el acceso al resto de los servicios.
+  // Si el usuario tiene créditos de EP/RA/RF/KD/NUT, se muestran y se pueden reservar.
+  // PE sigue existiendo como servicio normal si tiene créditos disponibles.
   const allowedServices = Object.entries(byKey)
-    .filter(([k, v]) => k !== "PE" && v > 0)
+    .filter(([, v]) => v > 0)
     .map(([k]) => SERVICE_KEY_TO_NAME[k])
     .filter(Boolean);
 
   const serviceCredits = {};
   for (const [k, v] of Object.entries(byKey)) {
-    if (k === "PE") continue;
     if (v > 0) serviceCredits[SERVICE_KEY_TO_NAME[k]] = v;
   }
 
@@ -563,22 +555,16 @@ function addCreditLot(
 }
 
 function buildCreditsByService(user) {
-  const firstEvaluationCompleted = !!user?.firstEvaluationCompleted;
   const debt = fixedScheduleDebtByServiceKey(user);
 
-  const result = {
+  return {
+    PE: sumCreditsForService(user, "PE"),
     EP: sumCreditsForService(user, "EP") - Number(debt.EP || 0),
     RF: sumCreditsForService(user, "RF") - Number(debt.RF || 0),
     RA: sumCreditsForService(user, "RA") - Number(debt.RA || 0),
     KD: sumCreditsForService(user, "KD") - Number(debt.KD || 0),
     NUT: sumCreditsForService(user, "NUT"),
   };
-
-  if (!firstEvaluationCompleted) {
-    result.PE = sumCreditsForService(user, "PE");
-  }
-
-  return result;
 }
 
 function stripSensitive(u) {

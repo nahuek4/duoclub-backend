@@ -1991,7 +1991,7 @@ router.post("/admin/:userId/complete-first-evaluation", ensureStaff, async (req,
 
         user.history = Array.isArray(user.history) ? user.history : [];
         user.history.push({
-          action: "evaluacion_obligatoria_completada_por_admin",
+          action: "primera_evaluacion_completada_por_admin",
           service: PE_NAME,
           serviceName: PE_NAME,
           createdAt: new Date(),
@@ -2022,8 +2022,8 @@ router.post("/admin/:userId/complete-first-evaluation", ensureStaff, async (req,
       action: "first_evaluation_completed_by_admin",
       entity: "user",
       entityId: String(activityUser?._id || userId),
-      title: "Evaluación obligatoria completada",
-      description: "Se marcó manualmente la evaluación obligatoria como completada.",
+      title: "Primera evaluación completada",
+      description: "Se marcó manualmente la primera evaluación como completada.",
       subject: buildUserSubject(activityUser || { _id: userId }),
       meta: {
         firstEvaluationCompleted: true,
@@ -2050,7 +2050,7 @@ router.post("/admin/:userId/complete-first-evaluation", ensureStaff, async (req,
     }
 
     return res.status(500).json({
-      error: "No se pudo completar la evaluación obligatoria.",
+      error: "No se pudo completar la primera evaluación.",
     });
   } finally {
     await session.endSession();
@@ -2268,18 +2268,6 @@ router.get("/availability", async (req, res) => {
         });
       }
 
-      if (!me.firstEvaluationCompleted && normalizedServiceKey !== "PE") {
-        return res.json({
-          date,
-          service: normalizedServiceName,
-          serviceKey: normalizedServiceKey,
-          slots: times.map((t) => ({
-            time: t,
-            state: "closed",
-            reason: "Primero debés completar tu primera evaluación presencial.",
-          })),
-        });
-      }
     }
 
     if (isSaturday(date) || isSunday(date)) {
@@ -2893,9 +2881,6 @@ router.post("/", async (req, res) => {
 
       if (user.suspended) throw new Error("USER_SUSPENDED");
       if (requiresApto(user)) throw new Error("APTO_REQUIRED");
-      if (!user.firstEvaluationCompleted && basic.serviceKey !== "PE") {
-        throw new Error("FIRST_EVALUATION_REQUIRED");
-      }
 
       recalcUserCredits(user);
 
@@ -3137,11 +3122,6 @@ router.post("/", async (req, res) => {
     if (msg === "APTO_REQUIRED") {
       return res.status(403).json({ error: "Falta apto médico." });
     }
-    if (msg === "FIRST_EVALUATION_REQUIRED") {
-      return res.status(403).json({
-        error: "Primero debés completar tu primera evaluación presencial.",
-      });
-    }
     if (msg === "NO_CREDITS") {
       return res.status(403).json({ error: "Sin créditos disponibles." });
     }
@@ -3228,11 +3208,6 @@ router.post("/batch", async (req, res) => {
         };
       });
 
-      for (const it of basicItems) {
-        if (!user.firstEvaluationCompleted && it.serviceKey !== "PE") {
-          throw new Error("FIRST_EVALUATION_REQUIRED");
-        }
-      }
 
       recalcUserCredits(user);
       const needed = basicItems.length;
@@ -3393,11 +3368,6 @@ router.post("/batch", async (req, res) => {
     }
     if (msg === "APTO_REQUIRED") {
       return res.status(403).json({ error: "Falta apto médico." });
-    }
-    if (msg === "FIRST_EVALUATION_REQUIRED") {
-      return res.status(403).json({
-        error: "Primero debés completar tu primera evaluación presencial.",
-      });
     }
     if (msg === "NO_CREDITS") {
       return res.status(403).json({ error: "Sin créditos suficientes." });
