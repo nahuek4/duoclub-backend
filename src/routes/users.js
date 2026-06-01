@@ -8,6 +8,8 @@ import mongoose from "mongoose";
 
 import User from "../models/User.js";
 import Appointment from "../models/Appointment.js";
+import FixedSchedule from "../models/FixedSchedule.js";
+import WaitlistEntry from "../models/WaitlistEntry.js";
 import { protect, adminOnly, adminOrProfessor } from "../middleware/auth.js";
 
 import multer from "multer";
@@ -197,6 +199,40 @@ function pushUserHistory(user, item = {}) {
     qty: Number(item.qty || 0) || 0,
     createdAt: item.createdAt || new Date(),
   });
+}
+
+async function cleanupUserSchedulingReferences(userId, { actorId = null, reason = "USER_DELETED" } = {}) {
+  const now = new Date();
+
+  await Appointment.deleteMany({ user: userId });
+
+  await FixedSchedule.updateMany(
+    { user: userId, active: true },
+    {
+      $set: {
+        active: false,
+        deactivatedAt: now,
+        deactivatedBy: actorId || null,
+      },
+    }
+  );
+
+  await WaitlistEntry.updateMany(
+    {
+      user: userId,
+      status: { $in: ["waiting", "notified"] },
+    },
+    {
+      $set: {
+        status: "removed",
+        removedAt: now,
+        removedBy: actorId || null,
+        closedAt: now,
+        closeReason: "SYSTEM_CLEANUP",
+        notes: reason,
+      },
+    }
+  );
 }
 
 function buildLegacyAppointmentHistoryTitle(ap) {
@@ -1234,7 +1270,10 @@ router.patch("/:id/approval", adminOnly, validateObjectIdParam, async (req, res)
         );
       }
 
-      await Appointment.deleteMany({ user: user._id });
+      await cleanupUserSchedulingReferences(user._id, {
+        actorId: req.user?._id || req.user?.id || null,
+        reason: "USER_REJECTED_DELETED",
+      });
 
       await logActivity({
         req,
@@ -1593,7 +1632,10 @@ router.delete("/:id", adminOnly, validateObjectIdParam, async (req, res) => {
     const user = await User.findById(id);
     if (!user) return res.status(404).json({ error: "Usuario no encontrado." });
 
-    await Appointment.deleteMany({ user: id });
+    await cleanupUserSchedulingReferences(user._id, {
+      actorId: req.user?._id || req.user?.id || null,
+      reason: "USER_DELETED",
+    });
 
     await logActivity({
       req,

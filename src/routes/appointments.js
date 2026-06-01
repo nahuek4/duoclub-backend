@@ -4021,6 +4021,11 @@ router.get("/admin/fixed-schedules", ensureStaff, async (req, res) => {
 
     const payload = [];
     for (const it of items) {
+      // Seguridad: si quedó un turno fijo huérfano por un usuario eliminado,
+      // no lo devolvemos al frontend para que no aparezca como "Usuario".
+      // El cleanup definitivo se hace al eliminar el usuario.
+      if (!it?.user) continue;
+
       const normalizedItems = await deriveFixedItemsFromAppointments(it);
       payload.push({
         id: String(it._id),
@@ -4091,13 +4096,11 @@ router.delete("/admin/fixed-schedules/:id", ensureStaff, async (req, res) => {
       }
     );
 
+    // No vaciamos schedule.items: el schema exige al menos un ítem.
+    // Vaciarlo hacía fallar la validación y devolvía 500 al borrar turnos fijos.
     schedule.active = false;
-    schedule.items = [];
     schedule.deactivatedAt = new Date();
     schedule.deactivatedBy = actorId;
-    schedule.deactivationReason = "FIXED_SCHEDULE_DELETED";
-    schedule.updatedBy = actorId;
-    schedule.updatedAt = new Date();
     await schedule.save();
 
     return res.json({
