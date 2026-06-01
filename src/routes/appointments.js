@@ -1192,9 +1192,27 @@ function countMonthlyRefundsByType(
     let itemType = explicitRefundType;
     if (!itemType) {
       const action = String(item?.action || "").trim();
-      if (action === "cancelado_con_reintegro") itemType = "timely";
-      else if (action === "cancelado_tarde_con_cortesia") itemType = "late";
-      else itemType = "none";
+
+      if (action === "cancelado_con_reintegro") {
+        itemType = "timely";
+      } else if (action === "cancelado_tarde_con_cortesia") {
+        itemType = "late";
+      } else if (
+        action === "fixed_schedule_debt_released_by_cancel" ||
+        action === "fixed_schedule_debt_settled_by_cancelled_credit"
+      ) {
+        // IMPORTANTE:
+        // Si el usuario cancela un turno fijo que no devuelve crédito positivo
+        // porque primero baja/compensa deuda, igualmente cuenta como una
+        // cancelación con reintegro a nivel política mensual.
+        //
+        // En entradas nuevas esto ya viene guardado en policyRefundType,
+        // pero dejamos este fallback para no abrir un hueco con historiales
+        // anteriores o acciones viejas sin metadata explícita.
+        itemType = "timely";
+      } else {
+        itemType = "none";
+      }
     }
 
     if (itemMonth !== wantedMonth) return acc;
@@ -1206,7 +1224,7 @@ function countMonthlyRefundsByType(
 }
 
 function buildCancellationHistoryMeta({ appointment, decision, now = new Date() }) {
-  const serviceKey = serviceToKey(appointment?.service || "");
+  const serviceKey = serviceToKey(appointment?.serviceKey || appointment?.service || "");
   const monthKey = getMonthKey(now);
 
   let refundType = "none";
