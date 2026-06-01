@@ -53,38 +53,40 @@ function sameIndexKey(indexKey = {}, expectedKey = {}) {
 
 async function ensurePricingIndexesForCustomCards() {
   try {
-    const expectedKey = { serviceKey: 1, payMethod: 1, credits: 1 };
+    const legacyUniqueKey = { serviceKey: 1, payMethod: 1, credits: 1 };
     const indexes = await PricingPlan.collection.indexes();
 
+    // Para poder tener 2 evaluaciones PE con la misma combinación
+    // serviceKey + payMethod + credits, no puede existir ningún índice ÚNICO
+    // sobre esa combinación. La unicidad de planes estándar la manejamos desde
+    // /pricing/upsert con findOneAndUpdate, y las tarjetas libres/variantes se
+    // identifican por customTitle.
     for (const idx of indexes) {
       if (!idx?.unique) continue;
-      if (!sameIndexKey(idx.key, expectedKey)) continue;
+      if (!sameIndexKey(idx.key, legacyUniqueKey)) continue;
 
-      const hasCustomPartial =
-        idx?.partialFilterExpression &&
-        JSON.stringify(idx.partialFilterExpression) ===
-          JSON.stringify({ isCustom: { $ne: true } });
-
-      if (!hasCustomPartial) {
-        await PricingPlan.collection.dropIndex(idx.name);
-        console.log("[PRICING][INDEX] Índice único legacy eliminado:", idx.name);
-      }
+      await PricingPlan.collection.dropIndex(idx.name);
+      console.log("[PRICING][INDEX] Índice único de precios eliminado:", idx.name);
     }
 
-    await PricingPlan.collection.createIndex(expectedKey, {
-      unique: true,
-      partialFilterExpression: { isCustom: { $ne: true } },
-      name: "uniq_standard_pricing_plan",
-    });
+    await PricingPlan.collection.createIndex(
+      { serviceKey: 1, payMethod: 1, credits: 1, isCustom: 1, active: 1 },
+      { name: "pricing_lookup", unique: false }
+    );
+
+    await PricingPlan.collection.createIndex(
+      { isCustom: 1, customTitle: 1, serviceKey: 1, payMethod: 1, credits: 1 },
+      { name: "pricing_custom_title_lookup", unique: false }
+    );
   } catch (err) {
-    // Si el índice ya existe con la configuración correcta o Mongo devuelve una carrera
-    // de creación, no frenamos la carga de precios.
     const msg = String(err?.message || "");
     const codeName = String(err?.codeName || "");
     const ignorable =
       msg.includes("already exists") ||
       msg.includes("IndexOptionsConflict") ||
-      codeName === "IndexOptionsConflict";
+      msg.includes("IndexKeySpecsConflict") ||
+      codeName === "IndexOptionsConflict" ||
+      codeName === "IndexKeySpecsConflict";
 
     if (!ignorable) {
       console.error("[PRICING][INDEX] No se pudo preparar índices de precios:", err);

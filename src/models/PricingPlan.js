@@ -122,20 +122,17 @@ pricingPlanSchema.pre("validate", function normalizeBeforeValidate() {
 });
 
 // IMPORTANTE:
-// Este índice mantiene única solo la combinación de planes estándar.
-// Las tarjetas libres (isCustom: true) pueden repetir serviceKey + payMethod + credits.
+// No usamos índice único en serviceKey + payMethod + credits porque ahora PE
+// puede tener dos variantes comerciales con el mismo crédito PE.
+// La unicidad de planes estándar se resuelve en la ruta /pricing/upsert.
 pricingPlanSchema.index(
-  { serviceKey: 1, payMethod: 1, credits: 1 },
-  {
-    unique: true,
-    partialFilterExpression: { isCustom: { $ne: true } },
-    name: "uniq_standard_pricing_plan",
-  }
+  { serviceKey: 1, payMethod: 1, credits: 1, isCustom: 1, active: 1 },
+  { name: "pricing_lookup" }
 );
 
 pricingPlanSchema.index(
-  { isCustom: 1, serviceKey: 1, payMethod: 1, active: 1, credits: 1 },
-  { name: "pricing_custom_lookup" }
+  { isCustom: 1, customTitle: 1, serviceKey: 1, payMethod: 1, credits: 1 },
+  { name: "pricing_custom_title_lookup" }
 );
 
 const PricingPlan =
