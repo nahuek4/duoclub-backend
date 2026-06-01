@@ -1522,6 +1522,196 @@ function buildOccurrencesForFixedSchedule({ startDate, months, items }) {
   });
 }
 
+
+function currentMonthRangeYmd(refDate = new Date()) {
+  const y = refDate.getFullYear();
+  const m = refDate.getMonth();
+  return {
+    monthKey: `${y}-${String(m + 1).padStart(2, "0")}`,
+    from: ymdAR(new Date(y, m, 1)),
+    to: ymdAR(new Date(y, m + 1, 0)),
+  };
+}
+
+function canDebtFixedScheduleService(serviceKey) {
+  const sk = normalizeServiceKey(serviceKey) || serviceToKey(serviceKey);
+  return ["EP", "RA", "RF", "KD"].includes(sk);
+}
+
+function ensureFixedScheduleDebtForUser(user) {
+  user.fixedScheduleDebt = user.fixedScheduleDebt || {};
+  for (const key of ["EP", "RA", "RF", "KD"]) {
+    const current = Number(user.fixedScheduleDebt?.[key] || 0);
+    user.fixedScheduleDebt[key] = Number.isFinite(current)
+      ? Math.max(0, Math.trunc(current))
+      : 0;
+  }
+}
+
+async function applyCurrentMonthFixedScheduleBilling({
+  fixedScheduleId,
+  userId,
+  serviceKey,
+  actorReq = null,
+}) {
+  const fixedId = String(fixedScheduleId || "").trim();
+  const targetUserId = String(userId || "").trim();
+  const sk = normalizeServiceKey(serviceKey) || serviceToKey(serviceKey);
+
+  if (!fixedId || !targetUserId || !sk || !canDebtFixedScheduleService(sk)) {
+    return {
+      ok: true,
+      skipped: true,
+      reason: "SERVICE_NOT_BILLABLE_FOR_FIXED_SCHEDULE",
+      processed: 0,
+      debited: 0,
+      debt: 0,
+    };
+  }
+
+  const { monthKey, from, to } = currentMonthRangeYmd(new Date());
+  const now = new Date();
+
+  const appointments = await Appointment.find({
+    fixedScheduleId: fixedId,
+    user: targetUserId,
+    serviceKey: sk,
+    status: "reserved",
+    date: { $gte: from, $lte: to },
+    $or: [
+      { creditDebitStatus: { $exists: false } },
+      { creditDebitStatus: "" },
+      { creditDebitStatus: "pending" },
+    ],
+  }).sort({ date: 1, time: 1 });
+
+  if (!appointments.length) {
+    return {
+      ok: true,
+      skipped: false,
+      monthKey,
+      processed: 0,
+      debited: 0,
+      debt: 0,
+      userCredits: null,
+    };
+  }
+
+  const user = await User.findById(targetUserId);
+  if (!user) {
+    return {
+      ok: false,
+      skipped: true,
+      reason: "USER_NOT_FOUND",
+      monthKey,
+      processed: 0,
+      debited: 0,
+      debt: 0,
+    };
+  }
+
+  ensureFixedScheduleDebtForUser(user);
+  user.history = Array.isArray(user.history) ? user.history : [];
+
+  let debited = 0;
+  let debt = 0;
+  const processedAppointments = [];
+
+  for (const ap of appointments) {
+    const slotDate = buildSlotDate(ap.date, ap.time) || now;
+    const lot = pickLotToConsumeForSlot(user, sk, slotDate);
+
+    if (lot) {
+      lot.remaining = Math.max(0, Number(lot.remaining || 0) - 1);
+
+      ap.creditLotId = lot._id;
+      ap.creditExpiresAt = lot.expiresAt || null;
+      ap.creditDebitStatus = "monthly_reserved";
+      ap.creditDebitedAt = now;
+      ap.fixedDebitProcessedAt = now;
+      ap.fixedDebtAmount = 0;
+
+      user.history.push({
+        action: "fixed_schedule_credit_reserved",
+        title: `Turno fijo debitado ${sk}`,
+        message: "Se debitó 1 crédito por turno fijo del mes en curso.",
+        date: ap.date,
+        time: ap.time,
+        service: ap.service,
+        serviceName: ap.service,
+        serviceKey: sk,
+        qty: 1,
+        createdAt: now,
+      });
+
+      debited += 1;
+    } else {
+      user.fixedScheduleDebt[sk] = Math.max(0, Number(user.fixedScheduleDebt?.[sk] || 0)) + 1;
+      user.markModified?.("fixedScheduleDebt");
+
+      ap.creditDebitStatus = "debt";
+      ap.fixedDebitProcessedAt = now;
+      ap.fixedDebtAmount = 1;
+
+      user.history.push({
+        action: "fixed_schedule_debt_added",
+        title: `Deuda de turno fijo ${sk}`,
+        message: "Se generó 1 crédito adeudado por turno fijo del mes en curso.",
+        date: ap.date,
+        time: ap.time,
+        service: ap.service,
+        serviceName: ap.service,
+        serviceKey: sk,
+        qty: 1,
+        createdAt: now,
+      });
+
+      debt += 1;
+    }
+
+    await ap.save();
+    processedAppointments.push(String(ap._id));
+  }
+
+  recalcUserCredits(user);
+  await user.save();
+
+  try {
+    await logActivity({
+      req: actorReq || { user: null },
+      category: "appointments",
+      action: "fixed_schedule_month_billing_applied",
+      entity: "fixedSchedule",
+      entityId: fixedId,
+      title: "Débito mensual de turnos fijos",
+      description: "Se aplicó el débito/deuda del mes actual para turnos fijos.",
+      subject: buildUserSubject(user),
+      meta: {
+        monthKey,
+        serviceKey: sk,
+        processed: appointments.length,
+        debited,
+        debt,
+      },
+    });
+  } catch (e) {
+    console.warn("[FIXED BILLING] logActivity error:", e?.message || e);
+  }
+
+  return {
+    ok: true,
+    skipped: false,
+    monthKey,
+    processed: appointments.length,
+    debited,
+    debt,
+    appointmentIds: processedAppointments,
+    userCredits: Number(user.credits || 0),
+    userCreditLots: serializeUserCreditLots(user),
+    fixedScheduleDebt: user.fixedScheduleDebt || {},
+  };
+}
+
 async function createAppointmentForTargetUser({
   userId,
   actorReq,
@@ -2827,6 +3017,13 @@ router.post("/admin/fixed-schedules", async (req, res) => {
       }
     }
 
+    const fixedScheduleMonthlyBilling = await applyCurrentMonthFixedScheduleBilling({
+      fixedScheduleId: fixed._id,
+      userId,
+      serviceKey: serviceIdentity.serviceKey,
+      actorReq: req,
+    });
+
     return res.status(updated ? 200 : 201).json({
       ok: true,
       updated,
@@ -2834,6 +3031,7 @@ router.post("/admin/fixed-schedules", async (req, res) => {
       cancelledOldCount,
       createdCount: created.length,
       conflictsCount: conflicts.length,
+      fixedScheduleMonthlyBilling,
       items: created,
       conflicts,
       fixedSchedule: {
