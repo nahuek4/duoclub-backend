@@ -146,6 +146,33 @@ function formatHistoryHumanDate(dateStr) {
   }
 }
 
+
+function normalizeHealthInsurancePlansInput(plans = [], provider = "") {
+  const unique = new Map();
+  const pushPlan = (raw) => {
+    const name = String(raw?.name ?? raw ?? "").trim();
+    if (!name) return;
+    const key = name.toLowerCase();
+    if (unique.has(key)) return;
+    unique.set(key, {
+      name,
+      memberNumber: String(raw?.memberNumber || "").trim(),
+      notes: String(raw?.notes || "").trim(),
+      createdAt: raw?.createdAt || new Date(),
+    });
+  };
+
+  if (provider) pushPlan({ name: provider });
+  if (Array.isArray(plans)) plans.forEach(pushPlan);
+
+  return Array.from(unique.values());
+}
+
+function selectedHealthInsuranceReason(provider = "") {
+  const clean = String(provider || "").trim();
+  return clean ? `Obra social: ${clean}` : "Obra social / cobertura";
+}
+
 function humanProfileFieldLabel(field) {
   const f = String(field || "").trim().toLowerCase();
   if (f === "name") return "el Nombre";
@@ -1390,6 +1417,45 @@ router.put("/:id", validateObjectIdParam, async (req, res) => {
   }
 });
 
+
+router.get("/health-insurance-options", adminOnly, async (req, res) => {
+  try {
+    const users = await User.find({
+      $or: [
+        { "healthInsurance.provider": { $type: "string", $ne: "" } },
+        { "healthInsurance.plans.0": { $exists: true } },
+      ],
+    })
+      .select("healthInsurance.provider healthInsurance.plans")
+      .lean();
+
+    const map = new Map();
+    const add = (value) => {
+      const name = String(value || "").trim();
+      if (!name) return;
+      const key = name.toLowerCase();
+      if (!map.has(key)) map.set(key, { name });
+    };
+
+    for (const user of users) {
+      add(user?.healthInsurance?.provider);
+      const plans = Array.isArray(user?.healthInsurance?.plans)
+        ? user.healthInsurance.plans
+        : [];
+      for (const plan of plans) add(plan?.name);
+    }
+
+    const options = Array.from(map.values()).sort((a, b) =>
+      a.name.localeCompare(b.name, "es")
+    );
+
+    return res.json({ ok: true, options });
+  } catch (err) {
+    console.error("Error en GET /users/health-insurance-options:", err);
+    return res.status(500).json({ error: "No se pudieron obtener las obras sociales." });
+  }
+});
+
 router.get("/:id", validateObjectIdParam, async (req, res) => {
   try {
     const { id } = req.params;
@@ -1426,10 +1492,17 @@ router.patch("/:id/health-insurance-coverage", adminOnly, validateObjectIdParam,
     const { id } = req.params;
     const coverageActive = Boolean(req.body?.coverageActive);
     const provider = String(req.body?.provider ?? "").trim();
+    const plans = normalizeHealthInsurancePlansInput(req.body?.plans, provider);
     const coverageReason = String(
       req.body?.coverageReason ||
-        (coverageActive ? "Obra social / cobertura" : "")
+        (coverageActive ? selectedHealthInsuranceReason(provider) : "")
     ).trim();
+
+    if (coverageActive && !provider) {
+      return res.status(400).json({
+        error: "Para activar obra social tenés que seleccionar o agregar una obra social.",
+      });
+    }
 
     const user = await User.findById(id);
     if (!user) return res.status(404).json({ error: "Usuario no encontrado." });
@@ -1437,11 +1510,10 @@ router.patch("/:id/health-insurance-coverage", adminOnly, validateObjectIdParam,
     const prev = user.healthInsurance?.toObject?.() || user.healthInsurance || {};
 
     user.healthInsurance = user.healthInsurance || {};
-    if (provider || req.body?.provider !== undefined) {
-      user.healthInsurance.provider = provider;
-    }
+    user.healthInsurance.provider = coverageActive ? provider : "";
+    user.healthInsurance.plans = plans;
     user.healthInsurance.coverageActive = coverageActive;
-    user.healthInsurance.coverageReason = coverageReason;
+    user.healthInsurance.coverageReason = coverageActive ? coverageReason : "";
     user.healthInsurance.coverageUpdatedAt = new Date();
     user.healthInsurance.coverageUpdatedBy =
       `${String(req.user?.name || "").trim()} ${String(req.user?.lastName || "").trim()}`.trim() ||
@@ -1451,9 +1523,11 @@ router.patch("/:id/health-insurance-coverage", adminOnly, validateObjectIdParam,
     pushUserHistory(user, {
       action: "health_insurance_coverage_updated",
       title: coverageActive
-        ? "Se habilitó precio con obra social / cobertura."
-        : "Se deshabilitó precio con obra social / cobertura.",
-      message: coverageReason ? `Motivo: ${coverageReason}` : "",
+        ? `Obra social: Sí (${provider}).`
+        : "Obra social: No.",
+      message: coverageActive
+        ? `Se seleccionó ${provider}. ${coverageReason ? `Motivo: ${coverageReason}` : ""}`
+        : "Se deshabilitó la cobertura para precios con obra social.",
       field: "healthInsurance.coverageActive",
       createdAt: new Date(),
     });
@@ -1466,10 +1540,10 @@ router.patch("/:id/health-insurance-coverage", adminOnly, validateObjectIdParam,
       action: "health_insurance_coverage_updated",
       entity: "user",
       entityId: user._id,
-      title: "Cobertura de precios actualizada",
+      title: "Obra social actualizada",
       description: coverageActive
-        ? "Se habilitó al usuario para ver precios con obra social/cobertura."
-        : "Se deshabilitó al usuario para ver precios con obra social/cobertura.",
+        ? `Obra social habilitada: ${provider}.`
+        : "Obra social deshabilitada.",
       subject: buildUserSubject(user),
       diff: buildDiff(prev, user.healthInsurance?.toObject?.() || user.healthInsurance || {}),
     });
@@ -1480,7 +1554,7 @@ router.patch("/:id/health-insurance-coverage", adminOnly, validateObjectIdParam,
     });
   } catch (err) {
     console.error("Error en PATCH /users/:id/health-insurance-coverage:", err);
-    return res.status(500).json({ error: err?.message || "No se pudo actualizar la cobertura." });
+    return res.status(500).json({ error: err?.message || "No se pudo actualizar la obra social." });
   }
 });
 

@@ -173,6 +173,17 @@ function createDefaultMedicalClearance() {
   };
 }
 
+
+const healthInsurancePlanSchema = new mongoose.Schema(
+  {
+    name: { type: String, default: "", trim: true },
+    memberNumber: { type: String, default: "", trim: true },
+    notes: { type: String, default: "", trim: true },
+    createdAt: { type: Date, default: Date.now },
+  },
+  { _id: false }
+);
+
 const clinicalNoteSchema = new mongoose.Schema(
   {
     date: { type: Date, default: Date.now },
@@ -349,7 +360,12 @@ const userSchema = new mongoose.Schema(
     notes: { type: String, default: "" },
 
     healthInsurance: {
+      // Obra social seleccionada actualmente para aplicar cobertura.
       provider: { type: String, default: "", trim: true },
+
+      // Catálogo/asociaciones del usuario. Permite guardar más de una obra social.
+      plans: { type: [healthInsurancePlanSchema], default: [] },
+
       // Lo maneja el admin. Habilita precios con cobertura en /comprar.
       coverageActive: { type: Boolean, default: false },
       coverageReason: { type: String, default: "", trim: true },
@@ -457,10 +473,47 @@ userSchema.pre("validate", function () {
   this.healthInsurance.provider = String(
     this.healthInsurance.provider || ""
   ).trim();
+
+  const planNames = new Set();
+  const rawPlans = Array.isArray(this.healthInsurance.plans)
+    ? this.healthInsurance.plans
+    : [];
+
+  this.healthInsurance.plans = rawPlans
+    .map((plan) => ({
+      name: String(plan?.name || "").trim(),
+      memberNumber: String(plan?.memberNumber || "").trim(),
+      notes: String(plan?.notes || "").trim(),
+      createdAt: plan?.createdAt || new Date(),
+    }))
+    .filter((plan) => {
+      const key = plan.name.toLowerCase();
+      if (!key || planNames.has(key)) return false;
+      planNames.add(key);
+      return true;
+    });
+
+  if (this.healthInsurance.provider) {
+    const providerKey = this.healthInsurance.provider.toLowerCase();
+    const exists = this.healthInsurance.plans.some(
+      (plan) => String(plan?.name || "").trim().toLowerCase() === providerKey
+    );
+    if (!exists) {
+      this.healthInsurance.plans.unshift({
+        name: this.healthInsurance.provider,
+        memberNumber: "",
+        notes: "",
+        createdAt: new Date(),
+      });
+    }
+  }
+
   this.healthInsurance.coverageActive = Boolean(this.healthInsurance.coverageActive);
   this.healthInsurance.coverageReason = String(
     this.healthInsurance.coverageReason ||
-      (this.healthInsurance.coverageActive ? "Obra social / cobertura" : "")
+      (this.healthInsurance.coverageActive
+        ? this.healthInsurance.provider || "Obra social / cobertura"
+        : "")
   ).trim();
   this.healthInsurance.coverageUpdatedBy = String(
     this.healthInsurance.coverageUpdatedBy || ""
