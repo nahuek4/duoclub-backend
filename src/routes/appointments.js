@@ -1276,6 +1276,18 @@ function getMonthlyCancellationCounters(user, serviceName, refDate = new Date())
 function buildCancellationClientMessage({ appointment, decision, counters }) {
   const sk = serviceToKey(appointment?.service || "");
 
+  if (decision?.reason === "FIXED_SCHEDULE_DEBT_RELEASED_BY_CANCEL") {
+    return "Cancelaste con el mínimo de anticipación. Este turno fijo estaba en deuda, por eso no se agregó un crédito positivo: se descontó de la deuda pendiente. Esta cancelación cuenta dentro de tus reintegros disponibles del mes.";
+  }
+
+  if (decision?.reason === "FIXED_SCHEDULE_DEBT_SETTLED_BY_CANCEL") {
+    return "Cancelaste con el mínimo de anticipación. Como tenías deuda del mismo servicio, el crédito de este turno se usó primero para compensar esa deuda. Esta cancelación cuenta dentro de tus reintegros disponibles del mes.";
+  }
+
+  if (decision?.reason === "FIXED_SCHEDULE_SETTLED_DEBT_REFUNDED_BY_CANCEL") {
+    return "Cancelaste con el mínimo de anticipación. Ese turno fijo ya había sido saldado, por eso se generó el crédito de reintegro correspondiente.";
+  }
+
   if (decision?.refundMode === "timely") {
     if (["RA", "RF", "KD"].includes(sk)) {
       if (counters.timelyRemaining > 0) {
