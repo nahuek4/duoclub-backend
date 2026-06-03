@@ -8,8 +8,6 @@ import mongoose from "mongoose";
 
 import User from "../models/User.js";
 import Appointment from "../models/Appointment.js";
-import FixedSchedule from "../models/FixedSchedule.js";
-import WaitlistEntry from "../models/WaitlistEntry.js";
 import { protect, adminOnly, adminOrProfessor } from "../middleware/auth.js";
 
 import multer from "multer";
@@ -148,33 +146,6 @@ function formatHistoryHumanDate(dateStr) {
   }
 }
 
-
-function normalizeHealthInsurancePlansInput(plans = [], provider = "") {
-  const unique = new Map();
-  const pushPlan = (raw) => {
-    const name = String(raw?.name ?? raw ?? "").trim();
-    if (!name) return;
-    const key = name.toLowerCase();
-    if (unique.has(key)) return;
-    unique.set(key, {
-      name,
-      memberNumber: String(raw?.memberNumber || "").trim(),
-      notes: String(raw?.notes || "").trim(),
-      createdAt: raw?.createdAt || new Date(),
-    });
-  };
-
-  if (provider) pushPlan({ name: provider });
-  if (Array.isArray(plans)) plans.forEach(pushPlan);
-
-  return Array.from(unique.values());
-}
-
-function selectedHealthInsuranceReason(provider = "") {
-  const clean = String(provider || "").trim();
-  return clean ? `Obra social: ${clean}` : "Obra social / cobertura";
-}
-
 function humanProfileFieldLabel(field) {
   const f = String(field || "").trim().toLowerCase();
   if (f === "name") return "el Nombre";
@@ -199,40 +170,6 @@ function pushUserHistory(user, item = {}) {
     qty: Number(item.qty || 0) || 0,
     createdAt: item.createdAt || new Date(),
   });
-}
-
-async function cleanupUserSchedulingReferences(userId, { actorId = null, reason = "USER_DELETED" } = {}) {
-  const now = new Date();
-
-  await Appointment.deleteMany({ user: userId });
-
-  await FixedSchedule.updateMany(
-    { user: userId, active: true },
-    {
-      $set: {
-        active: false,
-        deactivatedAt: now,
-        deactivatedBy: actorId || null,
-      },
-    }
-  );
-
-  await WaitlistEntry.updateMany(
-    {
-      user: userId,
-      status: { $in: ["waiting", "notified"] },
-    },
-    {
-      $set: {
-        status: "removed",
-        removedAt: now,
-        removedBy: actorId || null,
-        closedAt: now,
-        closeReason: "SYSTEM_CLEANUP",
-        notes: reason,
-      },
-    }
-  );
 }
 
 function buildLegacyAppointmentHistoryTitle(ap) {
@@ -426,16 +363,24 @@ function computeServiceAccessFromLots(u) {
   }
 
 
-  // La primera evaluación ya NO bloquea el acceso al resto de los servicios.
-  // Si el usuario tiene créditos de EP/RA/RF/KD/NUT, se muestran y se pueden reservar.
-  // PE sigue existiendo como servicio normal si tiene créditos disponibles.
+  if (!u?.firstEvaluationCompleted) {
+    const peCredits = Number(byKey.PE || 0);
+
+    return {
+      allowedServices: peCredits > 0 ? ["Primera evaluación presencial"] : [],
+      serviceCredits:
+        peCredits > 0 ? { "Primera evaluación presencial": peCredits } : {},
+    };
+  }
+
   const allowedServices = Object.entries(byKey)
-    .filter(([, v]) => v > 0)
+    .filter(([k, v]) => k !== "PE" && v > 0)
     .map(([k]) => SERVICE_KEY_TO_NAME[k])
     .filter(Boolean);
 
   const serviceCredits = {};
   for (const [k, v] of Object.entries(byKey)) {
+    if (k === "PE") continue;
     if (v > 0) serviceCredits[SERVICE_KEY_TO_NAME[k]] = v;
   }
 
@@ -514,33 +459,78 @@ function ensureFixedScheduleDebt(user) {
   }
 }
 
-function settleFixedScheduleDebt(user, { amount, serviceKey, source = "credits" } = {}) {
+async function settleFixedScheduleDebt(user, { amount, serviceKey, source = "credits" } = {}) {
   const sk = canonicalServiceKeyFromValue(serviceKey);
-  if (!sk) return { settled: 0, remaining: Math.max(0, Math.trunc(Number(amount || 0))) };
+  if (!sk) return { settled: 0, remaining: Math.max(0, Math.trunc(Number(amount || 0))), settledAppointmentIds: [] };
+
   const qty = Math.max(0, Math.trunc(Number(amount || 0)));
-  if (!qty) return { settled: 0, remaining: 0 };
+  if (!qty) return { settled: 0, remaining: 0, settledAppointmentIds: [] };
+
   ensureFixedScheduleDebt(user);
+
   const currentDebt = Math.max(0, Number(user.fixedScheduleDebt?.[sk] || 0));
-  if (!currentDebt) return { settled: 0, remaining: qty };
+  if (!currentDebt) return { settled: 0, remaining: qty, settledAppointmentIds: [] };
+
   const settled = Math.min(currentDebt, qty);
   const remaining = qty - settled;
+  const now = nowDate();
+
   user.fixedScheduleDebt[sk] = currentDebt - settled;
   user.markModified?.("fixedScheduleDebt");
+
+  // IMPORTANTE:
+  // Cuando el admin agrega créditos y esos créditos se usan para saldar deuda
+  // de turnos fijos, también marcamos los turnos futuros en deuda como
+  // "mensualmente reservados". Si no hacemos esto, después el usuario cancela
+  // esos turnos y el sistema no sabe que esa deuda ya fue pagada con créditos,
+  // por eso no podía devolver las últimas cancelaciones.
+  const settledAppointments = await Appointment.find({
+    user: user._id,
+    serviceKey: sk,
+    status: "reserved",
+    fixedScheduleId: { $ne: null },
+    creditLotId: null,
+    $or: [
+      { creditDebitStatus: "debt" },
+      { fixedDebtAmount: { $gt: 0 } },
+    ],
+  })
+    .sort({ date: 1, time: 1, createdAt: 1 })
+    .limit(settled);
+
+  const settledAppointmentIds = settledAppointments.map((ap) => ap._id);
+
+  if (settledAppointmentIds.length) {
+    await Appointment.updateMany(
+      { _id: { $in: settledAppointmentIds } },
+      {
+        $set: {
+          creditDebitStatus: "monthly_reserved",
+          fixedDebtAmount: 0,
+          creditDebitedAt: now,
+          fixedDebitProcessedAt: now,
+          refundReason: "FIXED_DEBT_SETTLED_BY_ADMIN_CREDITS",
+        },
+      }
+    );
+  }
+
   user.history = Array.isArray(user.history) ? user.history : [];
   user.history.push({
     action: "fixed_schedule_debt_settled",
     title: `Deuda de turnos fijos saldada ${sk}`,
-    message: `Se usaron ${settled} crédito(s) acreditados para saldar deuda pendiente de turnos fijos.`,
+    message: `Se usaron ${settled} crédito(s) acreditados para saldar deuda pendiente de turnos fijos.${settledAppointmentIds.length ? " Los turnos asociados quedaron marcados como pagados para permitir reintegro si se cancelan dentro de política." : ""}`,
     serviceKey: sk,
     serviceName: SERVICE_KEY_TO_NAME[sk] || sk,
     service: SERVICE_KEY_TO_NAME[sk] || sk,
     qty: settled,
-    createdAt: new Date(),
+    createdAt: now,
   });
-  return { settled, remaining };
+
+  return { settled, remaining, settledAppointmentIds };
 }
 
-function addCreditLot(
+async function addCreditLot(
   user,
   { amount, serviceKey, source = "admin-adjust" }
 ) {
@@ -555,7 +545,7 @@ function addCreditLot(
   if (!qty) return;
 
   const now = nowDate();
-  const debtSettlement = settleFixedScheduleDebt(user, { amount: qty, serviceKey: sk, source });
+  const debtSettlement = await settleFixedScheduleDebt(user, { amount: qty, serviceKey: sk, source });
   const remainingQty = Math.max(0, Number(debtSettlement.remaining || 0));
   if (!remainingQty) {
     recalcUserCredits(user);
@@ -591,16 +581,22 @@ function addCreditLot(
 }
 
 function buildCreditsByService(user) {
+  const firstEvaluationCompleted = !!user?.firstEvaluationCompleted;
   const debt = fixedScheduleDebtByServiceKey(user);
 
-  return {
-    PE: sumCreditsForService(user, "PE"),
+  const result = {
     EP: sumCreditsForService(user, "EP") - Number(debt.EP || 0),
     RF: sumCreditsForService(user, "RF") - Number(debt.RF || 0),
     RA: sumCreditsForService(user, "RA") - Number(debt.RA || 0),
     KD: sumCreditsForService(user, "KD") - Number(debt.KD || 0),
     NUT: sumCreditsForService(user, "NUT"),
   };
+
+  if (!firstEvaluationCompleted) {
+    result.PE = sumCreditsForService(user, "PE");
+  }
+
+  return result;
 }
 
 function stripSensitive(u) {
@@ -1156,7 +1152,7 @@ router.post("/", adminOnly, async (req, res) => {
 
     const initialCredits = Number(credits ?? 0);
     if (initialCredits > 0) {
-      addCreditLot(user, {
+      await addCreditLot(user, {
         amount: initialCredits,
         serviceKey: initialServiceKey,
         source: "admin-create",
@@ -1270,10 +1266,7 @@ router.patch("/:id/approval", adminOnly, validateObjectIdParam, async (req, res)
         );
       }
 
-      await cleanupUserSchedulingReferences(user._id, {
-        actorId: req.user?._id || req.user?.id || null,
-        reason: "USER_REJECTED_DELETED",
-      });
+      await Appointment.deleteMany({ user: user._id });
 
       await logActivity({
         req,
@@ -1442,45 +1435,6 @@ router.put("/:id", validateObjectIdParam, async (req, res) => {
   }
 });
 
-
-router.get("/health-insurance-options", adminOnly, async (req, res) => {
-  try {
-    const users = await User.find({
-      $or: [
-        { "healthInsurance.provider": { $type: "string", $ne: "" } },
-        { "healthInsurance.plans.0": { $exists: true } },
-      ],
-    })
-      .select("healthInsurance.provider healthInsurance.plans")
-      .lean();
-
-    const map = new Map();
-    const add = (value) => {
-      const name = String(value || "").trim();
-      if (!name) return;
-      const key = name.toLowerCase();
-      if (!map.has(key)) map.set(key, { name });
-    };
-
-    for (const user of users) {
-      add(user?.healthInsurance?.provider);
-      const plans = Array.isArray(user?.healthInsurance?.plans)
-        ? user.healthInsurance.plans
-        : [];
-      for (const plan of plans) add(plan?.name);
-    }
-
-    const options = Array.from(map.values()).sort((a, b) =>
-      a.name.localeCompare(b.name, "es")
-    );
-
-    return res.json({ ok: true, options });
-  } catch (err) {
-    console.error("Error en GET /users/health-insurance-options:", err);
-    return res.status(500).json({ error: "No se pudieron obtener las obras sociales." });
-  }
-});
-
 router.get("/:id", validateObjectIdParam, async (req, res) => {
   try {
     const { id } = req.params;
@@ -1510,79 +1464,6 @@ router.get("/:id", validateObjectIdParam, async (req, res) => {
     return res.status(500).json({ error: "Error interno." });
   }
 });
-
-
-router.patch("/:id/health-insurance-coverage", adminOnly, validateObjectIdParam, async (req, res) => {
-  try {
-    const { id } = req.params;
-    const coverageActive = Boolean(req.body?.coverageActive);
-    const provider = String(req.body?.provider ?? "").trim();
-    const plans = normalizeHealthInsurancePlansInput(req.body?.plans, provider);
-    const coverageReason = String(
-      req.body?.coverageReason ||
-        (coverageActive ? selectedHealthInsuranceReason(provider) : "")
-    ).trim();
-
-    if (coverageActive && !provider) {
-      return res.status(400).json({
-        error: "Para activar obra social tenés que seleccionar o agregar una obra social.",
-      });
-    }
-
-    const user = await User.findById(id);
-    if (!user) return res.status(404).json({ error: "Usuario no encontrado." });
-
-    const prev = user.healthInsurance?.toObject?.() || user.healthInsurance || {};
-
-    user.healthInsurance = user.healthInsurance || {};
-    user.healthInsurance.provider = coverageActive ? provider : "";
-    user.healthInsurance.plans = plans;
-    user.healthInsurance.coverageActive = coverageActive;
-    user.healthInsurance.coverageReason = coverageActive ? coverageReason : "";
-    user.healthInsurance.coverageUpdatedAt = new Date();
-    user.healthInsurance.coverageUpdatedBy =
-      `${String(req.user?.name || "").trim()} ${String(req.user?.lastName || "").trim()}`.trim() ||
-      String(req.user?.email || "").trim() ||
-      "Admin";
-
-    pushUserHistory(user, {
-      action: "health_insurance_coverage_updated",
-      title: coverageActive
-        ? `Obra social: Sí (${provider}).`
-        : "Obra social: No.",
-      message: coverageActive
-        ? `Se seleccionó ${provider}. ${coverageReason ? `Motivo: ${coverageReason}` : ""}`
-        : "Se deshabilitó la cobertura para precios con obra social.",
-      field: "healthInsurance.coverageActive",
-      createdAt: new Date(),
-    });
-
-    await user.save();
-
-    await logActivity({
-      req,
-      category: "users",
-      action: "health_insurance_coverage_updated",
-      entity: "user",
-      entityId: user._id,
-      title: "Obra social actualizada",
-      description: coverageActive
-        ? `Obra social habilitada: ${provider}.`
-        : "Obra social deshabilitada.",
-      subject: buildUserSubject(user),
-      diff: buildDiff(prev, user.healthInsurance?.toObject?.() || user.healthInsurance || {}),
-    });
-
-    return res.json({
-      ok: true,
-      user: decorateUserForResponse(user.toObject()),
-    });
-  } catch (err) {
-    console.error("Error en PATCH /users/:id/health-insurance-coverage:", err);
-    return res.status(500).json({ error: err?.message || "No se pudo actualizar la obra social." });
-  }
-});
-
 
 router.patch("/:id/role", adminOnly, validateObjectIdParam, async (req, res) => {
   try {
@@ -1632,10 +1513,7 @@ router.delete("/:id", adminOnly, validateObjectIdParam, async (req, res) => {
     const user = await User.findById(id);
     if (!user) return res.status(404).json({ error: "Usuario no encontrado." });
 
-    await cleanupUserSchedulingReferences(user._id, {
-      actorId: req.user?._id || req.user?.id || null,
-      reason: "USER_DELETED",
-    });
+    await Appointment.deleteMany({ user: id });
 
     await logActivity({
       req,
@@ -1785,7 +1663,7 @@ async function updateCredits(req, res) {
       0
     );
 
-    const applyOne = ({
+    const applyOne = async ({
       credits: c,
       delta: d,
       serviceKey: skRaw,
@@ -1805,7 +1683,7 @@ async function updateCredits(req, res) {
         const target = Math.max(0, Math.round(c));
         const diff = target - currentForService;
         if (diff > 0) {
-          addCreditLot(user, {
+          await addCreditLot(user, {
             amount: diff,
             serviceKey: sk,
             source: src || "admin-set",
@@ -1819,7 +1697,7 @@ async function updateCredits(req, res) {
       if (typeof d === "number") {
         const dd = Math.round(d);
         if (dd > 0) {
-          addCreditLot(user, {
+          await addCreditLot(user, {
             amount: dd,
             serviceKey: sk,
             source: src || "admin-delta",
@@ -1837,7 +1715,7 @@ async function updateCredits(req, res) {
 
     if (Array.isArray(items) && items.length > 0) {
       for (const it of items) {
-        applyOne({
+        await applyOne({
           credits: it?.credits,
           delta: it?.delta,
           serviceKey: it?.serviceKey,
@@ -1845,7 +1723,7 @@ async function updateCredits(req, res) {
         });
       }
     } else {
-      applyOne({
+      await applyOne({
         credits,
         delta,
         serviceKey,

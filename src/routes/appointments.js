@@ -4341,6 +4341,39 @@ router.delete("/:id", async (req, res) => {
             decision.refundMode = "fixed-debt-release";
             decision.reason = "FIXED_SCHEDULE_DEBT_RELEASED_BY_CANCEL";
             updatedUser = user;
+          } else if (
+            ap.fixedScheduleId &&
+            !ap.creditLotId &&
+            isFixedBillingServiceKey(serviceToKey(ap.serviceKey || ap.service || "")) &&
+            String(ap.creditDebitStatus || "") === "monthly_reserved"
+          ) {
+            // Caso especial:
+            // El turno fijo había nacido como deuda, pero luego el admin agregó
+            // créditos y esa deuda se saldó. En ese momento el turno queda
+            // marcado como monthly_reserved sin creditLotId. Si el usuario lo
+            // cancela dentro de política, corresponde generar un crédito de
+            // reintegro nuevo, no dejarlo sin devolución.
+            const refunded = await refundCreditAtomicNewLot({
+              userId: user._id,
+              apService: ap.service,
+              historyItem: {
+                action: decision.historyAction,
+                title: "Crédito devuelto por cancelación de turno fijo saldado",
+                message:
+                  "Se canceló un turno fijo cuya deuda ya había sido saldada con créditos cargados por el admin. Se generó un crédito de reintegro.",
+                date: ap.date,
+                time: ap.time,
+                service: ap.service,
+                serviceName: ap.service,
+                ...historyMeta,
+              },
+              session,
+            });
+
+            updatedUser = refunded.user;
+            decision.refund = true;
+            decision.refundMode = "fixed-settled-debt-refund";
+            decision.reason = "FIXED_SCHEDULE_SETTLED_DEBT_REFUNDED_BY_CANCEL";
           } else {
             decision.refund = false;
             decision.refundMode = "none";
