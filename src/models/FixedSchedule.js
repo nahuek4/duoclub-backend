@@ -45,12 +45,12 @@ function getServiceNameFromKey(serviceKey) {
 
 const fixedScheduleItemSchema = new mongoose.Schema(
   {
-    // 1 = lunes, 2 = martes ... 5 = viernes
+    // 1 = lunes, 2 = martes ... 5 = viernes, 6 = sábado
     weekday: {
       type: Number,
       required: true,
       min: 1,
-      max: 5,
+      max: 6,
     },
 
     // HH:mm
