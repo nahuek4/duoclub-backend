@@ -901,7 +901,6 @@ function buildAdminAppointmentEmail({
   const detailCardsHtml = buildAdminDataCards([
     { label: "Usuario", value: uName },
     { label: "Email", value: uEmail },
-    detailText ? { label: "Detalle", value: detailText } : null,
   ]);
 
   return buildAdminAppointmentVisualEmail({
@@ -1240,8 +1239,6 @@ export async function sendAppointmentBookedBatchEmail(user, items = []) {
     "",
     "Tus turnos fueron confirmados con éxito.",
     "",
-    "Detalle:",
-    ...(linesItems.length ? linesItems : ["(sin items)"]),
     "",
     "Si no podés asistir, recordá cancelarlo con anticipación desde tu perfil.",
   ].join("\n");
@@ -1289,8 +1286,6 @@ export async function sendAppointmentCancelledBatchEmail(user, items = []) {
     "",
     "Tus turnos fueron cancelados con éxito.",
     "",
-    "Detalle:",
-    ...(linesItems.length ? linesItems : ["(sin items)"]),
     "",
     "Si querés, podés volver a reservar desde tu perfil.",
   ].join("\n");
