@@ -14,6 +14,7 @@ import appointmentRoutes from "./routes/appointments.js";
 import servicesRoutes from "./routes/services.js";
 import pricingRoutes from "./routes/pricing.js";
 import ordersRoutes from "./routes/orders.js";
+import externalPaymentCardsRoutes from "./routes/externalPaymentCards.js";
 import mpWebhookRoutes from "./routes/mpWebhook.js";
 import admissionRoutes from "./routes/admission.js";
 import adminEvaluationsRoutes from "./routes/adminEvaluations.js";
@@ -181,6 +182,7 @@ function mountRoutes(prefix = "") {
   app.use(`${prefix}/services`, servicesRoutes);
   app.use(`${prefix}/pricing`, pricingRoutes);
   app.use(`${prefix}/orders`, ordersRoutes);
+  app.use(`${prefix}/external-payment-cards`, externalPaymentCardsRoutes);
   app.use(`${prefix}/payments`, mpWebhookRoutes);
   app.use(`${prefix}/admission`, admissionRoutes);
   app.use(`${prefix}/admin/evaluations`, adminEvaluationsRoutes);
