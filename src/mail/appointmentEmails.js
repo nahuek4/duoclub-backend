@@ -10,6 +10,7 @@ import {
   renderAdminDetailPanel,
   renderRowCard,
 } from "./ui.js";
+import { adminRecipientsForAppointment } from "./recipients.js";
 
 const IMG_BASE = "https://api.duoclub.ar/images";
 
@@ -1104,8 +1105,8 @@ export async function sendAppointmentReminderEmail(user, ap, serviceName) {
 ========================================================= */
 
 export async function sendAdminAppointmentBookedEmail(user, ap, serviceName) {
-  const to = ADMIN_EMAIL;
-  if (!to) return;
+  const to = adminRecipientsForAppointment(ap, serviceName);
+  if (!to.length) return;
 
   const uName = getUserName(user);
   const uEmail = user?.email || "-";
@@ -1144,8 +1145,8 @@ export async function sendAdminAppointmentCancelledEmail(
   serviceName,
   meta = {}
 ) {
-  const to = ADMIN_EMAIL;
-  if (!to) return;
+  const to = adminRecipientsForAppointment(ap, serviceName);
+  if (!to.length) return;
 
   const uName = getUserName(user);
   const uEmail = user?.email || "-";

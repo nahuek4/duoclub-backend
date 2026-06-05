@@ -138,7 +138,9 @@ export async function sendMail(to, subject, text, html) {
   console.log("[MAIL] sendMail called", { to, subject });
 
   const tx = getTransporter();
-  const cleanTo = String(to || "").trim();
+  const cleanTo = Array.isArray(to)
+    ? to.map((x) => String(x || "").trim()).filter(Boolean).join(", ")
+    : String(to || "").trim();
   const cleanSubject = String(subject || "").trim();
 
   if (!cleanTo || !cleanSubject) {

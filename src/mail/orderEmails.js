@@ -10,6 +10,7 @@ import {
   renderAdminDetailPanel,
   renderRowCard,
 } from "./ui.js";
+import { adminRecipientsForOrder } from "./recipients.js";
 
 
 const IMG_BASE = "https://api.duoclub.ar/images";
@@ -800,7 +801,8 @@ export async function sendOrderCancelledEmail(order = {}, user = null) {
 ========================================================= */
 
 export async function sendAdminOrderPendingEmail(order = {}, user = null) {
-  if (!ADMIN_EMAIL) return;
+  const to = adminRecipientsForOrder(order);
+  if (!to.length) return;
 
   const s = orderSummary(order, user);
 
@@ -834,11 +836,12 @@ export async function sendAdminOrderPendingEmail(order = {}, user = null) {
     forcedStatus: statusLabel(s.statusRaw),
   });
 
-  await sendMail(ADMIN_EMAIL, subject, text, html);
+  await sendMail(to, subject, text, html);
 }
 
 export async function sendAdminOrderPaidEmail(order = {}, user = null) {
-  if (!ADMIN_EMAIL) return;
+  const to = adminRecipientsForOrder(order);
+  if (!to.length) return;
 
   const s = orderSummary(order, user);
 
@@ -872,11 +875,12 @@ export async function sendAdminOrderPaidEmail(order = {}, user = null) {
     forcedStatus: "Pagado",
   });
 
-  await sendMail(ADMIN_EMAIL, subject, text, html);
+  await sendMail(to, subject, text, html);
 }
 
 export async function sendAdminOrderCancelledEmail(order = {}, user = null) {
-  if (!ADMIN_EMAIL) return;
+  const to = adminRecipientsForOrder(order);
+  if (!to.length) return;
 
   const s = orderSummary(order, user);
 
@@ -909,5 +913,5 @@ export async function sendAdminOrderCancelledEmail(order = {}, user = null) {
     forcedStatus: "Cancelado",
   });
 
-  await sendMail(ADMIN_EMAIL, subject, text, html);
+  await sendMail(to, subject, text, html);
 }
