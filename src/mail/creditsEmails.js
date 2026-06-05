@@ -9,7 +9,6 @@ import {
   renderAdminDetailPanel,
   renderRowCard,
 } from "./ui.js";
-import { adminRecipientsForServiceItems } from "./recipients.js";
 
 const IMG_BASE = "https://api.duoclub.ar/images";
 
@@ -240,10 +239,10 @@ function buildCreditsAdminVisualEmail({
       <table role="presentation" cellpadding="0" cellspacing="0" width="100%" style="border-collapse:collapse;">
         <tr><td align="center" style="padding:0;">
           <table role="presentation" cellpadding="0" cellspacing="0" width="100%" class="duo-admin-wrap" style="max-width:430px; border-collapse:separate; border-spacing:0;">
-            <tr><td class="duo-admin-card" style="background:#F4F4F4; border-radius:0 0 28px 28px; overflow:hidden; font-family:Arial, Helvetica, sans-serif; color:#111111;">
+            <tr><td class="duo-admin-card" style="background:#FBFBFB; border-radius:0 0 28px 28px; overflow:hidden; font-family:Arial, Helvetica, sans-serif; color:#111111;">
               <table role="presentation" cellpadding="0" cellspacing="0" width="100%" style="border-collapse:collapse; width:100%;">
                 <tr>
-                  <td class="duo-admin-content" style="padding:34px 28px 34px; background:#F4F4F4; color:#111111;">
+                  <td class="duo-admin-content" style="padding:34px 28px 34px; background:#FBFBFB; color:#111111;">
                     <table role="presentation" cellpadding="0" cellspacing="0" width="100%" style="border-collapse:collapse; width:100%;">
                       <tr><td align="center" style="padding:0 0 36px;">${renderMailHeaderLogo()}</td></tr>
                       <tr>
@@ -357,11 +356,11 @@ export async function sendAdminCreditsChangedEmail(
   items = [],
   meta = {}
 ) {
+  const to = String(ADMIN_EMAIL || "").trim();
+  if (!to) return;
+
   const normalized = normalizeItems(items);
   if (!normalized.length) return;
-
-  const to = adminRecipientsForServiceItems(normalized);
-  if (!to.length) return;
 
   const uName = fullNameOf(user);
   const uEmail = cleanStr(user?.email);

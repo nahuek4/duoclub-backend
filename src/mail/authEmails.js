@@ -208,7 +208,7 @@ function buildVerifyVisualEmail({
                 <td
                   class="duo-verify-card"
                   style="
-                    background:#F4F4F4;
+                    background:#FBFBFB;
                     border-radius:0 0 28px 28px;
                     overflow:hidden;
                     font-family:Arial, Helvetica, sans-serif;
@@ -220,7 +220,7 @@ function buildVerifyVisualEmail({
                       <td
                         class="duo-verify-content"
                         style="
-                          background:#F4F4F4;
+                          background:#FBFBFB;
                           padding:34px 36px 36px;
                           font-family:Arial, Helvetica, sans-serif;
                           color:#111111;
@@ -317,7 +317,7 @@ function buildVerifyVisualEmail({
                                   width:100%;
                                   border:1.5px solid #111111;
                                   border-radius:10px;
-                                  background:#F4F4F4;
+                                  background:#FBFBFB;
                                 "
                               >
                                 <tr>
@@ -614,7 +614,7 @@ function buildRegistrationReceivedVisualEmail({
                 <td
                   class="duo-reg-card"
                   style="
-                    background:#F4F4F4;
+                    background:#FBFBFB;
                     border-radius:0 0 28px 28px;
                     overflow:hidden;
                     font-family:Arial, Helvetica, sans-serif;
@@ -632,7 +632,7 @@ function buildRegistrationReceivedVisualEmail({
                       <td
                         class="duo-reg-content"
                         style="
-                          background:#F4F4F4;
+                          background:#FBFBFB;
                           padding:34px 36px 36px;
                           font-family:Arial, Helvetica, sans-serif;
                           color:#111111;
@@ -736,7 +736,7 @@ function buildRegistrationReceivedVisualEmail({
                                   width:100%;
                                   border:1.5px solid #111111;
                                   border-radius:10px;
-                                  background:#F4F4F4;
+                                  background:#FBFBFB;
                                 "
                               >
                                 <tr>
@@ -982,10 +982,10 @@ function buildAdminRegistrationVisualEmail({
       <table role="presentation" cellpadding="0" cellspacing="0" width="100%" style="border-collapse:collapse;">
         <tr><td align="center" style="padding:0;">
           <table role="presentation" cellpadding="0" cellspacing="0" width="100%" class="duo-admin-reg-wrap" style="max-width:430px; border-collapse:separate; border-spacing:0;">
-            <tr><td class="duo-admin-reg-card" style="background:#F4F4F4; border-radius:0 0 28px 28px; overflow:hidden; font-family:Arial, Helvetica, sans-serif; color:#111111;">
+            <tr><td class="duo-admin-reg-card" style="background:#FBFBFB; border-radius:0 0 28px 28px; overflow:hidden; font-family:Arial, Helvetica, sans-serif; color:#111111;">
               <table role="presentation" cellpadding="0" cellspacing="0" width="100%" style="border-collapse:collapse; width:100%;">
                 <tr>
-                  <td class="duo-admin-reg-content" style="padding:34px 28px 34px; background:#F4F4F4; color:#111111;">
+                  <td class="duo-admin-reg-content" style="padding:34px 28px 34px; background:#FBFBFB; color:#111111;">
                     <table role="presentation" cellpadding="0" cellspacing="0" width="100%" style="border-collapse:collapse; width:100%;">
                       <tr><td align="center" style="padding:0 0 36px;"><div style="font-size:34px; line-height:34px; font-weight:700; color:#0A0A0A; letter-spacing:-3px;">${renderMailHeaderLogo()}</div></td></tr>
                       <tr>
@@ -1154,7 +1154,7 @@ function buildAccountResultVisualEmail({
                 <td
                   class="duo-account-card"
                   style="
-                    background:#F4F4F4;
+                    background:#FBFBFB;
                     border-radius:0 0 28px 28px;
                     overflow:hidden;
                     font-family:Arial, Helvetica, sans-serif;
@@ -1172,7 +1172,7 @@ function buildAccountResultVisualEmail({
                       <td
                         class="duo-account-content"
                         style="
-                          background:#F4F4F4;
+                          background:#FBFBFB;
                           padding:34px 56px 58px;
                           font-family:Arial, Helvetica, sans-serif;
                           color:#111111;

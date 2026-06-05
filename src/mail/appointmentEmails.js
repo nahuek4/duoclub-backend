@@ -10,7 +10,6 @@ import {
   renderAdminDetailPanel,
   renderRowCard,
 } from "./ui.js";
-import { adminRecipientsForAppointment } from "./recipients.js";
 
 const IMG_BASE = "https://api.duoclub.ar/images";
 
@@ -21,7 +20,7 @@ const SOCIAL_LINKS = {
 };
 
 
-const DUO_WATERMARK_BG = `background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='360' height='420' viewBox='0 0 360 420'%3E%3Ctext x='-8' y='84' font-family='Arial, Helvetica, sans-serif' font-size='86' font-weight='700' fill='%23ffffff' fill-opacity='0.72'%3EDUO%3C/text%3E%3Ctext x='-8' y='214' font-family='Arial, Helvetica, sans-serif' font-size='86' font-weight='700' fill='%23ffffff' fill-opacity='0.72'%3EDUO%3C/text%3E%3Ctext x='-8' y='344' font-family='Arial, Helvetica, sans-serif' font-size='86' font-weight='700' fill='%23ffffff' fill-opacity='0.72'%3EDUO%3C/text%3E%3C/svg%3E"); background-repeat:repeat-y; background-position:center top; background-size:360px auto;`;
+const DUO_WATERMARK_BG = `${DUO_WATERMARK_BG} background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='360' height='420' viewBox='0 0 360 420'%3E%3Ctext x='-8' y='84' font-family='Arial, Helvetica, sans-serif' font-size='86' font-weight='700' fill='%23ffffff' fill-opacity='0.72'%3EDUO%3C/text%3E%3Ctext x='-8' y='214' font-family='Arial, Helvetica, sans-serif' font-size='86' font-weight='700' fill='%23ffffff' fill-opacity='0.72'%3EDUO%3C/text%3E%3Ctext x='-8' y='344' font-family='Arial, Helvetica, sans-serif' font-size='86' font-weight='700' fill='%23ffffff' fill-opacity='0.72'%3EDUO%3C/text%3E%3C/svg%3E"); background-repeat:repeat-y; background-position:center top; background-size:360px auto;`;
 
 /* =========================================================
    Helpers base
@@ -178,7 +177,7 @@ function buildHeroHeader({ title, kind = "confirmed" }) {
                 style="
                   width:115px;
                   height:36px;
-                  background:#F4F4F4;
+                  background:#FBFBFB;
                   border-top-left-radius:28px;
                 "
               ></div>
@@ -206,7 +205,7 @@ function buildAppointmentCard(item = {}) {
         border-spacing:0;
         width:100%;
         margin:0 0 14px;
-        background:#F4F4F4;
+        background:#FBFBFB;
         border:1.5px solid #171717;
         border-radius:14px;
         overflow:hidden;
@@ -316,7 +315,7 @@ function buildAdminDataCard({ label, value, valueHtml = "" } = {}) {
         border-spacing:0;
         width:100%;
         margin:0 0 10px;
-        background:#F4F4F4;
+        background:#FBFBFB;
         border:1.5px solid #171717;
         border-radius:14px;
         overflow:hidden;
@@ -425,7 +424,7 @@ function buildAdminAppointmentVisualEmail({
               <tr>
                 <td
                   style="
-                    background:#F4F4F4;
+                    background:#FBFBFB;
                     border-radius:28px;
                     overflow:hidden;
                   "
@@ -659,7 +658,7 @@ function buildAppointmentVisualEmail({
               <tr>
                 <td
                   style="
-                    background:#F4F4F4;
+                    background:#FBFBFB;
                     border-radius:28px;
                     overflow:hidden;
                   "
@@ -815,7 +814,7 @@ function buildReminderEmail({ items = [] }) {
                   class="mail-shell"
                   bgcolor="#ffffff"
                   style="
-                    background:#F4F4F4;
+                    background:#FBFBFB;
                     border-radius:14px;
                     padding:18px 10px 26px;
                     text-align:center;
@@ -901,6 +900,8 @@ function buildAdminAppointmentEmail({
   const detailCardsHtml = buildAdminDataCards([
     { label: "Usuario", value: uName },
     { label: "Email", value: uEmail },
+    refundDetail ? { label: "Reintegro", value: refundDetail } : null,
+    detailText ? { label: "Detalle", value: detailText } : null,
   ]);
 
   return buildAdminAppointmentVisualEmail({
@@ -1103,8 +1104,8 @@ export async function sendAppointmentReminderEmail(user, ap, serviceName) {
 ========================================================= */
 
 export async function sendAdminAppointmentBookedEmail(user, ap, serviceName) {
-  const to = adminRecipientsForAppointment(ap, serviceName);
-  if (!to.length) return;
+  const to = ADMIN_EMAIL;
+  if (!to) return;
 
   const uName = getUserName(user);
   const uEmail = user?.email || "-";
@@ -1143,8 +1144,8 @@ export async function sendAdminAppointmentCancelledEmail(
   serviceName,
   meta = {}
 ) {
-  const to = adminRecipientsForAppointment(ap, serviceName);
-  if (!to.length) return;
+  const to = ADMIN_EMAIL;
+  if (!to) return;
 
   const uName = getUserName(user);
   const uEmail = user?.email || "-";
@@ -1239,6 +1240,8 @@ export async function sendAppointmentBookedBatchEmail(user, items = []) {
     "",
     "Tus turnos fueron confirmados con éxito.",
     "",
+    "Detalle:",
+    ...(linesItems.length ? linesItems : ["(sin items)"]),
     "",
     "Si no podés asistir, recordá cancelarlo con anticipación desde tu perfil.",
   ].join("\n");
@@ -1286,6 +1289,8 @@ export async function sendAppointmentCancelledBatchEmail(user, items = []) {
     "",
     "Tus turnos fueron cancelados con éxito.",
     "",
+    "Detalle:",
+    ...(linesItems.length ? linesItems : ["(sin items)"]),
     "",
     "Si querés, podés volver a reservar desde tu perfil.",
   ].join("\n");

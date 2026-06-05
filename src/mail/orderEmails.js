@@ -10,7 +10,6 @@ import {
   renderAdminDetailPanel,
   renderRowCard,
 } from "./ui.js";
-import { adminRecipientsForOrder } from "./recipients.js";
 
 
 const IMG_BASE = "https://api.duoclub.ar/images";
@@ -22,7 +21,7 @@ const SOCIAL_LINKS = {
 };
 
 
-const DUO_WATERMARK_BG = `background-color:#F4F4F4; background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='360' height='420' viewBox='0 0 360 420'%3E%3Ctext x='-8' y='84' font-family='Arial, Helvetica, sans-serif' font-size='86' font-weight='700' fill='%23ffffff' fill-opacity='0.72'%3EDUO%3C/text%3E%3Ctext x='-8' y='214' font-family='Arial, Helvetica, sans-serif' font-size='86' font-weight='700' fill='%23ffffff' fill-opacity='0.72'%3EDUO%3C/text%3E%3Ctext x='-8' y='344' font-family='Arial, Helvetica, sans-serif' font-size='86' font-weight='700' fill='%23ffffff' fill-opacity='0.72'%3EDUO%3C/text%3E%3C/svg%3E"); background-repeat:repeat-y; background-position:center top; background-size:360px auto;`;
+const DUO_WATERMARK_BG = `background-color:#FBFBFB; background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='360' height='420' viewBox='0 0 360 420'%3E%3Ctext x='-8' y='84' font-family='Arial, Helvetica, sans-serif' font-size='86' font-weight='700' fill='%23ffffff' fill-opacity='0.72'%3EDUO%3C/text%3E%3Ctext x='-8' y='214' font-family='Arial, Helvetica, sans-serif' font-size='86' font-weight='700' fill='%23ffffff' fill-opacity='0.72'%3EDUO%3C/text%3E%3Ctext x='-8' y='344' font-family='Arial, Helvetica, sans-serif' font-size='86' font-weight='700' fill='%23ffffff' fill-opacity='0.72'%3EDUO%3C/text%3E%3C/svg%3E"); background-repeat:repeat-y; background-position:center top; background-size:360px auto;`;
 
 function renderMailHeaderLogo(width = 34) {
   return `<img src="${IMG_BASE}/logo.png" alt="${escapeHtml(BRAND_NAME)}" width="${Number(width) || 34}" style="display:block; margin:0 auto; width:${Number(width) || 34}px; max-width:${Number(width) || 34}px; height:auto; border:0; outline:none; text-decoration:none;" />`;
@@ -226,7 +225,7 @@ function renderPaymentItemsList(items = []) {
             <td style="padding:0 0 0 16px; position:relative;">
               <div
                 style="
-                  background:#F4F4F4;
+                  background:#FBFBFB;
                   border:1.5px solid #111111;
                   border-radius:8px;
                   overflow:hidden;
@@ -289,7 +288,7 @@ function renderPaymentSummaryBox(s, forcedStatus = null) {
         border-collapse:separate;
         border-spacing:0;
         width:100%;
-        background:#F4F4F4;
+        background:#FBFBFB;
         border-radius:12px;
         overflow:hidden;
         margin:0 0 14px;
@@ -364,10 +363,10 @@ function buildPaymentUserVisualEmail({
           <td align="center" style="padding:0;">
             <table role="presentation" cellpadding="0" cellspacing="0" width="100%" class="duo-pay-wrap" style="max-width:430px; border-collapse:separate; border-spacing:0;">
               <tr>
-                <td class="duo-pay-card" style="background:#F4F4F4; border-radius:0 0 28px 28px; overflow:hidden; font-family:Arial, Helvetica, sans-serif; color:#111111;">
+                <td class="duo-pay-card" style="background:#FBFBFB; border-radius:0 0 28px 28px; overflow:hidden; font-family:Arial, Helvetica, sans-serif; color:#111111;">
                   <table role="presentation" cellpadding="0" cellspacing="0" width="100%" style="border-collapse:collapse; width:100%;">
                     <tr>
-                      <td class="duo-pay-content" style="background:#F4F4F4; padding:34px 28px 34px; font-family:Arial, Helvetica, sans-serif; color:#111111;">
+                      <td class="duo-pay-content" style="background:#FBFBFB; padding:34px 28px 34px; font-family:Arial, Helvetica, sans-serif; color:#111111;">
                         <table role="presentation" cellpadding="0" cellspacing="0" width="100%" style="border-collapse:collapse; width:100%;">
                           <tr>
                             <td class="duo-pay-logo" align="center" style="padding:0 0 36px;">
@@ -801,8 +800,7 @@ export async function sendOrderCancelledEmail(order = {}, user = null) {
 ========================================================= */
 
 export async function sendAdminOrderPendingEmail(order = {}, user = null) {
-  const to = adminRecipientsForOrder(order);
-  if (!to.length) return;
+  if (!ADMIN_EMAIL) return;
 
   const s = orderSummary(order, user);
 
@@ -836,12 +834,11 @@ export async function sendAdminOrderPendingEmail(order = {}, user = null) {
     forcedStatus: statusLabel(s.statusRaw),
   });
 
-  await sendMail(to, subject, text, html);
+  await sendMail(ADMIN_EMAIL, subject, text, html);
 }
 
 export async function sendAdminOrderPaidEmail(order = {}, user = null) {
-  const to = adminRecipientsForOrder(order);
-  if (!to.length) return;
+  if (!ADMIN_EMAIL) return;
 
   const s = orderSummary(order, user);
 
@@ -875,12 +872,11 @@ export async function sendAdminOrderPaidEmail(order = {}, user = null) {
     forcedStatus: "Pagado",
   });
 
-  await sendMail(to, subject, text, html);
+  await sendMail(ADMIN_EMAIL, subject, text, html);
 }
 
 export async function sendAdminOrderCancelledEmail(order = {}, user = null) {
-  const to = adminRecipientsForOrder(order);
-  if (!to.length) return;
+  if (!ADMIN_EMAIL) return;
 
   const s = orderSummary(order, user);
 
@@ -913,5 +909,5 @@ export async function sendAdminOrderCancelledEmail(order = {}, user = null) {
     forcedStatus: "Cancelado",
   });
 
-  await sendMail(to, subject, text, html);
+  await sendMail(ADMIN_EMAIL, subject, text, html);
 }

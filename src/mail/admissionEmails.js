@@ -339,7 +339,7 @@ function renderSectionPanel(title, rows = []) {
     ${renderExactBodyText(escapeHtml(title), {
       fontSize: 13,
       lineHeight: 18,
-      weight: 900,
+      weight: 700,
       maxWidth: 340,
       marginTop: 2,
       marginBottom: 10,
@@ -406,10 +406,10 @@ function buildAdminAdmissionVisualEmail({
       <table role="presentation" cellpadding="0" cellspacing="0" width="100%" style="border-collapse:collapse;">
         <tr><td align="center" style="padding:0;">
           <table role="presentation" cellpadding="0" cellspacing="0" width="100%" class="duo-admin-wrap" style="max-width:430px; border-collapse:separate; border-spacing:0;">
-            <tr><td class="duo-admin-card" style="background:#F4F4F4; border-radius:0 0 28px 28px; overflow:hidden; font-family:Arial, Helvetica, sans-serif; color:#111111;">
+            <tr><td class="duo-admin-card" style="background:#FBFBFB; border-radius:0 0 28px 28px; overflow:hidden; font-family:Arial, Helvetica, sans-serif; color:#111111;">
               <table role="presentation" cellpadding="0" cellspacing="0" width="100%" style="border-collapse:collapse; width:100%;">
                 <tr>
-                  <td class="duo-admin-content" style="padding:34px 28px 34px; background:#F4F4F4; color:#111111;">
+                  <td class="duo-admin-content" style="padding:34px 28px 34px; background:#FBFBFB; color:#111111;">
                     <table role="presentation" cellpadding="0" cellspacing="0" width="100%" style="border-collapse:collapse; width:100%;">
                       <tr><td align="center" style="padding:0 0 36px;">${renderMailHeaderLogo()}</td></tr>
                       <tr><td style="padding:0 0 14px;"><table role="presentation" cellpadding="0" cellspacing="0" width="100%" style="border-collapse:collapse;"><tr><td valign="middle" style="width:24px; padding:0 10px 0 0;"><div style="width:19px; height:19px; border:2px solid #111111; border-radius:999px; font-size:11px; line-height:17px; text-align:center; font-weight:700; color:#111111;">✓</div></td><td class="duo-admin-heading" valign="middle" style="font-size:24px; line-height:28px; font-weight:700; color:#111111; letter-spacing:-0.6px;">${escapeHtml(heading)}</td></tr></table></td></tr>
@@ -663,7 +663,7 @@ export async function sendUserAdmissionReceivedEmail(
       ${renderExactBodyText("¿Qué sigue ahora?", {
         fontSize: 14,
         lineHeight: 18,
-        weight: 900,
+        weight: 700,
         maxWidth: 320,
         marginTop: 4,
         marginBottom: 10,
