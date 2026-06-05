@@ -7,6 +7,45 @@ const IMG_BASE = "https://api.duoclub.ar/images";
    UI kit mail — estilo DUO unificado
 ========================================================= */
 
+export function renderMailFooterSocialIcons({ align = "right", size = 20, gap = 6 } = {}) {
+  const safeSize = Number(size) || 20;
+  const safeGap = Number(gap) || 6;
+  const icons = [
+    { file: "iconoig.png", alt: "Instagram" },
+    { file: "iconolnkd.png", alt: "LinkedIn" },
+    { file: "iconospot.png", alt: "Spotify" },
+  ];
+
+  return `
+    <table
+      role="presentation"
+      cellpadding="0"
+      cellspacing="0"
+      ${align === "right" ? 'align="right"' : ''}
+      style="border-collapse:collapse; margin-top:8px; ${align === "right" ? "margin-left:auto;" : ""}"
+    >
+      <tr>
+        ${icons
+          .map(
+            (icon, idx) => `
+              <td style="${idx > 0 ? `padding-left:${safeGap}px;` : ""}">
+                <img
+                  src="${IMG_BASE}/${icon.file}"
+                  alt="${escapeHtml(icon.alt)}"
+                  width="${safeSize}"
+                  height="${safeSize}"
+                  style="display:block; width:${safeSize}px; height:${safeSize}px; border:0; outline:none; text-decoration:none;"
+                />
+              </td>
+            `
+          )
+          .join("")}
+      </tr>
+    </table>
+  `;
+}
+
+
 export function renderExactUserShell(innerHtml) {
   return `
     <style>
@@ -74,13 +113,7 @@ export function renderExactUserShell(innerHtml) {
                             <div style="font-weight:900; letter-spacing:2.8px;">DUOCLUB.AR</div>
                             <div>+54 249 420 7343</div>
                             <div>Av. Santamaría 54, Tandil.</div>
-                            <table role="presentation" cellpadding="0" cellspacing="0" align="right" style="border-collapse:collapse; margin-top:8px;">
-                              <tr>
-                                <td style="padding-left:6px;"><div style="width:20px; height:20px; border-radius:999px; border:1px solid #ffffff; color:#ffffff; font-family:${EMAIL_FONT}; font-size:8px; line-height:20px; text-align:center; font-weight:700;">ig</div></td>
-                                <td style="padding-left:6px;"><div style="width:20px; height:20px; border-radius:999px; border:1px solid #ffffff; color:#ffffff; font-family:${EMAIL_FONT}; font-size:10px; line-height:20px; text-align:center; font-weight:700;">f</div></td>
-                                <td style="padding-left:6px;"><div style="width:20px; height:20px; border-radius:999px; border:1px solid #ffffff; color:#ffffff; font-family:${EMAIL_FONT}; font-size:8px; line-height:20px; text-align:center; font-weight:700;">in</div></td>
-                              </tr>
-                            </table>
+                            ${renderMailFooterSocialIcons({ align: "right", size: 20 })}
                           </td>
                         </tr>
                       </table>
@@ -108,13 +141,63 @@ function renderExactHeaderLogo(width = 34) {
 
 export function renderExactStatusIcon(symbol = "✓") {
   const normalized = String(symbol || "").trim().toLowerCase();
+
   const iconMap = {
-    "account-approved": { src: `${IMG_BASE}/iconoCuentaAprobada.png`, alt: "Cuenta aprobada", size: 28 },
-    "cuenta-aprobada": { src: `${IMG_BASE}/iconoCuentaAprobada.png`, alt: "Cuenta aprobada", size: 28 },
-    "alta-aprobada": { src: `${IMG_BASE}/iconoCuentaAprobada.png`, alt: "Alta aprobada", size: 28 },
-    "sesiones-actualizadas": { src: `${IMG_BASE}/sesionesActualizas.png`, alt: "Sesiones actualizadas", size: 28 },
-    "creditos-actualizados": { src: `${IMG_BASE}/sesionesActualizas.png`, alt: "Créditos actualizados", size: 28 },
+    "account-approved": {
+      src: `${IMG_BASE}/iconoCuentaAprobada.png`,
+      alt: "Cuenta aprobada",
+      size: 28,
+    },
+    "cuenta-aprobada": {
+      src: `${IMG_BASE}/iconoCuentaAprobada.png`,
+      alt: "Cuenta aprobada",
+      size: 28,
+    },
+    "alta-aprobada": {
+      src: `${IMG_BASE}/iconoCuentaAprobada.png`,
+      alt: "Alta aprobada",
+      size: 28,
+    },
+
+    "sesiones-actualizadas": {
+      src: `${IMG_BASE}/sesionesActualizas.png`,
+      alt: "Sesiones actualizadas",
+      size: 28,
+    },
+    "creditos-actualizados": {
+      src: `${IMG_BASE}/sesionesActualizas.png`,
+      alt: "Créditos actualizados",
+      size: 28,
+    },
+
+    "pago-aprobado": {
+      src: `${IMG_BASE}/pagoAprobado.png`,
+      alt: "Pago aprobado",
+      size: 28,
+    },
+    "payment-approved": {
+      src: `${IMG_BASE}/pagoAprobado.png`,
+      alt: "Pago aprobado",
+      size: 28,
+    },
+
+    "pedido-aprobado": {
+      src: `${IMG_BASE}/pedidoAprobado.png`,
+      alt: "Pedido aprobado",
+      size: 28,
+    },
+    "pedido-generado": {
+      src: `${IMG_BASE}/pedidoAprobado.png`,
+      alt: "Pedido generado",
+      size: 28,
+    },
+    "order-approved": {
+      src: `${IMG_BASE}/pedidoAprobado.png`,
+      alt: "Pedido aprobado",
+      size: 28,
+    },
   };
+
   const selected = iconMap[normalized] || {
     src: `${IMG_BASE}/iconocheck.png`,
     alt: symbol,

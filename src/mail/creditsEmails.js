@@ -10,6 +10,47 @@ import {
   renderRowCard,
 } from "./ui.js";
 
+const IMG_BASE = "https://api.duoclub.ar/images";
+
+function renderMailHeaderLogo(width = 34) {
+  return `<img src="${IMG_BASE}/logo.png" alt="${escapeHtml(BRAND_NAME)}" width="${Number(width) || 34}" style="display:block; margin:0 auto; width:${Number(width) || 34}px; max-width:${Number(width) || 34}px; height:auto; border:0; outline:none; text-decoration:none;" />`;
+}
+
+function renderMailFooterBrand(width = 92) {
+  return `<img src="${IMG_BASE}/duohealthclub.png" alt="${escapeHtml(BRAND_NAME)} Health Club" width="${Number(width) || 92}" style="display:block; width:${Number(width) || 92}px; max-width:100%; height:auto; border:0; outline:none; text-decoration:none;" />`;
+}
+
+function renderMailFooterIcons() {
+  const icons = [
+    { file: "iconoig.png", alt: "Instagram" },
+    { file: "iconolnkd.png", alt: "LinkedIn" },
+    { file: "iconospot.png", alt: "Spotify" },
+  ];
+
+  return `
+    <table role="presentation" cellpadding="0" cellspacing="0" style="border-collapse:collapse; margin-top:8px; margin-left:auto;">
+      <tr>
+        ${icons
+          .map(
+            (icon, idx) => `
+              <td style="${idx > 0 ? "padding-left:6px;" : ""}">
+                <img
+                  src="${IMG_BASE}/${icon.file}"
+                  alt="${escapeHtml(icon.alt)}"
+                  width="20"
+                  height="20"
+                  style="display:block; width:20px; height:20px; border:0; outline:none; text-decoration:none;"
+                />
+              </td>
+            `
+          )
+          .join("")}
+      </tr>
+    </table>
+  `;
+}
+
+
 /* =========================================================
    HELPERS
 ========================================================= */
@@ -189,7 +230,7 @@ function buildCreditsAdminVisualEmail({
                 <tr>
                   <td class="duo-admin-content" style="padding:34px 28px 34px; background:#f3f3f3; color:#111111;">
                     <table role="presentation" cellpadding="0" cellspacing="0" width="100%" style="border-collapse:collapse; width:100%;">
-                      <tr><td align="center" style="padding:0 0 36px;"><div style="font-size:34px; line-height:34px; font-weight:900; color:#050505; letter-spacing:-3px;">ᗡ◖</div></td></tr>
+                      <tr><td align="center" style="padding:0 0 36px;">${renderMailHeaderLogo()}</td></tr>
                       <tr>
                         <td style="padding:0 0 14px;">
                           <table role="presentation" cellpadding="0" cellspacing="0" width="100%" style="border-collapse:collapse;">
@@ -206,7 +247,7 @@ function buildCreditsAdminVisualEmail({
                     </table>
                   </td>
                 </tr>
-                <tr><td class="duo-admin-footer" style="background:#050505; padding:40px 48px 42px; border-radius:0 0 28px 28px; font-family:Arial, Helvetica, sans-serif;"><table role="presentation" cellpadding="0" cellspacing="0" width="100%" style="border-collapse:collapse; width:100%;"><tr><td valign="middle" style="width:42%; color:#ffffff;"><div class="duo-footer-brand" style="font-size:23px; line-height:23px; font-weight:900; letter-spacing:7px;">DUO</div><div style="font-size:4px; line-height:7px; font-weight:700; letter-spacing:1.8px; margin-top:4px; opacity:0.95;">HEALTH CLUB</div></td><td valign="middle" align="right" class="duo-footer-info" style="width:58%; color:#ffffff; font-size:9px; line-height:13px; font-weight:500; letter-spacing:0.2px;"><div style="font-weight:900; letter-spacing:2.8px;">DUOCLUB.AR</div><div>+54 249 420 7343</div><div>Av. Santamaría 54, Tandil.</div><div style="padding-top:6px; font-size:10px; line-height:10px; letter-spacing:4px;">◎ f in</div></td></tr></table></td></tr>
+                <tr><td class="duo-admin-footer" style="background:#050505; padding:40px 48px 42px; border-radius:0 0 28px 28px; font-family:Arial, Helvetica, sans-serif;"><table role="presentation" cellpadding="0" cellspacing="0" width="100%" style="border-collapse:collapse; width:100%;"><tr><td valign="middle" style="width:42%; color:#ffffff;">${renderMailFooterBrand()}</td><td valign="middle" align="right" class="duo-footer-info" style="width:58%; color:#ffffff; font-size:9px; line-height:13px; font-weight:500; letter-spacing:0.2px;"><div style="font-weight:900; letter-spacing:2.8px;">DUOCLUB.AR</div><div>+54 249 420 7343</div><div>Av. Santamaría 54, Tandil.</div><div style="padding-top:6px;">${renderMailFooterIcons()}</div></td></tr></table></td></tr>
               </table>
             </td></tr>
           </table>

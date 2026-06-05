@@ -29,18 +29,30 @@ function renderMailFooterBrand(width = 92) {
 }
 
 function renderMailFooterIcons() {
+  const icons = [
+    { file: "iconoig.png", alt: "Instagram" },
+    { file: "iconolnkd.png", alt: "LinkedIn" },
+    { file: "iconospot.png", alt: "Spotify" },
+  ];
+
   return `
-    <table role="presentation" cellpadding="0" cellspacing="0" style="border-collapse:collapse; margin-top:8px;">
+    <table role="presentation" cellpadding="0" cellspacing="0" style="border-collapse:collapse; margin-top:8px; margin-left:auto;">
       <tr>
-        <td style="padding-right:6px;">
-          <div style="width:20px; height:20px; border-radius:999px; border:1px solid #ffffff; color:#ffffff; font-family:Arial, Helvetica, sans-serif; font-size:8px; line-height:20px; text-align:center; font-weight:700;">ig</div>
-        </td>
-        <td style="padding-right:6px;">
-          <div style="width:20px; height:20px; border-radius:999px; border:1px solid #ffffff; color:#ffffff; font-family:Arial, Helvetica, sans-serif; font-size:10px; line-height:20px; text-align:center; font-weight:700;">f</div>
-        </td>
-        <td>
-          <div style="width:20px; height:20px; border-radius:999px; border:1px solid #ffffff; color:#ffffff; font-family:Arial, Helvetica, sans-serif; font-size:8px; line-height:20px; text-align:center; font-weight:700;">in</div>
-        </td>
+        ${icons
+          .map(
+            (icon, idx) => `
+              <td style="${idx > 0 ? "padding-left:6px;" : ""}">
+                <img
+                  src="${IMG_BASE}/${icon.file}"
+                  alt="${escapeHtml(icon.alt)}"
+                  width="20"
+                  height="20"
+                  style="display:block; width:20px; height:20px; border:0; outline:none; text-decoration:none;"
+                />
+              </td>
+            `
+          )
+          .join("")}
       </tr>
     </table>
   `;

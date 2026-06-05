@@ -495,6 +495,36 @@ function buildAdminAppointmentVisualEmail({
 }
 
 
+function renderAppointmentFooterIcons() {
+  const icons = [
+    { file: "iconoig.png", alt: "Instagram" },
+    { file: "iconolnkd.png", alt: "LinkedIn" },
+    { file: "iconospot.png", alt: "Spotify" },
+  ];
+
+  return `
+    <table role="presentation" cellpadding="0" cellspacing="0" align="right" style="border-collapse:collapse; margin-top:10px; margin-left:auto;">
+      <tr>
+        ${icons
+          .map(
+            (icon, idx) => `
+              <td style="${idx > 0 ? "padding-left:6px;" : ""}">
+                <img
+                  src="${IMG_BASE}/${icon.file}"
+                  alt="${escapeHtml(icon.alt)}"
+                  width="17"
+                  height="17"
+                  style="display:block; width:17px; height:17px; border:0; outline:none; text-decoration:none;"
+                />
+              </td>
+            `
+          )
+          .join("")}
+      </tr>
+    </table>
+  `;
+}
+
 function buildFooterBlock() {
   return `
     <tr>
@@ -538,53 +568,7 @@ function buildFooterBlock() {
               <div style="font-size:12px; line-height:16px; font-weight:800; letter-spacing:2px;">DUOCLUB.AR</div>
               <div style="font-size:10px; line-height:15px; font-weight:400; opacity:0.96;">+549 249 420 7343</div>
               <div style="font-size:10px; line-height:15px; font-weight:400; opacity:0.96;">Av. Santamaría 54, Tandil.</div>
-              <div style="margin-top:10px; font-size:0; line-height:0;">
-                <span
-                  style="
-                    display:inline-block;
-                    width:17px;
-                    height:17px;
-                    border-radius:50%;
-                    background:#ffffff;
-                    color:#0A0A0A;
-                    font-family:${duoFontStack()};
-                    font-size:9px;
-                    line-height:17px;
-                    text-align:center;
-                    margin-left:6px;
-                  "
-                >ig</span>
-                <span
-                  style="
-                    display:inline-block;
-                    width:17px;
-                    height:17px;
-                    border-radius:50%;
-                    background:#ffffff;
-                    color:#0A0A0A;
-                    font-family:${duoFontStack()};
-                    font-size:10px;
-                    line-height:17px;
-                    text-align:center;
-                    margin-left:6px;
-                  "
-                >f</span>
-                <span
-                  style="
-                    display:inline-block;
-                    width:17px;
-                    height:17px;
-                    border-radius:50%;
-                    background:#ffffff;
-                    color:#0A0A0A;
-                    font-family:${duoFontStack()};
-                    font-size:9px;
-                    line-height:17px;
-                    text-align:center;
-                    margin-left:6px;
-                  "
-                >in</span>
-              </div>
+              ${renderAppointmentFooterIcons()}
             </td>
           </tr>
         </table>
