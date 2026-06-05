@@ -1469,6 +1469,158 @@ router.post("/public-evaluation/pay", async (req, res) => {
 });
 
 
+router.post("/admin-create", protect, adminOnly, async (req, res) => {
+  try {
+    const userId = String(req.body?.userId || "").trim();
+    const userEmail = normalizeCustomerEmail(req.body?.userEmail || req.body?.email);
+    const sk = assertServiceKey(req.body?.serviceKey, "serviceKey");
+    const credits = Math.trunc(Number(req.body?.credits ?? req.body?.sessions ?? 0));
+    const amount = normalizeMoney(req.body?.amount ?? req.body?.price ?? req.body?.total);
+    const payMethodRaw = String(req.body?.payMethod || "CASH").toUpperCase().trim();
+    const statusRaw = String(req.body?.status || "pending").toLowerCase().trim();
+    const applyCredits = Boolean(req.body?.applyCredits || req.body?.accreditCredits);
+    const notes = String(req.body?.notes || "").trim();
+    const customLabel = String(req.body?.label || req.body?.title || "").trim();
+
+    const pm = payMethodRaw === "MERCADOPAGO" || payMethodRaw === "MP" ? "MP" : "CASH";
+    const status = statusRaw === "paid" || statusRaw === "approved"
+      ? "paid"
+      : statusRaw === "rejected" || statusRaw === "cancelled" || statusRaw === "canceled"
+        ? "cancelled"
+        : "pending";
+
+    if (!userId && !userEmail) {
+      return res.status(400).json({ error: "Indicá el email o ID del usuario." });
+    }
+    if (!Number.isFinite(credits) || credits < 0) {
+      return res.status(400).json({ error: "Cantidad de créditos inválida." });
+    }
+    if (!Number.isFinite(amount) || amount < 0) {
+      return res.status(400).json({ error: "Precio inválido." });
+    }
+    if (status === "cancelled" && applyCredits) {
+      return res.status(400).json({ error: "Una orden rechazada/cancelada no puede acreditar créditos." });
+    }
+
+    let orderUser = null;
+    if (userId && mongoose.Types.ObjectId.isValid(userId)) {
+      orderUser = await User.findById(userId);
+    }
+    if (!orderUser && userEmail) {
+      orderUser = await User.findOne({ email: userEmail });
+    }
+    if (!orderUser) {
+      return res.status(404).json({ error: "Usuario no encontrado." });
+    }
+
+    const serviceName = prettyServiceNameFromKey(sk);
+    const label = customLabel || `${credits} ${pluralizeSessions(credits)} de ${serviceName}`;
+
+    const order = await Order.create({
+      user: orderUser._id,
+      payMethod: pm,
+      items: [
+        {
+          kind: "CREDITS",
+          serviceKey: sk,
+          credits,
+          label,
+          qty: 1,
+          basePrice: amount,
+          regularPrice: amount,
+          price: amount,
+        },
+      ],
+      totalBase: amount,
+      total: amount,
+      discountPercent: 0,
+      discountAmount: 0,
+      coverageDiscountAmount: 0,
+      plusDiscountAmount: 0,
+      discountReason: "",
+      totalFinal: amount,
+      status,
+      paidAt: status === "paid" ? new Date() : null,
+      applied: false,
+      creditsApplied: false,
+      createdByAdmin: true,
+      createdByAdminId: req.user?._id || null,
+      customerName: `${orderUser.name || ""} ${orderUser.lastName || ""}`.trim() || orderUser.fullName || "",
+      customerEmail: orderUser.email || "",
+      customerPhone: orderUser.phone || "",
+      notes,
+      serviceKey: sk,
+      credits,
+      price: amount,
+      label,
+    });
+
+    if (applyCredits && credits > 0) {
+      const result = await applyCreditsOnlyIfNeeded(order);
+      if (!result.ok) {
+        return res.status(500).json({ error: result.error || "No se pudieron acreditar los créditos." });
+      }
+      if (status === "paid") {
+        order.applied = true;
+        await order.save();
+      }
+    }
+
+    try {
+      orderUser.history = Array.isArray(orderUser.history) ? orderUser.history : [];
+      orderUser.history.push({
+        action: "order_created_by_admin",
+        title: `Orden creada manualmente: ${label}.`,
+        serviceKey: sk,
+        serviceName,
+        qty: credits,
+        createdAt: new Date(),
+      });
+      await orderUser.save();
+    } catch (e) {
+      console.warn("ORDER ADMIN CREATE HISTORY:", e?.message || e);
+    }
+
+    await logActivity({
+      req,
+      category: "orders",
+      action: "order_admin_created",
+      entity: "order",
+      entityId: order._id,
+      title: "Orden creada por admin",
+      description: "Se creó una orden manual desde AdminOrdenes.",
+      subject: buildUserSubject(req.user),
+      meta: {
+        userId: String(orderUser._id),
+        serviceKey: sk,
+        credits,
+        amount,
+        payMethod: pm,
+        status,
+        applyCredits,
+      },
+    });
+
+    const populated = await Order.findById(order._id)
+      .populate("user", "name lastName fullName email")
+      .lean();
+
+    return res.status(201).json({
+      ok: true,
+      order: populated || order,
+      message: applyCredits
+        ? "Orden creada y créditos acreditados."
+        : "Orden creada correctamente.",
+    });
+  } catch (err) {
+    console.error("POST /orders/admin-create", err);
+    return res.status(500).json({
+      error: err?.message || "No se pudo crear la orden.",
+    });
+  }
+});
+
+
 router.get("/me", protect, async (req, res) => {
   const list = await Order.find({ user: req.user._id }).sort({ createdAt: -1 }).lean();
   res.json(list);
