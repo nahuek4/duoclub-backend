@@ -901,7 +901,6 @@ function buildAdminAppointmentEmail({
   const detailCardsHtml = buildAdminDataCards([
     { label: "Usuario", value: uName },
     { label: "Email", value: uEmail },
-    refundDetail ? { label: "Reintegro", value: refundDetail } : null,
     detailText ? { label: "Detalle", value: detailText } : null,
   ]);
 
