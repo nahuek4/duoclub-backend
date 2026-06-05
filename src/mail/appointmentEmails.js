@@ -385,6 +385,26 @@ function buildAdminAppointmentVisualEmail({
     footerNote: "",
     bodyHtml: `
       <style>
+      a[x-apple-data-detectors],
+      .duo-footer-info a,
+      .duo-footer-info a:link,
+      .duo-footer-info a:visited,
+      .duo-exact-footer a,
+      .duo-exact-footer a:link,
+      .duo-exact-footer a:visited,
+      .ap-footer a,
+      .ap-footer a:link,
+      .ap-footer a:visited,
+      .duo-admin-footer a,
+      .duo-admin-footer a:link,
+      .duo-admin-footer a:visited,
+      .duo-pay-footer a,
+      .duo-pay-footer a:link,
+      .duo-pay-footer a:visited {
+        color:#ffffff !important;
+        text-decoration:none !important;
+      }
+    
         @media only screen and (max-width: 560px) {
           .ap-wrap {
             width:100% !important;
@@ -523,7 +543,7 @@ function renderAppointmentFooterIcons() {
                   href="${escapeHtml(icon.href)}"
                   target="_blank"
                   rel="noopener noreferrer"
-                  style="display:inline-block; text-decoration:none; border:0; outline:none;"
+                  style="display:inline-block; text-decoration:none; border:0; outline:none;; color:#ffffff;"
                 >
                   <img
                     src="${IMG_BASE}/${icon.file}"
@@ -582,9 +602,9 @@ function buildFooterBlock() {
                 color:#ffffff;
               "
             >
-              <div style="font-size:12px; line-height:16px; font-weight:700; letter-spacing:2px;">DUOCLUB.AR</div>
-              <div style="font-size:10px; line-height:15px; font-weight:400; opacity:0.96;">+549 249 420 7343</div>
-              <div style="font-size:10px; line-height:15px; font-weight:400; opacity:0.96;">Av. Santamaría 54, Tandil.</div>
+              <div style="font-size:12px; line-height:16px; font-weight:700; letter-spacing:2px; color:#ffffff; text-decoration:none;"><span style="color:#ffffff; text-decoration:none;">DUOCLUB.AR</span></div>
+              <div style="font-size:10px; line-height:15px; font-weight:400; opacity:0.96; color:#ffffff; text-decoration:none;"><span style="color:#ffffff; text-decoration:none;">+549 249 420 7343</span></div>
+              <div style="font-size:10px; line-height:15px; font-weight:400; opacity:0.96; color:#ffffff; text-decoration:none;"><span style="color:#ffffff; text-decoration:none;">Av. Santamaría 54, Tandil.</span></div>
               ${renderAppointmentFooterIcons()}
             </td>
           </tr>
@@ -709,7 +729,7 @@ function buildAppointmentVisualEmail({
                             style="
                               display:inline-block;
                               text-decoration:none;
-                              background:#E4FF00;
+                              background:#EEFF00;
                               color:#111111;
                               font-family:${duoFontStack()};
                               font-size:15px;

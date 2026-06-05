@@ -59,7 +59,7 @@ function renderMailFooterIcons() {
                   href="${escapeHtml(icon.href)}"
                   target="_blank"
                   rel="noopener noreferrer"
-                  style="display:inline-block; text-decoration:none; border:0; outline:none;"
+                  style="display:inline-block; text-decoration:none; border:0; outline:none;; color:#ffffff;"
                 >
                   <img
                     src="${IMG_BASE}/${icon.file}"
@@ -258,7 +258,7 @@ function renderPaymentItemsList(items = []) {
                     width:18px;
                     height:18px;
                     border-radius:999px;
-                    background:#E4FF00;
+                    background:#EEFF00;
                     border:1.5px solid #111111;
                     font-family:Arial, Helvetica, sans-serif;
                     font-size:10px;
@@ -344,6 +344,26 @@ function buildPaymentUserVisualEmail({
     footerNote: "",
     bodyHtml: `
       <style>
+      a[x-apple-data-detectors],
+      .duo-footer-info a,
+      .duo-footer-info a:link,
+      .duo-footer-info a:visited,
+      .duo-exact-footer a,
+      .duo-exact-footer a:link,
+      .duo-exact-footer a:visited,
+      .ap-footer a,
+      .ap-footer a:link,
+      .ap-footer a:visited,
+      .duo-admin-footer a,
+      .duo-admin-footer a:link,
+      .duo-admin-footer a:visited,
+      .duo-pay-footer a,
+      .duo-pay-footer a:link,
+      .duo-pay-footer a:visited {
+        color:#ffffff !important;
+        text-decoration:none !important;
+      }
+    
         @media only screen and (max-width: 560px) {
           .duo-pay-wrap { max-width: 100% !important; }
           .duo-pay-card { border-radius: 0 0 22px 22px !important; }
@@ -417,7 +437,7 @@ function buildPaymentUserVisualEmail({
                             <td class="duo-pay-btn-row" align="center" style="padding:30px 0 0;">
                               <table role="presentation" cellpadding="0" cellspacing="0" style="border-collapse:collapse; margin:0 auto;">
                                 <tr>
-                                  <td align="center" style="background:#E4FF00; border-radius:999px; box-shadow:0 10px 14px rgba(0,0,0,0.18);">
+                                  <td align="center" style="background:#EEFF00; border-radius:999px; box-shadow:0 10px 14px rgba(0,0,0,0.18);">
                                     <a href="${escapeHtml(linkHref)}" style="display:inline-block; padding:13px 21px; font-family:Arial, Helvetica, sans-serif; font-size:15px; line-height:16px; font-weight:700; color:#111111; text-decoration:none;">${escapeHtml(ctaLabel)}</a>
                                   </td>
                                 </tr>
@@ -449,9 +469,9 @@ function buildPaymentUserVisualEmail({
                               <div style="font-size:4px; line-height:7px; font-weight:700; letter-spacing:1.8px; margin-top:4px; opacity:0.95;"></div>
                             </td>
                             <td valign="middle" align="right" class="duo-footer-info" style="width:58%; color:#ffffff; font-family:Arial, Helvetica, sans-serif; font-size:9px; line-height:13px; font-weight:500; letter-spacing:0.2px;">
-                              <div style="font-weight:700; letter-spacing:2.8px;">DUOCLUB.AR</div>
-                              <div>+54 249 420 7343</div>
-                              <div>Av. Santamaría 54, Tandil.</div>
+                              <div style="font-weight:700; letter-spacing:2.8px; color:#ffffff; text-decoration:none;"><span style="color:#ffffff; text-decoration:none;">DUOCLUB.AR</span></div>
+                              <div style="color:#ffffff; text-decoration:none;"><span style="color:#ffffff; text-decoration:none;">+54 249 420 7343</span></div>
+                              <div style="color:#ffffff; text-decoration:none;"><span style="color:#ffffff; text-decoration:none;">Av. Santamaría 54, Tandil.</span></div>
                               <div style="padding-top:6px; font-size:10px; line-height:10px; letter-spacing:4px;">${renderMailFooterIcons()}</div>
                             </td>
                           </tr>

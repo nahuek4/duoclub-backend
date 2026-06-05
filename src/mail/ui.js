@@ -42,7 +42,7 @@ export function renderMailFooterSocialIcons({ align = "right", size = 20, gap = 
                   href="${escapeHtml(icon.href)}"
                   target="_blank"
                   rel="noopener noreferrer"
-                  style="display:inline-block; text-decoration:none; border:0; outline:none;"
+                  style="display:inline-block; text-decoration:none; border:0; outline:none;; color:#ffffff;"
                 >
                   <img
                     src="${IMG_BASE}/${icon.file}"
@@ -65,6 +65,26 @@ export function renderMailFooterSocialIcons({ align = "right", size = 20, gap = 
 export function renderExactUserShell(innerHtml) {
   return `
     <style>
+      a[x-apple-data-detectors],
+      .duo-footer-info a,
+      .duo-footer-info a:link,
+      .duo-footer-info a:visited,
+      .duo-exact-footer a,
+      .duo-exact-footer a:link,
+      .duo-exact-footer a:visited,
+      .ap-footer a,
+      .ap-footer a:link,
+      .ap-footer a:visited,
+      .duo-admin-footer a,
+      .duo-admin-footer a:link,
+      .duo-admin-footer a:visited,
+      .duo-pay-footer a,
+      .duo-pay-footer a:link,
+      .duo-pay-footer a:visited {
+        color:#ffffff !important;
+        text-decoration:none !important;
+      }
+    
       @media only screen and (max-width: 560px) {
         .mail-wrap { max-width:100% !important; }
         .mail-shell { padding:30px 26px 34px !important; border-radius:0 0 22px 22px !important; }
@@ -126,9 +146,9 @@ export function renderExactUserShell(innerHtml) {
                             <img src="${IMG_BASE}/duohealthclub.png" alt="DUO Health Club" width="92" class="duo-footer-brand-img" style="display:block; width:92px; max-width:92px; height:auto; border:0; outline:none; text-decoration:none; filter:invert(1);" />
                           </td>
                           <td valign="middle" align="right" class="duo-footer-info" style="width:58%; color:#ffffff; font-family:${EMAIL_FONT}; font-size:9px; line-height:13px; font-weight:500; letter-spacing:0.2px;">
-                            <div style="font-weight:700; letter-spacing:2.8px;">DUOCLUB.AR</div>
-                            <div>+54 249 420 7343</div>
-                            <div>Av. Santamaría 54, Tandil.</div>
+                            <div style="font-weight:700; letter-spacing:2.8px; color:#ffffff; text-decoration:none;"><span style="color:#ffffff; text-decoration:none;">DUOCLUB.AR</span></div>
+                            <div style="color:#ffffff; text-decoration:none;"><span style="color:#ffffff; text-decoration:none;">+54 249 420 7343</span></div>
+                            <div style="color:#ffffff; text-decoration:none;"><span style="color:#ffffff; text-decoration:none;">Av. Santamaría 54, Tandil.</span></div>
                             ${renderMailFooterSocialIcons({ align: "right", size: 20 })}
                           </td>
                         </tr>
@@ -309,7 +329,7 @@ export function panelRow(label, valueHtml) {
         font-size:12px;
         line-height:14px;
         font-weight:700;
-        color:#E4FF00;
+        color:#EEFF00;
         text-transform:uppercase;
         letter-spacing:0.2px;
         margin-bottom:4px;
@@ -331,7 +351,7 @@ export function renderRowCard({ titleLeft, titleRight = "", subtitle = "" }) {
     <div
       class="row-card"
       style="
-        border:1px solid #E4FF00;
+        border:1px solid #EEFF00;
         border-radius:8px;
         padding:10px 12px;
         margin:0 0 11px;
@@ -348,7 +368,7 @@ export function renderRowCard({ titleLeft, titleRight = "", subtitle = "" }) {
               font-size:15px;
               line-height:17px;
               font-weight:700;
-              color:#E4FF00;
+              color:#EEFF00;
               padding:0;
             "
           >
@@ -362,7 +382,7 @@ export function renderRowCard({ titleLeft, titleRight = "", subtitle = "" }) {
               font-size:15px;
               line-height:17px;
               font-weight:700;
-              color:#E4FF00;
+              color:#EEFF00;
               padding:0;
               white-space:nowrap;
             "
@@ -413,7 +433,7 @@ export function renderPrimaryButton(label, href) {
           font-size:14px;
           line-height:14px;
           font-weight:700;
-          background:#E4FF00;
+          background:#EEFF00;
           color:#111111;
           border:0;
         "
@@ -430,7 +450,7 @@ export function renderExactButtons(buttons = []) {
 
   const mapVariant = (variant) => {
     if (variant === "primary")
-      return { bg: "#E4FF00", fg: "#111111", border: "#E4FF00", radius: "999px" };
+      return { bg: "#EEFF00", fg: "#111111", border: "#EEFF00", radius: "999px" };
     if (variant === "danger")
       return { bg: "#dc3545", fg: "#ffffff", border: "#dc3545", radius: "12px" };
     if (variant === "outline")
@@ -525,7 +545,7 @@ export function renderAdminMetaPanel(rows = []) {
             font-size:12px;
             line-height:14px;
             font-weight:700;
-            color:#E4FF00;
+            color:#EEFF00;
             text-transform:uppercase;
             letter-spacing:0.2px;
             margin-bottom:6px;
@@ -592,7 +612,7 @@ export function renderAdminDetailPanel(rows = []) {
             font-size:12px;
             line-height:14px;
             font-weight:700;
-            color:#E4FF00;
+            color:#EEFF00;
             text-transform:uppercase;
             letter-spacing:0.2px;
             margin-bottom:4px;
