@@ -12,19 +12,26 @@ import {
 
 const IMG_BASE = "https://api.duoclub.ar/images";
 
+const SOCIAL_LINKS = {
+  instagram: process.env.DUO_INSTAGRAM_URL || "https://www.instagram.com/duoclub.ar/",
+  linkedin: process.env.DUO_LINKEDIN_URL || "https://www.linkedin.com/company/duo-club-ar/",
+  spotify: process.env.DUO_SPOTIFY_URL || "https://open.spotify.com/",
+};
+
+
 function renderMailHeaderLogo(width = 34) {
   return `<img src="${IMG_BASE}/logo.png" alt="${escapeHtml(BRAND_NAME)}" width="${Number(width) || 34}" style="display:block; margin:0 auto; width:${Number(width) || 34}px; max-width:${Number(width) || 34}px; height:auto; border:0; outline:none; text-decoration:none;" />`;
 }
 
 function renderMailFooterBrand(width = 92) {
-  return `<img src="${IMG_BASE}/duohealthclub.png" alt="${escapeHtml(BRAND_NAME)} Health Club" width="${Number(width) || 92}" style="display:block; width:${Number(width) || 92}px; max-width:100%; height:auto; border:0; outline:none; text-decoration:none;" />`;
+  return `<img src="${IMG_BASE}/duohealthclub.png" alt="${escapeHtml(BRAND_NAME)} Health Club" width="${Number(width) || 92}" style="display:block; width:${Number(width) || 92}px; max-width:100%; height:auto; border:0; outline:none; text-decoration:none; filter:invert(1);" />`;
 }
 
 function renderMailFooterIcons() {
   const icons = [
-    { file: "iconoig.png", alt: "Instagram" },
-    { file: "iconolnkd.png", alt: "LinkedIn" },
-    { file: "iconospot.png", alt: "Spotify" },
+    { file: "iconoig.png", alt: "Instagram", href: SOCIAL_LINKS.instagram },
+    { file: "iconolnkd.png", alt: "LinkedIn", href: SOCIAL_LINKS.linkedin },
+    { file: "iconospot.png", alt: "Spotify", href: SOCIAL_LINKS.spotify },
   ];
 
   return `
@@ -34,13 +41,20 @@ function renderMailFooterIcons() {
           .map(
             (icon, idx) => `
               <td style="${idx > 0 ? "padding-left:6px;" : ""}">
-                <img
-                  src="${IMG_BASE}/${icon.file}"
-                  alt="${escapeHtml(icon.alt)}"
-                  width="20"
-                  height="20"
-                  style="display:block; width:20px; height:20px; border:0; outline:none; text-decoration:none;"
-                />
+                <a
+                  href="${escapeHtml(icon.href)}"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  style="display:inline-block; text-decoration:none; border:0; outline:none;"
+                >
+                  <img
+                    src="${IMG_BASE}/${icon.file}"
+                    alt="${escapeHtml(icon.alt)}"
+                    width="20"
+                    height="20"
+                    style="display:block; width:20px; height:20px; border:0; outline:none; text-decoration:none;"
+                  />
+                </a>
               </td>
             `
           )
@@ -225,10 +239,10 @@ function buildCreditsAdminVisualEmail({
       <table role="presentation" cellpadding="0" cellspacing="0" width="100%" style="border-collapse:collapse;">
         <tr><td align="center" style="padding:0;">
           <table role="presentation" cellpadding="0" cellspacing="0" width="100%" class="duo-admin-wrap" style="max-width:430px; border-collapse:separate; border-spacing:0;">
-            <tr><td class="duo-admin-card" style="background:#f3f3f3; border-radius:0 0 28px 28px; overflow:hidden; font-family:Arial, Helvetica, sans-serif; color:#111111;">
+            <tr><td class="duo-admin-card" style="background:#F4F4F4; border-radius:0 0 28px 28px; overflow:hidden; font-family:Arial, Helvetica, sans-serif; color:#111111;">
               <table role="presentation" cellpadding="0" cellspacing="0" width="100%" style="border-collapse:collapse; width:100%;">
                 <tr>
-                  <td class="duo-admin-content" style="padding:34px 28px 34px; background:#f3f3f3; color:#111111;">
+                  <td class="duo-admin-content" style="padding:34px 28px 34px; background:#F4F4F4; color:#111111;">
                     <table role="presentation" cellpadding="0" cellspacing="0" width="100%" style="border-collapse:collapse; width:100%;">
                       <tr><td align="center" style="padding:0 0 36px;">${renderMailHeaderLogo()}</td></tr>
                       <tr>
@@ -236,7 +250,7 @@ function buildCreditsAdminVisualEmail({
                           <table role="presentation" cellpadding="0" cellspacing="0" width="100%" style="border-collapse:collapse;">
                             <tr>
                               <td valign="middle" style="width:24px; padding:0 10px 0 0;"><img src="https://api.duoclub.ar/images/sesionesActualizas.png" alt="Sesiones actualizadas" width="28" height="28" style="display:block; width:28px; height:28px; border:0; outline:none; text-decoration:none;" /></td>
-                              <td class="duo-admin-heading" valign="middle" style="font-size:24px; line-height:28px; font-weight:900; color:#111111; letter-spacing:-0.6px;">${escapeHtml(heading)}</td>
+                              <td class="duo-admin-heading" valign="middle" style="font-size:24px; line-height:28px; font-weight:700; color:#111111; letter-spacing:-0.6px;">${escapeHtml(heading)}</td>
                             </tr>
                           </table>
                         </td>
@@ -247,7 +261,7 @@ function buildCreditsAdminVisualEmail({
                     </table>
                   </td>
                 </tr>
-                <tr><td class="duo-admin-footer" style="background:#050505; padding:40px 48px 42px; border-radius:0 0 28px 28px; font-family:Arial, Helvetica, sans-serif;"><table role="presentation" cellpadding="0" cellspacing="0" width="100%" style="border-collapse:collapse; width:100%;"><tr><td valign="middle" style="width:42%; color:#ffffff;">${renderMailFooterBrand()}</td><td valign="middle" align="right" class="duo-footer-info" style="width:58%; color:#ffffff; font-size:9px; line-height:13px; font-weight:500; letter-spacing:0.2px;"><div style="font-weight:900; letter-spacing:2.8px;">DUOCLUB.AR</div><div>+54 249 420 7343</div><div>Av. Santamaría 54, Tandil.</div><div style="padding-top:6px;">${renderMailFooterIcons()}</div></td></tr></table></td></tr>
+                <tr><td class="duo-admin-footer" style="background:#050505; padding:40px 48px 42px; border-radius:0 0 28px 28px; font-family:Arial, Helvetica, sans-serif;"><table role="presentation" cellpadding="0" cellspacing="0" width="100%" style="border-collapse:collapse; width:100%;"><tr><td valign="middle" style="width:42%; color:#ffffff;">${renderMailFooterBrand()}</td><td valign="middle" align="right" class="duo-footer-info" style="width:58%; color:#ffffff; font-size:9px; line-height:13px; font-weight:500; letter-spacing:0.2px;"><div style="font-weight:700; letter-spacing:2.8px;">DUOCLUB.AR</div><div>+54 249 420 7343</div><div>Av. Santamaría 54, Tandil.</div><div style="padding-top:6px;">${renderMailFooterIcons()}</div></td></tr></table></td></tr>
               </table>
             </td></tr>
           </table>

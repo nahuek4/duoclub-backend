@@ -14,6 +14,15 @@ import {
 
 const IMG_BASE = "https://api.duoclub.ar/images";
 
+const SOCIAL_LINKS = {
+  instagram: process.env.DUO_INSTAGRAM_URL || "https://www.instagram.com/duoclub.ar/",
+  linkedin: process.env.DUO_LINKEDIN_URL || "https://www.linkedin.com/company/duo-club-ar/",
+  spotify: process.env.DUO_SPOTIFY_URL || "https://open.spotify.com/",
+};
+
+
+const DUO_WATERMARK_BG = `background-color:#F4F4F4; background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='360' height='420' viewBox='0 0 360 420'%3E%3Ctext x='-8' y='84' font-family='Arial, Helvetica, sans-serif' font-size='86' font-weight='700' fill='%23ffffff' fill-opacity='0.72'%3EDUO%3C/text%3E%3Ctext x='-8' y='214' font-family='Arial, Helvetica, sans-serif' font-size='86' font-weight='700' fill='%23ffffff' fill-opacity='0.72'%3EDUO%3C/text%3E%3Ctext x='-8' y='344' font-family='Arial, Helvetica, sans-serif' font-size='86' font-weight='700' fill='%23ffffff' fill-opacity='0.72'%3EDUO%3C/text%3E%3C/svg%3E"); background-repeat:repeat-y; background-position:center top; background-size:360px auto;`;
+
 function renderMailHeaderLogo(width = 34) {
   return `<img src="${IMG_BASE}/logo.png" alt="${escapeHtml(BRAND_NAME)}" width="${Number(width) || 34}" style="display:block; margin:0 auto; width:${Number(width) || 34}px; max-width:${Number(width) || 34}px; height:auto; border:0; outline:none; text-decoration:none;" />`;
 }
@@ -28,14 +37,14 @@ function renderMailCheckIcon(size = 19) {
 }
 
 function renderMailFooterBrand(width = 92) {
-  return `<img src="${IMG_BASE}/duohealthclub.png" alt="${escapeHtml(BRAND_NAME)} Health Club" width="${Number(width) || 92}" style="display:block; width:${Number(width) || 92}px; max-width:100%; height:auto; border:0; outline:none; text-decoration:none;" />`;
+  return `<img src="${IMG_BASE}/duohealthclub.png" alt="${escapeHtml(BRAND_NAME)} Health Club" width="${Number(width) || 92}" style="display:block; width:${Number(width) || 92}px; max-width:100%; height:auto; border:0; outline:none; text-decoration:none; filter:invert(1);" />`;
 }
 
 function renderMailFooterIcons() {
   const icons = [
-    { file: "iconoig.png", alt: "Instagram" },
-    { file: "iconolnkd.png", alt: "LinkedIn" },
-    { file: "iconospot.png", alt: "Spotify" },
+    { file: "iconoig.png", alt: "Instagram", href: SOCIAL_LINKS.instagram },
+    { file: "iconolnkd.png", alt: "LinkedIn", href: SOCIAL_LINKS.linkedin },
+    { file: "iconospot.png", alt: "Spotify", href: SOCIAL_LINKS.spotify },
   ];
 
   return `
@@ -45,13 +54,20 @@ function renderMailFooterIcons() {
           .map(
             (icon, idx) => `
               <td style="${idx > 0 ? "padding-left:6px;" : ""}">
-                <img
-                  src="${IMG_BASE}/${icon.file}"
-                  alt="${escapeHtml(icon.alt)}"
-                  width="20"
-                  height="20"
-                  style="display:block; width:20px; height:20px; border:0; outline:none; text-decoration:none;"
-                />
+                <a
+                  href="${escapeHtml(icon.href)}"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  style="display:inline-block; text-decoration:none; border:0; outline:none;"
+                >
+                  <img
+                    src="${IMG_BASE}/${icon.file}"
+                    alt="${escapeHtml(icon.alt)}"
+                    width="20"
+                    height="20"
+                    style="display:block; width:20px; height:20px; border:0; outline:none; text-decoration:none;"
+                  />
+                </a>
               </td>
             `
           )
@@ -221,7 +237,7 @@ function renderPaymentItemsList(items = []) {
                     <td style="width:8px; background:#0A0A0A; font-size:0; line-height:0;">&nbsp;</td>
                     <td style="padding:10px 12px 10px 10px; font-family:Arial, Helvetica, sans-serif; color:#111111;">
                       <div style="font-size:12px; line-height:15px; font-weight:500;">${escapeHtml(item.title)}</div>
-                      <div style="font-size:13px; line-height:16px; font-weight:900;">${escapeHtml(item.subtitle)}</div>
+                      <div style="font-size:13px; line-height:16px; font-weight:700;">${escapeHtml(item.subtitle)}</div>
                     </td>
                   </tr>
                 </table>
@@ -241,12 +257,12 @@ function renderPaymentItemsList(items = []) {
                     width:18px;
                     height:18px;
                     border-radius:999px;
-                    background:#dfff00;
+                    background:#E4FF00;
                     border:1.5px solid #111111;
                     font-family:Arial, Helvetica, sans-serif;
                     font-size:10px;
                     line-height:16px;
-                    font-weight:900;
+                    font-weight:700;
                     text-align:center;
                     color:#111111;
                   "
@@ -279,7 +295,7 @@ function renderPaymentSummaryBox(s, forcedStatus = null) {
       "
     >
       <tr>
-        <td style="background:#0A0A0A; padding:6px 12px; font-family:Arial, Helvetica, sans-serif; font-size:9px; line-height:11px; font-weight:900; color:#ffffff; text-transform:uppercase;">
+        <td style="background:#0A0A0A; padding:6px 12px; font-family:Arial, Helvetica, sans-serif; font-size:9px; line-height:11px; font-weight:700; color:#ffffff; text-transform:uppercase;">
           NO DE ORDEN #${escapeHtml(String(s.publicId))}
         </td>
       </tr>
@@ -287,13 +303,13 @@ function renderPaymentSummaryBox(s, forcedStatus = null) {
         <td style="padding:14px 14px 10px;">
           <table role="presentation" cellpadding="0" cellspacing="0" width="100%" style="border-collapse:collapse; width:100%; font-family:Arial, Helvetica, sans-serif; color:#111111;">
             <tr>
-              <td style="padding:0 0 10px; border-bottom:1px solid #d0d0d0; font-size:13px; line-height:16px; font-weight:900;">FORMA DE PAGO: ${escapeHtml(paymentMethodLabel(s.pm))}</td>
+              <td style="padding:0 0 10px; border-bottom:1px solid #d0d0d0; font-size:13px; line-height:16px; font-weight:700;">FORMA DE PAGO: ${escapeHtml(paymentMethodLabel(s.pm))}</td>
             </tr>
             <tr>
-              <td style="padding:10px 0; border-bottom:1px solid #d0d0d0; font-size:13px; line-height:16px; font-weight:900;">TOTAL: ${escapeHtml(s.totalFinal)}</td>
+              <td style="padding:10px 0; border-bottom:1px solid #d0d0d0; font-size:13px; line-height:16px; font-weight:700;">TOTAL: ${escapeHtml(s.totalFinal)}</td>
             </tr>
             <tr>
-              <td style="padding:10px 0 0; font-size:13px; line-height:16px; font-weight:900;">ESTADO: ${escapeHtml(status)}</td>
+              <td style="padding:10px 0 0; font-size:13px; line-height:16px; font-weight:700;">ESTADO: ${escapeHtml(status)}</td>
             </tr>
           </table>
         </td>
@@ -347,14 +363,14 @@ function buildPaymentUserVisualEmail({
           <td align="center" style="padding:0;">
             <table role="presentation" cellpadding="0" cellspacing="0" width="100%" class="duo-pay-wrap" style="max-width:430px; border-collapse:separate; border-spacing:0;">
               <tr>
-                <td class="duo-pay-card" style="background:#ffffff; border-radius:0 0 28px 28px; overflow:hidden; font-family:Arial, Helvetica, sans-serif; color:#111111;">
+                <td class="duo-pay-card" style="background:#F4F4F4; border-radius:0 0 28px 28px; overflow:hidden; font-family:Arial, Helvetica, sans-serif; color:#111111;">
                   <table role="presentation" cellpadding="0" cellspacing="0" width="100%" style="border-collapse:collapse; width:100%;">
                     <tr>
-                      <td class="duo-pay-content" style="background:#ffffff; padding:34px 28px 34px; font-family:Arial, Helvetica, sans-serif; color:#111111;">
+                      <td class="duo-pay-content" style="background:#F4F4F4; padding:34px 28px 34px; font-family:Arial, Helvetica, sans-serif; color:#111111;">
                         <table role="presentation" cellpadding="0" cellspacing="0" width="100%" style="border-collapse:collapse; width:100%;">
                           <tr>
                             <td class="duo-pay-logo" align="center" style="padding:0 0 36px;">
-                              <div style="font-family:Arial, Helvetica, sans-serif; font-size:34px; line-height:34px; font-weight:900; color:#0A0A0A; letter-spacing:-3px;">${renderMailHeaderLogo()}</div>
+                              <div style="font-family:Arial, Helvetica, sans-serif; font-size:34px; line-height:34px; font-weight:700; color:#0A0A0A; letter-spacing:-3px;">${renderMailHeaderLogo()}</div>
                             </td>
                           </tr>
                           <tr>
@@ -362,9 +378,9 @@ function buildPaymentUserVisualEmail({
                               <table role="presentation" cellpadding="0" cellspacing="0" width="100%" style="border-collapse:collapse;">
                                 <tr>
                                   <td valign="middle" style="width:24px; padding:0 10px 0 0;">
-                                    <div style="width:19px; height:19px; border:2px solid #111111; border-radius:999px; font-size:11px; line-height:17px; text-align:center; font-weight:900; color:#111111;">${renderMailIcon(iconFile, 19)}</div>
+                                    <div style="width:19px; height:19px; border:2px solid #111111; border-radius:999px; font-size:11px; line-height:17px; text-align:center; font-weight:700; color:#111111;">${renderMailIcon(iconFile, 19)}</div>
                                   </td>
-                                  <td class="duo-pay-heading" valign="middle" style="font-family:Arial, Helvetica, sans-serif; font-size:24px; line-height:28px; font-weight:900; color:#111111; letter-spacing:-0.6px;">${escapeHtml(heading)}</td>
+                                  <td class="duo-pay-heading" valign="middle" style="font-family:Arial, Helvetica, sans-serif; font-size:24px; line-height:28px; font-weight:700; color:#111111; letter-spacing:-0.6px;">${escapeHtml(heading)}</td>
                                 </tr>
                               </table>
                             </td>
@@ -400,8 +416,8 @@ function buildPaymentUserVisualEmail({
                             <td class="duo-pay-btn-row" align="center" style="padding:30px 0 0;">
                               <table role="presentation" cellpadding="0" cellspacing="0" style="border-collapse:collapse; margin:0 auto;">
                                 <tr>
-                                  <td align="center" style="background:#dfff00; border-radius:999px; box-shadow:0 10px 14px rgba(0,0,0,0.18);">
-                                    <a href="${escapeHtml(linkHref)}" style="display:inline-block; padding:13px 21px; font-family:Arial, Helvetica, sans-serif; font-size:15px; line-height:16px; font-weight:800; color:#111111; text-decoration:none;">${escapeHtml(ctaLabel)}</a>
+                                  <td align="center" style="background:#E4FF00; border-radius:999px; box-shadow:0 10px 14px rgba(0,0,0,0.18);">
+                                    <a href="${escapeHtml(linkHref)}" style="display:inline-block; padding:13px 21px; font-family:Arial, Helvetica, sans-serif; font-size:15px; line-height:16px; font-weight:700; color:#111111; text-decoration:none;">${escapeHtml(ctaLabel)}</a>
                                   </td>
                                 </tr>
                               </table>
@@ -428,11 +444,11 @@ function buildPaymentUserVisualEmail({
                         <table role="presentation" cellpadding="0" cellspacing="0" width="100%" style="border-collapse:collapse; width:100%;">
                           <tr>
                             <td valign="middle" style="width:42%; color:#ffffff; font-family:Arial, Helvetica, sans-serif;">
-                              <div class="duo-footer-brand" style="font-size:23px; line-height:23px; font-weight:900; letter-spacing:7px;">${renderMailFooterBrand()}</div>
+                              <div class="duo-footer-brand" style="font-size:23px; line-height:23px; font-weight:700; letter-spacing:7px;">${renderMailFooterBrand()}</div>
                               <div style="font-size:4px; line-height:7px; font-weight:700; letter-spacing:1.8px; margin-top:4px; opacity:0.95;"></div>
                             </td>
                             <td valign="middle" align="right" class="duo-footer-info" style="width:58%; color:#ffffff; font-family:Arial, Helvetica, sans-serif; font-size:9px; line-height:13px; font-weight:500; letter-spacing:0.2px;">
-                              <div style="font-weight:900; letter-spacing:2.8px;">DUOCLUB.AR</div>
+                              <div style="font-weight:700; letter-spacing:2.8px;">DUOCLUB.AR</div>
                               <div>+54 249 420 7343</div>
                               <div>Av. Santamaría 54, Tandil.</div>
                               <div style="padding-top:6px; font-size:10px; line-height:10px; letter-spacing:4px;">${renderMailFooterIcons()}</div>

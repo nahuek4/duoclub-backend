@@ -13,6 +13,13 @@ import {
 
 const IMG_BASE = "https://api.duoclub.ar/images";
 
+const SOCIAL_LINKS = {
+  instagram: process.env.DUO_INSTAGRAM_URL || "https://www.instagram.com/duoclub.ar/",
+  linkedin: process.env.DUO_LINKEDIN_URL || "https://www.linkedin.com/company/duo-club-ar/",
+  spotify: process.env.DUO_SPOTIFY_URL || "https://open.spotify.com/",
+};
+
+
 const DUO_WATERMARK_BG = `${DUO_WATERMARK_BG} background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='360' height='420' viewBox='0 0 360 420'%3E%3Ctext x='-8' y='84' font-family='Arial, Helvetica, sans-serif' font-size='86' font-weight='700' fill='%23ffffff' fill-opacity='0.72'%3EDUO%3C/text%3E%3Ctext x='-8' y='214' font-family='Arial, Helvetica, sans-serif' font-size='86' font-weight='700' fill='%23ffffff' fill-opacity='0.72'%3EDUO%3C/text%3E%3Ctext x='-8' y='344' font-family='Arial, Helvetica, sans-serif' font-size='86' font-weight='700' fill='%23ffffff' fill-opacity='0.72'%3EDUO%3C/text%3E%3C/svg%3E"); background-repeat:repeat-y; background-position:center top; background-size:360px auto;`;
 
 /* =========================================================
@@ -499,9 +506,9 @@ function buildAdminAppointmentVisualEmail({
 
 function renderAppointmentFooterIcons() {
   const icons = [
-    { file: "iconoig.png", alt: "Instagram" },
-    { file: "iconolnkd.png", alt: "LinkedIn" },
-    { file: "iconospot.png", alt: "Spotify" },
+    { file: "iconoig.png", alt: "Instagram", href: SOCIAL_LINKS.instagram },
+    { file: "iconolnkd.png", alt: "LinkedIn", href: SOCIAL_LINKS.linkedin },
+    { file: "iconospot.png", alt: "Spotify", href: SOCIAL_LINKS.spotify },
   ];
 
   return `
@@ -511,13 +518,20 @@ function renderAppointmentFooterIcons() {
           .map(
             (icon, idx) => `
               <td style="${idx > 0 ? "padding-left:6px;" : ""}">
-                <img
-                  src="${IMG_BASE}/${icon.file}"
-                  alt="${escapeHtml(icon.alt)}"
-                  width="17"
-                  height="17"
-                  style="display:block; width:17px; height:17px; border:0; outline:none; text-decoration:none;"
-                />
+                <a
+                  href="${escapeHtml(icon.href)}"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  style="display:inline-block; text-decoration:none; border:0; outline:none;"
+                >
+                  <img
+                    src="${IMG_BASE}/${icon.file}"
+                    alt="${escapeHtml(icon.alt)}"
+                    width="17"
+                    height="17"
+                    style="display:block; width:17px; height:17px; border:0; outline:none; text-decoration:none;"
+                  />
+                </a>
               </td>
             `
           )
@@ -555,7 +569,7 @@ function buildFooterBlock() {
                 color:#ffffff;
               "
             >
-              <div style="font-size:26px; line-height:24px; font-weight:700; letter-spacing:1px;"><img src="${IMG_BASE}/duohealthclub.png" alt="DUO Health Club" width="92" style="display:block; width:92px; max-width:100%; height:auto; border:0; outline:none; text-decoration:none;" /></div>
+              <div style="font-size:26px; line-height:24px; font-weight:700; letter-spacing:1px;"><img src="${IMG_BASE}/duohealthclub.png" alt="DUO Health Club" width="92" style="display:block; width:92px; max-width:100%; height:auto; border:0; outline:none; text-decoration:none; filter:invert(1);" /></div>
               <div style="font-size:5px; line-height:8px; opacity:0.95; letter-spacing:1.4px; margin-top:4px;"></div>
             </td>
             <td

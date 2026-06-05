@@ -3,6 +3,15 @@ import { EMAIL_FONT, escapeHtml } from "./helpers.js";
 
 const IMG_BASE = "https://api.duoclub.ar/images";
 
+const SOCIAL_LINKS = {
+  instagram: process.env.DUO_INSTAGRAM_URL || "https://www.instagram.com/duoclub.ar/",
+  linkedin: process.env.DUO_LINKEDIN_URL || "https://www.linkedin.com/company/duo-club-ar/",
+  spotify: process.env.DUO_SPOTIFY_URL || "https://open.spotify.com/",
+};
+
+
+const DUO_WATERMARK_BG = `background-color:#F4F4F4; background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='360' height='420' viewBox='0 0 360 420'%3E%3Ctext x='-8' y='84' font-family='Arial, Helvetica, sans-serif' font-size='86' font-weight='700' fill='%23ffffff' fill-opacity='0.72'%3EDUO%3C/text%3E%3Ctext x='-8' y='214' font-family='Arial, Helvetica, sans-serif' font-size='86' font-weight='700' fill='%23ffffff' fill-opacity='0.72'%3EDUO%3C/text%3E%3Ctext x='-8' y='344' font-family='Arial, Helvetica, sans-serif' font-size='86' font-weight='700' fill='%23ffffff' fill-opacity='0.72'%3EDUO%3C/text%3E%3C/svg%3E"); background-repeat:repeat-y; background-position:center top; background-size:360px auto;`;
+
 /* =========================================================
    UI kit mail — estilo DUO unificado
 ========================================================= */
@@ -11,9 +20,9 @@ export function renderMailFooterSocialIcons({ align = "right", size = 20, gap = 
   const safeSize = Number(size) || 20;
   const safeGap = Number(gap) || 6;
   const icons = [
-    { file: "iconoig.png", alt: "Instagram" },
-    { file: "iconolnkd.png", alt: "LinkedIn" },
-    { file: "iconospot.png", alt: "Spotify" },
+    { file: "iconoig.png", alt: "Instagram", href: SOCIAL_LINKS.instagram },
+    { file: "iconolnkd.png", alt: "LinkedIn", href: SOCIAL_LINKS.linkedin },
+    { file: "iconospot.png", alt: "Spotify", href: SOCIAL_LINKS.spotify },
   ];
 
   return `
@@ -29,13 +38,20 @@ export function renderMailFooterSocialIcons({ align = "right", size = 20, gap = 
           .map(
             (icon, idx) => `
               <td style="${idx > 0 ? `padding-left:${safeGap}px;` : ""}">
-                <img
-                  src="${IMG_BASE}/${icon.file}"
-                  alt="${escapeHtml(icon.alt)}"
-                  width="${safeSize}"
-                  height="${safeSize}"
-                  style="display:block; width:${safeSize}px; height:${safeSize}px; border:0; outline:none; text-decoration:none;"
-                />
+                <a
+                  href="${escapeHtml(icon.href)}"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  style="display:inline-block; text-decoration:none; border:0; outline:none;"
+                >
+                  <img
+                    src="${IMG_BASE}/${icon.file}"
+                    alt="${escapeHtml(icon.alt)}"
+                    width="${safeSize}"
+                    height="${safeSize}"
+                    style="display:block; width:${safeSize}px; height:${safeSize}px; border:0; outline:none; text-decoration:none;"
+                  />
+                </a>
               </td>
             `
           )
@@ -85,14 +101,14 @@ export function renderExactUserShell(innerHtml) {
         <td align="center" style="padding:0;">
           <table role="presentation" cellpadding="0" cellspacing="0" width="100%" class="mail-wrap" style="max-width:430px; border-collapse:separate; border-spacing:0;">
             <tr>
-              <td style="background:#ffffff; border-radius:0 0 28px 28px; overflow:hidden; font-family:${EMAIL_FONT}; color:#111111;">
+              <td style="background:#F4F4F4; border-radius:0 0 28px 28px; overflow:hidden; font-family:${EMAIL_FONT}; color:#111111;">
                 <table role="presentation" cellpadding="0" cellspacing="0" width="100%" style="border-collapse:collapse; width:100%;">
                   <tr>
                     <td
                       class="mail-shell"
                       bgcolor="#ffffff"
                       style="
-                        background:#ffffff;
+                        ${DUO_WATERMARK_BG}
                         padding:34px 36px 36px;
                         text-align:left;
                         font-family:${EMAIL_FONT};
@@ -107,10 +123,10 @@ export function renderExactUserShell(innerHtml) {
                       <table role="presentation" cellpadding="0" cellspacing="0" width="100%" style="border-collapse:collapse; width:100%;">
                         <tr>
                           <td valign="middle" style="width:42%; color:#ffffff; font-family:${EMAIL_FONT};">
-                            <img src="${IMG_BASE}/duohealthclub.png" alt="DUO Health Club" width="92" class="duo-footer-brand-img" style="display:block; width:92px; max-width:92px; height:auto; border:0; outline:none; text-decoration:none;" />
+                            <img src="${IMG_BASE}/duohealthclub.png" alt="DUO Health Club" width="92" class="duo-footer-brand-img" style="display:block; width:92px; max-width:92px; height:auto; border:0; outline:none; text-decoration:none; filter:invert(1);" />
                           </td>
                           <td valign="middle" align="right" class="duo-footer-info" style="width:58%; color:#ffffff; font-family:${EMAIL_FONT}; font-size:9px; line-height:13px; font-weight:500; letter-spacing:0.2px;">
-                            <div style="font-weight:900; letter-spacing:2.8px;">DUOCLUB.AR</div>
+                            <div style="font-weight:700; letter-spacing:2.8px;">DUOCLUB.AR</div>
                             <div>+54 249 420 7343</div>
                             <div>Av. Santamaría 54, Tandil.</div>
                             ${renderMailFooterSocialIcons({ align: "right", size: 20 })}
@@ -223,7 +239,7 @@ export function renderExactTitle(text, maxWidth = 300) {
       style="
         font-size:24px;
         line-height:28px;
-        font-weight:900;
+        font-weight:700;
         margin:0;
         max-width:${Number(maxWidth) || 300}px;
         font-family:${EMAIL_FONT};
@@ -292,8 +308,8 @@ export function panelRow(label, valueHtml) {
         font-family:${EMAIL_FONT};
         font-size:12px;
         line-height:14px;
-        font-weight:900;
-        color:#e4ff00;
+        font-weight:700;
+        color:#E4FF00;
         text-transform:uppercase;
         letter-spacing:0.2px;
         margin-bottom:4px;
@@ -315,7 +331,7 @@ export function renderRowCard({ titleLeft, titleRight = "", subtitle = "" }) {
     <div
       class="row-card"
       style="
-        border:1px solid #e4ff00;
+        border:1px solid #E4FF00;
         border-radius:8px;
         padding:10px 12px;
         margin:0 0 11px;
@@ -331,8 +347,8 @@ export function renderRowCard({ titleLeft, titleRight = "", subtitle = "" }) {
               font-family:${EMAIL_FONT};
               font-size:15px;
               line-height:17px;
-              font-weight:900;
-              color:#e4ff00;
+              font-weight:700;
+              color:#E4FF00;
               padding:0;
             "
           >
@@ -345,8 +361,8 @@ export function renderRowCard({ titleLeft, titleRight = "", subtitle = "" }) {
               font-family:${EMAIL_FONT};
               font-size:15px;
               line-height:17px;
-              font-weight:900;
-              color:#e4ff00;
+              font-weight:700;
+              color:#E4FF00;
               padding:0;
               white-space:nowrap;
             "
@@ -396,8 +412,8 @@ export function renderPrimaryButton(label, href) {
           font-family:${EMAIL_FONT};
           font-size:14px;
           line-height:14px;
-          font-weight:900;
-          background:#e4ff00;
+          font-weight:700;
+          background:#E4FF00;
           color:#111111;
           border:0;
         "
@@ -414,7 +430,7 @@ export function renderExactButtons(buttons = []) {
 
   const mapVariant = (variant) => {
     if (variant === "primary")
-      return { bg: "#e4ff00", fg: "#111111", border: "#e4ff00", radius: "999px" };
+      return { bg: "#E4FF00", fg: "#111111", border: "#E4FF00", radius: "999px" };
     if (variant === "danger")
       return { bg: "#dc3545", fg: "#ffffff", border: "#dc3545", radius: "12px" };
     if (variant === "outline")
@@ -438,7 +454,7 @@ export function renderExactButtons(buttons = []) {
             font-family:${EMAIL_FONT};
             font-size:14px;
             line-height:14px;
-            font-weight:800;
+            font-weight:700;
             background:${c.bg};
             color:${c.fg};
             border:1px solid ${c.border};
@@ -508,8 +524,8 @@ export function renderAdminMetaPanel(rows = []) {
             font-family:${EMAIL_FONT};
             font-size:12px;
             line-height:14px;
-            font-weight:900;
-            color:#e4ff00;
+            font-weight:700;
+            color:#E4FF00;
             text-transform:uppercase;
             letter-spacing:0.2px;
             margin-bottom:6px;
@@ -575,8 +591,8 @@ export function renderAdminDetailPanel(rows = []) {
             font-family:${EMAIL_FONT};
             font-size:12px;
             line-height:14px;
-            font-weight:900;
-            color:#e4ff00;
+            font-weight:700;
+            color:#E4FF00;
             text-transform:uppercase;
             letter-spacing:0.2px;
             margin-bottom:4px;
