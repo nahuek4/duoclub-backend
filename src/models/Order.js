@@ -37,8 +37,12 @@ const orderItemSchema = new mongoose.Schema(
           const kind = String(this?.kind || "").toUpperCase().trim();
           const normalized = normalizeServiceKey(value);
 
-          if (kind === "CREDITS" || kind === "MANUAL_SERVICE") {
+          if (kind === "CREDITS") {
             return isValidServiceKey(normalized);
+          }
+
+          if (kind === "MANUAL_SERVICE") {
+            return normalized === "" || isValidServiceKey(normalized);
           }
 
           return normalized === "";
@@ -156,6 +160,31 @@ const orderSchema = new mongoose.Schema(
     customerEmail: { type: String, default: "", trim: true, lowercase: true },
     customerPhone: { type: String, default: "", trim: true },
 
+
+
+    // Tarjetas externas reutilizables con link único.
+    externalPaymentCard: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "ExternalPaymentCard",
+      default: null,
+      index: true,
+    },
+    externalPaymentCardSlug: { type: String, default: "", trim: true },
+    externalPaymentCardTitle: { type: String, default: "", trim: true },
+    externalPaymentAddsCredits: { type: Boolean, default: false },
+    externalPaymentAutoApply: { type: Boolean, default: false },
+    externalPaymentAssignmentMode: {
+      type: String,
+      default: "",
+      trim: true,
+      enum: ["", "auto_by_email", "manual"],
+    },
+    externalPaymentMatchedUser: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "User",
+      default: null,
+    },
+    externalPaymentApprovedCountedAt: { type: Date, default: null },
 
     // LEGACY (compatibilidad)
     serviceKey: {
@@ -275,6 +304,8 @@ orderSchema.index(
   }
 );
 orderSchema.index({ publicPaymentLink: 1, publicPaymentExpiresAt: 1 });
+orderSchema.index({ externalPaymentCard: 1, createdAt: -1 });
+orderSchema.index({ externalPaymentCardSlug: 1, createdAt: -1 });
 
 const Order = mongoose.models.Order || mongoose.model("Order", orderSchema);
 export default Order;

@@ -4,6 +4,7 @@ import mongoose from "mongoose";
 
 import Order from "../models/Order.js";
 import User from "../models/User.js";
+import ExternalPaymentCard from "../models/ExternalPaymentCard.js";
 
 import {
   fireAndForget,
@@ -413,8 +414,34 @@ function applyCreditsFromOrder(user, order) {
   }
 }
 
+function isExternalPaymentOrder(order) {
+  return Boolean(order?.externalPaymentCard);
+}
+
 function isManualPublicOrder(order) {
+  if (isExternalPaymentOrder(order)) {
+    return Boolean(order.manualFulfillmentRequired) || !order.user || !order.externalPaymentAutoApply;
+  }
+
   return Boolean(order.publicPaymentLink) || Boolean(order.manualFulfillmentRequired) || !order.user;
+}
+
+async function countExternalPaymentApprovalIfNeeded({ order, paymentInfo, session }) {
+  if (!order?.externalPaymentCard || order.externalPaymentApprovedCountedAt) return;
+
+  order.externalPaymentApprovedCountedAt = new Date();
+
+  await ExternalPaymentCard.updateOne(
+    { _id: order.externalPaymentCard },
+    {
+      $inc: {
+        approvedPaymentsCount: 1,
+        totalApprovedAmount: Math.max(0, Number(paymentInfo?.paidAmount || 0)),
+      },
+      $set: { updatedAt: new Date() },
+    },
+    { session }
+  );
 }
 
 function setOrderPaymentFields(order, paymentInfo) {
@@ -452,11 +479,15 @@ async function applyApprovedOrderOnce({ orderId, paymentInfo }) {
       }
 
       if (isManualPublicOrder(order)) {
+        await countExternalPaymentApprovalIfNeeded({ order, paymentInfo, session });
+
         order.applied = false;
         order.creditsApplied = false;
         order.notes = appendNote(
           order.notes,
-          "Pago aprobado por Mercado Pago. Requiere gestión manual. No se acreditaron créditos automáticamente."
+          isExternalPaymentOrder(order)
+            ? "Pago externo aprobado por Mercado Pago. Requiere gestión manual o vinculación; no se acreditaron créditos automáticamente."
+            : "Pago aprobado por Mercado Pago. Requiere gestión manual. No se acreditaron créditos automáticamente."
         );
         await order.save({ session });
         result = { ok: true, manual: true, orderId: String(order._id) };
@@ -493,6 +524,8 @@ async function applyApprovedOrderOnce({ orderId, paymentInfo }) {
       });
 
       await user.save({ session });
+
+      await countExternalPaymentApprovalIfNeeded({ order, paymentInfo, session });
 
       order.applied = true;
       order.creditsApplied = true;
