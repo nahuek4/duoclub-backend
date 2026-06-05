@@ -9,6 +9,7 @@ import {
   renderAdminDetailPanel,
   renderRowCard,
 } from "./ui.js";
+import { adminRecipientsForServiceItems } from "./recipients.js";
 
 const IMG_BASE = "https://api.duoclub.ar/images";
 
@@ -356,11 +357,11 @@ export async function sendAdminCreditsChangedEmail(
   items = [],
   meta = {}
 ) {
-  const to = String(ADMIN_EMAIL || "").trim();
-  if (!to) return;
-
   const normalized = normalizeItems(items);
   if (!normalized.length) return;
+
+  const to = adminRecipientsForServiceItems(normalized);
+  if (!to.length) return;
 
   const uName = fullNameOf(user);
   const uEmail = cleanStr(user?.email);
