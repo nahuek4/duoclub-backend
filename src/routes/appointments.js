@@ -14,6 +14,8 @@ import {
   sendAppointmentBookedEmail,
   sendAppointmentBookedBatchEmail,
   sendAppointmentCancelledEmail,
+  sendAdminAppointmentBookedEmail,
+  sendAdminAppointmentCancelledEmail,
 } from "../mail.js";
 import { logActivity, buildUserSubject } from "../lib/activityLogger.js";
 
@@ -109,6 +111,49 @@ function ensureStaff(req, res, next) {
     return res.status(403).json({ error: "No autorizado." });
   }
   return next();
+}
+
+function isStaffActor(req) {
+  const role = String(req.user?.role || "").toLowerCase().trim();
+  return ["admin", "profesor", "staff"].includes(role);
+}
+
+async function sendBookedMailRespectingActor({ req, user, ap, serviceName }) {
+  if (isStaffActor(req)) {
+    await sendAdminAppointmentBookedEmail(user, ap, serviceName);
+    return;
+  }
+
+  await sendAppointmentBookedEmail(user, ap, serviceName);
+}
+
+async function sendBookedBatchMailRespectingActor({ req, user, items = [] }) {
+  if (isStaffActor(req)) {
+    for (const item of Array.isArray(items) ? items : []) {
+      await sendAdminAppointmentBookedEmail(
+        user,
+        item,
+        item?.serviceName || item?.service
+      );
+    }
+    return;
+  }
+
+  await sendAppointmentBookedBatchEmail(user, items);
+}
+
+async function sendCancelledMailRespectingActor({ req, user, ap }) {
+  if (isStaffActor(req)) {
+    await sendAdminAppointmentCancelledEmail(
+      user,
+      ap,
+      ap?.serviceName || ap?.service,
+      ap
+    );
+    return;
+  }
+
+  await sendAppointmentCancelledEmail(user, ap);
 }
 
 /* =========================
@@ -3767,7 +3812,12 @@ router.post("/", async (req, res) => {
     if (mailUser && mailAp && out?.kind !== "waitlist") {
       fireAndForget(async () => {
         try {
-          await sendAppointmentBookedEmail(mailUser, mailAp, mailServiceName);
+          await sendBookedMailRespectingActor({
+            req,
+            user: mailUser,
+            ap: mailAp,
+            serviceName: mailServiceName,
+          });
         } catch (e) {
           console.log("[MAIL] booked error:", e?.message || e);
           await sendAdminCopy({ kind: "booked", user: mailUser, ap: mailAp });
@@ -4020,7 +4070,11 @@ router.post("/batch", async (req, res) => {
     if (mailUser && mailItems?.length) {
       fireAndForget(async () => {
         try {
-          await sendAppointmentBookedBatchEmail(mailUser, mailItems);
+          await sendBookedBatchMailRespectingActor({
+            req,
+            user: mailUser,
+            items: mailItems,
+          });
         } catch (e) {
           console.log("[MAIL] booked batch error:", e?.message || e);
           await sendAdminCopy({ kind: "booked_batch", user: mailUser, ap: mailItems });
@@ -4221,7 +4275,11 @@ router.post("/admin/cancel/:id", ensureStaff, async (req, res) => {
     if (mailUser && mailAp) {
       fireAndForget(async () => {
         try {
-          await sendAppointmentCancelledEmail(mailUser, mailAp);
+          await sendCancelledMailRespectingActor({
+            req,
+            user: mailUser,
+            ap: mailAp,
+          });
         } catch (e) {
           console.log("[MAIL] admin no-policy cancelled error:", e?.message || e);
           await sendAdminCopy({ kind: "cancelled_admin_no_policy", user: mailUser, ap: mailAp });
@@ -4561,7 +4619,11 @@ router.delete("/:id", async (req, res) => {
     if (mailUser && mailAp) {
       fireAndForget(async () => {
         try {
-          await sendAppointmentCancelledEmail(mailUser, mailAp);
+          await sendCancelledMailRespectingActor({
+            req,
+            user: mailUser,
+            ap: mailAp,
+          });
         } catch (e) {
           console.log("[MAIL] cancelled error:", e?.message || e);
           await sendAdminCopy({ kind: "cancelled", user: mailUser, ap: mailAp });
