@@ -13,6 +13,8 @@ import {
 
 const IMG_BASE = "https://api.duoclub.ar/images";
 
+const DUO_WATERMARK_BG = `${DUO_WATERMARK_BG} background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='360' height='420' viewBox='0 0 360 420'%3E%3Ctext x='-8' y='84' font-family='Arial, Helvetica, sans-serif' font-size='86' font-weight='700' fill='%23ffffff' fill-opacity='0.72'%3EDUO%3C/text%3E%3Ctext x='-8' y='214' font-family='Arial, Helvetica, sans-serif' font-size='86' font-weight='700' fill='%23ffffff' fill-opacity='0.72'%3EDUO%3C/text%3E%3Ctext x='-8' y='344' font-family='Arial, Helvetica, sans-serif' font-size='86' font-weight='700' fill='%23ffffff' fill-opacity='0.72'%3EDUO%3C/text%3E%3C/svg%3E"); background-repeat:repeat-y; background-position:center top; background-size:360px auto;`;
+
 /* =========================================================
    Helpers base
 ========================================================= */
@@ -150,7 +152,7 @@ function buildHeroHeader({ title, kind = "confirmed" }) {
                         font-family:${duoFontStack()};
                         font-size:25px;
                         line-height:31px;
-                        font-weight:900;
+                        font-weight:700;
                         letter-spacing:-0.8px;
                         color:#ffffff;
                       "
@@ -220,7 +222,7 @@ function buildAppointmentCard(item = {}) {
                   font-family:${duoFontStack()};
                   font-size:12px;
                   line-height:16px;
-                  font-weight:800;
+                  font-weight:700;
                   color:#111111;
                 "
               >
@@ -238,7 +240,7 @@ function buildAppointmentCard(item = {}) {
                         font-family:${duoFontStack()};
                         font-size:12px;
                         line-height:16px;
-                        font-weight:800;
+                        font-weight:700;
                         color:#111111;
                         padding-right:12px;
                       "
@@ -253,7 +255,7 @@ function buildAppointmentCard(item = {}) {
                         font-family:${duoFontStack()};
                         font-size:12px;
                         line-height:16px;
-                        font-weight:800;
+                        font-weight:700;
                         color:#111111;
                         border-left:1px solid #d3d3d3;
                         padding-left:12px;
@@ -325,7 +327,7 @@ function buildAdminDataCard({ label, value, valueHtml = "" } = {}) {
             style="
               font-size:10px;
               line-height:13px;
-              font-weight:800;
+              font-weight:700;
               text-transform:uppercase;
               letter-spacing:0.9px;
               margin:0 0 5px;
@@ -428,7 +430,7 @@ function buildAdminAppointmentVisualEmail({
                     style="
                       border-collapse:collapse;
                       width:100%;
-                      background-color:#F4F4F4;
+                      ${DUO_WATERMARK_BG}
                     "
                   >
                     ${buildHeroHeader({ title, kind })}
@@ -553,7 +555,7 @@ function buildFooterBlock() {
                 color:#ffffff;
               "
             >
-              <div style="font-size:26px; line-height:24px; font-weight:900; letter-spacing:1px;"><img src="${IMG_BASE}/duohealthclub.png" alt="DUO Health Club" width="92" style="display:block; width:92px; max-width:100%; height:auto; border:0; outline:none; text-decoration:none;" /></div>
+              <div style="font-size:26px; line-height:24px; font-weight:700; letter-spacing:1px;"><img src="${IMG_BASE}/duohealthclub.png" alt="DUO Health Club" width="92" style="display:block; width:92px; max-width:100%; height:auto; border:0; outline:none; text-decoration:none;" /></div>
               <div style="font-size:5px; line-height:8px; opacity:0.95; letter-spacing:1.4px; margin-top:4px;"></div>
             </td>
             <td
@@ -565,7 +567,7 @@ function buildFooterBlock() {
                 color:#ffffff;
               "
             >
-              <div style="font-size:12px; line-height:16px; font-weight:800; letter-spacing:2px;">DUOCLUB.AR</div>
+              <div style="font-size:12px; line-height:16px; font-weight:700; letter-spacing:2px;">DUOCLUB.AR</div>
               <div style="font-size:10px; line-height:15px; font-weight:400; opacity:0.96;">+549 249 420 7343</div>
               <div style="font-size:10px; line-height:15px; font-weight:400; opacity:0.96;">Av. Santamaría 54, Tandil.</div>
               ${renderAppointmentFooterIcons()}
@@ -655,7 +657,7 @@ function buildAppointmentVisualEmail({
                     style="
                       border-collapse:collapse;
                       width:100%;
-                      background-color:#F4F4F4;
+                      ${DUO_WATERMARK_BG}
                     "
                   >
                     ${buildHeroHeader({ title, kind })}
@@ -692,12 +694,12 @@ function buildAppointmentVisualEmail({
                             style="
                               display:inline-block;
                               text-decoration:none;
-                              background:#efff00;
+                              background:#E4FF00;
                               color:#111111;
                               font-family:${duoFontStack()};
                               font-size:15px;
                               line-height:19px;
-                              font-weight:800;
+                              font-weight:700;
                               padding:15px 20px;
                               border-radius:999px;
                               box-shadow:0 7px 14px rgba(0,0,0,0.18);
@@ -748,7 +750,7 @@ function buildReminderEmail({ items = [] }) {
       style="
         font-size:19px;
         line-height:20px;
-        font-weight:900;
+        font-weight:700;
         margin:0 auto 18px;
         max-width:285px;
         color:#111111;
@@ -798,7 +800,7 @@ function buildReminderEmail({ items = [] }) {
                   class="mail-shell"
                   bgcolor="#ffffff"
                   style="
-                    background:#ffffff;
+                    background:#F4F4F4;
                     border-radius:14px;
                     padding:18px 10px 26px;
                     text-align:center;
