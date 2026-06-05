@@ -1469,6 +1469,37 @@ router.post("/public-evaluation/pay", async (req, res) => {
 });
 
 
+router.get("/admin-users", protect, adminOnly, async (req, res) => {
+  try {
+    const q = String(req.query?.q || "").trim();
+
+    const filter = q
+      ? {
+          $or: [
+            { name: { $regex: q, $options: "i" } },
+            { lastName: { $regex: q, $options: "i" } },
+            { fullName: { $regex: q, $options: "i" } },
+            { email: { $regex: q, $options: "i" } },
+            { phone: { $regex: q, $options: "i" } },
+          ],
+        }
+      : {};
+
+    const users = await User.find(filter)
+      .select("name lastName fullName email phone active isApproved createdAt")
+      .sort({ name: 1, lastName: 1, email: 1 })
+      .limit(q ? 80 : 500)
+      .lean();
+
+    return res.json({ ok: true, users });
+  } catch (err) {
+    console.error("GET /orders/admin-users", err);
+    return res.status(500).json({
+      error: err?.message || "No se pudieron cargar los usuarios.",
+    });
+  }
+});
+
 router.post("/admin-create", protect, adminOnly, async (req, res) => {
   try {
     const userId = String(req.body?.userId || "").trim();
@@ -1490,7 +1521,7 @@ router.post("/admin-create", protect, adminOnly, async (req, res) => {
         : "pending";
 
     if (!userId && !userEmail) {
-      return res.status(400).json({ error: "Indicá el email o ID del usuario." });
+      return res.status(400).json({ error: "Indicá el usuario." });
     }
     if (!Number.isFinite(credits) || credits < 0) {
       return res.status(400).json({ error: "Cantidad de créditos inválida." });
