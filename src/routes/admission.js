@@ -245,6 +245,13 @@ function buildServerErrorMessage(err, fallback = "Error interno.") {
   return err?.message || fallback;
 }
 
+function getHttpStatusFromError(err, fallback = 500) {
+  if (err?.name === "ValidationError") return 400;
+  if (err?.name === "CastError") return 400;
+  if (err?.code === 11000) return 409;
+  return fallback;
+}
+
 /* =========================================================
    PUBLIC: guardar step1
 ========================================================= */
@@ -262,15 +269,28 @@ router.post("/step1", async (req, res) => {
 
     payload.email = email;
 
-    const publicId = crypto.randomBytes(10).toString("hex");
+    let doc = null;
+    let lastCreateError = null;
 
-    const doc = await Admission.create({
-      publicId,
-      step1Completed: true,
-      step1: payload,
-      ip: getClientIp(req),
-      userAgent: req.headers["user-agent"] || "",
-    });
+    // Defensa extra ante una colisión muy improbable de publicId.
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      try {
+        const publicId = crypto.randomBytes(10).toString("hex");
+        doc = await Admission.create({
+          publicId,
+          step1Completed: true,
+          step1: payload,
+          ip: getClientIp(req),
+          userAgent: req.headers["user-agent"] || "",
+        });
+        break;
+      } catch (createErr) {
+        lastCreateError = createErr;
+        if (createErr?.code !== 11000) throw createErr;
+      }
+    }
+
+    if (!doc) throw lastCreateError || new Error("No se pudo crear la admisión.");
 
     return res.status(201).json({
       ok: true,
@@ -288,7 +308,7 @@ router.post("/step1", async (req, res) => {
       stack: err?.stack,
     });
 
-    return res.status(500).json({
+    return res.status(getHttpStatusFromError(err)).json({
       ok: false,
       error: buildServerErrorMessage(
         err,
@@ -435,7 +455,7 @@ router.patch("/:id/step2", async (req, res) => {
       stack: err?.stack,
     });
 
-    return res.status(500).json({
+    return res.status(getHttpStatusFromError(err)).json({
       ok: false,
       error: buildServerErrorMessage(err, "No se pudo guardar el paso 2."),
       code: err?.name || "ADMISSION_STEP2_ERROR",
@@ -659,7 +679,7 @@ router.post("/admin/:id/create-user", protect, adminOnly, async (req, res) => {
       stack: err?.stack,
     });
 
-    return res.status(500).json({
+    return res.status(getHttpStatusFromError(err)).json({
       ok: false,
       error: buildServerErrorMessage(err, "Error interno."),
     });
@@ -742,7 +762,7 @@ router.post("/admin/:id/link-user", protect, adminOnly, async (req, res) => {
       stack: err?.stack,
     });
 
-    return res.status(500).json({
+    return res.status(getHttpStatusFromError(err)).json({
       ok: false,
       error: buildServerErrorMessage(err, "Error interno."),
     });
