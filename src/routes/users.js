@@ -1667,12 +1667,18 @@ async function updateCredits(req, res) {
       0
     );
 
-    const applyOne = async ({
-      credits: c,
-      delta: d,
-      serviceKey: skRaw,
-      source: src,
-    }) => {
+    const applyOne = async (rawItem = {}) => {
+      const {
+        credits: c,
+        delta: d,
+        amount,
+        value,
+        sessions,
+        qty,
+        serviceKey: skRaw,
+        source: src,
+      } = rawItem || {};
+
       const sk = canonicalServiceKeyFromValue(skRaw);
       if (!sk || !ALLOWED_SERVICE_KEYS.has(sk)) {
         const err = new Error("serviceKey inválido.");
@@ -1680,16 +1686,22 @@ async function updateCredits(req, res) {
         throw err;
       }
 
-      const parseOptionalNumber = (value) => {
-        if (value === undefined || value === null || value === "") return null;
+      const parseOptionalNumber = (input) => {
+        if (input === undefined || input === null || input === "") return null;
 
-        const num = Number(value);
+        const cleaned =
+          typeof input === "string"
+            ? input.trim().replace(",", ".")
+            : input;
+
+        const num = Number(cleaned);
         if (!Number.isFinite(num)) return NaN;
 
         return num;
       };
 
-      const cNum = parseOptionalNumber(c);
+      const setValue = c ?? amount ?? value ?? sessions ?? qty;
+      const cNum = parseOptionalNumber(setValue);
       const dNum = parseOptionalNumber(d);
 
       recalcUserCredits(user);
@@ -1740,6 +1752,8 @@ async function updateCredits(req, res) {
         return;
       }
 
+      console.warn("[CREDITS][INVALID_PAYLOAD]", rawItem);
+
       const err = new Error("Valor inválido.");
       err.status = 400;
       throw err;
@@ -1748,9 +1762,7 @@ async function updateCredits(req, res) {
     if (Array.isArray(items) && items.length > 0) {
       for (const it of items) {
         await applyOne({
-          credits: it?.credits,
-          delta: it?.delta,
-          serviceKey: it?.serviceKey,
+          ...it,
           source: it?.source || source || "admin-batch",
         });
       }
