@@ -34,7 +34,7 @@ function normalizeServiceKeyInput(value) {
   if (s.includes("rehabilitacion") && s.includes("activa")) return "RA";
   if (s.includes("reeducacion") && s.includes("funcional")) return "RF";
   if (s.includes("kinefilaxia") || (s.includes("kine") && s.includes("deport"))) return "KD";
-  if (s.includes("synergy") || s.includes("sinergia")) return "SYN";
+  if (s.includes("synergy")) return "SYN";
   if (s.includes("nutric")) return "NUT";
 
   return "";

@@ -117,7 +117,7 @@ function canonicalServiceKeyFromValue(value) {
   if (s.includes("rehabilitacion") && s.includes("activa")) return "RA";
   if (s.includes("reeducacion") && s.includes("funcional")) return "RF";
   if (s.includes("kinefilaxia") || (s.includes("kine") && s.includes("deport"))) return "KD";
-  if (s.includes("synergy") || s.includes("sinergia")) return "SYN";
+  if (s.includes("synergy")) return "SYN";
   if (s.includes("nutric")) return "NUT";
 
   return "";
@@ -1680,12 +1680,31 @@ async function updateCredits(req, res) {
         throw err;
       }
 
+      const parseOptionalNumber = (value) => {
+        if (value === undefined || value === null || value === "") return null;
+
+        const num = Number(value);
+        if (!Number.isFinite(num)) return NaN;
+
+        return num;
+      };
+
+      const cNum = parseOptionalNumber(c);
+      const dNum = parseOptionalNumber(d);
+
       recalcUserCredits(user);
       const currentForService = sumCreditsForService(user, sk);
 
-      if (typeof c === "number") {
-        const target = Math.max(0, Math.round(c));
+      if (cNum !== null) {
+        if (!Number.isFinite(cNum)) {
+          const err = new Error("Valor inválido.");
+          err.status = 400;
+          throw err;
+        }
+
+        const target = Math.max(0, Math.round(cNum));
         const diff = target - currentForService;
+
         if (diff > 0) {
           await addCreditLot(user, {
             amount: diff,
@@ -1695,11 +1714,19 @@ async function updateCredits(req, res) {
         } else if (diff < 0) {
           consumeCreditsForService(user, Math.abs(diff), sk);
         }
+
         return;
       }
 
-      if (typeof d === "number") {
-        const dd = Math.round(d);
+      if (dNum !== null) {
+        if (!Number.isFinite(dNum)) {
+          const err = new Error("Valor inválido.");
+          err.status = 400;
+          throw err;
+        }
+
+        const dd = Math.round(dNum);
+
         if (dd > 0) {
           await addCreditLot(user, {
             amount: dd,
@@ -1709,6 +1736,7 @@ async function updateCredits(req, res) {
         } else if (dd < 0) {
           consumeCreditsForService(user, Math.abs(dd), sk);
         }
+
         return;
       }
 
