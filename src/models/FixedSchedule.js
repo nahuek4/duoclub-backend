@@ -1,7 +1,7 @@
 // backend/src/models/FixedSchedule.js
 import mongoose from "mongoose";
 
-const ALLOWED_SERVICE_KEYS = ["PE", "EP", "RA", "RF", "KD", "NUT"];
+const ALLOWED_SERVICE_KEYS = ["PE", "EP", "RA", "RF", "KD", "SYN", "NUT"];
 const ALLOWED_SERVICE_KEY_SET = new Set(ALLOWED_SERVICE_KEYS);
 
 const SERVICE_KEY_TO_NAME = {
@@ -10,6 +10,7 @@ const SERVICE_KEY_TO_NAME = {
   RA: "Rehabilitación Activa",
   RF: "Reeducación Funcional",
   KD: "Kinefilaxia Deportiva",
+  SYN: "Synergy",
   NUT: "Nutrición",
 };
 
@@ -33,6 +34,7 @@ function normalizeServiceKey(value) {
   if (text.includes("rehabilitacion") && text.includes("activa")) return "RA";
   if (text.includes("reeducacion") && text.includes("funcional")) return "RF";
   if (text.includes("kinefilaxia") || (text.includes("kine") && text.includes("deport"))) return "KD";
+  if (text.includes("synergy") || text.includes("sinergia")) return "SYN";
   if (text.includes("nutric")) return "NUT";
 
   return "";
@@ -167,7 +169,7 @@ fixedScheduleSchema.pre("validate", function normalizeFixedScheduleService() {
   if (!normalizedKey) {
     this.invalidate(
       "serviceKey",
-      "serviceKey inválido. Valores permitidos: PE, EP, RA, RF, KD, NUT."
+      "serviceKey inválido. Valores permitidos: PE, EP, RA, RF, KD, SYN, NUT."
     );
     return;
   }

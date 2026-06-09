@@ -41,6 +41,7 @@ const MIN_BOOKING_MINUTES_BY_SERVICE = {
   RA: 24 * 60,
   RF: 24 * 60,
   KD: 24 * 60,
+  SYN: 24 * 60,
   NUT: DEFAULT_MIN_BOOKING_MINUTES,
   OTHER: DEFAULT_MIN_BOOKING_MINUTES,
 };
@@ -58,7 +59,7 @@ const ACTIVE_WAITLIST_STATUSES = ["waiting", "notified"];
 function waitlistQueueServiceKeys(serviceKeyOrName) {
   const sk = serviceToKey(serviceKeyOrName);
   if (!sk) return [];
-  if (isTherapyService(sk)) return ["RA", "RF", "KD"];
+  if (isTherapyService(sk)) return ["RA", "RF", "KD", "SYN"];
   return [sk];
 }
 
@@ -215,7 +216,7 @@ function getWaitlistCloseMinutesForService(serviceName) {
   const sk = serviceToKey(serviceName);
 
   if (sk === "EP") return 30;
-  if (["RA", "RF", "KD"].includes(sk)) return 12 * 60;
+  if (["RA", "RF", "KD", "SYN"].includes(sk)) return 12 * 60;
 
   return null;
 }
@@ -272,7 +273,7 @@ function getTurnoFromTime(time) {
 /* =========================
    HELPERS: normalización servicios
 ========================= */
-const ALLOWED_SERVICE_KEYS = new Set(["PE", "EP", "RA", "RF", "KD", "NUT"]);
+const ALLOWED_SERVICE_KEYS = new Set(["PE", "EP", "RA", "RF", "KD", "SYN", "NUT"]);
 
 const SERVICE_KEY_TO_NAME = {
   PE: "Primera evaluación presencial",
@@ -280,6 +281,7 @@ const SERVICE_KEY_TO_NAME = {
   RA: "Rehabilitación activa",
   RF: "Reeducación funcional",
   KD: "Kinefilaxia Deportiva",
+  SYN: "Synergy",
   NUT: "Nutrición",
 };
 
@@ -313,6 +315,7 @@ function serviceToKey(serviceNameOrKey) {
   if (s.includes("rehabilitacion") && s.includes("activa")) return "RA";
   if (s.includes("reeducacion") && s.includes("funcional")) return "RF";
   if (s.includes("kinefilaxia") || (s.includes("kine") && s.includes("deport"))) return "KD";
+  if (s.includes("synergy") || s.includes("sinergia")) return "SYN";
   if (s.includes("nutricion")) return "NUT";
 
   return "";
@@ -964,7 +967,7 @@ function requiresApto(user) {
 ========================= */
 const PE_CAP_PER_SLOT = 1;
 const EP_CAP_PER_SLOT = 12;
-const THERAPY_SHARED_CAP_PER_SLOT = 8;
+const THERAPY_SHARED_CAP_PER_SLOT = 8; // RA + RF + KD + SYN comparten este cupo total por horario.
 const NUT_CAP_PER_SLOT = 1;
 
 const PE_NAME = "Primera evaluación presencial";
@@ -972,6 +975,7 @@ const EP_NAME = "Entrenamiento Personal";
 const RA_NAME = "Rehabilitación activa";
 const RF_NAME = "Reeducación funcional";
 const KD_NAME = "Kinefilaxia Deportiva";
+const SYN_NAME = "Synergy";
 
 const TIMES_EP_WEEKDAY = [
   "07:00", "08:00", "09:00", "10:00",
@@ -1011,7 +1015,7 @@ const TIMES_DEFAULT = [
 
 function isTherapyService(serviceNameOrKey) {
   const sk = serviceToKey(serviceNameOrKey);
-  return ["RA", "RF", "KD"].includes(sk);
+  return ["RA", "RF", "KD", "SYN"].includes(sk);
 }
 
 function getRehabTimesForDate(dateStr) {
@@ -1041,12 +1045,12 @@ function getAllowedTimesForService(serviceNameOrKey, dateStr = "") {
   const sk = serviceToKey(serviceNameOrKey);
 
   if (isSaturday(dateStr)) {
-    if (sk === "KD") return TIMES_PERFORMANCE_SATURDAY;
+    if (sk === "KD" || sk === "SYN") return TIMES_PERFORMANCE_SATURDAY;
     return [];
   }
 
   if (sk === "PE" || sk === "EP") return TIMES_EP_WEEKDAY;
-  if (sk === "KD") return getPerformanceTimesForDate(dateStr);
+  if (sk === "KD" || sk === "SYN") return getPerformanceTimesForDate(dateStr);
   if (["RA", "RF"].includes(sk)) return getRehabTimesForDate(dateStr);
   if (sk === "NUT") return TIMES_DEFAULT;
 
@@ -1084,7 +1088,8 @@ function getSlotReservationStats(existing, dateStr, time) {
   const rfReserved = list.filter((a) => appointmentServiceKey(a) === "RF").length;
   const kdReserved = list.filter((a) => appointmentServiceKey(a) === "KD").length;
   const nutReserved = list.filter((a) => appointmentServiceKey(a) === "NUT").length;
-  const therapyReserved = raReserved + rfReserved + kdReserved;
+  const synReserved = list.filter((a) => appointmentServiceKey(a) === "SYN").length;
+  const therapyReserved = raReserved + rfReserved + kdReserved + synReserved;
 
   return {
     totalReserved: list.length,
@@ -1095,10 +1100,12 @@ function getSlotReservationStats(existing, dateStr, time) {
     rfReserved,
     kdReserved,
     nutReserved,
+    synReserved,
     therapyReserved,
     therapyCap: getTherapyCapForSlot(dateStr, time),
     epCap: getEpCapForSlot(dateStr, time),
     nutCap: getNutCapForSlot(dateStr, time),
+    synCap: getTherapyCapForSlot(dateStr, time),
     therapyActive: isTherapyAreaActiveAt(dateStr, time),
   };
 }
@@ -1203,6 +1210,11 @@ const CANCELLATION_POLICY_BY_SERVICE = {
     lateRefundLimit: 1,
   },
   KD: {
+    refundCutoffHours: 4,
+    timelyRefundLimit: 2,
+    lateRefundLimit: 1,
+  },
+  SYN: {
     refundCutoffHours: 4,
     timelyRefundLimit: 2,
     lateRefundLimit: 1,
@@ -1366,7 +1378,7 @@ function buildCancellationClientMessage({ appointment, decision, counters }) {
   }
 
   if (decision?.refundMode === "timely") {
-    if (["RA", "RF", "KD"].includes(sk)) {
+    if (["RA", "RF", "KD", "SYN"].includes(sk)) {
       if (counters.timelyRemaining > 0) {
         return `Cancelaste con el mínimo de anticipación. Te devolvimos el crédito. Te queda ${counters.timelyRemaining} cancelación en término disponible este mes.`;
       }
@@ -1485,7 +1497,7 @@ function lotsDebug(user) {
 /* =========================
    Turnos fijos: débito/deuda mensual y reversa por baja de plan
 ========================= */
-const FIXED_BILLING_SERVICE_KEYS = new Set(["EP", "RA", "RF", "KD"]);
+const FIXED_BILLING_SERVICE_KEYS = new Set(["EP", "RA", "RF", "KD", "SYN"]);
 const FIXED_BILLING_DONE_STATUSES = new Set(["monthly_reserved", "debited", "debt", "skipped"]);
 
 function isFixedBillingServiceKey(value) {
@@ -1527,7 +1539,7 @@ function isSlotStrictlyAfterMoment(date, time, moment = new Date()) {
 function ensureFixedScheduleDebtObject(user) {
   user.fixedScheduleDebt = user.fixedScheduleDebt || {};
 
-  for (const sk of ["EP", "RA", "RF", "KD"]) {
+  for (const sk of ["EP", "RA", "RF", "KD", "SYN"]) {
     const n = Number(user.fixedScheduleDebt?.[sk] || 0);
     user.fixedScheduleDebt[sk] = Number.isFinite(n) ? Math.max(0, Math.trunc(n)) : 0;
   }
@@ -1892,7 +1904,7 @@ function validateBasicSlotRules({ date, time, service, serviceKey }) {
   const normalizedServiceKey = identity.serviceKey;
   const normalizedServiceName = identity.serviceName;
 
-  if (isSaturday(date) && normalizedServiceKey !== "KD") {
+  if (isSaturday(date) && !["KD", "SYN"].includes(normalizedServiceKey)) {
     return { ok: false, error: "Los sábados no hay turnos disponibles para este servicio." };
   }
 
@@ -1948,7 +1960,7 @@ function validateBasicSlotRulesAdmin({ date, time, service, serviceKey, bypassWi
   const normalizedServiceKey = identity.serviceKey;
   const normalizedServiceName = identity.serviceName;
 
-  if (isSaturday(date) && normalizedServiceKey !== "KD") {
+  if (isSaturday(date) && !["KD", "SYN"].includes(normalizedServiceKey)) {
     return { ok: false, error: "Los sábados no hay turnos disponibles para este servicio." };
   }
 
@@ -2454,7 +2466,7 @@ router.post("/waitlist/claim", async (req, res, next) => {
 
       // La sala de espera queda bajo gestión manual del admin.
       // No cerramos automáticamente el resto de la cola: puede quedar cupo
-      // disponible para más de una persona o para otro servicio del pool RA/RF/KD.
+      // disponible para más de una persona o para otro servicio del pool RA/RF/KD/SYN.
     });
 
     return res.status(201).json({
@@ -2829,7 +2841,7 @@ router.get("/availability", async (req, res) => {
       // El admin puede marcarla como completada, pero no bloquea disponibilidad.
     }
 
-    if (isSunday(date) || (isSaturday(date) && normalizedServiceKey !== "KD")) {
+    if (isSunday(date) || (isSaturday(date) && !["KD", "SYN"].includes(normalizedServiceKey))) {
       return res.json({
         date,
         service: normalizedServiceName,
@@ -2897,7 +2909,6 @@ router.get("/availability", async (req, res) => {
 
       const stats = getSlotReservationStats(existing, date, t);
       const isTherapy = isTherapyService(normalizedServiceKey);
-
       if (basic.isPeService) {
         if (stats.peReserved >= stats.peCap) {
           out.push({
@@ -2916,6 +2927,8 @@ router.get("/availability", async (req, res) => {
             kdReserved: stats.kdReserved,
             nutReserved: stats.nutReserved,
             nutCap: stats.nutCap,
+            synReserved: stats.synReserved,
+            synCap: stats.synCap,
             capacity: stats.peCap,
             reserved: stats.peReserved,
             available: Math.max(0, stats.peCap - stats.peReserved),
@@ -2944,6 +2957,8 @@ router.get("/availability", async (req, res) => {
             kdReserved: stats.kdReserved,
             nutReserved: stats.nutReserved,
             nutCap: stats.nutCap,
+            synReserved: stats.synReserved,
+            synCap: stats.synCap,
             capacity: stats.epCap,
             reserved: stats.epReserved,
             available: Math.max(0, stats.epCap - stats.epReserved),
@@ -2970,6 +2985,8 @@ router.get("/availability", async (req, res) => {
             kdReserved: stats.kdReserved,
             nutReserved: stats.nutReserved,
             nutCap: stats.nutCap,
+            synReserved: stats.synReserved,
+            synCap: stats.synCap,
             capacity: stats.therapyCap,
             reserved: stats.therapyReserved,
             available: Math.max(0, stats.therapyCap - stats.therapyReserved),
@@ -2996,6 +3013,8 @@ router.get("/availability", async (req, res) => {
             kdReserved: stats.kdReserved,
             nutReserved: stats.nutReserved,
             nutCap: stats.nutCap,
+            synReserved: stats.synReserved,
+            synCap: stats.synCap,
             capacity: stats.nutCap,
             reserved: stats.nutReserved,
             available: Math.max(0, stats.nutCap - stats.nutReserved),
@@ -3041,6 +3060,8 @@ router.get("/availability", async (req, res) => {
         kdReserved: stats.kdReserved,
         nutReserved: stats.nutReserved,
         nutCap: stats.nutCap,
+        synReserved: stats.synReserved,
+        synCap: stats.synCap,
         capacity: slotCapacity,
         reserved: slotReserved,
         available: availableVacancies,
@@ -4713,7 +4734,7 @@ router.post("/waitlist/claim", ensureStaff, async (req, res) => {
 
       // La sala de espera queda bajo gestión manual del admin.
       // No cerramos automáticamente el resto de la cola: puede quedar cupo
-      // disponible para más de una persona o para otro servicio del pool RA/RF/KD.
+      // disponible para más de una persona o para otro servicio del pool RA/RF/KD/SYN.
     });
 
     return res.status(201).json({

@@ -1,6 +1,6 @@
 import mongoose from "mongoose";
 
-const ALLOWED_SERVICE_KEYS = ["PE", "EP", "RA", "RF", "KD", "NUT"];
+const ALLOWED_SERVICE_KEYS = ["PE", "EP", "RA", "RF", "KD", "SYN", "NUT"];
 const ALLOWED_SERVICE_KEYS_SET = new Set(ALLOWED_SERVICE_KEYS);
 
 const SERVICE_KEY_TO_NAME = {
@@ -9,6 +9,7 @@ const SERVICE_KEY_TO_NAME = {
   RA: "Rehabilitación Activa",
   RF: "Reeducación Funcional",
   KD: "Kinefilaxia Deportiva",
+  SYN: "Synergy",
   NUT: "Nutrición",
 };
 
@@ -33,6 +34,7 @@ function normalizeServiceKeyInput(value) {
   if (s.includes("rehabilitacion") && s.includes("activa")) return "RA";
   if (s.includes("reeducacion") && s.includes("funcional")) return "RF";
   if (s.includes("kinefilaxia") || (s.includes("kine") && s.includes("deport"))) return "KD";
+  if (s.includes("synergy") || s.includes("sinergia")) return "SYN";
   if (s.includes("nutric")) return "NUT";
 
   return "";
@@ -365,6 +367,7 @@ const userSchema = new mongoose.Schema(
       RA: { type: Number, default: 0, min: 0 },
       RF: { type: Number, default: 0, min: 0 },
       KD: { type: Number, default: 0, min: 0 },
+      SYN: { type: Number, default: 0, min: 0 },
     },
 
     role: {

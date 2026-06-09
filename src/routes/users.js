@@ -88,7 +88,7 @@ function validateObjectIdParam(req, res, next) {
   next();
 }
 
-const ALLOWED_SERVICE_KEYS = new Set(["PE", "EP", "RF", "RA", "KD", "NUT"]);
+const ALLOWED_SERVICE_KEYS = new Set(["PE", "EP", "RF", "RA", "KD", "SYN", "NUT"]);
 
 const SERVICE_KEY_TO_NAME = {
   PE: "Primera evaluación presencial",
@@ -96,6 +96,7 @@ const SERVICE_KEY_TO_NAME = {
   RF: "Reeducación Funcional",
   RA: "Rehabilitación Activa",
   KD: "Kinefilaxia Deportiva",
+  SYN: "Synergy",
   NUT: "Nutrición",
 };
 
@@ -116,6 +117,7 @@ function canonicalServiceKeyFromValue(value) {
   if (s.includes("rehabilitacion") && s.includes("activa")) return "RA";
   if (s.includes("reeducacion") && s.includes("funcional")) return "RF";
   if (s.includes("kinefilaxia") || (s.includes("kine") && s.includes("deport"))) return "KD";
+  if (s.includes("synergy") || s.includes("sinergia")) return "SYN";
   if (s.includes("nutric")) return "NUT";
 
   return "";
@@ -342,6 +344,7 @@ function fixedScheduleDebtByServiceKey(u) {
     RF: Math.max(0, Number(raw?.RF || 0)),
     RA: Math.max(0, Number(raw?.RA || 0)),
     KD: Math.max(0, Number(raw?.KD || 0)),
+    SYN: Math.max(0, Number(raw?.SYN || 0)),
     NUT: 0,
   };
 }
@@ -349,7 +352,7 @@ function fixedScheduleDebtByServiceKey(u) {
 function computeServiceAccessFromLots(u) {
   const now = new Date();
   const lots = Array.isArray(u?.creditLots) ? u.creditLots : [];
-  const byKey = { PE: 0, EP: 0, RF: 0, RA: 0, KD: 0, NUT: 0 };
+  const byKey = { PE: 0, EP: 0, RF: 0, RA: 0, KD: 0, SYN: 0, NUT: 0 };
 
   for (const lot of lots) {
     const remaining = Number(lot?.remaining || 0);
@@ -453,7 +456,7 @@ function consumeCreditsForService(user, toRemove, serviceKey) {
 
 function ensureFixedScheduleDebt(user) {
   user.fixedScheduleDebt = user.fixedScheduleDebt || {};
-  for (const k of ["EP", "RA", "RF", "KD"]) {
+  for (const k of ["EP", "RA", "RF", "KD", "SYN"]) {
     const n = Number(user.fixedScheduleDebt?.[k] || 0);
     user.fixedScheduleDebt[k] = Number.isFinite(n) ? Math.max(0, Math.trunc(n)) : 0;
   }
@@ -589,6 +592,7 @@ function buildCreditsByService(user) {
     RF: sumCreditsForService(user, "RF") - Number(debt.RF || 0),
     RA: sumCreditsForService(user, "RA") - Number(debt.RA || 0),
     KD: sumCreditsForService(user, "KD") - Number(debt.KD || 0),
+    SYN: sumCreditsForService(user, "SYN") - Number(debt.SYN || 0),
     NUT: sumCreditsForService(user, "NUT"),
   };
 

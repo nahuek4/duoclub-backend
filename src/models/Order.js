@@ -1,6 +1,6 @@
 import mongoose from "mongoose";
 
-const ALLOWED_SERVICE_KEYS = ["PE", "EP", "RA", "RF", "KD", "NUT"];
+const ALLOWED_SERVICE_KEYS = ["PE", "EP", "RA", "RF", "KD", "SYN", "NUT"];
 const ALLOWED_SERVICE_KEY_SET = new Set(ALLOWED_SERVICE_KEYS);
 
 function normalizeServiceKey(value) {

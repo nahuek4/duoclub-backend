@@ -6,6 +6,7 @@ const SERVICE_KEY_TO_NAME = {
   RA: "Rehabilitación Activa",
   RF: "Reeducación Funcional",
   KD: "Kinefilaxia Deportiva",
+  SYN: "Synergy",
   NUT: "Nutrición",
 };
 
@@ -32,6 +33,7 @@ function normalizeServiceKey(value) {
   if (s.includes("rehabilitacion") && s.includes("activa")) return "RA";
   if (s.includes("reeducacion") && s.includes("funcional")) return "RF";
   if (s.includes("kinefilaxia") || (s.includes("kine") && s.includes("deport"))) return "KD";
+  if (s.includes("synergy") || s.includes("sinergia")) return "SYN";
   if (s.includes("nutric")) return "NUT";
 
   return "";

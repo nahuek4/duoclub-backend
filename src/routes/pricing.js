@@ -7,7 +7,7 @@ import { logActivity } from "../lib/activityLogger.js";
 
 const router = express.Router();
 
-const ALLOWED_SERVICE_KEYS = new Set(["PE", "EP", "RF", "RA", "KD", "NUT"]);
+const ALLOWED_SERVICE_KEYS = new Set(["PE", "EP", "RF", "RA", "KD", "SYN", "NUT"]);
 const SERVICE_KEY_ALIASES = {
   AR: "RA",
 };

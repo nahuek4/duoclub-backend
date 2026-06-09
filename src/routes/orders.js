@@ -22,16 +22,17 @@ const PLUS_PRICE = Number(process.env.PLUS_PRICE || 20000);
 const PLUS_DISCOUNT_PCT = 15;
 const CREDITS_EXPIRE_DAYS = 30;
 const PERFORMANCE_COPAY_PRICE = Number(process.env.PERFORMANCE_COPAY_PRICE || 12500);
-const PERFORMANCE_COPAY_KEYS = new Set(["RA", "RF", "KD"]);
+const PERFORMANCE_COPAY_KEYS = new Set(["RA", "RF", "KD", "SYN"]);
 const PUBLIC_EVALUATION_PRICE = Number(process.env.PUBLIC_EVALUATION_PRICE || 30000);
 
-const ALLOWED_SERVICE_KEYS = new Set(["PE", "EP", "RA", "RF", "KD", "NUT"]);
+const ALLOWED_SERVICE_KEYS = new Set(["PE", "EP", "RA", "RF", "KD", "SYN", "NUT"]);
 const SERVICE_KEY_TO_NAME = {
   PE: "Primera evaluación presencial",
   EP: "Entrenamiento Personal",
   RA: "Rehabilitación Activa",
   RF: "Reeducación Funcional",
   KD: "Kinefilaxia Deportiva",
+  SYN: "Synergy",
   NUT: "Nutrición",
 };
 
@@ -137,7 +138,7 @@ function currentMonthKey() {
 
 function ensureFixedScheduleDebt(user) {
   user.fixedScheduleDebt = user.fixedScheduleDebt || {};
-  for (const k of ["EP", "RA", "RF", "KD"]) {
+  for (const k of ["EP", "RA", "RF", "KD", "SYN"]) {
     const n = Number(user.fixedScheduleDebt?.[k] || 0);
     user.fixedScheduleDebt[k] = Number.isFinite(n) ? Math.max(0, Math.trunc(n)) : 0;
   }
@@ -797,7 +798,7 @@ async function resolveCreditsItem({ serviceKey, credits, payMethod, planCode, la
   const isCopay = isPerformanceCopayItem({ planCode, label });
   if (isCopay) {
     if (!PERFORMANCE_COPAY_KEYS.has(sk)) {
-      throw new Error("El copago solo está disponible para RA, RF o KD.");
+      throw new Error("El copago solo está disponible para RA, RF, KD o Synergy.");
     }
     if (cr !== 1) {
       throw new Error("El copago debe corresponder a 1 sesión.");
