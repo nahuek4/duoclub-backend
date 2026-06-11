@@ -77,7 +77,7 @@ function isWaitlistableService(serviceKeyOrName) {
 /* =========================
    ADMIN MAIL (fallback)
 ========================= */
-const ADMIN_EMAIL = process.env.ADMIN_EMAIL || "nahuek.75@gmail.com";
+const ADMIN_EMAIL = process.env.ADMIN_EMAIL || "duoclub.ar@gmail.com";
 
 async function sendAdminCopy({ kind, user, ap }) {
   try {
