@@ -365,29 +365,47 @@ function computeServiceAccessFromLots(u) {
     if (byKey[sk] !== undefined) byKey[sk] += remaining;
   }
 
+  const debtByServiceKey = fixedScheduleDebtByServiceKey(u);
+  const creditsByServiceKey = { PE: 0, EP: 0, RF: 0, RA: 0, KD: 0, SYN: 0, NUT: 0 };
+  const availableCreditsByServiceKey = { PE: 0, EP: 0, RF: 0, RA: 0, KD: 0, SYN: 0, NUT: 0 };
+
+  for (const k of Object.keys(availableCreditsByServiceKey)) {
+    availableCreditsByServiceKey[k] = Number(byKey[k] || 0);
+    creditsByServiceKey[k] = Number(byKey[k] || 0) - Number(debtByServiceKey[k] || 0);
+  }
+
+  const allowedServices = [];
+  const serviceCredits = {};
+
+  for (const k of ["EP", "RF", "RA", "KD", "SYN", "NUT"]) {
+    const available = Number(availableCreditsByServiceKey[k] || 0);
+    const debt = Number(debtByServiceKey[k] || 0);
+    const net = Number(creditsByServiceKey[k] || 0);
+
+    // Mostrar como servicio activo si tiene créditos, deuda o saldo neto distinto de cero.
+    if (available > 0 || debt > 0 || net !== 0) {
+      const label = SERVICE_KEY_TO_NAME[k] || k;
+      allowedServices.push(label);
+      serviceCredits[label] = net;
+    }
+  }
 
   if (!u?.firstEvaluationCompleted) {
     const peCredits = Number(byKey.PE || 0);
-
-    return {
-      allowedServices: peCredits > 0 ? ["Primera evaluación presencial"] : [],
-      serviceCredits:
-        peCredits > 0 ? { "Primera evaluación presencial": peCredits } : {},
-    };
+    if (peCredits > 0) {
+      allowedServices.unshift("Primera evaluación presencial");
+      serviceCredits["Primera evaluación presencial"] = peCredits;
+    }
+    creditsByServiceKey.PE = peCredits;
   }
 
-  const allowedServices = Object.entries(byKey)
-    .filter(([k, v]) => k !== "PE" && v > 0)
-    .map(([k]) => SERVICE_KEY_TO_NAME[k])
-    .filter(Boolean);
-
-  const serviceCredits = {};
-  for (const [k, v] of Object.entries(byKey)) {
-    if (k === "PE") continue;
-    if (v > 0) serviceCredits[SERVICE_KEY_TO_NAME[k]] = v;
-  }
-
-  return { allowedServices, serviceCredits };
+  return {
+    allowedServices,
+    serviceCredits,
+    creditsByServiceKey,
+    availableCreditsByServiceKey,
+    fixedScheduleDebt: debtByServiceKey,
+  };
 }
 
 function sumCreditsForService(user, serviceKey) {

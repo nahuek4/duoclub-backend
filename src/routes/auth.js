@@ -27,9 +27,10 @@ const SERVICE_KEY_TO_NAME = {
   RA: "Rehabilitación Activa",
   KD: "Kinefilaxia Deportiva",
   NUT: "Nutrición",
+  SYN: "Synergy",
 };
 
-const SERVICE_KEYS = ["PE", "EP", "RF", "RA", "KD", "NUT"];
+const SERVICE_KEYS = ["PE", "EP", "RF", "RA", "KD", "SYN", "NUT"];
 const SERVICE_KEY_SET = new Set(SERVICE_KEYS);
 
 function signToken(user) {
@@ -90,7 +91,8 @@ function normalizeServiceKey(input) {
   if (s.includes("reeducacion") && s.includes("funcional")) return "RF";
   if (s.includes("rehabilitacion") && s.includes("activa")) return "RA";
   if (s.includes("kinefilaxia") || (s.includes("kine") && s.includes("deport"))) return "KD";
-  if (s.includes("nutricion")) return "NUT";
+  if (s.includes("synergy") || s.includes("sinergia")) return "SYN";
+  if (s.includes("nutricion") || s.includes("nutric")) return "NUT";
 
   return "";
 }
@@ -114,6 +116,7 @@ function fixedScheduleDebtByServiceKey(u) {
     RF: Math.max(0, Number(raw?.RF || 0)),
     RA: Math.max(0, Number(raw?.RA || 0)),
     KD: Math.max(0, Number(raw?.KD || 0)),
+    SYN: Math.max(0, Number(raw?.SYN || 0)),
     NUT: 0,
   };
 }
@@ -126,7 +129,7 @@ function computeServiceAccessFromLots(u) {
   const now = new Date();
   const lots = Array.isArray(u?.creditLots) ? u.creditLots : [];
 
-  const byKey = { PE: 0, EP: 0, RF: 0, RA: 0, KD: 0, NUT: 0 };
+  const byKey = { PE: 0, EP: 0, RF: 0, RA: 0, KD: 0, SYN: 0, NUT: 0 };
 
   for (const lot of lots) {
     const remaining = Number(lot?.remaining || 0);
@@ -136,50 +139,56 @@ function computeServiceAccessFromLots(u) {
     if (exp && exp <= now) continue;
 
     const sk = getLotServiceKey(lot);
-    if (!sk) continue;
+    if (!sk || byKey[sk] === undefined) continue;
 
     byKey[sk] += remaining;
   }
 
   const debtByServiceKey = fixedScheduleDebtByServiceKey(u);
-  const creditsByServiceKey = { PE: 0, EP: 0, RF: 0, RA: 0, KD: 0, NUT: 0 };
-  const availableCreditsByServiceKey = { PE: 0, EP: 0, RF: 0, RA: 0, KD: 0, NUT: 0 };
+  const creditsByServiceKey = { PE: 0, EP: 0, RF: 0, RA: 0, KD: 0, SYN: 0, NUT: 0 };
+  const availableCreditsByServiceKey = { PE: 0, EP: 0, RF: 0, RA: 0, KD: 0, SYN: 0, NUT: 0 };
+
   for (const k of SERVICE_KEYS) {
     availableCreditsByServiceKey[k] = Number(byKey[k] || 0);
     creditsByServiceKey[k] = Number(byKey[k] || 0) - Number(debtByServiceKey[k] || 0);
   }
 
+  const allowedServices = [];
+  const serviceCredits = {};
+
+  for (const k of SERVICE_KEYS) {
+    if (k === "PE") continue;
+
+    const net = Number(creditsByServiceKey[k] || 0);
+    const available = Number(availableCreditsByServiceKey[k] || 0);
+    const debt = Number(debtByServiceKey[k] || 0);
+
+    // Se considera servicio activo si tiene créditos, deuda o saldo neto distinto de 0.
+    if (available > 0 || debt > 0 || net !== 0) {
+      const label = SERVICE_KEY_TO_NAME[k];
+      if (label) {
+        allowedServices.push(label);
+        serviceCredits[label] = net;
+      }
+    }
+  }
+
   if (!u?.firstEvaluationCompleted) {
     const peCredits = Number(byKey.PE || 0);
-
-    return {
-      allowedServices: peCredits > 0 ? [SERVICE_KEY_TO_NAME.PE] : [],
-      serviceCredits: peCredits > 0 ? { [SERVICE_KEY_TO_NAME.PE]: peCredits } : {},
-      creditsByServiceKey: {
-        PE: peCredits,
-        EP: -Number(debtByServiceKey.EP || 0),
-        RF: -Number(debtByServiceKey.RF || 0),
-        RA: -Number(debtByServiceKey.RA || 0),
-        KD: -Number(debtByServiceKey.KD || 0),
-        NUT: 0,
-      },
-      availableCreditsByServiceKey,
-      fixedScheduleDebt: debtByServiceKey,
-    };
+    if (peCredits > 0) {
+      allowedServices.unshift(SERVICE_KEY_TO_NAME.PE);
+      serviceCredits[SERVICE_KEY_TO_NAME.PE] = peCredits;
+    }
+    creditsByServiceKey.PE = peCredits;
   }
 
-  const allowedServices = Object.entries(byKey)
-    .filter(([k, v]) => k !== "PE" && v > 0)
-    .map(([k]) => SERVICE_KEY_TO_NAME[k])
-    .filter(Boolean);
-
-  const serviceCredits = {};
-  for (const [k, v] of Object.entries(byKey)) {
-    if (k === "PE") continue;
-    if (v > 0) serviceCredits[SERVICE_KEY_TO_NAME[k]] = v;
-  }
-
-  return { allowedServices, serviceCredits, creditsByServiceKey, availableCreditsByServiceKey, fixedScheduleDebt: debtByServiceKey };
+  return {
+    allowedServices,
+    serviceCredits,
+    creditsByServiceKey,
+    availableCreditsByServiceKey,
+    fixedScheduleDebt: debtByServiceKey,
+  };
 }
 
 function recalcCreditsCache(u) {
