@@ -1,6 +1,7 @@
 import express from "express";
 import path from "path";
 import fs from "fs";
+import crypto from "crypto";
 import { fileURLToPath } from "url";
 
 import bcrypt from "bcryptjs";
@@ -21,7 +22,8 @@ import {
   sendUserCreditsAssignedEmail,
   sendMedicalClearanceStatusEmail,
 } from "../mail.js";
-import { sendMail } from "../mail/core.js";
+import { BRAND_URL, sendMail } from "../mail/core.js";
+import { sendVerifyEmail } from "../mail/authEmails.js";
 import {
   logActivity,
   buildUserSubject,
@@ -1254,6 +1256,79 @@ router.get("/pending", adminOnly, async (req, res) => {
   } catch (err) {
     console.error("Error en GET /users/pending:", err);
     return res.status(500).json({ error: "Error al obtener pendientes." });
+  }
+});
+
+router.post("/:id/resend-verification", adminOnly, validateObjectIdParam, async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    const user = await User.findById(id);
+    if (!user) return res.status(404).json({ error: "Usuario no encontrado." });
+
+    const email = String(user.email || "").trim().toLowerCase();
+    if (!email) {
+      return res.status(400).json({ error: "El usuario no tiene email cargado." });
+    }
+
+    if (user.emailVerified) {
+      return res.status(400).json({
+        error: "Este usuario ya tiene el email verificado.",
+      });
+    }
+
+    const token = crypto.randomBytes(32).toString("hex");
+    const expiresAt = new Date(Date.now() + 1000 * 60 * 60 * 24);
+
+    user.emailVerificationToken = token;
+    user.emailVerificationExpires = expiresAt;
+
+    pushUserHistory(user, {
+      action: "email_verification_resent",
+      title: "Se reenvió el mail de verificación.",
+      message: "Un admin reenvió el link de verificación de email.",
+      createdAt: new Date(),
+    });
+
+    await user.save();
+
+    const baseUrl = String(
+      process.env.BRAND_URL ||
+        process.env.FRONTEND_URL ||
+        BRAND_URL ||
+        "https://duoclub.ar"
+    )
+      .trim()
+      .replace(/\/+$/, "");
+
+    const verifyUrl = `${baseUrl}/agenda/verificar-email?token=${encodeURIComponent(token)}`;
+
+    await sendVerifyEmail(user, verifyUrl);
+
+    await logActivity({
+      req,
+      category: "users",
+      action: "email_verification_resent",
+      entity: "user",
+      entityId: user._id,
+      title: "Verificación reenviada",
+      description: "Un admin reenvió el mail de verificación de email.",
+      subject: buildUserSubject(user),
+      meta: { email, expiresAt },
+    });
+
+    return res.json({
+      ok: true,
+      message: "Mail de verificación reenviado correctamente.",
+      emailVerified: !!user.emailVerified,
+      emailVerificationExpires: user.emailVerificationExpires || null,
+    });
+  } catch (err) {
+    console.error("Error en POST /users/:id/resend-verification:", err);
+    return res.status(500).json({
+      error: "No se pudo reenviar el mail de verificación.",
+      detail: err?.message || String(err),
+    });
   }
 });
 
