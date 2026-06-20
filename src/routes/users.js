@@ -2020,6 +2020,7 @@ router.post("/:id/apto", validateObjectIdParam, uploadAptoSingle, async (req, re
     }
 
     const newPath = "/uploads/aptos/" + req.file.filename;
+    const historyStart = Array.isArray(user.history) ? user.history.length : 0;
 
     user.aptoPath = newPath;
     user.aptoStatus = "pending_review";
@@ -2030,19 +2031,50 @@ router.post("/:id/apto", validateObjectIdParam, uploadAptoSingle, async (req, re
       message: "El apto físico quedó pendiente de revisión.",
       createdAt: new Date(),
     });
-    await user.save({ validateBeforeSave: false });
+
+    const historyToPush = Array.isArray(user.history)
+      ? user.history.slice(historyStart).map((h) => h?.toObject?.() || h)
+      : [];
+
+    const update = {
+      $set: {
+        aptoPath: newPath,
+        aptoStatus: user.aptoStatus || "pending_review",
+        aptoCompletedAt: user.aptoCompletedAt || null,
+        medicalClearance: user.medicalClearance?.toObject?.() || user.medicalClearance,
+        suspended: !!user.suspended,
+        suspendedReason: user.suspendedReason || "",
+        suspendedAt: user.suspendedAt || null,
+      },
+    };
+
+    if (historyToPush.length) {
+      update.$push = { history: { $each: historyToPush } };
+    }
+
+    const updated = await User.findByIdAndUpdate(id, update, {
+      new: true,
+      runValidators: false,
+    }).lean();
+
+    if (!updated?.aptoPath) {
+      return res.status(500).json({
+        error: "El archivo se recibió, pero no se pudo guardar la ruta del apto.",
+      });
+    }
 
     fireAndForget(
-      () => sendAptoStatusEmail(user, "pending_review"),
+      () => sendAptoStatusEmail(updated, "pending_review"),
       "MAIL_APTO_PENDING_REVIEW"
     );
 
     return res.json({
       ok: true,
       message: "Apto subido correctamente y pendiente de revisión.",
-      aptoPath: newPath,
-      aptoStatus: user.aptoStatus,
-      medicalClearance: user.medicalClearance,
+      aptoPath: updated.aptoPath,
+      aptoStatus: updated.aptoStatus,
+      medicalClearance: updated.medicalClearance,
+      user: decorateUserForResponse(updated),
     });
   } catch (err) {
     console.error("Error en POST /users/:id/apto:", err);
@@ -2094,6 +2126,8 @@ router.delete("/:id/apto", validateObjectIdParam, async (req, res) => {
       safeUnlink(absFromPublicUploadsPath(user.aptoPath));
     }
 
+    const historyStart = Array.isArray(user.history) ? user.history.length : 0;
+
     user.aptoPath = "";
     setMedicalClearanceStatus(user, "not_submitted", { actor: isAdmin ? "admin" : "user" });
     pushUserHistory(user, {
@@ -2101,13 +2135,39 @@ router.delete("/:id/apto", validateObjectIdParam, async (req, res) => {
       title: "Borró el Apto Físico.",
       createdAt: new Date(),
     });
-    await user.save({ validateBeforeSave: false });
+
+    const historyToPush = Array.isArray(user.history)
+      ? user.history.slice(historyStart).map((h) => h?.toObject?.() || h)
+      : [];
+
+    const update = {
+      $set: {
+        aptoPath: "",
+        aptoStatus: user.aptoStatus || "not_submitted",
+        aptoCompletedAt: user.aptoCompletedAt || null,
+        medicalClearance: user.medicalClearance?.toObject?.() || user.medicalClearance,
+        suspended: !!user.suspended,
+        suspendedReason: user.suspendedReason || "",
+        suspendedAt: user.suspendedAt || null,
+      },
+    };
+
+    if (historyToPush.length) {
+      update.$push = { history: { $each: historyToPush } };
+    }
+
+    const updated = await User.findByIdAndUpdate(id, update, {
+      new: true,
+      runValidators: false,
+    }).lean();
 
     return res.json({
       ok: true,
       message: "Apto eliminado correctamente.",
-      aptoStatus: user.aptoStatus,
-      medicalClearance: user.medicalClearance,
+      aptoPath: updated?.aptoPath || "",
+      aptoStatus: updated?.aptoStatus || "not_submitted",
+      medicalClearance: updated?.medicalClearance,
+      user: updated ? decorateUserForResponse(updated) : null,
     });
   } catch (err) {
     console.error("Error en DELETE /users/:id/apto:", err);
