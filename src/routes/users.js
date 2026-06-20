@@ -31,6 +31,7 @@ import {
 } from "../lib/activityLogger.js";
 
 const router = express.Router();
+const APTO_DEBUG_VERSION = "APTO_DEBUG_V8_2026-06-20";
 
 /* ============================================
    CONFIG GLOBAL: VENCIMIENTO CRÉDITOS
@@ -1997,6 +1998,7 @@ router.patch("/:id/suspend", adminOnly, validateObjectIdParam, async (req, res) 
 ============================================ */
 router.post("/:id/apto", validateObjectIdParam, uploadAptoSingle, async (req, res) => {
   try {
+    res.setHeader("X-Duo-Apto-Debug", APTO_DEBUG_VERSION);
     const { id } = req.params;
 
     const isAdmin = req.user.role === "admin";
@@ -2070,6 +2072,7 @@ router.post("/:id/apto", validateObjectIdParam, uploadAptoSingle, async (req, re
 
     return res.json({
       ok: true,
+      debugVersion: APTO_DEBUG_VERSION,
       message: "Apto subido correctamente y pendiente de revisión.",
       aptoPath: updated.aptoPath,
       aptoStatus: updated.aptoStatus,
@@ -2079,6 +2082,7 @@ router.post("/:id/apto", validateObjectIdParam, uploadAptoSingle, async (req, re
   } catch (err) {
     console.error("Error en POST /users/:id/apto:", err);
     return res.status(500).json({
+      debugVersion: APTO_DEBUG_VERSION,
       error: "Error al subir el apto.",
       detail: err?.message || String(err),
     });
