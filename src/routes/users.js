@@ -31,7 +31,7 @@ import {
 } from "../lib/activityLogger.js";
 
 const router = express.Router();
-const APTO_DEBUG_VERSION = "APTO_DEBUG_V8_2026-06-20";
+const APTO_DEBUG_VERSION = "APTO_DEBUG_V9_2026-06-20";
 
 /* ============================================
    CONFIG GLOBAL: VENCIMIENTO CRÉDITOS
@@ -1025,6 +1025,15 @@ function ensureMonthlyPlan(user) {
 ============================================ */
 router.use(protect);
 
+router.get("/apto-debug-version", async (req, res) => {
+  return res.json({
+    ok: true,
+    debugVersion: APTO_DEBUG_VERSION,
+    userId: String(req.user?._id || ""),
+    role: String(req.user?.role || ""),
+  });
+});
+
 /* ============================================
    TEST SMTP
 ============================================ */
@@ -2000,6 +2009,16 @@ router.post("/:id/apto", validateObjectIdParam, uploadAptoSingle, async (req, re
   try {
     res.setHeader("X-Duo-Apto-Debug", APTO_DEBUG_VERSION);
     const { id } = req.params;
+    console.log("[APTO_UPLOAD_V9] route hit", {
+      debugVersion: APTO_DEBUG_VERSION,
+      id,
+      actorId: String(req.user?._id || ""),
+      role: String(req.user?.role || ""),
+      hasFile: !!req.file,
+      fileName: req.file?.filename || "",
+      originalName: req.file?.originalname || "",
+      size: req.file?.size || 0,
+    });
 
     const isAdmin = req.user.role === "admin";
     const isSelf = req.user._id.toString() === id;
@@ -2059,8 +2078,22 @@ router.post("/:id/apto", validateObjectIdParam, uploadAptoSingle, async (req, re
       runValidators: false,
     }).lean();
 
+    console.log("[APTO_UPLOAD_V9] mongo updated", {
+      id,
+      newPath,
+      savedAptoPath: updated?.aptoPath || "",
+      savedAptoStatus: updated?.aptoStatus || "",
+      medicalStatus: updated?.medicalClearance?.status || "",
+    });
+
     if (!updated?.aptoPath) {
+      console.error("[APTO_UPLOAD_V9] mongo update missing aptoPath", {
+        id,
+        newPath,
+        updatedFound: !!updated,
+      });
       return res.status(500).json({
+        debugVersion: APTO_DEBUG_VERSION,
         error: "El archivo se recibió, pero no se pudo guardar la ruta del apto.",
       });
     }
