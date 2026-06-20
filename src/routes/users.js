@@ -2019,7 +2019,7 @@ router.post("/:id/apto", validateObjectIdParam, uploadAptoSingle, async (req, re
       safeUnlink(absFromPublicUploadsPath(user.aptoPath));
     }
 
-    const newPath = "/api/uploads/aptos/" + req.file.filename;
+    const newPath = "/uploads/aptos/" + req.file.filename;
 
     user.aptoPath = newPath;
     user.aptoStatus = "pending_review";
@@ -2030,7 +2030,7 @@ router.post("/:id/apto", validateObjectIdParam, uploadAptoSingle, async (req, re
       message: "El apto físico quedó pendiente de revisión.",
       createdAt: new Date(),
     });
-    await user.save();
+    await user.save({ validateBeforeSave: false });
 
     fireAndForget(
       () => sendAptoStatusEmail(user, "pending_review"),
@@ -2101,7 +2101,7 @@ router.delete("/:id/apto", validateObjectIdParam, async (req, res) => {
       title: "Borró el Apto Físico.",
       createdAt: new Date(),
     });
-    await user.save();
+    await user.save({ validateBeforeSave: false });
 
     return res.json({
       ok: true,
