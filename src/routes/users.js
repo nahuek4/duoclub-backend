@@ -31,7 +31,7 @@ import {
 } from "../lib/activityLogger.js";
 
 const router = express.Router();
-const APTO_DEBUG_VERSION = "APTO_DEBUG_V11_2026-06-20";
+const APTO_DEBUG_VERSION = "APTO_DEBUG_V13_2026-06-20";
 
 /* ============================================
    CONFIG GLOBAL: VENCIMIENTO CRÉDITOS
