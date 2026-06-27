@@ -471,7 +471,7 @@ function buildPaymentUserVisualEmail({
                             <td valign="middle" align="right" class="duo-footer-info" style="width:58%; color:#ffffff; font-family:Arial, Helvetica, sans-serif; font-size:9px; line-height:13px; font-weight:500; letter-spacing:0.2px;">
                               <div style="font-weight:700; letter-spacing:2.8px; color:#ffffff; text-decoration:none;"><span style="color:#ffffff; text-decoration:none;">DUOCLUB.AR</span></div>
                               <div style="color:#ffffff; text-decoration:none;"><span style="color:#ffffff; text-decoration:none;">+54 249 420 7343</span></div>
-                              <div style="color:#ffffff; text-decoration:none;"><span style="color:#ffffff; text-decoration:none;">Av. Santamaría 54, Tandil.</span></div>
+                              <div style="color:#ffffff; text-decoration:none;"><span style="color:#ffffff; text-decoration:none;">Avellaneda 1425 of. 201, Tandil</span></div>
                               <div style="padding-top:6px; font-size:10px; line-height:10px; letter-spacing:4px;">${renderMailFooterIcons()}</div>
                             </td>
                           </tr>

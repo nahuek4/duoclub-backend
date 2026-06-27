@@ -604,7 +604,7 @@ function buildFooterBlock() {
             >
               <div style="font-size:12px; line-height:16px; font-weight:700; letter-spacing:2px; color:#ffffff; text-decoration:none;"><span style="color:#ffffff; text-decoration:none;">DUOCLUB.AR</span></div>
               <div style="font-size:10px; line-height:15px; font-weight:400; opacity:0.96; color:#ffffff; text-decoration:none;"><span style="color:#ffffff; text-decoration:none;">+549 249 420 7343</span></div>
-              <div style="font-size:10px; line-height:15px; font-weight:400; opacity:0.96; color:#ffffff; text-decoration:none;"><span style="color:#ffffff; text-decoration:none;">Av. Santamaría 54, Tandil.</span></div>
+              <div style="font-size:10px; line-height:15px; font-weight:400; opacity:0.96; color:#ffffff; text-decoration:none;"><span style="color:#ffffff; text-decoration:none;">Avellaneda 1425 of. 201, Tandil</span></div>
               ${renderAppointmentFooterIcons()}
             </td>
           </tr>
