@@ -984,27 +984,12 @@ const TIMES_EP_WEEKDAY = [
   "18:00", "19:00", "20:00",
 ];
 
-const TIMES_REHAB_MWF = [
-  "07:00", "08:00", "09:00", "10:00",
-  "11:00", "12:00", "13:00", "14:00", "15:00",
-];
-
-const TIMES_REHAB_TT = [
-  "07:00", "08:00", "09:00", "10:00",
-  "11:00", "12:00",
-  "16:00", "17:00", "18:00",
-];
-
-// PERFORMANCE / Kinefilaxia Deportiva
-// Lun a vie: 07 a 13 y 16 a 19. Sábados: 09 a 12.
+// Sala PERFORMANCE: lunes a viernes de 07 a 13 (última 12)
+// y 16 a 20 (última 19).
 const TIMES_PERFORMANCE_WEEKDAY = [
   "07:00", "08:00", "09:00", "10:00",
-  "11:00", "12:00", "13:00",
+  "11:00", "12:00",
   "16:00", "17:00", "18:00", "19:00",
-];
-
-const TIMES_PERFORMANCE_SATURDAY = [
-  "09:00", "10:00", "11:00", "12:00",
 ];
 
 const TIMES_DEFAULT = [
@@ -1019,15 +1004,12 @@ function isTherapyService(serviceNameOrKey) {
 }
 
 function getRehabTimesForDate(dateStr) {
-  const weekday = getWeekdayMondayFirst(dateStr);
-  if ([1, 3, 5].includes(weekday)) return TIMES_REHAB_MWF;
-  if ([2, 4].includes(weekday)) return TIMES_REHAB_TT;
-  return [];
+  return getPerformanceTimesForDate(dateStr);
 }
 
 function getPerformanceTimesForDate(dateStr) {
   if (!dateStr || isSunday(dateStr)) return [];
-  if (isSaturday(dateStr)) return TIMES_PERFORMANCE_SATURDAY;
+  if (isSaturday(dateStr)) return [];
 
   const weekday = getWeekdayMondayFirst(dateStr);
   if (weekday >= 1 && weekday <= 5) return TIMES_PERFORMANCE_WEEKDAY;
@@ -1044,14 +1026,10 @@ function getAllowedTimesForService(serviceNameOrKey, dateStr = "") {
 
   const sk = serviceToKey(serviceNameOrKey);
 
-  if (isSaturday(dateStr)) {
-    if (sk === "KD" || sk === "SYN") return TIMES_PERFORMANCE_SATURDAY;
-    return [];
-  }
+  if (isSaturday(dateStr)) return [];
 
   if (sk === "PE" || sk === "EP") return TIMES_EP_WEEKDAY;
-  if (sk === "KD" || sk === "SYN") return getPerformanceTimesForDate(dateStr);
-  if (["RA", "RF"].includes(sk)) return getRehabTimesForDate(dateStr);
+  if (["RA", "RF", "KD", "SYN"].includes(sk)) return getPerformanceTimesForDate(dateStr);
   if (sk === "NUT") return TIMES_DEFAULT;
 
   return [];
@@ -1904,7 +1882,7 @@ function validateBasicSlotRules({ date, time, service, serviceKey }) {
   const normalizedServiceKey = identity.serviceKey;
   const normalizedServiceName = identity.serviceName;
 
-  if (isSaturday(date) && !["KD", "SYN"].includes(normalizedServiceKey)) {
+  if (isSaturday(date)) {
     return { ok: false, error: "Los sábados no hay turnos disponibles para este servicio." };
   }
 
@@ -1960,7 +1938,7 @@ function validateBasicSlotRulesAdmin({ date, time, service, serviceKey, bypassWi
   const normalizedServiceKey = identity.serviceKey;
   const normalizedServiceName = identity.serviceName;
 
-  if (isSaturday(date) && !["KD", "SYN"].includes(normalizedServiceKey)) {
+  if (isSaturday(date)) {
     return { ok: false, error: "Los sábados no hay turnos disponibles para este servicio." };
   }
 
@@ -2841,7 +2819,7 @@ router.get("/availability", async (req, res) => {
       // El admin puede marcarla como completada, pero no bloquea disponibilidad.
     }
 
-    if (isSunday(date) || (isSaturday(date) && !["KD", "SYN"].includes(normalizedServiceKey))) {
+    if (isSunday(date) || isSaturday(date)) {
       return res.json({
         date,
         service: normalizedServiceName,
