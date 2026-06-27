@@ -1,4 +1,5 @@
 import express from "express";
+import mongoose from "mongoose";
 
 import { protect, adminOnly } from "../middleware/auth.js";
 import ActivityLog from "../models/ActivityLog.js";
@@ -123,8 +124,22 @@ const SERVICE_KEY_TO_NAME = {
   EP: "Entrenamiento Personal",
   RA: "Rehabilitación activa",
   RF: "Reeducación funcional",
+  KD: "Kinefilaxia Deportiva",
+  SYN: "Synergy",
   NUT: "Nutrición",
 };
+
+const DEBT_SERVICE_KEYS = ["EP", "RA", "RF", "KD", "SYN"];
+
+const DEBT_HISTORY_ACTIONS = new Set([
+  "fixed_schedule_monthly_debt",
+  "fixed_schedule_debt_settled",
+  "fixed_schedule_debt_settled_by_cancelled_credit",
+  "fixed_schedule_debt_settled_by_plan_delete",
+  "fixed_schedule_debt_released_by_cancel",
+  "fixed_schedule_debt_released_by_plan_delete",
+  "credits_added_monthly",
+]);
 
 function normalizeServiceKey(serviceKey) {
   const key = String(serviceKey || "").toUpperCase().trim();
@@ -136,6 +151,173 @@ function normalizeServiceKey(serviceKey) {
 function translateServiceKey(serviceKey) {
   const key = normalizeServiceKey(serviceKey);
   return SERVICE_KEY_TO_NAME[key] || String(serviceKey || "").toUpperCase().trim() || "";
+}
+
+function sumDebtObject(raw = {}) {
+  return DEBT_SERVICE_KEYS.reduce((acc, sk) => {
+    const value = Number(raw?.[sk] || 0);
+    return acc + (Number.isFinite(value) ? Math.max(0, value) : 0);
+  }, 0);
+}
+
+function normalizeDebtByService(raw = {}) {
+  return DEBT_SERVICE_KEYS.reduce((acc, sk) => {
+    const value = Number(raw?.[sk] || 0);
+    acc[sk] = Number.isFinite(value) ? Math.max(0, value) : 0;
+    return acc;
+  }, {});
+}
+
+function classifyDebtHistoryItem(item = {}) {
+  const action = String(item.action || "").trim();
+
+  if (action === "fixed_schedule_monthly_debt") {
+    return {
+      type: "debt_created",
+      label: "Asumió deuda",
+      sign: 1,
+    };
+  }
+
+  if (
+    action === "fixed_schedule_debt_settled" ||
+    action === "fixed_schedule_debt_settled_by_cancelled_credit" ||
+    action === "fixed_schedule_debt_settled_by_plan_delete"
+  ) {
+    return {
+      type: "debt_paid",
+      label: "Deuda saldada con créditos",
+      sign: -1,
+    };
+  }
+
+  if (
+    action === "fixed_schedule_debt_released_by_cancel" ||
+    action === "fixed_schedule_debt_released_by_plan_delete"
+  ) {
+    return {
+      type: "debt_released",
+      label: "Deuda liberada",
+      sign: -1,
+    };
+  }
+
+  if (action === "credits_added_monthly") {
+    return {
+      type: "credits_loaded",
+      label: "Créditos cargados",
+      sign: 0,
+    };
+  }
+
+  return {
+    type: "movement",
+    label: item.title || "Movimiento",
+    sign: 0,
+  };
+}
+
+function debtEventFromHistoryItem(item = {}, index = 0) {
+  const classified = classifyDebtHistoryItem(item);
+  const serviceKey = normalizeServiceKey(item.serviceKey || item.service || item.serviceName);
+  const qty = Math.max(0, Number(item.qty || item.amount || item.value || 0));
+  const createdAt = item.createdAt || item.date || null;
+
+  return {
+    id: String(item._id || `${createdAt || "event"}-${index}`),
+    type: classified.type,
+    label: classified.label,
+    sign: classified.sign,
+    serviceKey,
+    serviceName: translateServiceKey(serviceKey) || item.serviceName || item.service || "",
+    qty,
+    date: item.date || "",
+    time: item.time || "",
+    title: item.title || classified.label,
+    message: item.message || "",
+    appointmentId: item.appointmentId || null,
+    fixedScheduleId: item.fixedScheduleId || null,
+    createdAt,
+  };
+}
+
+function debtEventFromAppointment(ap = {}, index = 0) {
+  const serviceKey = normalizeServiceKey(ap.serviceKey || ap.service || ap.serviceName);
+  const qty = Math.max(1, Number(ap.fixedDebtAmount || 1));
+
+  return {
+    id: `ap-${String(ap._id || index)}`,
+    type: "debt_appointment",
+    label: "Turno fijo con deuda",
+    sign: Number(ap.fixedDebtAmount || 0) > 0 ? 1 : 0,
+    serviceKey,
+    serviceName: translateServiceKey(serviceKey) || ap.serviceName || ap.service || "",
+    qty,
+    date: ap.date || "",
+    time: ap.time || "",
+    title: "Turno fijo marcado con deuda",
+    message: "Registro tomado desde la reserva asociada al turno fijo.",
+    appointmentId: ap._id || null,
+    fixedScheduleId: ap.fixedScheduleId || null,
+    createdAt: ap.updatedAt || ap.createdAt || null,
+  };
+}
+
+function decorateDebtUser(user = {}, appointmentEvents = []) {
+  const history = Array.isArray(user.history) ? user.history : [];
+  const currentDebtByService = normalizeDebtByService(user.fixedScheduleDebt || {});
+  const currentDebt = sumDebtObject(currentDebtByService);
+
+  const historyEvents = history
+    .filter((item) => DEBT_HISTORY_ACTIONS.has(String(item?.action || "").trim()))
+    .map((item, index) => debtEventFromHistoryItem(item, index));
+
+  const historyAppointmentIds = new Set(
+    historyEvents
+      .map((event) => String(event.appointmentId || ""))
+      .filter(Boolean)
+  );
+
+  const safeAppointmentEvents = appointmentEvents.filter((event) => {
+    const appointmentId = String(event.appointmentId || "");
+    return !appointmentId || !historyAppointmentIds.has(appointmentId);
+  });
+
+  const events = [...historyEvents, ...safeAppointmentEvents]
+    .filter((event) => event.serviceKey || event.type === "credits_loaded")
+    .sort((a, b) => {
+      const ad = a.createdAt ? new Date(a.createdAt).getTime() : 0;
+      const bd = b.createdAt ? new Date(b.createdAt).getTime() : 0;
+      return bd - ad;
+    });
+
+  const totalCreated = events
+    .filter((event) => event.sign > 0)
+    .reduce((acc, event) => acc + Number(event.qty || 0), 0);
+
+  const totalSettled = events
+    .filter((event) => event.sign < 0)
+    .reduce((acc, event) => acc + Number(event.qty || 0), 0);
+
+  const totalCreditsLoaded = events
+    .filter((event) => event.type === "credits_loaded")
+    .reduce((acc, event) => acc + Number(event.qty || 0), 0);
+
+  const lastEventAt = events[0]?.createdAt || null;
+
+  return {
+    id: String(user._id || ""),
+    fullName: fullNameOf(user) || "Usuario",
+    email: user.email || "",
+    phone: user.phone || "",
+    currentDebt,
+    currentDebtByService,
+    totalCreated,
+    totalSettled,
+    totalCreditsLoaded,
+    lastEventAt,
+    events,
+  };
 }
 
 function translateMembershipTier(tier) {
@@ -453,6 +635,132 @@ router.get("/activity", async (req, res) => {
     return res.status(500).json({
       ok: false,
       error: "No se pudo cargar la actividad.",
+    });
+  }
+});
+
+router.get("/debt-history", async (req, res) => {
+  try {
+    const limit = Math.min(200, Math.max(1, Number(req.query.limit || 80)));
+    const search = String(req.query.search || "").trim();
+
+    const debtActionList = [...DEBT_HISTORY_ACTIONS];
+    const appointmentDebtMatch = {
+      fixedScheduleId: { $ne: null },
+      $or: [
+        { creditDebitStatus: "debt" },
+        { fixedDebtAmount: { $gt: 0 } },
+        { refundReason: { $regex: "DEBT", $options: "i" } },
+      ],
+    };
+
+    const debtAppointmentSeed = await Appointment.find(appointmentDebtMatch)
+      .select(
+        "_id user date time service serviceName serviceKey status fixedScheduleId creditDebitStatus fixedDebtAmount refundReason createdAt updatedAt"
+      )
+      .sort({ date: -1, time: -1, createdAt: -1 })
+      .limit(1000)
+      .lean();
+
+    const appointmentUserIds = [
+      ...new Set(
+        debtAppointmentSeed
+          .map((ap) => String(ap.user || ""))
+          .filter((id) => mongoose.Types.ObjectId.isValid(id))
+      ),
+    ];
+
+    const query = {
+      $or: [
+        ...DEBT_SERVICE_KEYS.map((sk) => ({
+          [`fixedScheduleDebt.${sk}`]: { $gt: 0 },
+        })),
+        { "history.action": { $in: debtActionList } },
+        ...(appointmentUserIds.length
+          ? [{ _id: { $in: appointmentUserIds } }]
+          : []),
+      ],
+    };
+
+    if (search) {
+      query.$and = [
+        {
+          $or: [
+            { name: { $regex: search, $options: "i" } },
+            { lastName: { $regex: search, $options: "i" } },
+            { fullName: { $regex: search, $options: "i" } },
+            { email: { $regex: search, $options: "i" } },
+            { phone: { $regex: search, $options: "i" } },
+          ],
+        },
+      ];
+    }
+
+    const users = await User.find(query)
+      .select("name lastName fullName email phone fixedScheduleDebt history createdAt")
+      .sort({ updatedAt: -1, createdAt: -1 })
+      .limit(limit)
+      .lean();
+
+    const userIdSet = new Set(users.map((u) => String(u._id || "")));
+    const debtAppointments = debtAppointmentSeed.filter((ap) =>
+      userIdSet.has(String(ap.user || ""))
+    );
+
+    const appointmentsByUser = new Map();
+    for (const ap of debtAppointments) {
+      const key = String(ap.user || "");
+      if (!appointmentsByUser.has(key)) appointmentsByUser.set(key, []);
+      appointmentsByUser.get(key).push(ap);
+    }
+
+    const rows = users
+      .map((user) =>
+        decorateDebtUser(
+          user,
+          (appointmentsByUser.get(String(user._id || "")) || []).map(
+            (ap, index) => debtEventFromAppointment(ap, index)
+          )
+        )
+      )
+      .filter((row) => row.currentDebt > 0 || row.events.length > 0)
+      .sort((a, b) => {
+        if (b.currentDebt !== a.currentDebt) return b.currentDebt - a.currentDebt;
+        const ad = a.lastEventAt ? new Date(a.lastEventAt).getTime() : 0;
+        const bd = b.lastEventAt ? new Date(b.lastEventAt).getTime() : 0;
+        return bd - ad;
+      });
+
+    const totals = rows.reduce(
+      (acc, row) => {
+        acc.usersCount += 1;
+        acc.currentDebt += Number(row.currentDebt || 0);
+        acc.totalCreated += Number(row.totalCreated || 0);
+        acc.totalSettled += Number(row.totalSettled || 0);
+        acc.totalCreditsLoaded += Number(row.totalCreditsLoaded || 0);
+        return acc;
+      },
+      {
+        usersCount: 0,
+        currentDebt: 0,
+        totalCreated: 0,
+        totalSettled: 0,
+        totalCreditsLoaded: 0,
+      }
+    );
+
+    return res.json({
+      ok: true,
+      limit,
+      total: rows.length,
+      totals,
+      users: rows,
+    });
+  } catch (err) {
+    console.error("GET /admin/dashboard/debt-history error:", err);
+    return res.status(500).json({
+      ok: false,
+      error: "No se pudo cargar el historial de deuda.",
     });
   }
 });
