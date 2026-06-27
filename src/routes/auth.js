@@ -54,6 +54,46 @@ function normPhone(v) {
     .replace(/[^\d+\s()-]/g, "");
 }
 
+function normPassword(v) {
+  return String(v || "").trim();
+}
+
+async function passwordMatches(input, hashedPassword) {
+  const raw = String(input || "");
+  const hash = String(hashedPassword || "");
+  if (!hash) return false;
+
+  if (await bcrypt.compare(raw, hash)) return true;
+
+  const trimmed = raw.trim();
+  if (trimmed && trimmed !== raw) {
+    return bcrypt.compare(trimmed, hash);
+  }
+
+  return false;
+}
+
+function getFrontendAppBase() {
+  const raw = String(
+    process.env.FRONTEND_URL ||
+      process.env.BRAND_URL ||
+      "https://duoclub.ar/agenda"
+  )
+    .trim()
+    .replace(/\/+$/, "");
+
+  if (!raw) return "https://duoclub.ar/agenda";
+  if (/\/agenda$/i.test(raw)) return raw;
+  if (/^https?:\/\/(www\.)?duoclub\.ar$/i.test(raw)) return `${raw}/agenda`;
+  return raw;
+}
+
+function buildVerifyEmailUrl(rawToken) {
+  return `${getFrontendAppBase()}/verificar-email?token=${encodeURIComponent(
+    rawToken
+  )}`;
+}
+
 function getBackendBase(req) {
   const env = String(process.env.BACKEND_URL || "").trim();
   if (env) return env.replace(/\/+$/, "");
@@ -385,7 +425,7 @@ router.post("/login", async (req, res) => {
         .json({ error: "Usuario invitado. Acceso no permitido." });
     }
 
-    const match = await bcrypt.compare(password, user.password);
+    const match = await passwordMatches(password, user.password);
     if (!match) {
       return res
         .status(401)
@@ -438,14 +478,16 @@ router.post("/register", async (req, res) => {
     const ph = normPhone(phone);
     const em = normText(email).toLowerCase();
 
-    if (!n || !ln || !ph || !em || !password) {
+    const cleanPassword = normPassword(password);
+
+    if (!n || !ln || !ph || !em || !cleanPassword) {
       return res.status(400).json({
         error:
           "Nombre, apellido, teléfono, email y contraseña son obligatorios.",
       });
     }
 
-    if (String(password).length < 8) {
+    if (cleanPassword.length < 8) {
       return res.status(400).json({
         error: "La contraseña debe tener al menos 8 caracteres.",
       });
@@ -458,7 +500,7 @@ router.post("/register", async (req, res) => {
         .json({ error: "Ya existe una cuenta con ese email." });
     }
 
-    const hashedPass = await bcrypt.hash(password, 10);
+    const hashedPass = await bcrypt.hash(cleanPassword, 10);
 
     const rawToken = crypto.randomBytes(32).toString("hex");
     const tokenHash = sha256(rawToken);
@@ -488,8 +530,7 @@ router.post("/register", async (req, res) => {
       firstEvaluationCompletedAt: null,
     });
 
-    const frontend = process.env.FRONTEND_URL || "https://duoclub.ar";
-    const verifyUrl = `${frontend}/verificar-email?token=${rawToken}`;
+    const verifyUrl = buildVerifyEmailUrl(rawToken);
 
     await sendUserRegistrationReceivedEmail(user, verifyUrl);
 
@@ -596,10 +637,17 @@ router.get("/verify-email", async (req, res) => {
 
     const tokenHash = sha256(rawToken);
 
-    const user = await User.findOne({
+    let user = await User.findOne({
       emailVerificationToken: tokenHash,
       emailVerificationExpires: { $gt: new Date() },
     });
+
+    if (!user) {
+      user = await User.findOne({
+        emailVerificationToken: rawToken,
+        emailVerificationExpires: { $gt: new Date() },
+      });
+    }
 
     if (!user) {
       return res.status(400).json({
@@ -669,8 +717,7 @@ router.post("/resend-verification", async (req, res) => {
     user.emailVerificationExpires = new Date(Date.now() + 24 * 60 * 60 * 1000);
     await user.save();
 
-    const frontend = process.env.FRONTEND_URL || "https://duoclub.ar";
-    const verifyUrl = `${frontend}/verificar-email?token=${rawToken}`;
+    const verifyUrl = buildVerifyEmailUrl(rawToken);
 
     await sendUserRegistrationReceivedEmail(user, verifyUrl);
 

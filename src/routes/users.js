@@ -38,6 +38,26 @@ const APTO_DEBUG_VERSION = "APTO_DEBUG_V15_2026-06-20";
 ============================================ */
 const CREDITS_EXPIRE_DAYS = 30;
 
+function sha256(str) {
+  return crypto.createHash("sha256").update(String(str || "")).digest("hex");
+}
+
+function getFrontendAppBase() {
+  const raw = String(
+    process.env.FRONTEND_URL ||
+      process.env.BRAND_URL ||
+      BRAND_URL ||
+      "https://duoclub.ar/agenda"
+  )
+    .trim()
+    .replace(/\/+$/, "");
+
+  if (!raw) return "https://duoclub.ar/agenda";
+  if (/\/agenda$/i.test(raw)) return raw;
+  if (/^https?:\/\/(www\.)?duoclub\.ar$/i.test(raw)) return `${raw}/agenda`;
+  return raw;
+}
+
 /* ============================================
    PATHS
 ============================================ */
@@ -1290,7 +1310,7 @@ router.post("/:id/resend-verification", adminOnly, validateObjectIdParam, async 
     const token = crypto.randomBytes(32).toString("hex");
     const expiresAt = new Date(Date.now() + 1000 * 60 * 60 * 24);
 
-    user.emailVerificationToken = token;
+    user.emailVerificationToken = sha256(token);
     user.emailVerificationExpires = expiresAt;
 
     pushUserHistory(user, {
@@ -1302,16 +1322,7 @@ router.post("/:id/resend-verification", adminOnly, validateObjectIdParam, async 
 
     await user.save();
 
-    const baseUrl = String(
-      process.env.BRAND_URL ||
-        process.env.FRONTEND_URL ||
-        BRAND_URL ||
-        "https://duoclub.ar"
-    )
-      .trim()
-      .replace(/\/+$/, "");
-
-    const verifyUrl = `${baseUrl}/agenda/verificar-email?token=${encodeURIComponent(token)}`;
+    const verifyUrl = `${getFrontendAppBase()}/verificar-email?token=${encodeURIComponent(token)}`;
 
     await sendVerifyEmail(user, verifyUrl);
 
