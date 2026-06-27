@@ -13,6 +13,7 @@ import {
   sendUserApprovalResultEmail,
   fireAndForget,
 } from "../mail.js";
+import { sendMail } from "../mail/core.js";
 
 const router = express.Router();
 
@@ -92,6 +93,57 @@ function buildVerifyEmailUrl(rawToken) {
   return `${getFrontendAppBase()}/verificar-email?token=${encodeURIComponent(
     rawToken
   )}`;
+}
+
+function buildPasswordResetUrl(rawToken) {
+  return `${getFrontendAppBase()}/login?resetToken=${encodeURIComponent(
+    rawToken
+  )}`;
+}
+
+function escapeHtml(value) {
+  return String(value || "")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
+}
+
+async function sendPasswordResetEmail(user, resetUrl) {
+  const to = String(user?.email || "").trim();
+  if (!to) return null;
+
+  const name = String(user?.name || "").trim();
+  const greeting = name ? `Hola ${name},` : "Hola,";
+  const subject = "Restablecer contraseña - DUO";
+
+  const text = [
+    greeting,
+    "",
+    "Recibimos una solicitud para restablecer la contraseña de tu cuenta DUO.",
+    "Para crear una nueva contraseña, ingresá al siguiente link:",
+    resetUrl,
+    "",
+    "El link vence en 1 hora. Si no pediste este cambio, podés ignorar este correo.",
+  ].join("\n");
+
+  const html = `
+    <div style="font-family:Arial,sans-serif; color:#111; line-height:1.5;">
+      <h2 style="margin:0 0 12px;">Restablecer contraseña</h2>
+      <p>${escapeHtml(greeting)}</p>
+      <p>Recibimos una solicitud para restablecer la contraseña de tu cuenta DUO.</p>
+      <p>
+        <a href="${escapeHtml(resetUrl)}" style="display:inline-block;background:#111;color:#fff;text-decoration:none;padding:10px 16px;border-radius:6px;">
+          Crear nueva contraseña
+        </a>
+      </p>
+      <p style="font-size:13px;color:#555;">El link vence en 1 hora.</p>
+      <p style="font-size:13px;color:#555;">Si no pediste este cambio, podés ignorar este correo.</p>
+    </div>
+  `;
+
+  return sendMail(to, subject, text, html);
 }
 
 function getBackendBase(req) {
@@ -574,6 +626,89 @@ router.post("/register", async (req, res) => {
         .json({ error: "Ya existe una cuenta con ese email." });
     }
     return res.status(500).json({ error: "Error al registrarse." });
+  }
+});
+
+/* ============================================
+   POST /auth/forgot-password
+============================================ */
+router.post("/forgot-password", async (req, res) => {
+  try {
+    const emailLower = normText(req.body?.email).toLowerCase();
+    if (!emailLower) {
+      return res.status(400).json({ error: "Email requerido." });
+    }
+
+    const okMessage =
+      "Si el email existe, te enviamos un link para restablecer la contraseña.";
+
+    const user = await User.findOne({ email: emailLower });
+    if (!user || String(user.role || "").toLowerCase() === "guest") {
+      return res.json({ ok: true, message: okMessage });
+    }
+
+    const rawToken = crypto.randomBytes(32).toString("hex");
+    const tokenHash = sha256(rawToken);
+
+    user.passwordResetToken = tokenHash;
+    user.passwordResetExpires = new Date(Date.now() + 60 * 60 * 1000);
+    await user.save();
+
+    const resetUrl = buildPasswordResetUrl(rawToken);
+    await sendPasswordResetEmail(user, resetUrl);
+
+    return res.json({ ok: true, message: okMessage });
+  } catch (err) {
+    console.error("Error en POST /auth/forgot-password:", err);
+    return res
+      .status(500)
+      .json({ error: "No se pudo enviar el link de recuperación." });
+  }
+});
+
+/* ============================================
+   POST /auth/reset-password
+============================================ */
+router.post("/reset-password", async (req, res) => {
+  try {
+    const rawToken = String(req.body?.token || "").trim();
+    const newPassword = normPassword(req.body?.password);
+
+    if (!rawToken) return res.status(400).json({ error: "Token inválido." });
+    if (newPassword.length < 8) {
+      return res.status(400).json({
+        error: "La contraseña debe tener al menos 8 caracteres.",
+      });
+    }
+
+    const tokenHash = sha256(rawToken);
+    const user = await User.findOne({
+      passwordResetToken: tokenHash,
+      passwordResetExpires: { $gt: new Date() },
+    });
+
+    if (!user || String(user.role || "").toLowerCase() === "guest") {
+      return res.status(400).json({
+        error: "El link es inválido o expiró. Pedí uno nuevo.",
+      });
+    }
+
+    user.password = await bcrypt.hash(newPassword, 10);
+    user.passwordResetToken = "";
+    user.passwordResetExpires = null;
+    user.mustChangePassword = false;
+
+    await user.save();
+
+    return res.json({
+      ok: true,
+      message: "Contraseña actualizada. Ya podés iniciar sesión.",
+    });
+  } catch (err) {
+    console.error("Error en POST /auth/reset-password:", err);
+    return res
+      .status(500)
+      .json({ error: "No se pudo actualizar la contraseña." });
   }
 });
 

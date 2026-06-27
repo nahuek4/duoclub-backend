@@ -379,6 +379,9 @@ const userSchema = new mongoose.Schema(
     password: { type: String, required: requiredIfNotGuest, default: "" },
 
     mustChangePassword: { type: Boolean, default: false },
+    passwordResetToken: { type: String, default: "" },
+    passwordResetExpires: { type: Date, default: null },
+
     suspended: { type: Boolean, default: false },
     suspendedReason: { type: String, default: "", trim: true },
     suspendedAt: { type: Date, default: null },
