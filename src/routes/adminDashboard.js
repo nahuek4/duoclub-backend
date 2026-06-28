@@ -130,6 +130,7 @@ const SERVICE_KEY_TO_NAME = {
 };
 
 const DEBT_SERVICE_KEYS = ["EP", "RA", "RF", "KD", "SYN"];
+const DEBT_HISTORY_SCOPE_LABEL = "Historial completo disponible";
 
 const DEBT_HISTORY_ACTIONS = new Set([
   "fixed_schedule_monthly_debt",
@@ -138,7 +139,6 @@ const DEBT_HISTORY_ACTIONS = new Set([
   "fixed_schedule_debt_settled_by_plan_delete",
   "fixed_schedule_debt_released_by_cancel",
   "fixed_schedule_debt_released_by_plan_delete",
-  "credits_added_monthly",
 ]);
 
 function normalizeServiceKey(serviceKey) {
@@ -202,14 +202,6 @@ function classifyDebtHistoryItem(item = {}) {
     };
   }
 
-  if (action === "credits_added_monthly") {
-    return {
-      type: "credits_loaded",
-      label: "Créditos cargados",
-      sign: 0,
-    };
-  }
-
   return {
     type: "movement",
     label: item.title || "Movimiento",
@@ -263,7 +255,104 @@ function debtEventFromAppointment(ap = {}, index = 0) {
   };
 }
 
-function decorateDebtUser(user = {}, appointmentEvents = []) {
+function extractPaidCreditEventsFromOrder(order = {}) {
+  const orderDate = order.paidAt || order.approvedAt || order.createdAt || null;
+
+  const base = {
+    orderId: order._id || null,
+    createdAt: orderDate,
+    title: "Créditos pagados por orden",
+    message: `Orden ${String(order._id || "").slice(-6) || ""}${
+      pickOrderTotal(order) ? ` · ${pickOrderTotal(order)}` : ""
+    }`,
+  };
+
+  const items = Array.isArray(order.items) ? order.items : [];
+  const events = items
+    .map((item, index) => {
+      const kind = String(item?.kind || "").toUpperCase().trim();
+      const serviceKey = normalizeServiceKey(item?.serviceKey || item?.service || item?.serviceName);
+      const qty = Math.max(0, Number(item?.credits || item?.quantity || 0));
+
+      if (kind && kind !== "CREDITS") return null;
+      if (!serviceKey || qty <= 0) return null;
+
+      return {
+        id: `order-${String(order._id || "order")}-${index}`,
+        type: "paid_order_credits",
+        label: "Créditos pagados",
+        sign: 0,
+        serviceKey,
+        serviceName: translateServiceKey(serviceKey),
+        qty,
+        date: "",
+        time: "",
+        ...base,
+        title: item?.label || base.title,
+      };
+    })
+    .filter(Boolean);
+
+  if (events.length) return events;
+
+  const serviceKey = normalizeServiceKey(order.serviceKey || order.service || order.serviceName);
+  const qty = Math.max(0, Number(order.credits || 0));
+  if (!serviceKey || qty <= 0) return [];
+
+  return [
+    {
+      id: `order-${String(order._id || "order")}`,
+      type: "paid_order_credits",
+      label: "Créditos pagados",
+      sign: 0,
+      serviceKey,
+      serviceName: translateServiceKey(serviceKey),
+      qty,
+      date: "",
+      time: "",
+      ...base,
+    },
+  ];
+}
+
+function extractManualCreditEventsFromLog(log = {}) {
+  const before = log?.diff?.before?.byService || {};
+  const after = log?.diff?.after?.byService || {};
+  const actorName =
+    String(log?.actor?.fullName || "").trim() ||
+    String(log?.actor?.name || "").trim() ||
+    String(log?.actor?.email || "").trim() ||
+    "Admin/staff";
+
+  return DEBT_SERVICE_KEYS.map((serviceKey) => {
+    const beforeQty = Number(before?.[serviceKey] || 0);
+    const afterQty = Number(after?.[serviceKey] || 0);
+    const delta = afterQty - beforeQty;
+    if (!Number.isFinite(delta) || delta === 0) return null;
+
+    const isPositive = delta > 0;
+
+    return {
+      id: `manual-credit-${String(log._id || "log")}-${serviceKey}`,
+      type: isPositive ? "admin_assigned_credits" : "admin_removed_credits",
+      label: isPositive ? "Créditos asignados" : "Créditos retirados",
+      sign: 0,
+      serviceKey,
+      serviceName: translateServiceKey(serviceKey),
+      qty: Math.abs(delta),
+      date: "",
+      time: "",
+      title: isPositive
+        ? `Créditos asignados por ${actorName}`
+        : `Créditos retirados por ${actorName}`,
+      message: log.description || log.title || "",
+      activityLogId: log._id || null,
+      createdAt: log.createdAt || null,
+    };
+  }).filter(Boolean);
+}
+
+function decorateDebtUser(user = {}, appointmentEvents = [], orderEvents = [], manualCreditEvents = []) {
   const history = Array.isArray(user.history) ? user.history : [];
   const currentDebtByService = normalizeDebtByService(user.fixedScheduleDebt || {});
   const currentDebt = sumDebtObject(currentDebtByService);
@@ -283,8 +372,19 @@ function decorateDebtUser(user = {}, appointmentEvents = []) {
     return !appointmentId || !historyAppointmentIds.has(appointmentId);
   });
 
-  const events = [...historyEvents, ...safeAppointmentEvents]
-    .filter((event) => event.serviceKey || event.type === "credits_loaded")
+  const events = [
+    ...historyEvents,
+    ...safeAppointmentEvents,
+    ...orderEvents,
+    ...manualCreditEvents,
+  ]
+    .filter(
+      (event) =>
+        (event.serviceKey ||
+          event.type === "paid_order_credits" ||
+          event.type === "admin_assigned_credits" ||
+          event.type === "admin_removed_credits")
+    )
     .sort((a, b) => {
       const ad = a.createdAt ? new Date(a.createdAt).getTime() : 0;
       const bd = b.createdAt ? new Date(b.createdAt).getTime() : 0;
@@ -299,9 +399,19 @@ function decorateDebtUser(user = {}, appointmentEvents = []) {
     .filter((event) => event.sign < 0)
     .reduce((acc, event) => acc + Number(event.qty || 0), 0);
 
-  const totalCreditsLoaded = events
-    .filter((event) => event.type === "credits_loaded")
+  const totalPaidCredits = events
+    .filter((event) => event.type === "paid_order_credits")
     .reduce((acc, event) => acc + Number(event.qty || 0), 0);
+
+  const totalAdminAssignedCredits = events
+    .filter((event) => event.type === "admin_assigned_credits")
+    .reduce((acc, event) => acc + Number(event.qty || 0), 0);
+
+  const totalAdminRemovedCredits = events
+    .filter((event) => event.type === "admin_removed_credits")
+    .reduce((acc, event) => acc + Number(event.qty || 0), 0);
+
+  const totalIncomingCredits = totalPaidCredits + totalAdminAssignedCredits;
 
   const lastEventAt = events[0]?.createdAt || null;
 
@@ -314,7 +424,10 @@ function decorateDebtUser(user = {}, appointmentEvents = []) {
     currentDebtByService,
     totalCreated,
     totalSettled,
-    totalCreditsLoaded,
+    totalPaidCredits,
+    totalAdminAssignedCredits,
+    totalAdminRemovedCredits,
+    totalIncomingCredits,
     lastEventAt,
     events,
   };
@@ -670,6 +783,44 @@ router.get("/debt-history", async (req, res) => {
       ),
     ];
 
+    const paidCreditOrderMatch = {
+      status: { $regex: "^(paid|approved)$", $options: "i" },
+    };
+
+    const paidCreditOrdersSeed = await Order.find(paidCreditOrderMatch)
+      .select(
+        "_id user items service serviceName serviceKey credits total totalFinal status paidAt approvedAt createdAt updatedAt"
+      )
+      .sort({ paidAt: -1, approvedAt: -1, updatedAt: -1, createdAt: -1 })
+      .limit(1000)
+      .lean();
+
+    const orderUserIds = [
+      ...new Set(
+        paidCreditOrdersSeed
+          .map((order) => String(order.user || ""))
+          .filter((id) => mongoose.Types.ObjectId.isValid(id))
+      ),
+    ];
+
+    const manualCreditLogsSeed = await ActivityLog.find({
+      category: "users",
+      action: { $in: ["credits_updated", "credit_updated"] },
+      entity: { $in: ["user", "users"] },
+    })
+      .select("_id actor entity entityId subject title description diff meta createdAt")
+      .sort({ createdAt: -1 })
+      .limit(5000)
+      .lean();
+
+    const manualCreditUserIds = [
+      ...new Set(
+        manualCreditLogsSeed
+          .map((log) => String(log.entityId || log.subject?.id || log.subject?._id || ""))
+          .filter((id) => mongoose.Types.ObjectId.isValid(id))
+      ),
+    ];
+
     const query = {
       $or: [
         ...DEBT_SERVICE_KEYS.map((sk) => ({
@@ -679,6 +830,8 @@ router.get("/debt-history", async (req, res) => {
         ...(appointmentUserIds.length
           ? [{ _id: { $in: appointmentUserIds } }]
           : []),
+        ...(orderUserIds.length ? [{ _id: { $in: orderUserIds } }] : []),
+        ...(manualCreditUserIds.length ? [{ _id: { $in: manualCreditUserIds } }] : []),
       ],
     };
 
@@ -707,11 +860,33 @@ router.get("/debt-history", async (req, res) => {
       userIdSet.has(String(ap.user || ""))
     );
 
+    const paidCreditOrders = paidCreditOrdersSeed.filter((order) =>
+      userIdSet.has(String(order.user || ""))
+    );
+
+    const manualCreditLogs = manualCreditLogsSeed.filter((log) =>
+      userIdSet.has(String(log.entityId || log.subject?.id || log.subject?._id || ""))
+    );
+
     const appointmentsByUser = new Map();
     for (const ap of debtAppointments) {
       const key = String(ap.user || "");
       if (!appointmentsByUser.has(key)) appointmentsByUser.set(key, []);
       appointmentsByUser.get(key).push(ap);
+    }
+
+    const paidCreditOrdersByUser = new Map();
+    for (const order of paidCreditOrders) {
+      const key = String(order.user || "");
+      if (!paidCreditOrdersByUser.has(key)) paidCreditOrdersByUser.set(key, []);
+      paidCreditOrdersByUser.get(key).push(order);
+    }
+
+    const manualCreditLogsByUser = new Map();
+    for (const log of manualCreditLogs) {
+      const key = String(log.entityId || log.subject?.id || log.subject?._id || "");
+      if (!manualCreditLogsByUser.has(key)) manualCreditLogsByUser.set(key, []);
+      manualCreditLogsByUser.get(key).push(log);
     }
 
     const rows = users
@@ -720,6 +895,12 @@ router.get("/debt-history", async (req, res) => {
           user,
           (appointmentsByUser.get(String(user._id || "")) || []).map(
             (ap, index) => debtEventFromAppointment(ap, index)
+          ),
+          (paidCreditOrdersByUser.get(String(user._id || "")) || []).flatMap(
+            (order) => extractPaidCreditEventsFromOrder(order)
+          ),
+          (manualCreditLogsByUser.get(String(user._id || "")) || []).flatMap(
+            (log) => extractManualCreditEventsFromLog(log)
           )
         )
       )
@@ -737,7 +918,10 @@ router.get("/debt-history", async (req, res) => {
         acc.currentDebt += Number(row.currentDebt || 0);
         acc.totalCreated += Number(row.totalCreated || 0);
         acc.totalSettled += Number(row.totalSettled || 0);
-        acc.totalCreditsLoaded += Number(row.totalCreditsLoaded || 0);
+        acc.totalPaidCredits += Number(row.totalPaidCredits || 0);
+        acc.totalAdminAssignedCredits += Number(row.totalAdminAssignedCredits || 0);
+        acc.totalAdminRemovedCredits += Number(row.totalAdminRemovedCredits || 0);
+        acc.totalIncomingCredits += Number(row.totalIncomingCredits || 0);
         return acc;
       },
       {
@@ -745,12 +929,16 @@ router.get("/debt-history", async (req, res) => {
         currentDebt: 0,
         totalCreated: 0,
         totalSettled: 0,
-        totalCreditsLoaded: 0,
+        totalPaidCredits: 0,
+        totalAdminAssignedCredits: 0,
+        totalAdminRemovedCredits: 0,
+        totalIncomingCredits: 0,
       }
     );
 
     return res.json({
       ok: true,
+      historyScopeLabel: DEBT_HISTORY_SCOPE_LABEL,
       limit,
       total: rows.length,
       totals,
