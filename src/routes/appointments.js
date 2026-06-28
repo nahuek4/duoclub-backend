@@ -411,6 +411,7 @@ async function syncPastAppointmentsForUserId(userId, session = null) {
   if (session) userQuery.session(session);
   const user = await userQuery;
   if (!user) return null;
+  let currentUser = user;
 
   const now = new Date();
 
@@ -429,6 +430,27 @@ async function syncPastAppointmentsForUserId(userId, session = null) {
     if (!slotDate) continue;
     if (slotDate.getTime() > now.getTime()) continue;
 
+    const serviceKey = serviceToKey(ap.serviceKey || ap.service || "");
+    const billingStatus = String(ap.creditDebitStatus || "").trim();
+    const needsFixedBillingBeforeCompletion =
+      !!ap.fixedScheduleId &&
+      isFixedBillingServiceKey(serviceKey) &&
+      !ap.fixedDebitProcessedAt &&
+      !FIXED_BILLING_DONE_STATUSES.has(billingStatus);
+
+    if (needsFixedBillingBeforeCompletion) {
+      const billing = await applyFixedAppointmentMonthlyBilling({
+        appointment: ap,
+        session,
+      });
+
+      if (billing?.action === "debt" || billing?.action === "debited") {
+        const refreshedUserQuery = User.findById(user._id);
+        if (session) refreshedUserQuery.session(session);
+        currentUser = (await refreshedUserQuery) || currentUser;
+      }
+    }
+
     ap.status = "completed";
     ap.completedAt = now;
     if (session) await ap.save({ session });
@@ -440,19 +462,19 @@ async function syncPastAppointmentsForUserId(userId, session = null) {
     }
   }
 
-  if (completedFirstEvaluation && !user.firstEvaluationCompleted) {
-    user.firstEvaluationCompleted = true;
-    user.firstEvaluationCompletedAt = user.firstEvaluationCompletedAt || now;
+  if (completedFirstEvaluation && !currentUser.firstEvaluationCompleted) {
+    currentUser.firstEvaluationCompleted = true;
+    currentUser.firstEvaluationCompletedAt = currentUser.firstEvaluationCompletedAt || now;
     changed = true;
   }
 
   if (changed) {
-    recalcUserCredits(user);
-    if (session) await user.save({ session });
-    else await user.save();
+    recalcUserCredits(currentUser);
+    if (session) await currentUser.save({ session });
+    else await currentUser.save();
   }
 
-  return user;
+  return currentUser;
 }
 
 function ensureSlotBeforeCreditExpiry(slotDate, lotExpiresAt) {
@@ -923,6 +945,9 @@ function serializeAppointment(ap) {
     userFullName,
     userEmail: userObj?.email || "",
     creditExpiresAt: json?.creditExpiresAt || null,
+    creditDebitStatus: json?.creditDebitStatus || "",
+    fixedDebtAmount: Number(json?.fixedDebtAmount || 0),
+    fixedScheduleId: json?.fixedScheduleId || null,
     completedAt: json?.completedAt || null,
   };
 }

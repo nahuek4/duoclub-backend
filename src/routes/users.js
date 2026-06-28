@@ -524,14 +524,14 @@ async function settleFixedScheduleDebt(user, { amount, serviceKey, source = "cre
 
   // IMPORTANTE:
   // Cuando el admin agrega créditos y esos créditos se usan para saldar deuda
-  // de turnos fijos, también marcamos los turnos futuros en deuda como
+  // de turnos fijos, también marcamos los turnos asociados en deuda como
   // "mensualmente reservados". Si no hacemos esto, después el usuario cancela
-  // esos turnos y el sistema no sabe que esa deuda ya fue pagada con créditos,
+  // esos turnos futuros y el sistema no sabe que esa deuda ya fue pagada con créditos,
   // por eso no podía devolver las últimas cancelaciones.
   const settledAppointments = await Appointment.find({
     user: user._id,
     serviceKey: sk,
-    status: "reserved",
+    status: { $in: ["reserved", "completed"] },
     fixedScheduleId: { $ne: null },
     creditLotId: null,
     $or: [
