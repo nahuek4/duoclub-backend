@@ -1685,6 +1685,99 @@ async function applyFixedAppointmentMonthlyBilling({ appointment, actorReq = nul
   };
 }
 
+function isBackfillablePastFixedDebtAppointment(ap, now = new Date()) {
+  if (!ap?._id) return false;
+
+  const serviceKey = serviceToKey(ap.serviceKey || ap.service || "");
+  if (!isFixedBillingServiceKey(serviceKey)) return false;
+
+  if (!ap.fixedScheduleId) return false;
+  if (!["reserved", "completed"].includes(String(ap.status || ""))) return false;
+
+  const slotDate = buildSlotDate(ap.date, ap.time);
+  if (!slotDate || slotDate.getTime() > now.getTime()) return false;
+
+  const billingStatus = String(ap.creditDebitStatus || "").trim();
+  if (ap.fixedDebitProcessedAt || FIXED_BILLING_DONE_STATUSES.has(billingStatus)) {
+    return false;
+  }
+
+  if (ap.creditLotId) return false;
+  if (Number(ap.fixedDebtAmount || 0) > 0) return false;
+
+  return true;
+}
+
+async function backfillPastFixedAppointmentDebt({ appointment, session = null } = {}) {
+  const ap = appointment;
+  if (!isBackfillablePastFixedDebtAppointment(ap)) {
+    return { ok: false, skipped: true, reason: "NOT_BACKFILLABLE" };
+  }
+
+  const serviceKey = serviceToKey(ap.serviceKey || ap.service || "");
+  const slotDate = buildSlotDate(ap.date, ap.time);
+  const monthKey = slotDate ? getMonthKey(slotDate) : getMonthKey(new Date());
+  const now = new Date();
+
+  const userQuery = User.findById(ap.user);
+  if (session) userQuery.session(session);
+  const user = await userQuery;
+  if (!user) {
+    return { ok: false, skipped: true, reason: "USER_NOT_FOUND" };
+  }
+
+  ensureFixedScheduleDebtObject(user);
+  user.fixedScheduleDebt[serviceKey] = Number(user.fixedScheduleDebt?.[serviceKey] || 0) + 1;
+  user.markModified?.("fixedScheduleDebt");
+
+  user.history = Array.isArray(user.history) ? user.history : [];
+  user.history.push({
+    action: "fixed_schedule_monthly_debt",
+    title: `Deuda regularizada de turno fijo ${serviceKey}`,
+    message:
+      "Se regularizó 1 sesión adeudada de un turno fijo pasado que no tenía procesamiento financiero.",
+    date: ap.date,
+    time: ap.time,
+    service: serviceKeyToName(serviceKey) || ap.service,
+    serviceName: serviceKeyToName(serviceKey) || ap.service,
+    serviceKey,
+    qty: 1,
+    appointmentId: ap._id,
+    fixedScheduleId: ap.fixedScheduleId,
+    policyMonthKey: monthKey,
+    createdAt: now,
+  });
+
+  recalcUserCredits(user);
+  if (session) await user.save({ session });
+  else await user.save();
+
+  ap.creditDebitStatus = "debt";
+  ap.creditLotId = null;
+  ap.creditExpiresAt = null;
+  ap.creditDebitedAt = null;
+  ap.fixedDebitProcessedAt = now;
+  ap.fixedDebtAmount = 1;
+  if (String(ap.status || "") === "reserved") {
+    ap.status = "completed";
+    ap.completedAt = ap.completedAt || now;
+  }
+
+  if (session) await ap.save({ session });
+  else await ap.save();
+
+  return {
+    ok: true,
+    action: "debt_backfilled",
+    appointmentId: String(ap._id),
+    userId: String(user._id),
+    serviceKey,
+    date: ap.date,
+    time: ap.time,
+    debt: Number(user.fixedScheduleDebt?.[serviceKey] || 0),
+  };
+}
+
 async function settleFixedScheduleDebtWithCancelledCreditOnCancel({ user, appointment, historyItem = {}, session = null } = {}) {
   const ap = appointment;
   const serviceKey = serviceToKey(ap?.serviceKey || ap?.service || "");
@@ -2703,6 +2796,185 @@ router.post("/admin/:userId/complete-apto", ensureStaff, async (req, res) => {
     return res.status(500).json({
       error: "No se pudo completar el apto.",
     });
+  }
+});
+
+router.post("/admin/backfill-fixed-debt", ensureStaff, async (req, res) => {
+  const session = await mongoose.startSession();
+
+  try {
+    const dryRun =
+      req.body?.dryRun !== false &&
+      String(req.query?.dryRun || "1") !== "0" &&
+      String(req.query?.dryRun || "true") !== "false";
+
+    const userId = String(req.body?.userId || req.query?.userId || "").trim();
+    const serviceKey = serviceToKey(req.body?.serviceKey || req.query?.serviceKey || "");
+    const from = String(req.body?.from || req.query?.from || "").slice(0, 10);
+    const to = String(req.body?.to || req.query?.to || ymdAR()).slice(0, 10);
+    const limit = Math.min(1000, Math.max(1, Number(req.body?.limit || req.query?.limit || 500)));
+    const now = new Date();
+
+    const query = {
+      fixedScheduleId: { $ne: null },
+      status: { $in: ["reserved", "completed"] },
+      date: { $lte: to || ymdAR() },
+      creditLotId: null,
+      $or: [
+        { fixedDebitProcessedAt: null },
+        { fixedDebitProcessedAt: { $exists: false } },
+      ],
+      $and: [
+        {
+          $or: [
+            { creditDebitStatus: "" },
+            { creditDebitStatus: null },
+            { creditDebitStatus: { $exists: false } },
+          ],
+        },
+        {
+          $or: [
+            { fixedDebtAmount: 0 },
+            { fixedDebtAmount: null },
+            { fixedDebtAmount: { $exists: false } },
+          ],
+        },
+      ],
+    };
+
+    if (from) query.date.$gte = from;
+
+    if (userId) {
+      if (!mongoose.Types.ObjectId.isValid(userId)) {
+        return res.status(400).json({ error: "userId inválido." });
+      }
+      query.user = userId;
+    }
+
+    if (serviceKey) query.serviceKey = serviceKey;
+
+    const candidatesRaw = await Appointment.find(query)
+      .sort({ date: 1, time: 1, createdAt: 1 })
+      .limit(limit)
+      .populate("user", "name lastName email")
+      .lean();
+
+    const candidates = (candidatesRaw || []).filter((ap) =>
+      isBackfillablePastFixedDebtAppointment(ap, now)
+    );
+
+    const summaryByService = {};
+    const summaryByUser = {};
+
+    for (const ap of candidates) {
+      const sk = serviceToKey(ap.serviceKey || ap.service || "");
+      summaryByService[sk] = Number(summaryByService[sk] || 0) + 1;
+
+      const userObj = ap.user || {};
+      const uid = String(userObj?._id || ap.user || "");
+      const userName = [userObj?.name, userObj?.lastName].filter(Boolean).join(" ").trim();
+
+      if (!summaryByUser[uid]) {
+        summaryByUser[uid] = {
+          userId: uid,
+          fullName: userName || "Usuario",
+          email: userObj?.email || "",
+          count: 0,
+          byService: {},
+        };
+      }
+
+      summaryByUser[uid].count += 1;
+      summaryByUser[uid].byService[sk] = Number(summaryByUser[uid].byService[sk] || 0) + 1;
+    }
+
+    if (dryRun) {
+      return res.json({
+        ok: true,
+        dryRun: true,
+        message:
+          "Simulación: no se modificó nada. Enviar dryRun=false en el body para aplicar.",
+        scanned: candidatesRaw.length,
+        candidates: candidates.length,
+        summaryByService,
+        summaryByUser: Object.values(summaryByUser),
+        sample: candidates.slice(0, 50).map((ap) => ({
+          appointmentId: String(ap._id),
+          userId: String(ap.user?._id || ap.user || ""),
+          fullName: [ap.user?.name, ap.user?.lastName].filter(Boolean).join(" ").trim(),
+          email: ap.user?.email || "",
+          date: ap.date,
+          time: ap.time,
+          service: ap.service,
+          serviceKey: serviceToKey(ap.serviceKey || ap.service || ""),
+          status: ap.status,
+        })),
+      });
+    }
+
+    const applied = [];
+    const skipped = [];
+
+    await session.withTransaction(async () => {
+      for (const candidate of candidates) {
+        const ap = await Appointment.findById(candidate._id).session(session);
+
+        if (!ap || !isBackfillablePastFixedDebtAppointment(ap, now)) {
+          skipped.push({
+            appointmentId: String(candidate._id),
+            reason: "NOT_BACKFILLABLE_AT_APPLY_TIME",
+          });
+          continue;
+        }
+
+        const result = await backfillPastFixedAppointmentDebt({
+          appointment: ap,
+          session,
+        });
+
+        if (result?.ok) applied.push(result);
+        else {
+          skipped.push({
+            appointmentId: String(candidate._id),
+            reason: result?.reason || "SKIPPED",
+          });
+        }
+      }
+    });
+
+    await logActivity({
+      req,
+      category: "appointments",
+      action: "fixed_schedule_past_debt_backfilled",
+      entity: "appointment_batch",
+      entityId: "fixed_schedule_past_debt_backfill",
+      title: "Deuda de turnos fijos pasados regularizada",
+      description:
+        "Se regularizaron como deuda turnos fijos pasados que no tenían procesamiento financiero.",
+      subject: buildUserSubject({ _id: req.user?._id || req.user?.id || "" }),
+      meta: {
+        appliedCount: applied.length,
+        skippedCount: skipped.length,
+        filters: { userId, serviceKey, from, to, limit },
+        summaryByService,
+      },
+    });
+
+    return res.json({
+      ok: true,
+      dryRun: false,
+      appliedCount: applied.length,
+      skippedCount: skipped.length,
+      applied,
+      skipped,
+    });
+  } catch (err) {
+    console.error("POST /appointments/admin/backfill-fixed-debt error:", err);
+    return res.status(500).json({
+      error: err?.message || "No se pudo regularizar la deuda de turnos pasados.",
+    });
+  } finally {
+    await session.endSession();
   }
 });
 
