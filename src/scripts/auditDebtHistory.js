@@ -6,6 +6,22 @@ dotenv.config();
 const SERVICES = ["EP", "RA", "RF", "KD", "SYN"];
 const PAID_STATUSES = new Set(["paid", "approved"]);
 
+const EXCLUDED_USER_IDS = new Set([
+  "692c8747ac97e1bf8ba86839", // Admin DUO / usuario operativo de prueba
+]);
+
+const EXCLUDED_EMAILS = new Set([
+  "admin@duoclub.ar",
+]);
+
+const EXCLUDED_ROLES = new Set([
+  "admin",
+  "staff",
+  "profesor",
+  "professor",
+  "coach",
+]);
+
 function norm(v = "") {
   return String(v || "")
     .normalize("NFD")
@@ -37,6 +53,18 @@ function add(map, sk, qty) {
   map[sk] = Number(map[sk] || 0) + n;
 }
 
+function sumMap(map = {}) {
+  return SERVICES.reduce((a, sk) => a + Math.max(0, Number(map?.[sk] || 0)), 0);
+}
+
+function positiveDiff(left = {}, right = {}) {
+  const out = emptyByService();
+  for (const sk of SERVICES) {
+    out[sk] = Math.max(0, Number(left?.[sk] || 0) - Number(right?.[sk] || 0));
+  }
+  return out;
+}
+
 function qtyOf(item) {
   const n = Number(item?.qty ?? item?.amount ?? item?.value ?? 0);
   return Number.isFinite(n) ? Math.abs(n) : 0;
@@ -54,6 +82,14 @@ function fullName(u = {}) {
     `${String(u.name || "").trim()} ${String(u.lastName || "").trim()}`.trim() ||
     "Usuario"
   );
+}
+
+function isExcludedUser(user = {}) {
+  const id = String(user?._id || user?.id || "").trim();
+  const email = String(user?.email || "").toLowerCase().trim();
+  const role = String(user?.role || "").toLowerCase().trim();
+
+  return EXCLUDED_USER_IDS.has(id) || EXCLUDED_EMAILS.has(email) || EXCLUDED_ROLES.has(role);
 }
 
 function currentDebtByService(user = {}) {
@@ -157,23 +193,92 @@ function extractDebtEventsFromHistory(user = {}) {
         index,
       };
 
-      if (action === "fixed_schedule_monthly_debt") return { ...base, type: "debt_created", sign: 1 };
-      if (["fixed_schedule_debt_settled", "fixed_schedule_debt_settled_by_cancelled_credit", "fixed_schedule_debt_settled_by_plan_delete"].includes(action)) return { ...base, type: "debt_settled", sign: -1 };
-      if (["fixed_schedule_debt_released_by_cancel", "fixed_schedule_debt_released_by_plan_delete"].includes(action)) return { ...base, type: "debt_released", sign: -1 };
-      if (action === "fixed_schedule_auto_released_unpaid") return { ...base, type: "auto_release_notice", sign: 0 };
-      if (action === "fixed_schedule_monthly_turn_completed") return { ...base, type: "fixed_turn_completed", sign: 0 };
-      if (action === "fixed_schedule_monthly_reserved") return { ...base, type: "monthly_reserved_notice", sign: 0 };
-      if (action === "fixed_schedule_monthly_debit") return { ...base, type: "fixed_credit_debited", sign: 0 };
+      if (action === "fixed_schedule_monthly_debt" || action === "fixed_schedule_debt_created") {
+        return { ...base, type: "debt_created", sign: 1 };
+      }
+
+      if ([
+        "fixed_schedule_debt_settled",
+        "fixed_schedule_debt_settled_by_cancelled_credit",
+        "fixed_schedule_debt_settled_by_plan_delete",
+      ].includes(action)) {
+        return { ...base, type: "debt_settled", sign: -1 };
+      }
+
+      if ([
+        "fixed_schedule_debt_released_by_cancel",
+        "fixed_schedule_debt_released_by_plan_delete",
+      ].includes(action)) {
+        return { ...base, type: "debt_released", sign: -1 };
+      }
+
+      if (action === "fixed_schedule_auto_released_unpaid") {
+        return { ...base, type: "auto_release_notice", sign: 0 };
+      }
+
+      if (action === "fixed_schedule_monthly_turn_completed") {
+        return { ...base, type: "fixed_turn_completed", sign: 0 };
+      }
+
+      if (action === "fixed_schedule_monthly_reserved") {
+        return { ...base, type: "monthly_reserved_notice", sign: 0 };
+      }
+
+      if (action === "fixed_schedule_monthly_debit") {
+        return { ...base, type: "fixed_credit_debited", sign: 0 };
+      }
+
       return null;
     })
     .filter(Boolean);
 }
 
-function reconcile(user, extraEvents = []) {
+function extractAppointmentDebtMarkers(appointments = []) {
+  const out = emptyByService();
+  const cancelledMetadata = emptyByService();
+
+  for (const ap of appointments) {
+    const sk = serviceKey(ap.serviceKey || ap.service || ap.serviceName || "");
+    if (!sk) continue;
+
+    const hasDebtMarker =
+      String(ap.creditDebitStatus || "") === "debt" || Number(ap.fixedDebtAmount || 0) > 0;
+
+    if (!hasDebtMarker) continue;
+
+    if (["reserved", "completed"].includes(String(ap.status || ""))) {
+      add(out, sk, Math.max(1, Number(ap.fixedDebtAmount || 1)));
+    } else if (String(ap.status || "") === "cancelled") {
+      add(cancelledMetadata, sk, Math.max(1, Number(ap.fixedDebtAmount || 1)));
+    }
+  }
+
+  return { activeMarkersByService: out, cancelledMetadataByService: cancelledMetadata };
+}
+
+function explicitAutoReleasedByService(debtEvents = []) {
+  const out = emptyByService();
+  for (const e of debtEvents) {
+    if (e.type !== "auto_release_notice") continue;
+    if (!e.serviceKey) continue;
+    add(out, e.serviceKey, e.qty);
+  }
+  return out;
+}
+
+function classifyStatus({ currentDebt, unexplainedGenerated, legacyCurrentDebt, historicalOverResolved, autoReleased }) {
+  if (unexplainedGenerated > 0) return "REVISAR";
+  if (currentDebt > 0 && legacyCurrentDebt > 0) return "DEUDA_LEGACY";
+  if (currentDebt > 0) return "DEUDA_ACTUAL";
+  if (historicalOverResolved > 0) return "HISTORICO";
+  if (autoReleased > 0) return "AUTO_LIBERADO";
+  return "OK";
+}
+
+function reconcile(user, { extraEvents = [], appointments = [] } = {}) {
   const cur = currentDebtByService(user);
   const created = emptyByService();
   const settled = emptyByService();
-  const autoEstimated = emptyByService();
   const debtEvents = extractDebtEventsFromHistory(user);
   const autoNoticeCount = debtEvents.filter((e) => e.type === "auto_release_notice").length;
 
@@ -183,18 +288,45 @@ function reconcile(user, extraEvents = []) {
     if (e.sign < 0) add(settled, e.serviceKey, e.qty);
   }
 
+  const explicitAuto = explicitAutoReleasedByService(debtEvents);
+  const autoEstimated = emptyByService();
+
   for (const sk of SERVICES) {
-    autoEstimated[sk] = Math.max(0, Number(created[sk] || 0) - Number(settled[sk] || 0) - Number(cur[sk] || 0));
+    const explicitQty = Number(explicitAuto[sk] || 0);
+    if (explicitQty > 0) {
+      autoEstimated[sk] = explicitQty;
+      continue;
+    }
+
+    autoEstimated[sk] =
+      autoNoticeCount > 0
+        ? Math.max(0, Number(created[sk] || 0) - Number(settled[sk] || 0) - Number(cur[sk] || 0))
+        : 0;
   }
 
-  const total = (map) => SERVICES.reduce((a, sk) => a + Number(map[sk] || 0), 0);
-  const totalCreated = total(created);
-  const totalSettled = total(settled);
-  const currentDebt = total(cur);
-  const totalAutoEstimated = total(autoEstimated);
-  const canExplainWithAutoRule = autoNoticeCount > 0;
-  const unexplained = canExplainWithAutoRule ? 0 : totalAutoEstimated;
-  const status = unexplained > 0 ? "REVISAR" : "OK";
+  const expectedDebt = emptyByService();
+  for (const sk of SERVICES) {
+    expectedDebt[sk] = Math.max(
+      0,
+      Number(created[sk] || 0) -
+        Number(settled[sk] || 0) -
+        Number(autoEstimated[sk] || 0)
+    );
+  }
+
+  const unexplainedGenerated = positiveDiff(expectedDebt, cur);
+  const legacyCurrentDebt = positiveDiff(cur, expectedDebt);
+
+  const historicalOverResolved = emptyByService();
+  for (const sk of SERVICES) {
+    historicalOverResolved[sk] = Math.max(
+      0,
+      Number(settled[sk] || 0) +
+        Number(autoEstimated[sk] || 0) +
+        Number(cur[sk] || 0) -
+        Number(created[sk] || 0)
+    );
+  }
 
   const paidCredits = emptyByService();
   const adminAssigned = emptyByService();
@@ -206,37 +338,75 @@ function reconcile(user, extraEvents = []) {
     if (e.type === "admin_removed_credits") add(adminRemoved, e.serviceKey, e.qty);
   }
 
+  const markers = extractAppointmentDebtMarkers(appointments);
+
+  const totals = {
+    created: sumMap(created),
+    settledReleased: sumMap(settled),
+    autoEstimated: sumMap(autoEstimated),
+    currentDebt: sumMap(cur),
+    unexplained: sumMap(unexplainedGenerated),
+    legacyCurrentDebt: sumMap(legacyCurrentDebt),
+    historicalOverResolved: sumMap(historicalOverResolved),
+    paidCredits: sumMap(paidCredits),
+    adminAssignedCredits: sumMap(adminAssigned),
+    adminRemovedCredits: sumMap(adminRemoved),
+    autoNoticeCount,
+    activeDebtMarkers: sumMap(markers.activeMarkersByService),
+    cancelledDebtMetadata: sumMap(markers.cancelledMetadataByService),
+  };
+
+  const status = classifyStatus({
+    currentDebt: totals.currentDebt,
+    unexplainedGenerated: totals.unexplained,
+    legacyCurrentDebt: totals.legacyCurrentDebt,
+    historicalOverResolved: totals.historicalOverResolved,
+    autoReleased: totals.autoEstimated,
+  });
+
   return {
     status,
     currentDebtByService: cur,
     createdByService: created,
     settledReleasedByService: settled,
     autoEstimatedByService: autoEstimated,
-    totals: {
-      created: totalCreated,
-      settledReleased: totalSettled,
-      autoEstimated: totalAutoEstimated,
-      currentDebt,
-      unexplained,
-      paidCredits: total(paidCredits),
-      adminAssignedCredits: total(adminAssigned),
-      adminRemovedCredits: total(adminRemoved),
-      autoNoticeCount,
-    },
+    expectedDebtByService: expectedDebt,
+    legacyCurrentDebtByService: legacyCurrentDebt,
+    unexplainedGeneratedByService: unexplainedGenerated,
+    historicalOverResolvedByService: historicalOverResolved,
+    activeDebtMarkersByService: markers.activeMarkersByService,
+    cancelledDebtMetadataByService: markers.cancelledMetadataByService,
+    totals,
   };
 }
 
 async function loadUserIdsForAll() {
+  const excludedObjectIds = [...EXCLUDED_USER_IDS]
+    .filter((id) => mongoose.Types.ObjectId.isValid(id))
+    .map((id) => new mongoose.Types.ObjectId(id));
+
   const users = await mongoose.connection.db.collection("users")
-    .find({})
-    .project({ _id: 1, name: 1, lastName: 1, fullName: 1, email: 1, fixedScheduleDebt: 1, history: 1 })
+    .find(excludedObjectIds.length ? { _id: { $nin: excludedObjectIds } } : {})
+    .project({
+      _id: 1,
+      name: 1,
+      lastName: 1,
+      fullName: 1,
+      email: 1,
+      role: 1,
+      fixedScheduleDebt: 1,
+      history: 1,
+    })
     .toArray();
 
-  return users.filter((u) => {
-    const hasDebt = SERVICES.some((sk) => Number(u?.fixedScheduleDebt?.[sk] || 0) > 0);
-    const hasHistory = (Array.isArray(u.history) ? u.history : []).some((h) => String(h.action || "").startsWith("fixed_schedule"));
-    return hasDebt || hasHistory;
-  }).map((u) => String(u._id));
+  return users
+    .filter((u) => !isExcludedUser(u))
+    .filter((u) => {
+      const hasDebt = SERVICES.some((sk) => Number(u?.fixedScheduleDebt?.[sk] || 0) > 0);
+      const hasHistory = (Array.isArray(u.history) ? u.history : []).some((h) => String(h.action || "").startsWith("fixed_schedule"));
+      return hasDebt || hasHistory;
+    })
+    .map((u) => String(u._id));
 }
 
 async function auditUser(userId, { compact = false } = {}) {
@@ -246,6 +416,8 @@ async function auditUser(userId, { compact = false } = {}) {
     console.log(`Usuario no encontrado: ${userId}`);
     return null;
   }
+
+  if (isExcludedUser(user)) return null;
 
   const orders = await mongoose.connection.db.collection("orders")
     .find({ user: id })
@@ -267,7 +439,23 @@ async function auditUser(userId, { compact = false } = {}) {
 
   const appointments = await mongoose.connection.db.collection("appointments")
     .find({ user: id, fixedScheduleId: { $ne: null } })
-    .project({ date: 1, time: 1, service: 1, serviceName: 1, serviceKey: 1, status: 1, creditDebitStatus: 1, fixedDebtAmount: 1, fixedDebitProcessedAt: 1, creditLotId: 1, refundReason: 1, fixedScheduleId: 1, createdAt: 1, updatedAt: 1 })
+    .project({
+      date: 1,
+      time: 1,
+      service: 1,
+      serviceName: 1,
+      serviceKey: 1,
+      status: 1,
+      creditDebitStatus: 1,
+      fixedDebtAmount: 1,
+      fixedDebitProcessedAt: 1,
+      creditLotId: 1,
+      refundReason: 1,
+      cancelReason: 1,
+      fixedScheduleId: 1,
+      createdAt: 1,
+      updatedAt: 1,
+    })
     .sort({ date: 1, time: 1 })
     .toArray();
 
@@ -275,7 +463,7 @@ async function auditUser(userId, { compact = false } = {}) {
   const manualCreditEvents = logs.flatMap(extractManualCreditEvents);
   const extraEvents = [...orderEvents, ...manualCreditEvents];
   const debtEvents = extractDebtEventsFromHistory(user);
-  const rec = reconcile(user, extraEvents);
+  const rec = reconcile(user, { extraEvents, appointments });
 
   const row = {
     id: String(user._id),
@@ -290,9 +478,12 @@ async function auditUser(userId, { compact = false } = {}) {
   console.log(`${fullName(user)} · ${user.email || "sin email"} · ${String(user._id)}`);
   console.log("Estado:", rec.status);
   console.log("Deuda actual:", rec.currentDebtByService);
+  console.log("Deuda legacy actual:", rec.legacyCurrentDebtByService);
   console.log("Generó:", rec.createdByService);
   console.log("Saldó/liberó:", rec.settledReleasedByService);
-  console.log("Auto liberado estimado:", rec.autoEstimatedByService);
+  console.log("Auto liberado:", rec.autoEstimatedByService);
+  console.log("Turnos activos en deuda:", rec.activeDebtMarkersByService);
+  console.log("Metadata deuda cancelada:", rec.cancelledDebtMetadataByService);
   console.log("Totales:", rec.totals);
 
   const timeline = [
@@ -309,10 +500,30 @@ async function auditUser(userId, { compact = false } = {}) {
 
   console.log("\n--- Turnos fijos del usuario ---");
   for (const ap of appointments) {
-    console.log(`${ap.date || ""} ${ap.time || ""} | ${serviceKey(ap.serviceKey || ap.service || ap.serviceName) || "-"} | status:${ap.status || ""} | debit:${ap.creditDebitStatus || ""} | debt:${Number(ap.fixedDebtAmount || 0)} | lot:${ap.creditLotId ? String(ap.creditLotId) : "-"} | refund:${ap.refundReason || "-"}`);
+    console.log(`${ap.date || ""} ${ap.time || ""} | ${serviceKey(ap.serviceKey || ap.service || ap.serviceName) || "-"} | status:${ap.status || ""} | debit:${ap.creditDebitStatus || ""} | debt:${Number(ap.fixedDebtAmount || 0)} | lot:${ap.creditLotId ? String(ap.creditLotId) : "-"} | refund:${ap.refundReason || "-"} | cancel:${ap.cancelReason || "-"}`);
   }
 
   return row;
+}
+
+function compactRow(r) {
+  return {
+    id: r.id,
+    fullName: r.fullName,
+    email: r.email,
+    status: r.status,
+    actual: r.totals.currentDebt,
+    genero: r.totals.created,
+    saldoLibero: r.totals.settledReleased,
+    autoLiberado: r.totals.autoEstimated,
+    deudaLegacyActual: r.totals.legacyCurrentDebt,
+    historicoSobreConciliado: r.totals.historicalOverResolved,
+    diferenciaReal: r.totals.unexplained,
+    turnosDeuda: r.totals.activeDebtMarkers,
+    deudaActualPorServicio: r.currentDebtByService,
+    deudaLegacyPorServicio: r.legacyCurrentDebtByService,
+    turnosDeudaPorServicio: r.activeDebtMarkersByService,
+  };
 }
 
 async function main() {
@@ -328,20 +539,13 @@ async function main() {
       const row = await auditUser(id, { compact: true });
       if (row) rows.push(row);
     }
-    const filtered = arg === "--reviews" ? rows.filter((r) => r.status === "REVISAR") : rows;
-    console.log(JSON.stringify(filtered.map((r) => ({
-      id: r.id,
-      fullName: r.fullName,
-      email: r.email,
-      status: r.status,
-      actual: r.totals.currentDebt,
-      genero: r.totals.created,
-      saldoLibero: r.totals.settledReleased,
-      autoEstimado: r.totals.autoEstimated,
-      diferencia: r.totals.unexplained,
-      avisosAuto: r.totals.autoNoticeCount,
-      deudaActualPorServicio: r.currentDebtByService,
-    })), null, 2));
+
+    const filtered =
+      arg === "--reviews"
+        ? rows.filter((r) => ["REVISAR", "DEUDA_LEGACY"].includes(r.status))
+        : rows;
+
+    console.log(JSON.stringify(filtered.map(compactRow), null, 2));
   } else if (mongoose.Types.ObjectId.isValid(arg)) {
     await auditUser(arg);
   } else {

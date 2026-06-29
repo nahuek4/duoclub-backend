@@ -132,8 +132,25 @@ const SERVICE_KEY_TO_NAME = {
 const DEBT_SERVICE_KEYS = ["EP", "RA", "RF", "KD", "SYN"];
 const DEBT_HISTORY_SCOPE_LABEL = "Historial completo disponible";
 
+const EXCLUDED_DEBT_USER_IDS = new Set([
+  "692c8747ac97e1bf8ba86839", // Admin DUO / usuario de prueba operativo
+]);
+
+const EXCLUDED_DEBT_EMAILS = new Set([
+  "admin@duoclub.ar",
+]);
+
+const EXCLUDED_DEBT_ROLES = new Set([
+  "admin",
+  "staff",
+  "profesor",
+  "professor",
+  "coach",
+]);
+
 const DEBT_HISTORY_ACTIONS = new Set([
   "fixed_schedule_monthly_debt",
+  "fixed_schedule_debt_created",
   "fixed_schedule_debt_settled",
   "fixed_schedule_debt_settled_by_cancelled_credit",
   "fixed_schedule_debt_settled_by_plan_delete",
@@ -142,13 +159,33 @@ const DEBT_HISTORY_ACTIONS = new Set([
   "fixed_schedule_auto_released_unpaid",
   "fixed_schedule_monthly_turn_completed",
   "fixed_schedule_monthly_reserved",
+  "fixed_schedule_monthly_debit",
 ]);
+
+function normalizeText(value = "") {
+  return String(value || "")
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase()
+    .trim();
+}
 
 function normalizeServiceKey(serviceKey) {
   const key = String(serviceKey || "").toUpperCase().trim();
   if (!key) return "";
   if (key === "AR") return "RA";
-  return SERVICE_KEY_TO_NAME[key] ? key : "";
+  if (SERVICE_KEY_TO_NAME[key]) return key;
+
+  const text = normalizeText(serviceKey);
+  if (text.includes("entrenamiento") && text.includes("personal")) return "EP";
+  if (text.includes("rehabilitacion") && text.includes("activa")) return "RA";
+  if (text.includes("reeducacion") && text.includes("funcional")) return "RF";
+  if (text.includes("kinefilaxia") || (text.includes("kine") && text.includes("deport"))) return "KD";
+  if (text.includes("synergy") || text.includes("sinergia")) return "SYN";
+  if (text.includes("nutricion")) return "NUT";
+  if (text.includes("evaluacion")) return "PE";
+
+  return "";
 }
 
 function translateServiceKey(serviceKey) {
@@ -171,10 +208,49 @@ function normalizeDebtByService(raw = {}) {
   }, {});
 }
 
+function emptyDebtByService() {
+  return DEBT_SERVICE_KEYS.reduce((acc, serviceKey) => {
+    acc[serviceKey] = 0;
+    return acc;
+  }, {});
+}
+
+function sumMapValues(map = {}) {
+  return DEBT_SERVICE_KEYS.reduce((acc, serviceKey) => {
+    const value = Number(map?.[serviceKey] || 0);
+    return acc + (Number.isFinite(value) ? Math.max(0, value) : 0);
+  }, 0);
+}
+
+function positiveDiffByService(left = {}, right = {}) {
+  return DEBT_SERVICE_KEYS.reduce((acc, serviceKey) => {
+    acc[serviceKey] = Math.max(
+      0,
+      Number(left?.[serviceKey] || 0) - Number(right?.[serviceKey] || 0)
+    );
+    return acc;
+  }, {});
+}
+
+function isExcludedDebtUser(user = {}) {
+  const id = String(user?._id || user?.id || "").trim();
+  const email = String(user?.email || "").toLowerCase().trim();
+  const role = String(user?.role || "").toLowerCase().trim();
+
+  return (
+    EXCLUDED_DEBT_USER_IDS.has(id) ||
+    EXCLUDED_DEBT_EMAILS.has(email) ||
+    EXCLUDED_DEBT_ROLES.has(role)
+  );
+}
+
 function classifyDebtHistoryItem(item = {}) {
   const action = String(item.action || "").trim();
 
-  if (action === "fixed_schedule_monthly_debt") {
+  if (
+    action === "fixed_schedule_monthly_debt" ||
+    action === "fixed_schedule_debt_created"
+  ) {
     return {
       type: "debt_created",
       label: "Asumió deuda",
@@ -208,7 +284,7 @@ function classifyDebtHistoryItem(item = {}) {
   if (action === "fixed_schedule_auto_released_unpaid") {
     return {
       type: "debt_auto_released_notice",
-      label: "Liberación automática",
+      label: "Turnos futuros liberados",
       sign: 0,
     };
   }
@@ -224,7 +300,15 @@ function classifyDebtHistoryItem(item = {}) {
   if (action === "fixed_schedule_monthly_reserved") {
     return {
       type: "monthly_debt_notice",
-      label: "Deuda mensual agrupada",
+      label: "Deuda legacy mensual",
+      sign: 0,
+    };
+  }
+
+  if (action === "fixed_schedule_monthly_debit") {
+    return {
+      type: "fixed_credit_debited",
+      label: "Crédito debitado por turno fijo",
       sign: 0,
     };
   }
@@ -239,7 +323,8 @@ function classifyDebtHistoryItem(item = {}) {
 function debtEventFromHistoryItem(item = {}, index = 0) {
   const classified = classifyDebtHistoryItem(item);
   const serviceKey = normalizeServiceKey(item.serviceKey || item.service || item.serviceName);
-  const qty = Math.max(0, Number(item.qty || item.amount || item.value || 0));
+  const rawQty = Number(item.qty ?? item.amount ?? item.value ?? 0);
+  const qty = Number.isFinite(rawQty) ? Math.abs(rawQty) : 0;
   const createdAt = item.createdAt || item.date || null;
 
   return {
@@ -266,16 +351,16 @@ function debtEventFromAppointment(ap = {}, index = 0) {
 
   return {
     id: `ap-${String(ap._id || index)}`,
-    type: "debt_appointment",
-    label: "Turno fijo con deuda",
-    sign: Number(ap.fixedDebtAmount || 0) > 0 ? 1 : 0,
+    type: "active_debt_marker",
+    label: "Turno en deuda activo",
+    sign: 0,
     serviceKey,
     serviceName: translateServiceKey(serviceKey) || ap.serviceName || ap.service || "",
     qty,
     date: ap.date || "",
     time: ap.time || "",
-    title: "Turno fijo marcado con deuda",
-    message: "Registro tomado desde la reserva asociada al turno fijo.",
+    title: "Turno fijo activo marcado con deuda",
+    message: "Marcador operativo de deuda. La deuda real exigible se toma desde el saldo del usuario.",
     appointmentId: ap._id || null,
     fixedScheduleId: ap.fixedScheduleId || null,
     createdAt: ap.updatedAt || ap.createdAt || null,
@@ -303,6 +388,81 @@ function estimateAutoReleasedByService({
     acc[serviceKey] = Math.max(0, generated - settled - current);
     return acc;
   }, {});
+}
+
+function explicitAutoReleasedByService(events = []) {
+  return DEBT_SERVICE_KEYS.reduce((acc, serviceKey) => {
+    acc[serviceKey] = events
+      .filter((event) => event.type === "debt_auto_released_notice" && event.serviceKey === serviceKey)
+      .reduce((sum, event) => sum + Math.max(0, Number(event.qty || 0)), 0);
+    return acc;
+  }, {});
+}
+
+function classifyDebtRow({
+  currentDebt = 0,
+  unexplainedGenerated = 0,
+  legacyCurrentDebt = 0,
+  historicalOverResolved = 0,
+  totalAutoReleased = 0,
+} = {}) {
+  if (unexplainedGenerated > 0) {
+    return {
+      reconciliationStatus: "review",
+      reconciliationLabel: "Revisar",
+      reconciliationTone: "warning",
+      reconciliationMessage: "Hay deuda generada que no queda explicada por pagos, liberaciones o saldo actual.",
+      needsManualReview: true,
+    };
+  }
+
+  if (currentDebt > 0 && legacyCurrentDebt > 0) {
+    return {
+      reconciliationStatus: "legacy_debt",
+      reconciliationLabel: "Deuda legacy",
+      reconciliationTone: "dark",
+      reconciliationMessage: "La deuda actual existe en el usuario, pero su origen viene de historial legacy o saldo arrastrado.",
+      needsManualReview: false,
+    };
+  }
+
+  if (currentDebt > 0) {
+    return {
+      reconciliationStatus: "active_debt",
+      reconciliationLabel: "Deuda actual",
+      reconciliationTone: "danger",
+      reconciliationMessage: "Deuda real exigible del usuario.",
+      needsManualReview: false,
+    };
+  }
+
+  if (historicalOverResolved > 0) {
+    return {
+      reconciliationStatus: "historical_over_resolved",
+      reconciliationLabel: "Histórico",
+      reconciliationTone: "secondary",
+      reconciliationMessage: "El historial viejo muestra más saldos/liberaciones que deuda generada. No hay deuda actual para cobrar.",
+      needsManualReview: false,
+    };
+  }
+
+  if (totalAutoReleased > 0) {
+    return {
+      reconciliationStatus: "auto_released",
+      reconciliationLabel: "Auto liberado",
+      reconciliationTone: "info",
+      reconciliationMessage: "Cierra por liberación automática de turnos futuros.",
+      needsManualReview: false,
+    };
+  }
+
+  return {
+    reconciliationStatus: "ok",
+    reconciliationLabel: "OK",
+    reconciliationTone: "success",
+    reconciliationMessage: "Conciliado.",
+    needsManualReview: false,
+  };
 }
 
 function extractPaidCreditEventsFromOrder(order = {}) {
@@ -454,33 +614,81 @@ function decorateDebtUser(user = {}, appointmentEvents = [], orderEvents = [], m
 
   const createdByService = sumEventsByService(events, (event) => event.sign > 0);
   const settledByService = sumEventsByService(events, (event) => event.sign < 0);
+  const activeDebtMarkersByService = sumEventsByService(
+    safeAppointmentEvents,
+    (event) => event.type === "active_debt_marker"
+  );
+
   const autoReleaseNoticeCount = events.filter(
     (event) => event.type === "debt_auto_released_notice"
   ).length;
+
+  const explicitAutoReleased = explicitAutoReleasedByService(events);
   const estimatedAutoReleasedByService = estimateAutoReleasedByService({
     currentDebtByService,
     createdByService,
     settledByService,
   });
-  const autoReleasedByService =
-    autoReleaseNoticeCount > 0
-      ? estimatedAutoReleasedByService
-      : DEBT_SERVICE_KEYS.reduce((acc, serviceKey) => {
-          acc[serviceKey] = 0;
-          return acc;
-        }, {});
-  const totalAutoReleased = Object.values(autoReleasedByService).reduce(
-    (acc, value) => acc + Number(value || 0),
-    0
+
+  const autoReleasedByService = DEBT_SERVICE_KEYS.reduce((acc, serviceKey) => {
+    const explicit = Number(explicitAutoReleased[serviceKey] || 0);
+    if (explicit > 0) {
+      acc[serviceKey] = explicit;
+      return acc;
+    }
+
+    acc[serviceKey] =
+      autoReleaseNoticeCount > 0
+        ? Number(estimatedAutoReleasedByService[serviceKey] || 0)
+        : 0;
+    return acc;
+  }, {});
+
+  const totalAutoReleased = sumMapValues(autoReleasedByService);
+  const totalResolved = totalSettled + totalAutoReleased;
+
+  const expectedDebtByService = DEBT_SERVICE_KEYS.reduce((acc, serviceKey) => {
+    acc[serviceKey] = Math.max(
+      0,
+      Number(createdByService[serviceKey] || 0) -
+        Number(settledByService[serviceKey] || 0) -
+        Number(autoReleasedByService[serviceKey] || 0)
+    );
+    return acc;
+  }, {});
+
+  const unexplainedGeneratedByService = positiveDiffByService(
+    expectedDebtByService,
+    currentDebtByService
   );
-  const reconciliationStatus =
-    totalCreated === totalSettled + totalAutoReleased + currentDebt
-      ? "ok"
-      : "review";
-  const unexplainedDelta = Math.max(
-    0,
-    totalCreated - totalSettled - totalAutoReleased - currentDebt
+
+  const legacyCurrentDebtByService = positiveDiffByService(
+    currentDebtByService,
+    expectedDebtByService
   );
+
+  const historicalOverResolvedByService = DEBT_SERVICE_KEYS.reduce((acc, serviceKey) => {
+    const generated = Number(createdByService[serviceKey] || 0);
+    const resolvedPlusCurrent =
+      Number(settledByService[serviceKey] || 0) +
+      Number(autoReleasedByService[serviceKey] || 0) +
+      Number(currentDebtByService[serviceKey] || 0);
+
+    acc[serviceKey] = Math.max(0, resolvedPlusCurrent - generated);
+    return acc;
+  }, {});
+
+  const unexplainedDelta = sumMapValues(unexplainedGeneratedByService);
+  const totalLegacyCurrentDebt = sumMapValues(legacyCurrentDebtByService);
+  const totalHistoricalOverResolved = sumMapValues(historicalOverResolvedByService);
+
+  const rowStatus = classifyDebtRow({
+    currentDebt,
+    unexplainedGenerated: unexplainedDelta,
+    legacyCurrentDebt: totalLegacyCurrentDebt,
+    historicalOverResolved: totalHistoricalOverResolved,
+    totalAutoReleased,
+  });
 
   const autoReleaseEvents = DEBT_SERVICE_KEYS.flatMap((serviceKey) => {
     const qty = Number(autoReleasedByService[serviceKey] || 0);
@@ -490,16 +698,16 @@ function decorateDebtUser(user = {}, appointmentEvents = [], orderEvents = [], m
       {
         id: `auto-release-reconciled-${String(user._id || "user")}-${serviceKey}`,
         type: "debt_auto_released",
-        label: "Liberación automática conciliada",
+        label: "Turnos futuros liberados",
         sign: -1,
         serviceKey,
         serviceName: translateServiceKey(serviceKey),
         qty,
         date: "",
         time: "",
-        title: "Deuda liberada automáticamente por regla de primera semana",
+        title: "Turnos futuros liberados por regla automática",
         message:
-          "Cantidad reconstruida por conciliación: deuda generada menos saldado/liberado manual menos saldo actual.",
+          "No se cuenta como pago. Solo descuenta los turnos futuros liberados por deuda impaga.",
         appointmentId: null,
         fixedScheduleId: null,
         createdAt: events.find((event) => event.type === "debt_auto_released_notice")?.createdAt || null,
@@ -507,7 +715,32 @@ function decorateDebtUser(user = {}, appointmentEvents = [], orderEvents = [], m
     ];
   });
 
-  const displayEvents = [...events, ...autoReleaseEvents].sort((a, b) => {
+  const legacyDebtEvents = DEBT_SERVICE_KEYS.flatMap((serviceKey) => {
+    const qty = Number(legacyCurrentDebtByService[serviceKey] || 0);
+    if (qty <= 0) return [];
+
+    return [
+      {
+        id: `legacy-current-debt-${String(user._id || "user")}-${serviceKey}`,
+        type: "legacy_current_debt",
+        label: "Deuda legacy",
+        sign: 0,
+        serviceKey,
+        serviceName: translateServiceKey(serviceKey),
+        qty,
+        date: "",
+        time: "",
+        title: "Saldo actual heredado",
+        message:
+          "La deuda existe en el usuario, pero no queda explicada por los eventos nuevos de generación/saldo. Se muestra como deuda real legacy.",
+        appointmentId: null,
+        fixedScheduleId: null,
+        createdAt: events[0]?.createdAt || user.updatedAt || user.createdAt || null,
+      },
+    ];
+  });
+
+  const displayEvents = [...events, ...autoReleaseEvents, ...legacyDebtEvents].sort((a, b) => {
     const ad = a.createdAt ? new Date(a.createdAt).getTime() : 0;
     const bd = b.createdAt ? new Date(b.createdAt).getTime() : 0;
     return bd - ad;
@@ -527,30 +760,46 @@ function decorateDebtUser(user = {}, appointmentEvents = [], orderEvents = [], m
 
   const totalIncomingCredits = totalPaidCredits + totalAdminAssignedCredits;
 
-  const lastEventAt = events[0]?.createdAt || null;
+  const lastEventAt = events[0]?.createdAt || user.updatedAt || user.createdAt || null;
+  const hasDebtContext = currentDebt > 0 || historyEvents.length > 0 || safeAppointmentEvents.length > 0;
 
   return {
     id: String(user._id || ""),
     fullName: fullNameOf(user) || "Usuario",
     email: user.email || "",
     phone: user.phone || "",
+    role: user.role || "",
     currentDebt,
     currentDebtByService,
+    currentDebtExigible: currentDebt,
     totalCreated,
     totalSettled,
     totalAutoReleased,
-    totalResolved: totalSettled + totalAutoReleased,
+    totalResolved,
     totalPaidCredits,
     totalAdminAssignedCredits,
     totalAdminRemovedCredits,
     totalIncomingCredits,
+    totalLegacyCurrentDebt,
+    totalHistoricalOverResolved,
+    totalActiveDebtMarkers: sumMapValues(activeDebtMarkersByService),
     createdByService,
     settledByService,
     autoReleasedByService,
+    expectedDebtByService,
+    activeDebtMarkersByService,
+    legacyCurrentDebtByService,
+    historicalOverResolvedByService,
+    unexplainedGeneratedByService,
     autoReleaseNoticeCount,
-    reconciliationStatus,
+    reconciliationStatus: rowStatus.reconciliationStatus,
+    reconciliationLabel: rowStatus.reconciliationLabel,
+    reconciliationTone: rowStatus.reconciliationTone,
+    reconciliationMessage: rowStatus.reconciliationMessage,
+    needsManualReview: rowStatus.needsManualReview,
     unexplainedDelta,
     lastEventAt,
+    hasDebtContext,
     events: displayEvents,
   };
 }
@@ -880,12 +1129,16 @@ router.get("/debt-history", async (req, res) => {
     const search = String(req.query.search || "").trim();
 
     const debtActionList = [...DEBT_HISTORY_ACTIONS];
+    const excludedObjectIds = [...EXCLUDED_DEBT_USER_IDS]
+      .filter((id) => mongoose.Types.ObjectId.isValid(id))
+      .map((id) => new mongoose.Types.ObjectId(id));
+
     const appointmentDebtMatch = {
       fixedScheduleId: { $ne: null },
+      status: { $in: ["reserved", "completed"] },
       $or: [
         { creditDebitStatus: "debt" },
         { fixedDebtAmount: { $gt: 0 } },
-        { refundReason: { $regex: "DEBT", $options: "i" } },
       ],
     };
 
@@ -901,49 +1154,15 @@ router.get("/debt-history", async (req, res) => {
       ...new Set(
         debtAppointmentSeed
           .map((ap) => String(ap.user || ""))
-          .filter((id) => mongoose.Types.ObjectId.isValid(id))
-      ),
-    ];
-
-    const paidCreditOrderMatch = {
-      status: { $regex: "^(paid|approved)$", $options: "i" },
-    };
-
-    const paidCreditOrdersSeed = await Order.find(paidCreditOrderMatch)
-      .select(
-        "_id user items service serviceName serviceKey credits total totalFinal status paidAt approvedAt createdAt updatedAt"
-      )
-      .sort({ paidAt: -1, approvedAt: -1, updatedAt: -1, createdAt: -1 })
-      .limit(1000)
-      .lean();
-
-    const orderUserIds = [
-      ...new Set(
-        paidCreditOrdersSeed
-          .map((order) => String(order.user || ""))
-          .filter((id) => mongoose.Types.ObjectId.isValid(id))
-      ),
-    ];
-
-    const manualCreditLogsSeed = await ActivityLog.find({
-      category: "users",
-      action: { $in: ["credits_updated", "credit_updated"] },
-      entity: { $in: ["user", "users"] },
-    })
-      .select("_id actor entity entityId subject title description diff meta createdAt")
-      .sort({ createdAt: -1 })
-      .limit(5000)
-      .lean();
-
-    const manualCreditUserIds = [
-      ...new Set(
-        manualCreditLogsSeed
-          .map((log) => String(log.entityId || log.subject?.id || log.subject?._id || ""))
-          .filter((id) => mongoose.Types.ObjectId.isValid(id))
+          .filter((id) => mongoose.Types.ObjectId.isValid(id) && !EXCLUDED_DEBT_USER_IDS.has(id))
       ),
     ];
 
     const query = {
+      $and: [
+        excludedObjectIds.length ? { _id: { $nin: excludedObjectIds } } : {},
+        { email: { $not: /^admin@duoclub\.ar$/i } },
+      ].filter((part) => Object.keys(part).length > 0),
       $or: [
         ...DEBT_SERVICE_KEYS.map((sk) => ({
           [`fixedScheduleDebt.${sk}`]: { $gt: 0 },
@@ -952,13 +1171,12 @@ router.get("/debt-history", async (req, res) => {
         ...(appointmentUserIds.length
           ? [{ _id: { $in: appointmentUserIds } }]
           : []),
-        ...(orderUserIds.length ? [{ _id: { $in: orderUserIds } }] : []),
-        ...(manualCreditUserIds.length ? [{ _id: { $in: manualCreditUserIds } }] : []),
       ],
     };
 
     if (search) {
       query.$and = [
+        ...(Array.isArray(query.$and) ? query.$and : []),
         {
           $or: [
             { name: { $regex: search, $options: "i" } },
@@ -971,24 +1189,44 @@ router.get("/debt-history", async (req, res) => {
       ];
     }
 
-    const users = await User.find(query)
-      .select("name lastName fullName email phone fixedScheduleDebt history createdAt")
+    const users = (await User.find(query)
+      .select("name lastName fullName email phone role fixedScheduleDebt history createdAt updatedAt")
       .sort({ updatedAt: -1, createdAt: -1 })
       .limit(limit)
-      .lean();
+      .lean()).filter((user) => !isExcludedDebtUser(user));
 
     const userIdSet = new Set(users.map((u) => String(u._id || "")));
     const debtAppointments = debtAppointmentSeed.filter((ap) =>
       userIdSet.has(String(ap.user || ""))
     );
 
-    const paidCreditOrders = paidCreditOrdersSeed.filter((order) =>
-      userIdSet.has(String(order.user || ""))
-    );
+    const [paidCreditOrders, manualCreditLogs] = await Promise.all([
+      Order.find({
+        user: { $in: [...userIdSet].map((id) => new mongoose.Types.ObjectId(id)) },
+        status: { $regex: "^(paid|approved)$", $options: "i" },
+      })
+        .select(
+          "_id user items service serviceName serviceKey credits total totalFinal status paidAt approvedAt createdAt updatedAt"
+        )
+        .sort({ paidAt: -1, approvedAt: -1, updatedAt: -1, createdAt: -1 })
+        .limit(2000)
+        .lean(),
 
-    const manualCreditLogs = manualCreditLogsSeed.filter((log) =>
-      userIdSet.has(String(log.entityId || log.subject?.id || log.subject?._id || ""))
-    );
+      ActivityLog.find({
+        category: "users",
+        action: { $in: ["credits_updated", "credit_updated"] },
+        entity: { $in: ["user", "users"] },
+        $or: [
+          { entityId: { $in: [...userIdSet] } },
+          { "subject.id": { $in: [...userIdSet] } },
+          { "subject._id": { $in: [...userIdSet] } },
+        ],
+      })
+        .select("_id actor entity entityId subject title description diff meta createdAt")
+        .sort({ createdAt: -1 })
+        .limit(5000)
+        .lean(),
+    ]);
 
     const appointmentsByUser = new Map();
     for (const ap of debtAppointments) {
@@ -1026,9 +1264,12 @@ router.get("/debt-history", async (req, res) => {
           )
         )
       )
-      .filter((row) => row.currentDebt > 0 || row.events.length > 0)
+      .filter((row) => row.hasDebtContext)
       .sort((a, b) => {
         if (b.currentDebt !== a.currentDebt) return b.currentDebt - a.currentDebt;
+        if (Number(b.needsManualReview) !== Number(a.needsManualReview)) {
+          return Number(b.needsManualReview) - Number(a.needsManualReview);
+        }
         const ad = a.lastEventAt ? new Date(a.lastEventAt).getTime() : 0;
         const bd = b.lastEventAt ? new Date(b.lastEventAt).getTime() : 0;
         return bd - ad;
@@ -1038,6 +1279,7 @@ router.get("/debt-history", async (req, res) => {
       (acc, row) => {
         acc.usersCount += 1;
         acc.currentDebt += Number(row.currentDebt || 0);
+        acc.currentDebtExigible += Number(row.currentDebtExigible || row.currentDebt || 0);
         acc.totalCreated += Number(row.totalCreated || 0);
         acc.totalSettled += Number(row.totalSettled || 0);
         acc.totalAutoReleased += Number(row.totalAutoReleased || 0);
@@ -1046,13 +1288,22 @@ router.get("/debt-history", async (req, res) => {
         acc.totalAdminAssignedCredits += Number(row.totalAdminAssignedCredits || 0);
         acc.totalAdminRemovedCredits += Number(row.totalAdminRemovedCredits || 0);
         acc.totalIncomingCredits += Number(row.totalIncomingCredits || 0);
+        acc.totalLegacyCurrentDebt += Number(row.totalLegacyCurrentDebt || 0);
+        acc.totalHistoricalOverResolved += Number(row.totalHistoricalOverResolved || 0);
+        acc.totalActiveDebtMarkers += Number(row.totalActiveDebtMarkers || 0);
         acc.unexplainedDelta += Number(row.unexplainedDelta || 0);
-        if (row.reconciliationStatus === "review") acc.reviewCount += 1;
+
+        if (row.needsManualReview) acc.reviewCount += 1;
+        if (row.reconciliationStatus === "legacy_debt") acc.legacyDebtCount += 1;
+        if (row.reconciliationStatus === "historical_over_resolved") acc.historicalOnlyCount += 1;
+        if (row.reconciliationStatus === "auto_released") acc.autoReleasedUsersCount += 1;
+        if (row.currentDebt > 0) acc.usersWithCurrentDebt += 1;
         return acc;
       },
       {
         usersCount: 0,
         currentDebt: 0,
+        currentDebtExigible: 0,
         totalCreated: 0,
         totalSettled: 0,
         totalAutoReleased: 0,
@@ -1061,14 +1312,21 @@ router.get("/debt-history", async (req, res) => {
         totalAdminAssignedCredits: 0,
         totalAdminRemovedCredits: 0,
         totalIncomingCredits: 0,
+        totalLegacyCurrentDebt: 0,
+        totalHistoricalOverResolved: 0,
+        totalActiveDebtMarkers: 0,
         unexplainedDelta: 0,
         reviewCount: 0,
+        legacyDebtCount: 0,
+        historicalOnlyCount: 0,
+        autoReleasedUsersCount: 0,
+        usersWithCurrentDebt: 0,
       }
     );
 
     return res.json({
       ok: true,
-      historyScopeLabel: DEBT_HISTORY_SCOPE_LABEL,
+      historyScopeLabel: "Deuda real separada de historial legacy",
       limit,
       total: rows.length,
       totals,
