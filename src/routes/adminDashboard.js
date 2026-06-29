@@ -139,6 +139,9 @@ const DEBT_HISTORY_ACTIONS = new Set([
   "fixed_schedule_debt_settled_by_plan_delete",
   "fixed_schedule_debt_released_by_cancel",
   "fixed_schedule_debt_released_by_plan_delete",
+  "fixed_schedule_auto_released_unpaid",
+  "fixed_schedule_monthly_turn_completed",
+  "fixed_schedule_monthly_reserved",
 ]);
 
 function normalizeServiceKey(serviceKey) {
@@ -202,6 +205,30 @@ function classifyDebtHistoryItem(item = {}) {
     };
   }
 
+  if (action === "fixed_schedule_auto_released_unpaid") {
+    return {
+      type: "debt_auto_released_notice",
+      label: "Liberación automática",
+      sign: 0,
+    };
+  }
+
+  if (action === "fixed_schedule_monthly_turn_completed") {
+    return {
+      type: "fixed_turn_completed",
+      label: "Turno fijo completado",
+      sign: 0,
+    };
+  }
+
+  if (action === "fixed_schedule_monthly_reserved") {
+    return {
+      type: "monthly_debt_notice",
+      label: "Deuda mensual agrupada",
+      sign: 0,
+    };
+  }
+
   return {
     type: "movement",
     label: item.title || "Movimiento",
@@ -253,6 +280,29 @@ function debtEventFromAppointment(ap = {}, index = 0) {
     fixedScheduleId: ap.fixedScheduleId || null,
     createdAt: ap.updatedAt || ap.createdAt || null,
   };
+}
+
+function sumEventsByService(events = [], predicate = () => true) {
+  return DEBT_SERVICE_KEYS.reduce((acc, serviceKey) => {
+    acc[serviceKey] = events
+      .filter((event) => event.serviceKey === serviceKey && predicate(event))
+      .reduce((sum, event) => sum + Number(event.qty || 0), 0);
+    return acc;
+  }, {});
+}
+
+function estimateAutoReleasedByService({
+  currentDebtByService = {},
+  createdByService = {},
+  settledByService = {},
+} = {}) {
+  return DEBT_SERVICE_KEYS.reduce((acc, serviceKey) => {
+    const generated = Number(createdByService[serviceKey] || 0);
+    const settled = Number(settledByService[serviceKey] || 0);
+    const current = Number(currentDebtByService[serviceKey] || 0);
+    acc[serviceKey] = Math.max(0, generated - settled - current);
+    return acc;
+  }, {});
 }
 
 function extractPaidCreditEventsFromOrder(order = {}) {
@@ -383,7 +433,10 @@ function decorateDebtUser(user = {}, appointmentEvents = [], orderEvents = [], m
         (event.serviceKey ||
           event.type === "paid_order_credits" ||
           event.type === "admin_assigned_credits" ||
-          event.type === "admin_removed_credits")
+          event.type === "admin_removed_credits" ||
+          event.type === "debt_auto_released_notice" ||
+          event.type === "fixed_turn_completed" ||
+          event.type === "monthly_debt_notice")
     )
     .sort((a, b) => {
       const ad = a.createdAt ? new Date(a.createdAt).getTime() : 0;
@@ -398,6 +451,67 @@ function decorateDebtUser(user = {}, appointmentEvents = [], orderEvents = [], m
   const totalSettled = events
     .filter((event) => event.sign < 0)
     .reduce((acc, event) => acc + Number(event.qty || 0), 0);
+
+  const createdByService = sumEventsByService(events, (event) => event.sign > 0);
+  const settledByService = sumEventsByService(events, (event) => event.sign < 0);
+  const autoReleaseNoticeCount = events.filter(
+    (event) => event.type === "debt_auto_released_notice"
+  ).length;
+  const estimatedAutoReleasedByService = estimateAutoReleasedByService({
+    currentDebtByService,
+    createdByService,
+    settledByService,
+  });
+  const autoReleasedByService =
+    autoReleaseNoticeCount > 0
+      ? estimatedAutoReleasedByService
+      : DEBT_SERVICE_KEYS.reduce((acc, serviceKey) => {
+          acc[serviceKey] = 0;
+          return acc;
+        }, {});
+  const totalAutoReleased = Object.values(autoReleasedByService).reduce(
+    (acc, value) => acc + Number(value || 0),
+    0
+  );
+  const reconciliationStatus =
+    totalCreated === totalSettled + totalAutoReleased + currentDebt
+      ? "ok"
+      : "review";
+  const unexplainedDelta = Math.max(
+    0,
+    totalCreated - totalSettled - totalAutoReleased - currentDebt
+  );
+
+  const autoReleaseEvents = DEBT_SERVICE_KEYS.flatMap((serviceKey) => {
+    const qty = Number(autoReleasedByService[serviceKey] || 0);
+    if (qty <= 0) return [];
+
+    return [
+      {
+        id: `auto-release-reconciled-${String(user._id || "user")}-${serviceKey}`,
+        type: "debt_auto_released",
+        label: "Liberación automática conciliada",
+        sign: -1,
+        serviceKey,
+        serviceName: translateServiceKey(serviceKey),
+        qty,
+        date: "",
+        time: "",
+        title: "Deuda liberada automáticamente por regla de primera semana",
+        message:
+          "Cantidad reconstruida por conciliación: deuda generada menos saldado/liberado manual menos saldo actual.",
+        appointmentId: null,
+        fixedScheduleId: null,
+        createdAt: events.find((event) => event.type === "debt_auto_released_notice")?.createdAt || null,
+      },
+    ];
+  });
+
+  const displayEvents = [...events, ...autoReleaseEvents].sort((a, b) => {
+    const ad = a.createdAt ? new Date(a.createdAt).getTime() : 0;
+    const bd = b.createdAt ? new Date(b.createdAt).getTime() : 0;
+    return bd - ad;
+  });
 
   const totalPaidCredits = events
     .filter((event) => event.type === "paid_order_credits")
@@ -424,12 +538,20 @@ function decorateDebtUser(user = {}, appointmentEvents = [], orderEvents = [], m
     currentDebtByService,
     totalCreated,
     totalSettled,
+    totalAutoReleased,
+    totalResolved: totalSettled + totalAutoReleased,
     totalPaidCredits,
     totalAdminAssignedCredits,
     totalAdminRemovedCredits,
     totalIncomingCredits,
+    createdByService,
+    settledByService,
+    autoReleasedByService,
+    autoReleaseNoticeCount,
+    reconciliationStatus,
+    unexplainedDelta,
     lastEventAt,
-    events,
+    events: displayEvents,
   };
 }
 
@@ -918,10 +1040,14 @@ router.get("/debt-history", async (req, res) => {
         acc.currentDebt += Number(row.currentDebt || 0);
         acc.totalCreated += Number(row.totalCreated || 0);
         acc.totalSettled += Number(row.totalSettled || 0);
+        acc.totalAutoReleased += Number(row.totalAutoReleased || 0);
+        acc.totalResolved += Number(row.totalResolved || 0);
         acc.totalPaidCredits += Number(row.totalPaidCredits || 0);
         acc.totalAdminAssignedCredits += Number(row.totalAdminAssignedCredits || 0);
         acc.totalAdminRemovedCredits += Number(row.totalAdminRemovedCredits || 0);
         acc.totalIncomingCredits += Number(row.totalIncomingCredits || 0);
+        acc.unexplainedDelta += Number(row.unexplainedDelta || 0);
+        if (row.reconciliationStatus === "review") acc.reviewCount += 1;
         return acc;
       },
       {
@@ -929,10 +1055,14 @@ router.get("/debt-history", async (req, res) => {
         currentDebt: 0,
         totalCreated: 0,
         totalSettled: 0,
+        totalAutoReleased: 0,
+        totalResolved: 0,
         totalPaidCredits: 0,
         totalAdminAssignedCredits: 0,
         totalAdminRemovedCredits: 0,
         totalIncomingCredits: 0,
+        unexplainedDelta: 0,
+        reviewCount: 0,
       }
     );
 
