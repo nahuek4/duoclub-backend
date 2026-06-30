@@ -300,7 +300,7 @@ function classifyDebtHistoryItem(item = {}) {
   if (action === "fixed_schedule_monthly_reserved") {
     return {
       type: "monthly_debt_notice",
-      label: "Deuda legacy mensual",
+      label: "Deuda mensual",
       sign: 0,
     };
   }
@@ -402,8 +402,6 @@ function explicitAutoReleasedByService(events = []) {
 function classifyDebtRow({
   currentDebt = 0,
   unexplainedGenerated = 0,
-  legacyCurrentDebt = 0,
-  historicalOverResolved = 0,
   totalAutoReleased = 0,
 } = {}) {
   if (unexplainedGenerated > 0) {
@@ -416,32 +414,12 @@ function classifyDebtRow({
     };
   }
 
-  if (currentDebt > 0 && legacyCurrentDebt > 0) {
-    return {
-      reconciliationStatus: "legacy_debt",
-      reconciliationLabel: "Deuda legacy",
-      reconciliationTone: "dark",
-      reconciliationMessage: "La deuda actual existe en el usuario, pero su origen viene de historial legacy o saldo arrastrado.",
-      needsManualReview: false,
-    };
-  }
-
   if (currentDebt > 0) {
     return {
       reconciliationStatus: "active_debt",
       reconciliationLabel: "Deuda actual",
       reconciliationTone: "danger",
-      reconciliationMessage: "Deuda real exigible del usuario.",
-      needsManualReview: false,
-    };
-  }
-
-  if (historicalOverResolved > 0) {
-    return {
-      reconciliationStatus: "historical_over_resolved",
-      reconciliationLabel: "Histórico",
-      reconciliationTone: "secondary",
-      reconciliationMessage: "El historial viejo muestra más saldos/liberaciones que deuda generada. No hay deuda actual para cobrar.",
+      reconciliationMessage: "Deuda real vigente del usuario.",
       needsManualReview: false,
     };
   }
@@ -685,8 +663,6 @@ function decorateDebtUser(user = {}, appointmentEvents = [], orderEvents = [], m
   const rowStatus = classifyDebtRow({
     currentDebt,
     unexplainedGenerated: unexplainedDelta,
-    legacyCurrentDebt: totalLegacyCurrentDebt,
-    historicalOverResolved: totalHistoricalOverResolved,
     totalAutoReleased,
   });
 
@@ -715,24 +691,25 @@ function decorateDebtUser(user = {}, appointmentEvents = [], orderEvents = [], m
     ];
   });
 
-  const legacyDebtEvents = DEBT_SERVICE_KEYS.flatMap((serviceKey) => {
-    const qty = Number(legacyCurrentDebtByService[serviceKey] || 0);
+  const currentDebtBalanceEvents = DEBT_SERVICE_KEYS.flatMap((serviceKey) => {
+    const currentQty = Number(currentDebtByService[serviceKey] || 0);
+    const generatedQty = Math.max(0, Number(expectedDebtByService[serviceKey] || 0));
+    const qty = Math.max(0, currentQty - generatedQty);
     if (qty <= 0) return [];
 
     return [
       {
-        id: `legacy-current-debt-${String(user._id || "user")}-${serviceKey}`,
-        type: "legacy_current_debt",
-        label: "Deuda legacy",
+        id: `current-debt-balance-${String(user._id || "user")}-${serviceKey}`,
+        type: "current_debt_balance",
+        label: "Deuda actual",
         sign: 0,
         serviceKey,
         serviceName: translateServiceKey(serviceKey),
         qty,
         date: "",
         time: "",
-        title: "Saldo actual heredado",
-        message:
-          "La deuda existe en el usuario, pero no queda explicada por los eventos nuevos de generación/saldo. Se muestra como deuda real legacy.",
+        title: "Saldo actual vigente",
+        message: "Saldo de deuda actual del usuario.",
         appointmentId: null,
         fixedScheduleId: null,
         createdAt: events[0]?.createdAt || user.updatedAt || user.createdAt || null,
@@ -740,7 +717,7 @@ function decorateDebtUser(user = {}, appointmentEvents = [], orderEvents = [], m
     ];
   });
 
-  const displayEvents = [...events, ...autoReleaseEvents, ...legacyDebtEvents].sort((a, b) => {
+  const displayEvents = [...events, ...autoReleaseEvents, ...currentDebtBalanceEvents].sort((a, b) => {
     const ad = a.createdAt ? new Date(a.createdAt).getTime() : 0;
     const bd = b.createdAt ? new Date(b.createdAt).getTime() : 0;
     return bd - ad;
@@ -761,7 +738,7 @@ function decorateDebtUser(user = {}, appointmentEvents = [], orderEvents = [], m
   const totalIncomingCredits = totalPaidCredits + totalAdminAssignedCredits;
 
   const lastEventAt = events[0]?.createdAt || user.updatedAt || user.createdAt || null;
-  const hasDebtContext = currentDebt > 0 || historyEvents.length > 0 || safeAppointmentEvents.length > 0;
+  const hasDebtContext = currentDebt > 0 || unexplainedDelta > 0 || totalAutoReleased > 0 || sumMapValues(activeDebtMarkersByService) > 0;
 
   return {
     id: String(user._id || ""),
@@ -780,16 +757,12 @@ function decorateDebtUser(user = {}, appointmentEvents = [], orderEvents = [], m
     totalAdminAssignedCredits,
     totalAdminRemovedCredits,
     totalIncomingCredits,
-    totalLegacyCurrentDebt,
-    totalHistoricalOverResolved,
     totalActiveDebtMarkers: sumMapValues(activeDebtMarkersByService),
     createdByService,
     settledByService,
     autoReleasedByService,
     expectedDebtByService,
     activeDebtMarkersByService,
-    legacyCurrentDebtByService,
-    historicalOverResolvedByService,
     unexplainedGeneratedByService,
     autoReleaseNoticeCount,
     reconciliationStatus: rowStatus.reconciliationStatus,
@@ -1288,14 +1261,10 @@ router.get("/debt-history", async (req, res) => {
         acc.totalAdminAssignedCredits += Number(row.totalAdminAssignedCredits || 0);
         acc.totalAdminRemovedCredits += Number(row.totalAdminRemovedCredits || 0);
         acc.totalIncomingCredits += Number(row.totalIncomingCredits || 0);
-        acc.totalLegacyCurrentDebt += Number(row.totalLegacyCurrentDebt || 0);
-        acc.totalHistoricalOverResolved += Number(row.totalHistoricalOverResolved || 0);
         acc.totalActiveDebtMarkers += Number(row.totalActiveDebtMarkers || 0);
         acc.unexplainedDelta += Number(row.unexplainedDelta || 0);
 
         if (row.needsManualReview) acc.reviewCount += 1;
-        if (row.reconciliationStatus === "legacy_debt") acc.legacyDebtCount += 1;
-        if (row.reconciliationStatus === "historical_over_resolved") acc.historicalOnlyCount += 1;
         if (row.reconciliationStatus === "auto_released") acc.autoReleasedUsersCount += 1;
         if (row.currentDebt > 0) acc.usersWithCurrentDebt += 1;
         return acc;
@@ -1312,13 +1281,9 @@ router.get("/debt-history", async (req, res) => {
         totalAdminAssignedCredits: 0,
         totalAdminRemovedCredits: 0,
         totalIncomingCredits: 0,
-        totalLegacyCurrentDebt: 0,
-        totalHistoricalOverResolved: 0,
         totalActiveDebtMarkers: 0,
         unexplainedDelta: 0,
         reviewCount: 0,
-        legacyDebtCount: 0,
-        historicalOnlyCount: 0,
         autoReleasedUsersCount: 0,
         usersWithCurrentDebt: 0,
       }
@@ -1326,7 +1291,7 @@ router.get("/debt-history", async (req, res) => {
 
     return res.json({
       ok: true,
-      historyScopeLabel: "Deuda real separada de historial legacy",
+      historyScopeLabel: "Deuda real de turnos fijos",
       limit,
       total: rows.length,
       totals,

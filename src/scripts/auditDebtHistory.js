@@ -266,11 +266,9 @@ function explicitAutoReleasedByService(debtEvents = []) {
   return out;
 }
 
-function classifyStatus({ currentDebt, unexplainedGenerated, legacyCurrentDebt, historicalOverResolved, autoReleased }) {
+function classifyStatus({ currentDebt, unexplainedGenerated, autoReleased }) {
   if (unexplainedGenerated > 0) return "REVISAR";
-  if (currentDebt > 0 && legacyCurrentDebt > 0) return "DEUDA_LEGACY";
   if (currentDebt > 0) return "DEUDA_ACTUAL";
-  if (historicalOverResolved > 0) return "HISTORICO";
   if (autoReleased > 0) return "AUTO_LIBERADO";
   return "OK";
 }
@@ -359,8 +357,6 @@ function reconcile(user, { extraEvents = [], appointments = [] } = {}) {
   const status = classifyStatus({
     currentDebt: totals.currentDebt,
     unexplainedGenerated: totals.unexplained,
-    legacyCurrentDebt: totals.legacyCurrentDebt,
-    historicalOverResolved: totals.historicalOverResolved,
     autoReleased: totals.autoEstimated,
   });
 
@@ -371,9 +367,7 @@ function reconcile(user, { extraEvents = [], appointments = [] } = {}) {
     settledReleasedByService: settled,
     autoEstimatedByService: autoEstimated,
     expectedDebtByService: expectedDebt,
-    legacyCurrentDebtByService: legacyCurrentDebt,
     unexplainedGeneratedByService: unexplainedGenerated,
-    historicalOverResolvedByService: historicalOverResolved,
     activeDebtMarkersByService: markers.activeMarkersByService,
     cancelledDebtMetadataByService: markers.cancelledMetadataByService,
     totals,
@@ -478,7 +472,6 @@ async function auditUser(userId, { compact = false } = {}) {
   console.log(`${fullName(user)} · ${user.email || "sin email"} · ${String(user._id)}`);
   console.log("Estado:", rec.status);
   console.log("Deuda actual:", rec.currentDebtByService);
-  console.log("Deuda legacy actual:", rec.legacyCurrentDebtByService);
   console.log("Generó:", rec.createdByService);
   console.log("Saldó/liberó:", rec.settledReleasedByService);
   console.log("Auto liberado:", rec.autoEstimatedByService);
@@ -516,12 +509,9 @@ function compactRow(r) {
     genero: r.totals.created,
     saldoLibero: r.totals.settledReleased,
     autoLiberado: r.totals.autoEstimated,
-    deudaLegacyActual: r.totals.legacyCurrentDebt,
-    historicoSobreConciliado: r.totals.historicalOverResolved,
     diferenciaReal: r.totals.unexplained,
     turnosDeuda: r.totals.activeDebtMarkers,
     deudaActualPorServicio: r.currentDebtByService,
-    deudaLegacyPorServicio: r.legacyCurrentDebtByService,
     turnosDeudaPorServicio: r.activeDebtMarkersByService,
   };
 }
@@ -542,7 +532,7 @@ async function main() {
 
     const filtered =
       arg === "--reviews"
-        ? rows.filter((r) => ["REVISAR", "DEUDA_LEGACY"].includes(r.status))
+        ? rows.filter((r) => ["REVISAR", "DEUDA_ACTUAL"].includes(r.status))
         : rows;
 
     console.log(JSON.stringify(filtered.map(compactRow), null, 2));
