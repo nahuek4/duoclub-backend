@@ -1517,6 +1517,48 @@ function isFixedBillingServiceKey(value) {
   return FIXED_BILLING_SERVICE_KEYS.has(sk);
 }
 
+// Los turnos manuales del admin también tienen que impactar en la cuenta
+// del usuario: si hay crédito, se debita; si no hay crédito, queda deuda.
+// Reutilizamos fixedScheduleDebt como saldo/deuda por servicio para no abrir
+// otro modelo paralelo ni romper la visualización actual del perfil.
+const ADMIN_MANUAL_DEBT_SERVICE_KEYS = new Set(["EP", "RA", "RF", "KD", "SYN", "NUT"]);
+
+function isAdminManualDebtServiceKey(value) {
+  const sk = serviceToKey(value);
+  return ADMIN_MANUAL_DEBT_SERVICE_KEYS.has(sk);
+}
+
+function isFinanciallyTrackedAppointment(ap) {
+  return !!ap?.fixedScheduleId || !!ap?.assignedManually;
+}
+
+function isUnpaidDebtAppointment(ap) {
+  const serviceKey = serviceToKey(ap?.serviceKey || ap?.service || "");
+  const fixedDebtAmount = Math.max(0, Number(ap?.fixedDebtAmount || 0));
+
+  return (
+    !!ap?._id &&
+    isFinanciallyTrackedAppointment(ap) &&
+    isAdminManualDebtServiceKey(serviceKey) &&
+    !ap?.creditLotId &&
+    (String(ap?.creditDebitStatus || "") === "debt" || fixedDebtAmount > 0)
+  );
+}
+
+function isSettledDebtAppointmentWithoutLot(ap) {
+  const serviceKey = serviceToKey(ap?.serviceKey || ap?.service || "");
+  const status = String(ap?.creditDebitStatus || "").trim();
+
+  return (
+    !!ap?._id &&
+    isFinanciallyTrackedAppointment(ap) &&
+    isAdminManualDebtServiceKey(serviceKey) &&
+    !ap?.creditLotId &&
+    ["monthly_reserved", "debited"].includes(status) &&
+    Math.max(0, Number(ap?.fixedDebtAmount || 0)) <= 0
+  );
+}
+
 function getCurrentMonthRangeYmd(refDate = new Date()) {
   const ref = new Date(refDate);
   const start = new Date(ref.getFullYear(), ref.getMonth(), 1);
@@ -1551,7 +1593,7 @@ function isSlotStrictlyAfterMoment(date, time, moment = new Date()) {
 function ensureFixedScheduleDebtObject(user) {
   user.fixedScheduleDebt = user.fixedScheduleDebt || {};
 
-  for (const sk of ["EP", "RA", "RF", "KD", "SYN"]) {
+  for (const sk of ["EP", "RA", "RF", "KD", "SYN", "NUT"]) {
     const n = Number(user.fixedScheduleDebt?.[sk] || 0);
     user.fixedScheduleDebt[sk] = Number.isFinite(n) ? Math.max(0, Math.trunc(n)) : 0;
   }
@@ -1629,6 +1671,7 @@ async function applyFixedAppointmentMonthlyBilling({ appointment, actorReq = nul
     if (session) await user.save({ session });
     else await user.save();
 
+    ap.serviceKey = serviceKey;
     ap.creditLotId = lot._id || null;
     ap.creditExpiresAt = lot.expiresAt || null;
     ap.creditDebitStatus = "monthly_reserved";
@@ -1674,6 +1717,7 @@ async function applyFixedAppointmentMonthlyBilling({ appointment, actorReq = nul
   if (session) await user.save({ session });
   else await user.save();
 
+  ap.serviceKey = serviceKey;
   ap.creditDebitStatus = "debt";
   ap.creditLotId = null;
   ap.creditExpiresAt = null;
@@ -1790,12 +1834,12 @@ async function backfillPastFixedAppointmentDebt({ appointment, session = null } 
 async function settleFixedScheduleDebtWithCancelledCreditOnCancel({ user, appointment, historyItem = {}, session = null } = {}) {
   const ap = appointment;
   const serviceKey = serviceToKey(ap?.serviceKey || ap?.service || "");
-  const isDebitedFixedAppointment =
-    !!ap?.fixedScheduleId &&
+  const isDebitedTrackedAppointment =
+    isFinanciallyTrackedAppointment(ap) &&
     !!ap?.creditLotId &&
-    isFixedBillingServiceKey(serviceKey);
+    isAdminManualDebtServiceKey(serviceKey);
 
-  if (!user?._id || !isDebitedFixedAppointment) {
+  if (!user?._id || !isDebitedTrackedAppointment) {
     return { settled: false, amount: 0, serviceKey, user };
   }
 
@@ -1839,12 +1883,9 @@ async function releaseFixedAppointmentDebtOnCancel({ user, appointment, historyI
   const ap = appointment;
   const serviceKey = serviceToKey(ap?.serviceKey || ap?.service || "");
   const fixedDebtAmount = Math.max(0, Number(ap?.fixedDebtAmount || 0));
-  const isDebtAppointment =
-    !!ap?.fixedScheduleId &&
-    !ap?.creditLotId &&
-    (String(ap?.creditDebitStatus || "") === "debt" || fixedDebtAmount > 0);
+  const isDebtAppointment = isUnpaidDebtAppointment(ap);
 
-  if (!user?._id || !isDebtAppointment || !isFixedBillingServiceKey(serviceKey)) {
+  if (!user?._id || !isDebtAppointment || !isAdminManualDebtServiceKey(serviceKey)) {
     return { released: false, amount: 0, serviceKey };
   }
 
@@ -2203,9 +2244,11 @@ async function createAppointmentForTargetUser({
   notes = "",
   bypassWindow = false,
   bypassCredits = false,
+  allowDebtIfNoCredits = false,
   fixedScheduleId = null,
   monthlyRolloverMonthKey = "",
   skipActivityLog = false,
+  session = null,
 }) {
   const basic = validateBasicSlotRulesAdmin({
     date,
@@ -2220,7 +2263,9 @@ async function createAppointmentForTargetUser({
     throw e;
   }
 
-  const targetUser = await User.findById(userId);
+  const targetUserQuery = User.findById(userId);
+  if (session) targetUserQuery.session(session);
+  const targetUser = await targetUserQuery;
   if (!targetUser) {
     const e = new Error("USER_NOT_FOUND");
     e.http = 404;
@@ -2242,14 +2287,19 @@ async function createAppointmentForTargetUser({
   recalcUserCredits(targetUser);
 
   const requestedSk = basic.serviceKey;
-  if (!bypassCredits) {
-    if ((targetUser.credits || 0) <= 0 || getServiceBalance(targetUser, requestedSk, basic.slotDate) <= 0) {
+  const hasCreditsForRequestedService =
+    (targetUser.credits || 0) > 0 &&
+    getServiceBalance(targetUser, requestedSk, basic.slotDate) > 0 &&
+    hasValidCreditsForServiceAndSlot(targetUser, requestedSk, basic.slotDate);
+
+  if (!bypassCredits && !hasCreditsForRequestedService) {
+    if (allowDebtIfNoCredits && isAdminManualDebtServiceKey(requestedSk)) {
+      // El admin puede asignar igual: después generamos deuda del servicio.
+    } else if ((targetUser.credits || 0) <= 0 || getServiceBalance(targetUser, requestedSk, basic.slotDate) <= 0) {
       const e = new Error("NO_CREDITS");
       e.http = 403;
       throw e;
-    }
-
-    if (!hasValidCreditsForServiceAndSlot(targetUser, requestedSk, basic.slotDate)) {
+    } else {
       const e = new Error(`NO_CREDITS_FOR_SLOT_${requestedSk}`);
       e.http = 403;
       throw e;
@@ -2262,11 +2312,14 @@ async function createAppointmentForTargetUser({
     date,
     time: t,
     serviceKey: basic.serviceKey,
+    session,
   });
 
-  const alreadyByUser = await Appointment.findOne(
+  const alreadyByUserQuery = Appointment.findOne(
     buildReservedSlotQuery(date, t, { user: targetUser._id })
-  ).lean();
+  );
+  if (session) alreadyByUserQuery.session(session);
+  const alreadyByUser = await alreadyByUserQuery.lean();
 
   if (alreadyByUser) {
     const e = new Error("ALREADY_HAVE_SLOT");
@@ -2274,9 +2327,11 @@ async function createAppointmentForTargetUser({
     throw e;
   }
 
-  const existingAtSlot = await Appointment.find(
+  const existingAtSlotQuery = Appointment.find(
     buildReservedSlotQuery(date, t)
-  ).lean();
+  );
+  if (session) existingAtSlotQuery.session(session);
+  const existingAtSlot = await existingAtSlotQuery.lean();
 
   const stats = getSlotReservationStats(existingAtSlot, date, t);
 
@@ -2310,8 +2365,13 @@ async function createAppointmentForTargetUser({
   let effectiveUser = targetUser;
   let usedLotId = null;
   let usedLotExp = null;
+  let creditDebitStatus = "";
+  let creditDebitedAt = null;
+  let fixedDebitProcessedAt = null;
+  let fixedDebtAmount = 0;
+  let manualBillingAction = "none";
 
-  if (!bypassCredits) {
+  if (!bypassCredits && hasCreditsForRequestedService) {
     const consumed = await consumeCreditAtomic({
       userId: targetUser._id,
       serviceKey: basic.serviceKey,
@@ -2325,13 +2385,48 @@ async function createAppointmentForTargetUser({
         serviceKey: basic.serviceKey,
       },
       slotDate: basic.slotDate,
-      session: null,
+      session,
     });
 
     effectiveUser = consumed.user;
     usedLotId = consumed.usedLotId;
     usedLotExp = consumed.usedLotExp;
-  } else {
+    creditDebitStatus = "debited";
+    creditDebitedAt = new Date();
+    fixedDebitProcessedAt = creditDebitedAt;
+    manualBillingAction = "debited";
+  } else if (!bypassCredits && allowDebtIfNoCredits && isAdminManualDebtServiceKey(requestedSk)) {
+    const now = new Date();
+
+    ensureFixedScheduleDebtObject(targetUser);
+    targetUser.fixedScheduleDebt[requestedSk] =
+      Number(targetUser.fixedScheduleDebt?.[requestedSk] || 0) + 1;
+    targetUser.markModified?.("fixedScheduleDebt");
+
+    targetUser.history = Array.isArray(targetUser.history) ? targetUser.history : [];
+    targetUser.history.push({
+      action: "manual_admin_debt",
+      title: `Deuda generada por turno manual ${requestedSk}`,
+      message: "El admin asignó un turno manual sin crédito disponible. Se generó 1 sesión adeudada del servicio.",
+      date,
+      time: t,
+      service: basic.serviceName,
+      serviceName: basic.serviceName,
+      serviceKey: basic.serviceKey,
+      qty: 1,
+      createdAt: now,
+    });
+
+    recalcUserCredits(targetUser);
+    if (session) await targetUser.save({ session });
+    else await targetUser.save();
+
+    effectiveUser = targetUser;
+    creditDebitStatus = "debt";
+    fixedDebtAmount = 1;
+    fixedDebitProcessedAt = now;
+    manualBillingAction = "debt";
+  } else if (bypassCredits) {
     targetUser.history = Array.isArray(targetUser.history) ? targetUser.history : [];
     targetUser.history.push({
       action: fixedScheduleId ? "turno_fijo_asignado" : "reservado_por_admin_sin_credito",
@@ -2346,8 +2441,10 @@ async function createAppointmentForTargetUser({
       createdAt: new Date(),
     });
     recalcUserCredits(targetUser);
-    await targetUser.save();
+    if (session) await targetUser.save({ session });
+    else await targetUser.save();
     effectiveUser = targetUser;
+    manualBillingAction = fixedScheduleId ? "pending_fixed_billing" : "skipped";
   }
 
   console.log("[BOOKING DEBUG AFTER CONSUME]", {
@@ -2359,23 +2456,35 @@ async function createAppointmentForTargetUser({
     lots: serializeUserCreditLots(effectiveUser),
   });
 
-  const created = await Appointment.create({
-    date,
-    time: t,
-    service: basic.serviceName,
-    user: targetUser._id,
-    status: "reserved",
-    creditLotId: usedLotId,
-    creditExpiresAt: usedLotExp,
-    createdByRole: String(actorReq?.user?.role || "").toLowerCase(),
-    createdByUser: actorReq?.user?._id || actorReq?.user?.id || null,
-    assignedManually: true,
-    fixedScheduleId: fixedScheduleId || null,
-    monthlyRolloverMonthKey: monthlyRolloverMonthKey || "",
-  });
+  const createdDocs = await Appointment.create(
+    [{
+      date,
+      time: t,
+      service: basic.serviceName,
+      serviceKey: basic.serviceKey,
+      user: targetUser._id,
+      status: "reserved",
+      creditLotId: usedLotId,
+      creditExpiresAt: usedLotExp,
+      creditDebitStatus,
+      creditDebitedAt,
+      fixedDebitProcessedAt,
+      fixedDebtAmount,
+      createdByRole: String(actorReq?.user?.role || "").toLowerCase(),
+      createdByUser: actorReq?.user?._id || actorReq?.user?.id || null,
+      assignedManually: true,
+      fixedScheduleId: fixedScheduleId || null,
+      monthlyRolloverMonthKey: monthlyRolloverMonthKey || "",
+    }],
+    session ? { session } : undefined
+  );
 
-  const populated = await Appointment.findById(created._id)
+  const created = Array.isArray(createdDocs) ? createdDocs[0] : createdDocs;
+
+  const populatedQuery = Appointment.findById(created._id)
     .populate("user", "name lastName email");
+  if (session) populatedQuery.session(session);
+  const populated = await populatedQuery;
 
   if (!skipActivityLog) {
     await logActivity({
@@ -2399,6 +2508,9 @@ async function createAppointmentForTargetUser({
   const serialized = serializeAppointment(populated);
   serialized.userCredits = Number(effectiveUser.credits || 0);
   serialized.userCreditLots = serializeUserCreditLots(effectiveUser);
+  serialized.manualBillingAction = manualBillingAction;
+  serialized.billingAction = manualBillingAction;
+  serialized.fixedScheduleDebt = effectiveUser?.fixedScheduleDebt || {};
 
   return serialized;
 }
@@ -3479,27 +3591,38 @@ router.post("/admin/assign", async (req, res) => {
     const conflicts = [];
 
     for (const it of items) {
+      const itemSession = await mongoose.startSession();
       try {
-        const ap = await createAppointmentForTargetUser({
-          userId,
-          actorReq: req,
-          date: String(it?.date || "").slice(0, 10),
-          time: String(it?.time || "").slice(0, 5),
-          service: String(it?.service || "").trim(),
-          serviceKey: String(it?.serviceKey || "").trim(),
-          notes,
-          bypassWindow: true,
-          bypassCredits: true,
-          skipActivityLog: true,
+        let ap = null;
+
+        await itemSession.withTransaction(async () => {
+          ap = await createAppointmentForTargetUser({
+            userId,
+            actorReq: req,
+            date: String(it?.date || "").slice(0, 10),
+            time: String(it?.time || "").slice(0, 5),
+            service: String(it?.service || "").trim(),
+            serviceKey: String(it?.serviceKey || "").trim(),
+            notes,
+            bypassWindow: true,
+            bypassCredits: false,
+            allowDebtIfNoCredits: true,
+            skipActivityLog: true,
+            session: itemSession,
+          });
         });
+
         created.push(ap);
       } catch (e) {
         conflicts.push({
           date: String(it?.date || "").slice(0, 10),
           time: String(it?.time || "").slice(0, 5),
           service: String(it?.service || "").trim(),
+          serviceKey: String(it?.serviceKey || "").trim(),
           error: e?.message || "No se pudo asignar.",
         });
+      } finally {
+        await itemSession.endSession();
       }
     }
 
@@ -3550,11 +3673,18 @@ router.post("/admin/assign", async (req, res) => {
       });
     }
 
+    const billingSummary = {
+      debited: created.filter((x) => x?.manualBillingAction === "debited" || x?.billingAction === "debited").length,
+      debt: created.filter((x) => x?.manualBillingAction === "debt" || x?.billingAction === "debt").length,
+      skipped: created.filter((x) => ["skipped", "none"].includes(String(x?.manualBillingAction || x?.billingAction || ""))).length,
+    };
+
     return res.status(201).json({
       ok: true,
       items: created,
       createdCount: created.length,
       conflictsCount: conflicts.length,
+      billingSummary,
       conflicts,
     });
   } catch (err) {
@@ -4044,6 +4174,7 @@ router.post("/", async (req, res) => {
           date,
           time: t,
           service: basic.serviceName,
+          serviceKey: basic.serviceKey,
           user: user._id,
           status: "reserved",
           creditLotId: usedLotId,
@@ -4319,6 +4450,7 @@ router.post("/batch", async (req, res) => {
             date: it.date,
             time: it.time,
             service: it.service,
+            serviceKey: it.serviceKey,
             user: user._id,
             status: "reserved",
             creditLotId: consumed.usedLotId,
@@ -4491,15 +4623,68 @@ router.post("/admin/cancel/:id", ensureStaff, async (req, res) => {
       let refundReason = "ADMIN_NO_POLICY";
 
       if (ap.creditLotId) {
-        updatedUser = await refundCreditAtomicToOriginalLotOrNewLot({
-          userId: user._id,
-          lotId: ap.creditLotId,
-          apService: ap.service,
-          historyItem,
+        const debtSettlement = await settleFixedScheduleDebtWithCancelledCreditOnCancel({
+          user: updatedUser,
+          appointment: ap,
+          historyItem: {
+            ...historyItem,
+            action: "debt_settled_by_admin_cancelled_credit",
+            title: "Deuda compensada por cancelación administrativa",
+            message:
+              "Se canceló administrativamente un turno ya debitado. Como existía deuda del mismo servicio, se compensó la deuda pendiente.",
+          },
           session,
         });
+
+        if (debtSettlement.settled) {
+          updatedUser = debtSettlement.user;
+          refundApplied = true;
+          refundMode = "admin-debt-settlement";
+          refundReason = "ADMIN_DEBT_SETTLEMENT";
+        } else {
+          updatedUser = await refundCreditAtomicToOriginalLotOrNewLot({
+            userId: user._id,
+            lotId: ap.creditLotId,
+            apService: ap.service,
+            historyItem,
+            session,
+          });
+          refundApplied = true;
+          refundMode = "admin-no-policy";
+        }
+      } else if (isUnpaidDebtAppointment(ap)) {
+        const debtRelease = await releaseFixedAppointmentDebtOnCancel({
+          user: updatedUser,
+          appointment: ap,
+          historyItem: {
+            ...historyItem,
+            action: "manual_or_fixed_debt_released_by_admin_cancel",
+            title: "Deuda liberada por cancelación administrativa",
+            message: "Se canceló administrativamente un turno marcado como deuda. Se bajó la deuda pendiente del servicio.",
+          },
+          session,
+        });
+
+        updatedUser = user;
+        refundApplied = !!debtRelease.released;
+        refundMode = debtRelease.released ? "admin-debt-release" : "none";
+        refundReason = debtRelease.released ? "ADMIN_DEBT_RELEASE" : refundReason;
+      } else if (isSettledDebtAppointmentWithoutLot(ap)) {
+        const refunded = await refundCreditAtomicNewLot({
+          userId: user._id,
+          apService: ap.service,
+          historyItem: {
+            ...historyItem,
+            action: "settled_debt_refunded_by_admin_cancel",
+            title: "Crédito devuelto por cancelación administrativa",
+            message: "El turno había nacido como deuda y luego fue saldado. Al cancelarlo administrativamente, se generó un crédito de reintegro.",
+          },
+          session,
+        });
+        updatedUser = refunded.user;
         refundApplied = true;
-        refundMode = "admin-no-policy";
+        refundMode = "admin-settled-debt-refund";
+        refundReason = "ADMIN_SETTLED_DEBT_REFUND";
       } else if (!ap.assignedManually && !ap.fixedScheduleId) {
         const refunded = await refundCreditAtomicNewLot({
           userId: user._id,
@@ -4710,14 +4895,14 @@ router.delete("/:id", async (req, res) => {
       let updatedUser = user;
 
       if (decision.refund) {
-        if (ap.fixedScheduleId && !ap.creditLotId) {
+        if (!ap.creditLotId && (isUnpaidDebtAppointment(ap) || isSettledDebtAppointmentWithoutLot(ap))) {
           const debtRelease = await releaseFixedAppointmentDebtOnCancel({
             user: updatedUser,
             appointment: ap,
             historyItem: {
-              action: "fixed_schedule_debt_released_by_cancel",
-              title: "Deuda de turno fijo liberada",
-              message: "Se canceló un turno fijo que estaba marcado como deuda. Se bajó la deuda antes de generar crédito positivo.",
+              action: "appointment_debt_released_by_cancel",
+              title: "Deuda de turno manual/fijo liberada",
+              message: "Se canceló un turno manual/fijo que estaba marcado como deuda. Se bajó la deuda antes de generar crédito positivo.",
               date: ap.date,
               time: ap.time,
               service: ap.service,
@@ -4729,15 +4914,10 @@ router.delete("/:id", async (req, res) => {
 
           if (debtRelease.released) {
             decision.refund = true;
-            decision.refundMode = "fixed-debt-release";
-            decision.reason = "FIXED_SCHEDULE_DEBT_RELEASED_BY_CANCEL";
+            decision.refundMode = "debt-release";
+            decision.reason = "APPOINTMENT_DEBT_RELEASED_BY_CANCEL";
             updatedUser = user;
-          } else if (
-            ap.fixedScheduleId &&
-            !ap.creditLotId &&
-            isFixedBillingServiceKey(serviceToKey(ap.serviceKey || ap.service || "")) &&
-            String(ap.creditDebitStatus || "") === "monthly_reserved"
-          ) {
+          } else if (isSettledDebtAppointmentWithoutLot(ap)) {
             // Caso especial:
             // El turno fijo había nacido como deuda, pero luego el admin agregó
             // créditos y esa deuda se saldó. En ese momento el turno queda
@@ -4749,9 +4929,9 @@ router.delete("/:id", async (req, res) => {
               apService: ap.service,
               historyItem: {
                 action: decision.historyAction,
-                title: "Crédito devuelto por cancelación de turno fijo saldado",
+                title: "Crédito devuelto por cancelación de turno manual/fijo saldado",
                 message:
-                  "Se canceló un turno fijo cuya deuda ya había sido saldada con créditos cargados por el admin. Se generó un crédito de reintegro.",
+                  "Se canceló un turno manual/fijo cuya deuda ya había sido saldada con créditos cargados por el admin. Se generó un crédito de reintegro.",
                 date: ap.date,
                 time: ap.time,
                 service: ap.service,
@@ -4768,7 +4948,7 @@ router.delete("/:id", async (req, res) => {
           } else {
             decision.refund = false;
             decision.refundMode = "none";
-            decision.reason = "Turno fijo sin crédito consumido: no corresponde reintegro automático.";
+            decision.reason = "Turno manual/fijo sin crédito consumido: no corresponde reintegro automático.";
           }
         } else if (ap.creditLotId) {
           const fixedDebtSettlement = await settleFixedScheduleDebtWithCancelledCreditOnCancel({
