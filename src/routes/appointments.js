@@ -1153,10 +1153,14 @@ function scheduleBlockReason(block) {
   );
 }
 
-async function findActiveScheduleBlock({ date, time, serviceKey, session = null }) {
+function blockId(block) {
+  return String(block?._id || block?.id || "");
+}
+
+async function findActiveScheduleBlocksForDateService({ date, serviceKey, session = null }) {
   const day = String(date || "").slice(0, 10);
   const sk = normalizeServiceKey(serviceKey);
-  if (!day || !sk) return null;
+  if (!day || !sk) return [];
 
   const query = ScheduleBlock.find({
     active: true,
@@ -1182,13 +1186,90 @@ async function findActiveScheduleBlock({ date, time, serviceKey, session = null 
   if (session) query.session(session);
 
   const candidates = await query.lean();
+  return (candidates || []).filter((block) => dateMatchesScheduleBlock(block, day));
+}
+
+function scheduleBlockCoversEveryTime(block, times = []) {
+  if (!block || !Array.isArray(times) || !times.length) return false;
+  if (block.allDay) return true;
+
+  return times.every((time) => timeIsInsideScheduleBlock(block, time));
+}
+
+async function getFullDayScheduleBlockInfo({ date, serviceKey, times = [], session = null }) {
+  const cleanTimes = (Array.isArray(times) ? times : [])
+    .map((t) => String(t || "").slice(0, 5))
+    .filter(Boolean);
+
+  if (!cleanTimes.length) {
+    return { blocked: false, reason: "", blockIds: [], blockByTime: {} };
+  }
+
+  const blocks = await findActiveScheduleBlocksForDateService({
+    date,
+    serviceKey,
+    session,
+  });
+
+  if (!blocks.length) {
+    return { blocked: false, reason: "", blockIds: [], blockByTime: {} };
+  }
+
+  const blockByTime = {};
+  for (const time of cleanTimes) {
+    const block = blocks.find((candidate) => timeIsInsideScheduleBlock(candidate, time)) || null;
+    if (block) blockByTime[time] = block;
+  }
+
+  const blocked = cleanTimes.every((time) => !!blockByTime[time]);
+  if (!blocked) {
+    return { blocked: false, reason: "", blockIds: [], blockByTime };
+  }
+
+  const fullDayBlock = blocks.find((block) => scheduleBlockCoversEveryTime(block, cleanTimes));
+  const firstBlock = fullDayBlock || blockByTime[cleanTimes[0]] || blocks[0];
+  const blockIds = [
+    ...new Set(
+      cleanTimes
+        .map((time) => blockId(blockByTime[time]))
+        .filter(Boolean)
+    ),
+  ];
+
+  return {
+    blocked: true,
+    reason: scheduleBlockReason(firstBlock),
+    blockIds,
+    blockByTime,
+    fullDayBlock: fullDayBlock || null,
+  };
+}
+
+function buildScheduleBlockedSlots(times = [], fullDayInfo = {}) {
+  return (Array.isArray(times) ? times : []).map((time) => {
+    const t = String(time || "").slice(0, 5);
+    const block = fullDayInfo?.blockByTime?.[t] || fullDayInfo?.fullDayBlock || null;
+
+    return {
+      time: t,
+      state: "blocked",
+      reason: block ? scheduleBlockReason(block) : fullDayInfo?.reason || "Agenda bloqueada",
+      totalReserved: 0,
+      capacity: 0,
+      reserved: 0,
+      available: 0,
+      availableVacancies: 0,
+      blockId: blockId(block) || "",
+      dayBlocked: true,
+    };
+  });
+}
+
+async function findActiveScheduleBlock({ date, time, serviceKey, session = null }) {
+  const blocks = await findActiveScheduleBlocksForDateService({ date, serviceKey, session });
 
   return (
-    candidates.find(
-      (block) =>
-        dateMatchesScheduleBlock(block, day) &&
-        timeIsInsideScheduleBlock(block, time)
-    ) || null
+    blocks.find((block) => timeIsInsideScheduleBlock(block, time)) || null
   );
 }
 
@@ -3168,6 +3249,111 @@ router.delete("/waitlist/:id", ensureStaff, async (req, res) => {
 });
 
 /* =========================
+   GET /appointments/availability/month
+   Devuelve estado por día para que el front desactive días bloqueados completos.
+========================= */
+router.get("/availability/month", async (req, res) => {
+  try {
+    const service = String(req.query?.service || "").trim();
+    const serviceKey = String(req.query?.serviceKey || "").trim();
+    const month = String(req.query?.month || "").slice(0, 7);
+
+    let from = String(req.query?.from || "").slice(0, 10);
+    let to = String(req.query?.to || "").slice(0, 10);
+
+    if ((!from || !to) && /^\d{4}-\d{2}$/.test(month)) {
+      const [y, m] = month.split("-").map(Number);
+      from = ymdAR(new Date(y, m - 1, 1));
+      to = ymdAR(new Date(y, m, 0));
+    }
+
+    const identity = normalizeServiceIdentity({ service, serviceKey });
+
+    if (!identity?.serviceKey) {
+      return res.status(400).json({ error: "Falta service." });
+    }
+
+    if (!isValidYMD(from) || !isValidYMD(to) || from > to) {
+      return res.status(400).json({ error: "Rango de fechas inválido." });
+    }
+
+    const start = buildSlotDate(from, "00:00");
+    const end = buildSlotDate(to, "00:00");
+    if (!start || !end) {
+      return res.status(400).json({ error: "Rango de fechas inválido." });
+    }
+
+    const diffDays = Math.floor((end.getTime() - start.getTime()) / (24 * 60 * 60 * 1000)) + 1;
+    if (diffDays > 62) {
+      return res.status(400).json({ error: "El rango máximo permitido es de 62 días." });
+    }
+
+    const normalizedServiceKey = identity.serviceKey;
+    const normalizedServiceName = identity.serviceName;
+    const days = [];
+    const cursor = new Date(start);
+
+    while (cursor.getTime() <= end.getTime()) {
+      const date = ymdAR(cursor);
+      const allowedTimes = getAllowedTimesForService(normalizedServiceKey, date);
+
+      if (!allowedTimes.length || isSunday(date) || isSaturday(date)) {
+        days.push({
+          date,
+          service: normalizedServiceName,
+          serviceKey: normalizedServiceKey,
+          state: "closed",
+          dayBlocked: false,
+          dayDisabled: true,
+          reason: isSunday(date)
+            ? "Domingos no disponibles"
+            : isSaturday(date)
+              ? "Sábados no disponibles para este servicio"
+              : "Sin horarios disponibles",
+          blockIds: [],
+        });
+        cursor.setDate(cursor.getDate() + 1);
+        continue;
+      }
+
+      const fullDayBlockInfo = await getFullDayScheduleBlockInfo({
+        date,
+        serviceKey: normalizedServiceKey,
+        times: allowedTimes,
+      });
+
+      days.push({
+        date,
+        service: normalizedServiceName,
+        serviceKey: normalizedServiceKey,
+        state: fullDayBlockInfo.blocked ? "blocked" : "available",
+        dayBlocked: !!fullDayBlockInfo.blocked,
+        dayDisabled: !!fullDayBlockInfo.blocked,
+        reason: fullDayBlockInfo.blocked ? fullDayBlockInfo.reason : "",
+        blockIds: fullDayBlockInfo.blockIds || [],
+      });
+
+      cursor.setDate(cursor.getDate() + 1);
+    }
+
+    return res.json({
+      ok: true,
+      from,
+      to,
+      service: normalizedServiceName,
+      serviceKey: normalizedServiceKey,
+      days,
+      blockedDays: days
+        .filter((day) => day.dayBlocked)
+        .map((day) => day.date),
+    });
+  } catch (err) {
+    console.error("Error en GET /appointments/availability/month:", err);
+    return res.status(500).json({ error: "Error calculando disponibilidad mensual." });
+  }
+});
+
+/* =========================
    GET /appointments/availability
 ========================= */
 router.get("/availability", async (req, res) => {
@@ -3242,6 +3428,12 @@ router.get("/availability", async (req, res) => {
         date,
         service: normalizedServiceName,
         serviceKey: normalizedServiceKey,
+        dayState: "closed",
+        dayBlocked: false,
+        dayDisabled: true,
+        reason: isSunday(date)
+          ? "Domingos no disponibles"
+          : "Sábados no disponibles para este servicio",
         slots: times.map((t) => ({
           time: t,
           state: "closed",
@@ -3249,6 +3441,26 @@ router.get("/availability", async (req, res) => {
             ? "Domingos no disponibles"
             : "Sábados no disponibles para este servicio",
         })),
+      });
+    }
+
+    const fullDayBlockInfo = await getFullDayScheduleBlockInfo({
+      date,
+      serviceKey: normalizedServiceKey,
+      times,
+    });
+
+    if (fullDayBlockInfo.blocked) {
+      return res.json({
+        date,
+        service: normalizedServiceName,
+        serviceKey: normalizedServiceKey,
+        dayState: "blocked",
+        dayBlocked: true,
+        dayDisabled: true,
+        reason: fullDayBlockInfo.reason,
+        blockIds: fullDayBlockInfo.blockIds || [],
+        slots: buildScheduleBlockedSlots(times, fullDayBlockInfo),
       });
     }
 
