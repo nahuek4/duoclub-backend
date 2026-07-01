@@ -15,6 +15,8 @@ const SERVICE_KEY_TO_NAME = {
   NUT: "Nutrición",
 };
 
+const AR_TIME_ZONE = "America/Argentina/Buenos_Aires";
+
 function ensureStaff(req, res, next) {
   const role = String(req.user?.role || "").toLowerCase().trim();
   if (!["admin", "profesor", "staff"].includes(role)) {
@@ -42,7 +44,6 @@ function normalizeServiceKey(value) {
   if (up === "ALL" || up === "TODOS") return "ALL";
   if (up === "AR") return "RA";
   if (up === "KINEDEPO" || up === "KINE-DEPO") return "KD";
-  if (up === "SINERGIA") return "SYN";
   return SERVICE_KEYS.includes(up) ? up : "";
 }
 
@@ -70,6 +71,136 @@ function normalizeWeekdays(value) {
   ).sort((a, b) => a - b);
 }
 
+function getArgentinaNowParts(date = new Date()) {
+  try {
+    const parts = new Intl.DateTimeFormat("en-US", {
+      timeZone: AR_TIME_ZONE,
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+      hour: "2-digit",
+      minute: "2-digit",
+      hour12: false,
+      hourCycle: "h23",
+    }).formatToParts(date);
+
+    const get = (type) => parts.find((p) => p.type === type)?.value || "";
+    const year = get("year");
+    const month = get("month");
+    const day = get("day");
+    const hour = get("hour").padStart(2, "0").slice(-2);
+    const minute = get("minute").padStart(2, "0").slice(-2);
+
+    if (year && month && day && hour && minute) {
+      return {
+        today: `${year}-${month}-${day}`,
+        time: `${hour}:${minute}`,
+      };
+    }
+  } catch {
+    // fallback abajo
+  }
+
+  const y = date.getFullYear();
+  const m = String(date.getMonth() + 1).padStart(2, "0");
+  const d = String(date.getDate()).padStart(2, "0");
+  const hh = String(date.getHours()).padStart(2, "0");
+  const mm = String(date.getMinutes()).padStart(2, "0");
+
+  return {
+    today: `${y}-${m}-${d}`,
+    time: `${hh}:${mm}`,
+  };
+}
+
+function ymdToDate(value) {
+  const [y, m, d] = cleanYmd(value).split("-").map(Number);
+  return new Date(y || 1970, (m || 1) - 1, d || 1);
+}
+
+function dateToYmd(date) {
+  const y = date.getFullYear();
+  const m = String(date.getMonth() + 1).padStart(2, "0");
+  const d = String(date.getDate()).padStart(2, "0");
+  return `${y}-${m}-${d}`;
+}
+
+function weekdayMondayFirst(day) {
+  const [y, m, d] = cleanYmd(day).split("-").map(Number);
+  const js = new Date(y || 1970, (m || 1) - 1, d || 1).getDay();
+  return js === 0 ? 7 : js;
+}
+
+function blockWeekdayMatches(block, day) {
+  const weekdays = Array.isArray(block?.weekdays) ? block.weekdays.map(Number) : [];
+  if (!weekdays.length) return true;
+  return weekdays.includes(weekdayMondayFirst(day));
+}
+
+function hasRemainingOccurrence(block, nowParts = getArgentinaNowParts()) {
+  const dateFrom = cleanYmd(block?.dateFrom);
+  const dateTo = cleanYmd(block?.dateTo || block?.dateFrom);
+  if (!dateFrom || !dateTo) return true;
+
+  if (dateTo < nowParts.today) return false;
+
+  const cursor = ymdToDate(dateFrom > nowParts.today ? dateFrom : nowParts.today);
+  const end = ymdToDate(dateTo);
+  let guard = 0;
+
+  while (cursor <= end && guard < 900) {
+    const day = dateToYmd(cursor);
+
+    if (blockWeekdayMatches(block, day)) {
+      if (day > nowParts.today) return true;
+      if (block?.allDay !== false) return true;
+
+      const timeTo = cleanTime(block?.timeTo);
+      if (!timeTo || timeTo > nowParts.time) return true;
+    }
+
+    cursor.setDate(cursor.getDate() + 1);
+    guard += 1;
+  }
+
+  return false;
+}
+
+function isScheduleBlockExpired(block, nowParts = getArgentinaNowParts()) {
+  if (!block || block.active === false) return false;
+  if (block.indefinite) return false;
+
+  const dateFrom = cleanYmd(block.dateFrom);
+  const dateTo = cleanYmd(block.dateTo || block.dateFrom);
+  if (!dateFrom || !dateTo) return false;
+
+  return !hasRemainingOccurrence(block, nowParts);
+}
+
+async function deactivateExpiredBlocks() {
+  const nowParts = getArgentinaNowParts();
+  const candidates = await ScheduleBlock.find({
+    active: true,
+    indefinite: { $ne: true },
+  })
+    .select("_id active dateFrom dateTo indefinite allDay timeFrom timeTo weekdays")
+    .lean();
+
+  const expiredIds = candidates
+    .filter((block) => isScheduleBlockExpired(block, nowParts))
+    .map((block) => block._id)
+    .filter(Boolean);
+
+  if (expiredIds.length) {
+    await ScheduleBlock.updateMany(
+      { _id: { $in: expiredIds } },
+      { $set: { active: false } }
+    );
+  }
+
+  return expiredIds.length;
+}
+
 function buildPayload(req) {
   const body = req.body || {};
   const serviceKeys = normalizeServiceKeys(body);
@@ -78,7 +209,7 @@ function buildPayload(req) {
   const dateFrom = cleanYmd(body.dateFrom || body.date || "");
   const dateTo = indefinite ? "" : cleanYmd(body.dateTo || body.date || dateFrom);
 
-  return {
+  const payload = {
     title: cleanString(body.title) || cleanString(body.reason) || "Bloqueo de agenda",
     reason: cleanString(body.reason),
     serviceKeys,
@@ -92,6 +223,12 @@ function buildPayload(req) {
     weekdays: normalizeWeekdays(body.weekdays),
     active: body.active !== false,
   };
+
+  if (payload.active && isScheduleBlockExpired(payload)) {
+    payload.active = false;
+  }
+
+  return payload;
 }
 
 function serviceNamesFor(keys = [], allServices = false) {
@@ -105,6 +242,7 @@ function serializeBlock(block) {
   return {
     ...raw,
     id: String(raw?._id || raw?.id || ""),
+    expired: isScheduleBlockExpired(raw),
     serviceNames: serviceNamesFor(raw?.serviceKeys || [], raw?.allServices === true),
   };
 }
@@ -115,6 +253,7 @@ router.use(ensureStaff);
 router.get("/", async (req, res) => {
   try {
     const includeInactive = String(req.query?.active || "1") === "0";
+    const autoDeactivatedCount = await deactivateExpiredBlocks();
     const q = includeInactive ? {} : { active: true };
 
     const items = await ScheduleBlock.find(q)
@@ -124,6 +263,7 @@ router.get("/", async (req, res) => {
 
     return res.json({
       ok: true,
+      autoDeactivatedCount,
       items: items.map(serializeBlock),
     });
   } catch (err) {
@@ -193,12 +333,20 @@ router.patch("/:id", async (req, res) => {
       Object.assign(next, buildPayload(req));
     }
 
+    if (next.active !== false && isScheduleBlockExpired({ ...current.toObject(), ...next })) {
+      next.active = false;
+    }
+
     next.updatedBy = req.user?._id || null;
 
-    const updated = await ScheduleBlock.findByIdAndUpdate(id, { $set: next }, {
-      new: true,
-      runValidators: true,
-    });
+    const updated = await ScheduleBlock.findByIdAndUpdate(
+      id,
+      { $set: next },
+      {
+        new: true,
+        runValidators: true,
+      }
+    );
 
     return res.json({ ok: true, item: serializeBlock(updated) });
   } catch (err) {
