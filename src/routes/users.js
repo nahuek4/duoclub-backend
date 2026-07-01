@@ -348,7 +348,7 @@ function fixedScheduleDebtByServiceKey(u) {
     RA: Math.max(0, Number(raw?.RA || 0)),
     KD: Math.max(0, Number(raw?.KD || 0)),
     SYN: Math.max(0, Number(raw?.SYN || 0)),
-    NUT: 0,
+    NUT: Math.max(0, Number(raw?.NUT || 0)),
   };
 }
 
@@ -477,7 +477,7 @@ function consumeCreditsForService(user, toRemove, serviceKey) {
 
 function ensureFixedScheduleDebt(user) {
   user.fixedScheduleDebt = user.fixedScheduleDebt || {};
-  for (const k of ["EP", "RA", "RF", "KD", "SYN"]) {
+  for (const k of ["EP", "RA", "RF", "KD", "SYN", "NUT"]) {
     const n = Number(user.fixedScheduleDebt?.[k] || 0);
     user.fixedScheduleDebt[k] = Number.isFinite(n) ? Math.max(0, Math.trunc(n)) : 0;
   }
@@ -503,16 +503,14 @@ async function settleFixedScheduleDebt(user, { amount, serviceKey, source = "cre
   user.markModified?.("fixedScheduleDebt");
 
   // IMPORTANTE:
-  // Cuando el admin agrega créditos y esos créditos se usan para saldar deuda
-  // de turnos fijos, también marcamos los turnos asociados en deuda como
-  // "mensualmente reservados". Si no hacemos esto, después el usuario cancela
-  // esos turnos futuros y el sistema no sabe que esa deuda ya fue pagada con créditos,
-  // por eso no podía devolver las últimas cancelaciones.
-  const settledAppointments = await Appointment.find({
+  // Cuando el admin agrega créditos y esos créditos se usan para saldar deuda,
+  // también marcamos los turnos asociados en deuda como "mensualmente reservados".
+  // Esto aplica tanto a turnos fijos como a turnos manuales asignados por admin.
+  // Si no hacemos esto, después al cancelar el turno el sistema no sabe que esa
+  // deuda ya fue pagada con créditos y no puede devolver correctamente.
+  const debtCandidates = await Appointment.find({
     user: user._id,
-    serviceKey: sk,
     status: { $in: ["reserved", "completed"] },
-    fixedScheduleId: { $ne: null },
     creditLotId: null,
     $or: [
       { creditDebitStatus: "debt" },
@@ -520,7 +518,13 @@ async function settleFixedScheduleDebt(user, { amount, serviceKey, source = "cre
     ],
   })
     .sort({ date: 1, time: 1, createdAt: 1 })
-    .limit(settled);
+    .limit(Math.max(settled * 5, settled + 20));
+
+  const settledAppointments = debtCandidates
+    .filter((ap) =>
+      canonicalServiceKeyFromValue(ap?.serviceKey || ap?.service || ap?.serviceName || "") === sk
+    )
+    .slice(0, settled);
 
   const settledAppointmentIds = settledAppointments.map((ap) => ap._id);
 
@@ -529,11 +533,12 @@ async function settleFixedScheduleDebt(user, { amount, serviceKey, source = "cre
       { _id: { $in: settledAppointmentIds } },
       {
         $set: {
+          serviceKey: sk,
           creditDebitStatus: "monthly_reserved",
           fixedDebtAmount: 0,
           creditDebitedAt: now,
           fixedDebitProcessedAt: now,
-          refundReason: "FIXED_DEBT_SETTLED_BY_ADMIN_CREDITS",
+          refundReason: "DEBT_SETTLED_BY_ADMIN_CREDITS",
         },
       }
     );
@@ -542,8 +547,8 @@ async function settleFixedScheduleDebt(user, { amount, serviceKey, source = "cre
   user.history = Array.isArray(user.history) ? user.history : [];
   user.history.push({
     action: "fixed_schedule_debt_settled",
-    title: `Deuda de turnos fijos saldada ${sk}`,
-    message: `Se usaron ${settled} crédito(s) acreditados para saldar deuda pendiente de turnos fijos.${settledAppointmentIds.length ? " Los turnos asociados quedaron marcados como pagados para permitir reintegro si se cancelan dentro de política." : ""}`,
+    title: `Deuda saldada ${sk}`,
+    message: `Se usaron ${settled} crédito(s) acreditados para saldar deuda pendiente.${settledAppointmentIds.length ? " Los turnos asociados quedaron marcados como pagados para permitir reintegro si se cancelan dentro de política." : ""}`,
     serviceKey: sk,
     serviceName: SERVICE_KEY_TO_NAME[sk] || sk,
     service: SERVICE_KEY_TO_NAME[sk] || sk,
@@ -614,7 +619,7 @@ function buildCreditsByService(user) {
     RA: sumCreditsForService(user, "RA") - Number(debt.RA || 0),
     KD: sumCreditsForService(user, "KD") - Number(debt.KD || 0),
     SYN: sumCreditsForService(user, "SYN") - Number(debt.SYN || 0),
-    NUT: sumCreditsForService(user, "NUT"),
+    NUT: sumCreditsForService(user, "NUT") - Number(debt.NUT || 0),
   };
 
   if (!firstEvaluationCompleted) {
