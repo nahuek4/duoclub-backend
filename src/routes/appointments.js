@@ -1160,13 +1160,22 @@ async function findActiveScheduleBlock({ date, time, serviceKey, session = null 
 
   const query = ScheduleBlock.find({
     active: true,
-    serviceKeys: sk,
     dateFrom: { $lte: day },
-    $or: [
-      { indefinite: true },
-      { dateTo: { $gte: day } },
-      { dateTo: "" },
-      { dateTo: { $exists: false } },
+    $and: [
+      {
+        $or: [
+          { serviceKeys: sk },
+          { allServices: true },
+        ],
+      },
+      {
+        $or: [
+          { indefinite: true },
+          { dateTo: { $gte: day } },
+          { dateTo: "" },
+          { dateTo: { $exists: false } },
+        ],
+      },
     ],
   }).sort({ createdAt: -1 });
 

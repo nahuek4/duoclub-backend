@@ -11,6 +11,7 @@ const SERVICE_KEY_TO_NAME = {
   RA: "Rehabilitación Activa",
   RF: "Reeducación Funcional",
   KD: "Kinefilaxia Deportiva",
+  SYN: "Synergy",
   NUT: "Nutrición",
 };
 
@@ -41,6 +42,7 @@ function normalizeServiceKey(value) {
   if (up === "ALL" || up === "TODOS") return "ALL";
   if (up === "AR") return "RA";
   if (up === "KINEDEPO" || up === "KINE-DEPO") return "KD";
+  if (up === "SINERGIA") return "SYN";
   return SERVICE_KEYS.includes(up) ? up : "";
 }
 
@@ -82,7 +84,7 @@ function buildPayload(req) {
     serviceKeys,
     allServices: serviceKeys.length === SERVICE_KEYS.length,
     dateFrom,
-    dateTo: dateTo || dateFrom,
+    dateTo: indefinite ? "" : (dateTo || dateFrom),
     indefinite,
     allDay,
     timeFrom: allDay ? "" : cleanTime(body.timeFrom),
@@ -92,9 +94,9 @@ function buildPayload(req) {
   };
 }
 
-function serviceNamesFor(keys = []) {
+function serviceNamesFor(keys = [], allServices = false) {
   const list = Array.isArray(keys) ? keys : [];
-  if (list.length === SERVICE_KEYS.length) return "Todos los servicios";
+  if (allServices || list.length === SERVICE_KEYS.length) return "Todos los servicios";
   return list.map((k) => SERVICE_KEY_TO_NAME[k] || k).join(", ");
 }
 
@@ -103,7 +105,7 @@ function serializeBlock(block) {
   return {
     ...raw,
     id: String(raw?._id || raw?.id || ""),
-    serviceNames: serviceNamesFor(raw?.serviceKeys || []),
+    serviceNames: serviceNamesFor(raw?.serviceKeys || [], raw?.allServices === true),
   };
 }
 

@@ -1,6 +1,6 @@
 import mongoose from "mongoose";
 
-const SERVICE_KEYS = ["PE", "EP", "RA", "RF", "KD", "NUT"];
+const SERVICE_KEYS = ["PE", "EP", "RA", "RF", "KD", "SYN", "NUT"];
 const SERVICE_KEY_SET = new Set(SERVICE_KEYS);
 
 function cleanString(value) {
@@ -21,6 +21,7 @@ function normalizeServiceKey(value) {
   const up = cleanString(value).toUpperCase();
   if (up === "AR") return "RA";
   if (up === "KINEDEPO" || up === "KINE-DEPO") return "KD";
+  if (up === "SINERGIA") return "SYN";
   return SERVICE_KEY_SET.has(up) ? up : "";
 }
 
