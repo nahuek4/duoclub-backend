@@ -31,7 +31,7 @@ import {
 } from "../lib/activityLogger.js";
 
 const router = express.Router();
-const APTO_DEBUG_VERSION = "APTO_DEBUG_V15_2026-06-20";
+const APTO_DEBUG_VERSION = "APTO_UPLOAD_FIX_V16_2026-07-02";
 
 /* ============================================
    CONFIG GLOBAL: VENCIMIENTO CRÉDITOS
@@ -215,32 +215,49 @@ const uploadApto = multer({
   },
 });
 
+function getUploadedAptoFile(req) {
+  if (req?.file) return req.file;
+
+  const files = req?.files || {};
+  const acceptedFields = ["apto", "file", "pdf", "aptoFile"];
+
+  for (const field of acceptedFields) {
+    const value = files?.[field];
+    if (Array.isArray(value) && value[0]) return value[0];
+    if (value) return value;
+  }
+
+  return null;
+}
+
 function uploadAptoSingle(req, res, next) {
-  // Campo oficial: "apto". Dejamos aliases para tolerar versiones viejas
-  // del front o pruebas manuales sin romper con "Unexpected field".
   const handler = uploadApto.fields([
     { name: "apto", maxCount: 1 },
     { name: "file", maxCount: 1 },
     { name: "pdf", maxCount: 1 },
+    { name: "aptoFile", maxCount: 1 },
   ]);
 
   handler(req, res, (err) => {
-    if (err) {
-      if (err.code === "LIMIT_FILE_SIZE") {
-        return res.status(400).json({ error: "El PDF supera el límite de 10MB." });
-      }
-      return res
-        .status(400)
-        .json({ error: err.message || "Error al subir el archivo." });
+    if (!err) {
+      req.file = getUploadedAptoFile(req);
+      return next();
     }
 
-    req.file =
-      req.files?.apto?.[0] ||
-      req.files?.file?.[0] ||
-      req.files?.pdf?.[0] ||
-      null;
+    if (err.code === "LIMIT_FILE_SIZE") {
+      return res.status(400).json({ error: "El PDF supera el límite de 10MB." });
+    }
 
-    return next();
+    if (err.code === "LIMIT_UNEXPECTED_FILE") {
+      return res.status(400).json({
+        error: "El campo del archivo no es válido. Usá el campo apto.",
+        detail: err.field ? `Campo recibido: ${err.field}` : "Campo inesperado.",
+      });
+    }
+
+    return res
+      .status(400)
+      .json({ error: err.message || "Error al subir el archivo." });
   });
 }
 
@@ -2030,15 +2047,19 @@ router.post("/:id/apto", validateObjectIdParam, uploadAptoSingle, async (req, re
   try {
     res.setHeader("X-Duo-Apto-Debug", APTO_DEBUG_VERSION);
     const { id } = req.params;
-    console.log("[APTO_UPLOAD_V9] route hit", {
+    const uploadedAptoFile = getUploadedAptoFile(req);
+
+    console.log("[APTO_UPLOAD_V10] route hit", {
       debugVersion: APTO_DEBUG_VERSION,
       id,
       actorId: String(req.user?._id || ""),
       role: String(req.user?.role || ""),
-      hasFile: !!req.file,
-      fileName: req.file?.filename || "",
-      originalName: req.file?.originalname || "",
-      size: req.file?.size || 0,
+      contentType: String(req.headers?.["content-type"] || ""),
+      hasFile: !!uploadedAptoFile,
+      fileName: uploadedAptoFile?.filename || "",
+      originalName: uploadedAptoFile?.originalname || "",
+      size: uploadedAptoFile?.size || 0,
+      receivedFields: req.files ? Object.keys(req.files) : [],
     });
 
     const isAdmin = req.user.role === "admin";
@@ -2050,8 +2071,11 @@ router.post("/:id/apto", validateObjectIdParam, uploadAptoSingle, async (req, re
       });
     }
 
-    if (!req.file) {
-      return res.status(400).json({ error: "No se recibió ningún archivo." });
+    if (!uploadedAptoFile) {
+      return res.status(400).json({
+        error: "No se recibió ningún archivo.",
+        detail: "El PDF tiene que enviarse como multipart/form-data en el campo apto.",
+      });
     }
 
     const user = await User.findById(id);
@@ -2061,7 +2085,7 @@ router.post("/:id/apto", validateObjectIdParam, uploadAptoSingle, async (req, re
       safeUnlink(absFromPublicUploadsPath(user.aptoPath));
     }
 
-    const newPath = "/uploads/aptos/" + req.file.filename;
+    const newPath = "/uploads/aptos/" + uploadedAptoFile.filename;
     const historyStart = Array.isArray(user.history) ? user.history.length : 0;
 
     user.aptoPath = newPath;
@@ -2099,7 +2123,7 @@ router.post("/:id/apto", validateObjectIdParam, uploadAptoSingle, async (req, re
       runValidators: false,
     }).lean();
 
-    console.log("[APTO_UPLOAD_V9] mongo updated", {
+    console.log("[APTO_UPLOAD_V10] mongo updated", {
       id,
       newPath,
       savedAptoPath: updated?.aptoPath || "",
@@ -2108,7 +2132,7 @@ router.post("/:id/apto", validateObjectIdParam, uploadAptoSingle, async (req, re
     });
 
     if (!updated?.aptoPath) {
-      console.error("[APTO_UPLOAD_V9] mongo update missing aptoPath", {
+      console.error("[APTO_UPLOAD_V10] mongo update missing aptoPath", {
         id,
         newPath,
         updatedFound: !!updated,
