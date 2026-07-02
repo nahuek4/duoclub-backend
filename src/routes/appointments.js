@@ -2326,6 +2326,7 @@ async function createAppointmentForTargetUser({
   bypassWindow = false,
   bypassCredits = false,
   allowDebtIfNoCredits = false,
+  bypassScheduleBlocks = false,
   fixedScheduleId = null,
   monthlyRolloverMonthKey = "",
   skipActivityLog = false,
@@ -2389,12 +2390,14 @@ async function createAppointmentForTargetUser({
 
   const t = String(time).slice(0, 5);
 
-  await assertSlotNotBlocked({
-    date,
-    time: t,
-    serviceKey: basic.serviceKey,
-    session,
-  });
+  if (!bypassScheduleBlocks) {
+    await assertSlotNotBlocked({
+      date,
+      time: t,
+      serviceKey: basic.serviceKey,
+      session,
+    });
+  }
 
   const alreadyByUserQuery = Appointment.findOne(
     buildReservedSlotQuery(date, t, { user: targetUser._id })
@@ -3381,8 +3384,19 @@ router.get("/availability", async (req, res) => {
 
     const requesterId = req.user?._id || req.user?.id;
     const requesterRole = String(req.user?.role || "");
+    const staffAvailabilityRequest = isStaffActor(req);
+    const ignoreScheduleBlocks =
+      staffAvailabilityRequest &&
+      ["1", "true", "yes", "si", "sí"].includes(
+        String(req.query?.ignoreScheduleBlocks || "").toLowerCase().trim()
+      );
+    const bypassWindowForAvailability =
+      staffAvailabilityRequest &&
+      ["1", "true", "yes", "si", "sí"].includes(
+        String(req.query?.bypassWindow || req.query?.adminFixed || "").toLowerCase().trim()
+      );
 
-    if (requesterId && requesterRole !== "admin") {
+    if (requesterId && !staffAvailabilityRequest) {
       await syncPastAppointmentsForUserId(requesterId);
 
       const me = await User.findById(requesterId)
@@ -3444,59 +3458,76 @@ router.get("/availability", async (req, res) => {
       });
     }
 
-    const fullDayBlockInfo = await getFullDayScheduleBlockInfo({
-      date,
-      serviceKey: normalizedServiceKey,
-      times,
-    });
-
-    if (fullDayBlockInfo.blocked) {
-      return res.json({
+    if (!ignoreScheduleBlocks) {
+      const fullDayBlockInfo = await getFullDayScheduleBlockInfo({
         date,
-        service: normalizedServiceName,
         serviceKey: normalizedServiceKey,
-        dayState: "blocked",
-        dayBlocked: true,
-        dayDisabled: true,
-        reason: fullDayBlockInfo.reason,
-        blockIds: fullDayBlockInfo.blockIds || [],
-        slots: buildScheduleBlockedSlots(times, fullDayBlockInfo),
+        times,
       });
+
+      if (fullDayBlockInfo.blocked) {
+        return res.json({
+          date,
+          service: normalizedServiceName,
+          serviceKey: normalizedServiceKey,
+          dayState: "blocked",
+          dayBlocked: true,
+          dayDisabled: true,
+          reason: fullDayBlockInfo.reason,
+          blockIds: fullDayBlockInfo.blockIds || [],
+          slots: buildScheduleBlockedSlots(times, fullDayBlockInfo),
+        });
+      }
     }
 
     const out = [];
 
     for (const time of times) {
       const t = String(time).slice(0, 5);
-      const basic = validateBasicSlotRules({ date, time: t, service: normalizedServiceName, serviceKey: normalizedServiceKey });
+      const basic = bypassWindowForAvailability
+        ? validateBasicSlotRulesAdmin({
+            date,
+            time: t,
+            service: normalizedServiceName,
+            serviceKey: normalizedServiceKey,
+            bypassWindow: true,
+          })
+        : validateBasicSlotRules({
+            date,
+            time: t,
+            service: normalizedServiceName,
+            serviceKey: normalizedServiceKey,
+          });
 
       if (!basic.ok) {
         out.push({ time: t, state: "closed", reason: basic.error });
         continue;
       }
 
-      const block = await findActiveScheduleBlock({
-        date,
-        time: t,
-        serviceKey: normalizedServiceKey,
-      });
-
-      if (block) {
-        out.push({
+      if (!ignoreScheduleBlocks) {
+        const block = await findActiveScheduleBlock({
+          date,
           time: t,
-          state: "blocked",
-          reason: scheduleBlockReason(block),
-          totalReserved: 0,
-          capacity: 0,
-          reserved: 0,
-          available: 0,
-          availableVacancies: 0,
-          blockId: String(block._id || block.id || ""),
+          serviceKey: normalizedServiceKey,
         });
-        continue;
+
+        if (block) {
+          out.push({
+            time: t,
+            state: "blocked",
+            reason: scheduleBlockReason(block),
+            totalReserved: 0,
+            capacity: 0,
+            reserved: 0,
+            available: 0,
+            availableVacancies: 0,
+            blockId: String(block._id || block.id || ""),
+          });
+          continue;
+        }
       }
 
-      if (requesterId && requesterRole !== "admin") {
+      if (requesterId && !staffAvailabilityRequest) {
         const me = await User.findById(requesterId)
           .select("credits creditLots firstEvaluationCompleted")
           .lean();
@@ -4094,6 +4125,7 @@ router.post("/admin/fixed-schedules", async (req, res) => {
           notes,
           bypassWindow: true,
           bypassCredits: true,
+          bypassScheduleBlocks: true,
           fixedScheduleId: fixed._id,
           skipActivityLog: true,
         });
