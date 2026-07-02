@@ -31,7 +31,7 @@ import {
 } from "../lib/activityLogger.js";
 
 const router = express.Router();
-const APTO_DEBUG_VERSION = "APTO_UPLOAD_FIX_V16_2026-07-02";
+const APTO_DEBUG_VERSION = "APTO_UPLOAD_FIX_V17_DIRECT_2026-07-02";
 
 /* ============================================
    CONFIG GLOBAL: VENCIMIENTO CRÉDITOS
@@ -215,28 +215,51 @@ const uploadApto = multer({
   },
 });
 
+function isPdfUploadFile(file) {
+  const name = String(file?.originalname || file?.filename || "").toLowerCase();
+  const mimetype = String(file?.mimetype || "").toLowerCase();
+  return (
+    name.endsWith(".pdf") ||
+    mimetype === "application/pdf" ||
+    mimetype === "application/octet-stream"
+  );
+}
+
+function flattenUploadedFiles(files) {
+  if (!files) return [];
+  if (Array.isArray(files)) return files.filter(Boolean);
+
+  if (typeof files === "object") {
+    return Object.values(files)
+      .flatMap((value) => (Array.isArray(value) ? value : [value]))
+      .filter(Boolean);
+  }
+
+  return [];
+}
+
 function getUploadedAptoFile(req) {
   if (req?.file) return req.file;
 
-  const files = req?.files || {};
-  const acceptedFields = ["apto", "file", "pdf", "aptoFile"];
+  const files = flattenUploadedFiles(req?.files);
+  if (!files.length) return null;
 
-  for (const field of acceptedFields) {
-    const value = files?.[field];
-    if (Array.isArray(value) && value[0]) return value[0];
-    if (value) return value;
-  }
+  // Prioridad al nombre oficial, pero aceptamos cualquier nombre de campo
+  // para diagnosticar y evitar que el front falle por una diferencia mínima.
+  const acceptedFields = new Set(["apto", "file", "pdf", "aptoFile", "aptoFile[]"]);
 
-  return null;
+  return (
+    files.find((file) => acceptedFields.has(String(file?.fieldname || "")) && isPdfUploadFile(file)) ||
+    files.find((file) => isPdfUploadFile(file)) ||
+    files[0] ||
+    null
+  );
 }
 
 function uploadAptoSingle(req, res, next) {
-  const handler = uploadApto.fields([
-    { name: "apto", maxCount: 1 },
-    { name: "file", maxCount: 1 },
-    { name: "pdf", maxCount: 1 },
-    { name: "aptoFile", maxCount: 1 },
-  ]);
+  // Más tolerante que single/fields: acepta cualquier nombre de campo,
+  // pero luego elegimos un PDF y mantenemos "apto" como campo oficial.
+  const handler = uploadApto.any();
 
   handler(req, res, (err) => {
     if (!err) {
@@ -248,16 +271,11 @@ function uploadAptoSingle(req, res, next) {
       return res.status(400).json({ error: "El PDF supera el límite de 10MB." });
     }
 
-    if (err.code === "LIMIT_UNEXPECTED_FILE") {
-      return res.status(400).json({
-        error: "El campo del archivo no es válido. Usá el campo apto.",
-        detail: err.field ? `Campo recibido: ${err.field}` : "Campo inesperado.",
-      });
-    }
-
-    return res
-      .status(400)
-      .json({ error: err.message || "Error al subir el archivo." });
+    return res.status(400).json({
+      debugVersion: APTO_DEBUG_VERSION,
+      error: err.message || "Error al subir el archivo.",
+      detail: err.field ? `Campo recibido: ${err.field}` : "Multer no pudo procesar el multipart/form-data.",
+    });
   });
 }
 
@@ -2049,7 +2067,7 @@ router.post("/:id/apto", validateObjectIdParam, uploadAptoSingle, async (req, re
     const { id } = req.params;
     const uploadedAptoFile = getUploadedAptoFile(req);
 
-    console.log("[APTO_UPLOAD_V10] route hit", {
+    console.log("[APTO_UPLOAD_V17] route hit", {
       debugVersion: APTO_DEBUG_VERSION,
       id,
       actorId: String(req.user?._id || ""),
@@ -2123,7 +2141,7 @@ router.post("/:id/apto", validateObjectIdParam, uploadAptoSingle, async (req, re
       runValidators: false,
     }).lean();
 
-    console.log("[APTO_UPLOAD_V10] mongo updated", {
+    console.log("[APTO_UPLOAD_V17] mongo updated", {
       id,
       newPath,
       savedAptoPath: updated?.aptoPath || "",
@@ -2132,7 +2150,7 @@ router.post("/:id/apto", validateObjectIdParam, uploadAptoSingle, async (req, re
     });
 
     if (!updated?.aptoPath) {
-      console.error("[APTO_UPLOAD_V10] mongo update missing aptoPath", {
+      console.error("[APTO_UPLOAD_V17] mongo update missing aptoPath", {
         id,
         newPath,
         updatedFound: !!updated,
