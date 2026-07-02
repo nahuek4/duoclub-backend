@@ -1845,6 +1845,12 @@ async function updateCredits(req, res) {
         throw err;
       }
 
+      if (sk === "NUT") {
+        const err = new Error("Nutrición no permite carga manual de sesiones desde admin.");
+        err.status = 400;
+        throw err;
+      }
+
       const parseOptionalNumber = (input) => {
         if (input === undefined || input === null || input === "") return null;
 
