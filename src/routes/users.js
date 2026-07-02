@@ -2285,18 +2285,61 @@ router.patch("/:id/apto/status", adminOnly, validateObjectIdParam, async (req, r
     const status = String(req.body?.status || "").toLowerCase().trim();
     const notes = String(req.body?.notes || "").trim();
 
+    if (!["approved", "rejected", "pending_review", "not_submitted", "suspended"].includes(status)) {
+      return res.status(400).json({ error: "Estado de apto inválido." });
+    }
+
     const user = await User.findById(id);
     if (!user) return res.status(404).json({ error: "Usuario no encontrado." });
 
+    const previousAptoPath = String(user.aptoPath || "").trim();
     const prev = {
+      aptoPath: user.aptoPath || "",
       aptoStatus: user.aptoStatus || "",
+      aptoCompletedAt: user.aptoCompletedAt || null,
       suspended: !!user.suspended,
       suspendedReason: user.suspendedReason || "",
       medicalClearance: user.medicalClearance?.toObject?.() || user.medicalClearance || null,
     };
 
     setMedicalClearanceStatus(user, status, { notes, actor: "admin" });
+
+    if (status === "approved") {
+      user.aptoStatus = "approved";
+      user.aptoCompletedAt = user.aptoCompletedAt || new Date();
+      if (previousAptoPath) user.aptoPath = previousAptoPath;
+    }
+
+    if (status === "rejected") {
+      if (previousAptoPath) {
+        safeUnlink(absFromPublicUploadsPath(previousAptoPath));
+      }
+
+      user.aptoPath = "";
+      user.aptoStatus = "rejected";
+      user.aptoCompletedAt = null;
+
+      pushUserHistory(user, {
+        action: "apto_rejected_deleted",
+        title: "Apto físico rechazado",
+        message: notes
+          ? `El apto físico fue rechazado y eliminado. Motivo: ${notes}`
+          : "El apto físico fue rechazado y eliminado. Debe subir uno nuevo.",
+        createdAt: new Date(),
+      });
+    }
+
+    if (status === "not_submitted") {
+      if (previousAptoPath) {
+        safeUnlink(absFromPublicUploadsPath(previousAptoPath));
+      }
+      user.aptoPath = "";
+      user.aptoCompletedAt = null;
+    }
+
     await user.save();
+
+    const savedLean = (await User.findById(id).lean()) || user.toObject?.() || user;
 
     await logActivity({
       req,
@@ -2305,27 +2348,46 @@ router.patch("/:id/apto/status", adminOnly, validateObjectIdParam, async (req, r
       entity: "user",
       entityId: user._id,
       title: "Estado de apto físico actualizado",
-      description: `El apto físico cambió a ${status}.`,
+      description:
+        status === "rejected"
+          ? "El apto físico fue rechazado, se notificó al usuario y se eliminó el archivo cargado."
+          : `El apto físico cambió a ${status}.`,
       subject: buildUserSubject(user),
       diff: buildDiff(prev, {
-        aptoStatus: user.aptoStatus || "",
-        suspended: !!user.suspended,
-        suspendedReason: user.suspendedReason || "",
-        medicalClearance: user.medicalClearance?.toObject?.() || user.medicalClearance || null,
+        aptoPath: savedLean?.aptoPath || "",
+        aptoStatus: savedLean?.aptoStatus || "",
+        aptoCompletedAt: savedLean?.aptoCompletedAt || null,
+        suspended: !!savedLean?.suspended,
+        suspendedReason: savedLean?.suspendedReason || "",
+        medicalClearance: savedLean?.medicalClearance || null,
       }),
+      meta: {
+        previousAptoPath,
+        fileDeleted: status === "rejected" || status === "not_submitted",
+        notes,
+      },
     });
 
     fireAndForget(
-      () => sendAptoStatusEmail(user, status, { notes }),
+      () => sendAptoStatusEmail(savedLean, status, { notes }),
       "MAIL_APTO_STATUS_UPDATED"
     );
 
     return res.json({
       ok: true,
-      aptoStatus: user.aptoStatus,
-      suspended: user.suspended,
-      suspendedReason: user.suspendedReason || "",
-      medicalClearance: user.medicalClearance,
+      message:
+        status === "approved"
+          ? "Apto aprobado correctamente."
+          : status === "rejected"
+            ? "Apto rechazado. Se notificó al usuario y se eliminó el archivo cargado."
+            : "Estado del apto actualizado.",
+      aptoPath: savedLean?.aptoPath || "",
+      aptoStatus: savedLean?.aptoStatus || "",
+      aptoCompletedAt: savedLean?.aptoCompletedAt || null,
+      suspended: !!savedLean?.suspended,
+      suspendedReason: savedLean?.suspendedReason || "",
+      medicalClearance: savedLean?.medicalClearance || null,
+      user: decorateUserForResponse(savedLean),
     });
   } catch (err) {
     console.error("Error en PATCH /users/:id/apto/status:", err);
