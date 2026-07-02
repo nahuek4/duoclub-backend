@@ -216,15 +216,31 @@ const uploadApto = multer({
 });
 
 function uploadAptoSingle(req, res, next) {
-  const handler = uploadApto.single("apto");
+  // Campo oficial: "apto". Dejamos aliases para tolerar versiones viejas
+  // del front o pruebas manuales sin romper con "Unexpected field".
+  const handler = uploadApto.fields([
+    { name: "apto", maxCount: 1 },
+    { name: "file", maxCount: 1 },
+    { name: "pdf", maxCount: 1 },
+  ]);
+
   handler(req, res, (err) => {
-    if (!err) return next();
-    if (err.code === "LIMIT_FILE_SIZE") {
-      return res.status(400).json({ error: "El PDF supera el límite de 10MB." });
+    if (err) {
+      if (err.code === "LIMIT_FILE_SIZE") {
+        return res.status(400).json({ error: "El PDF supera el límite de 10MB." });
+      }
+      return res
+        .status(400)
+        .json({ error: err.message || "Error al subir el archivo." });
     }
-    return res
-      .status(400)
-      .json({ error: err.message || "Error al subir el archivo." });
+
+    req.file =
+      req.files?.apto?.[0] ||
+      req.files?.file?.[0] ||
+      req.files?.pdf?.[0] ||
+      null;
+
+    return next();
   });
 }
 
