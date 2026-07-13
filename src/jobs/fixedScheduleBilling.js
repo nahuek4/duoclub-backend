@@ -39,6 +39,60 @@ function arParts(date = new Date()) {
 function ymdFromParts(p) { return `${p.year}-${pad2(p.month)}-${pad2(p.day)}`; }
 function hmFromParts(p) { return `${pad2(p.hour)}:${pad2(p.minute)}`; }
 function monthKeyFromParts(p) { return `${p.year}-${pad2(p.month)}`; }
+function monthKeyFromDate(value) {
+  if (!value) return "";
+  const d = value instanceof Date ? value : new Date(value);
+  if (Number.isNaN(d.getTime())) return "";
+  return monthKeyFromParts(arParts(d));
+}
+function serviceKeyFromHistoryItem(item) {
+  return normalizeServiceKey(item?.serviceKey || item?.serviceName || item?.service || "");
+}
+function hasServicePackMovementForMonth(user, serviceKey, monthKey) {
+  const sk = normalizeServiceKey(serviceKey);
+  if (!user || !sk || !monthKey) return false;
+
+  const lots = Array.isArray(user?.creditLots) ? user.creditLots : [];
+  const hasLotMovement = lots.some((lot) => {
+    const lotSk = normalizeServiceKey(lot?.serviceKey || lot?.service || lot?.serviceName);
+    if (lotSk !== sk) return false;
+
+    const amount = Number(lot?.amount || 0);
+    if (amount <= 0) return false;
+
+    const source = String(lot?.source || "").toLowerCase();
+    // Los reintegros generados por cancelaciones no cuentan como compra/carga de pack.
+    if (source.includes("refund") || source.includes("reintegro")) return false;
+
+    return monthKeyFromDate(lot?.createdAt) === monthKey;
+  });
+
+  if (hasLotMovement) return true;
+
+  const history = Array.isArray(user?.history) ? user.history : [];
+  return history.some((item) => {
+    const itemSk = serviceKeyFromHistoryItem(item);
+    if (itemSk !== sk) return false;
+    if (monthKeyFromDate(item?.createdAt) !== monthKey) return false;
+
+    const action = String(item?.action || "").trim();
+    const title = String(item?.title || "").toLowerCase();
+    const message = String(item?.message || "").toLowerCase();
+
+    if (action === "credits_added_monthly") return true;
+
+    // Cuando la carga de créditos se usa completa para saldar deuda puede no quedar lote
+    // positivo. En ese caso este historial es la prueba de que hubo carga/compra del pack.
+    if (action === "fixed_schedule_debt_settled") {
+      if (message.includes("al liberar turnos fijos futuros")) return false;
+      if (title.includes("deuda saldada") || message.includes("crédito") || message.includes("credito")) {
+        return true;
+      }
+    }
+
+    return false;
+  });
+}
 function slotDue(date, time, now = new Date()) {
   const p = arParts(now);
   const today = ymdFromParts(p);
@@ -352,15 +406,47 @@ export async function releaseUnpaidFixedSchedules({ now = new Date(), force = fa
       continue;
     }
 
-    // Solo se pausan los planes del servicio que efectivamente tiene deuda.
-    // Si un usuario debe EP, no tocamos turnos fijos RF/RA/KD/SYN que no tienen deuda.
+    const protectedDebtServiceKeys = debtServiceKeys.filter((sk) =>
+      hasServicePackMovementForMonth(user, sk, monthKey)
+    );
+    const releasableDebtServiceKeys = debtServiceKeys.filter(
+      (sk) => !protectedDebtServiceKeys.includes(sk)
+    );
+
+    if (protectedDebtServiceKeys.length && !releasableDebtServiceKeys.length) {
+      user.history = Array.isArray(user.history) ? user.history : [];
+      for (const sk of protectedDebtServiceKeys) {
+        user.history.push({
+          action: "fixed_schedule_auto_release_skipped_purchase",
+          title: `Turnos fijos mantenidos ${sk}`,
+          message:
+            `No se liberaron ni pausaron turnos fijos de ${serviceName(sk)} porque el usuario tuvo una carga/compra del pack del servicio durante ${monthKey}. ` +
+            "No hace falta saldar el 100% de la deuda para conservar el turno fijo; la deuda pendiente se mantiene.",
+          serviceKey: sk,
+          serviceName: serviceName(sk),
+          service: serviceName(sk),
+          qty: 0,
+          policyMonthKey: monthKey,
+          createdAt: now,
+        });
+      }
+      recalcCredits(user);
+      user.monthlyAutomation.lastFixedDebtReleaseMonthKey = monthKey;
+      user.markModified?.("monthlyAutomation");
+      await user.save();
+      usersTouched += 1;
+      continue;
+    }
+
+    // Solo se pausan los planes del servicio que efectivamente tiene deuda y no tuvo compra/carga.
+    // Si un usuario debe EP pero cargó/compró EP ese mes, no tocamos sus turnos fijos EP.
     const allActiveSchedules = await FixedSchedule.find({
       user: user._id,
       active: true,
     });
 
     const schedules = allActiveSchedules.filter((schedule) =>
-      debtServiceKeys.includes(normalizeServiceKey(schedule.serviceKey || schedule.service))
+      releasableDebtServiceKeys.includes(normalizeServiceKey(schedule.serviceKey || schedule.service))
     );
 
     const scheduleIds = schedules.map((schedule) => schedule._id);
@@ -396,7 +482,7 @@ export async function releaseUnpaidFixedSchedules({ now = new Date(), force = fa
 
       for (const ap of futureReserved) {
         const sk = normalizeServiceKey(ap.serviceKey || ap.service);
-        if (!sk || !debtServiceKeys.includes(sk)) continue;
+        if (!sk || !releasableDebtServiceKeys.includes(sk)) continue;
 
         const status = String(ap.creditDebitStatus || "").trim();
         const fixedDebtAmount = Math.max(0, Number(ap.fixedDebtAmount || 0));
@@ -501,6 +587,22 @@ Pausado automáticamente por deuda de turnos fijos (${monthKey}).`
 
     const debtAfter = cloneDebt(user);
     user.history = Array.isArray(user.history) ? user.history : [];
+
+    for (const sk of protectedDebtServiceKeys) {
+      user.history.push({
+        action: "fixed_schedule_auto_release_skipped_purchase",
+        title: `Turnos fijos mantenidos ${sk}`,
+        message:
+          `No se liberaron ni pausaron turnos fijos de ${serviceName(sk)} porque el usuario tuvo una carga/compra del pack del servicio durante ${monthKey}. ` +
+          "No hace falta saldar el 100% de la deuda para conservar el turno fijo; la deuda pendiente se mantiene.",
+        serviceKey: sk,
+        serviceName: serviceName(sk),
+        service: serviceName(sk),
+        qty: 0,
+        policyMonthKey: monthKey,
+        createdAt: now,
+      });
+    }
 
     for (const sk of FIXED_SERVICE_KEYS) {
       const st = serviceStats[sk];

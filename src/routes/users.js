@@ -628,6 +628,19 @@ async function addCreditLot(
   const debtSettlement = await settleFixedScheduleDebt(user, { amount: qty, serviceKey: sk, source });
   const remainingQty = Math.max(0, Number(debtSettlement.remaining || 0));
   if (!remainingQty) {
+    user.history = Array.isArray(user.history) ? user.history : [];
+    user.history.push({
+      action: "credits_added_monthly",
+      title: `Créditos acreditados ${sk}`,
+      message: `Se cargaron ${qty} crédito(s) de ${SERVICE_KEY_TO_NAME[sk] || sk}. Se usaron ${debtSettlement.settled || qty} para saldar deuda pendiente; no quedaron créditos disponibles.`,
+      serviceKey: sk,
+      serviceName: SERVICE_KEY_TO_NAME[sk] || sk,
+      service: SERVICE_KEY_TO_NAME[sk] || sk,
+      qty: 0,
+      loadedQty: qty,
+      settledDebtQty: Number(debtSettlement.settled || qty),
+      createdAt: now,
+    });
     recalcUserCredits(user);
     return;
   }

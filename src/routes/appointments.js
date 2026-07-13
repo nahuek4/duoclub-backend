@@ -4110,9 +4110,13 @@ router.post("/admin/fixed-schedules", async (req, res) => {
           fixedScheduleId: fixed._id,
           date: occ.date,
           time: occ.time,
-          status: "reserved",
+          status: { $in: ["reserved", "completed"] },
         }).lean();
 
+        // Blindaje contra duplicados: si ese turno fijo ya existe reservado o
+        // completado para la misma fecha/hora, no lo volvemos a crear. Esto evita
+        // que el job mensual o una reasignación duplique clases ya procesadas y
+        // vuelva a inflar deuda.
         if (existingSameFixed) continue;
 
         const ap = await createAppointmentForTargetUser({

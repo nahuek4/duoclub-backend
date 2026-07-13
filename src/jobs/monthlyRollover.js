@@ -17,10 +17,12 @@ const SERVICE_KEY_TO_NAME = {
   RA: "Rehabilitación Activa",
   RF: "Reeducación Funcional",
   KD: "Kinefilaxia Deportiva",
+  SYN: "Synergy",
   NUT: "Nutrición",
 };
 
-const THERAPY_KEYS = new Set(["RA", "RF", "KD"]);
+const FIXED_SERVICE_KEYS = ["EP", "RA", "RF", "KD", "SYN"];
+const THERAPY_KEYS = new Set(["RA", "RF", "KD", "SYN"]);
 const EP_CAP = 12;
 const THERAPY_SHARED_CAP = 8;
 
@@ -109,7 +111,7 @@ function isPastOccurrence(date, time, now = new Date()) {
 
 function ensureFixedDebt(user) {
   user.fixedScheduleDebt = user.fixedScheduleDebt || {};
-  for (const k of ["EP", "RA", "RF", "KD"]) {
+  for (const k of FIXED_SERVICE_KEYS) {
     const n = Number(user.fixedScheduleDebt?.[k] || 0);
     user.fixedScheduleDebt[k] = Number.isFinite(n) ? Math.max(0, Math.trunc(n)) : 0;
   }
@@ -245,7 +247,7 @@ async function ensureFixedAppointmentsForMonth(monthKey, { now = new Date() } = 
   for (const schedule of schedules) {
     const userId = schedule.user;
     const sk = normalizeServiceKey(schedule.serviceKey || schedule.service);
-    if (!userId || !sk || !["EP", "RA", "RF", "KD"].includes(sk)) {
+    if (!userId || !sk || !FIXED_SERVICE_KEYS.includes(sk)) {
       skipped += 1;
       continue;
     }
@@ -260,6 +262,19 @@ async function ensureFixedAppointmentsForMonth(monthKey, { now = new Date() } = 
       if (schedule.startDate && occ.date < schedule.startDate) continue;
       if (schedule.endDate && occ.date > schedule.endDate) continue;
       if (isPastOccurrence(occ.date, occ.time, now)) {
+        skipped += 1;
+        continue;
+      }
+
+      const alreadyForSameFixedSlot = await Appointment.findOne({
+        user: userId,
+        fixedScheduleId: schedule._id,
+        date: occ.date,
+        time: occ.time,
+        status: { $in: ["reserved", "completed", "cancelled"] },
+      }).lean();
+
+      if (alreadyForSameFixedSlot) {
         skipped += 1;
         continue;
       }
