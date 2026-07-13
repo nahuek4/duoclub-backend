@@ -1153,14 +1153,10 @@ function scheduleBlockReason(block) {
   );
 }
 
-function blockId(block) {
-  return String(block?._id || block?.id || "");
-}
-
-async function findActiveScheduleBlocksForDateService({ date, serviceKey, session = null }) {
+async function findActiveScheduleBlock({ date, time, serviceKey, session = null }) {
   const day = String(date || "").slice(0, 10);
   const sk = normalizeServiceKey(serviceKey);
-  if (!day || !sk) return [];
+  if (!day || !sk) return null;
 
   const query = ScheduleBlock.find({
     active: true,
@@ -1186,90 +1182,13 @@ async function findActiveScheduleBlocksForDateService({ date, serviceKey, sessio
   if (session) query.session(session);
 
   const candidates = await query.lean();
-  return (candidates || []).filter((block) => dateMatchesScheduleBlock(block, day));
-}
-
-function scheduleBlockCoversEveryTime(block, times = []) {
-  if (!block || !Array.isArray(times) || !times.length) return false;
-  if (block.allDay) return true;
-
-  return times.every((time) => timeIsInsideScheduleBlock(block, time));
-}
-
-async function getFullDayScheduleBlockInfo({ date, serviceKey, times = [], session = null }) {
-  const cleanTimes = (Array.isArray(times) ? times : [])
-    .map((t) => String(t || "").slice(0, 5))
-    .filter(Boolean);
-
-  if (!cleanTimes.length) {
-    return { blocked: false, reason: "", blockIds: [], blockByTime: {} };
-  }
-
-  const blocks = await findActiveScheduleBlocksForDateService({
-    date,
-    serviceKey,
-    session,
-  });
-
-  if (!blocks.length) {
-    return { blocked: false, reason: "", blockIds: [], blockByTime: {} };
-  }
-
-  const blockByTime = {};
-  for (const time of cleanTimes) {
-    const block = blocks.find((candidate) => timeIsInsideScheduleBlock(candidate, time)) || null;
-    if (block) blockByTime[time] = block;
-  }
-
-  const blocked = cleanTimes.every((time) => !!blockByTime[time]);
-  if (!blocked) {
-    return { blocked: false, reason: "", blockIds: [], blockByTime };
-  }
-
-  const fullDayBlock = blocks.find((block) => scheduleBlockCoversEveryTime(block, cleanTimes));
-  const firstBlock = fullDayBlock || blockByTime[cleanTimes[0]] || blocks[0];
-  const blockIds = [
-    ...new Set(
-      cleanTimes
-        .map((time) => blockId(blockByTime[time]))
-        .filter(Boolean)
-    ),
-  ];
-
-  return {
-    blocked: true,
-    reason: scheduleBlockReason(firstBlock),
-    blockIds,
-    blockByTime,
-    fullDayBlock: fullDayBlock || null,
-  };
-}
-
-function buildScheduleBlockedSlots(times = [], fullDayInfo = {}) {
-  return (Array.isArray(times) ? times : []).map((time) => {
-    const t = String(time || "").slice(0, 5);
-    const block = fullDayInfo?.blockByTime?.[t] || fullDayInfo?.fullDayBlock || null;
-
-    return {
-      time: t,
-      state: "blocked",
-      reason: block ? scheduleBlockReason(block) : fullDayInfo?.reason || "Agenda bloqueada",
-      totalReserved: 0,
-      capacity: 0,
-      reserved: 0,
-      available: 0,
-      availableVacancies: 0,
-      blockId: blockId(block) || "",
-      dayBlocked: true,
-    };
-  });
-}
-
-async function findActiveScheduleBlock({ date, time, serviceKey, session = null }) {
-  const blocks = await findActiveScheduleBlocksForDateService({ date, serviceKey, session });
 
   return (
-    blocks.find((block) => timeIsInsideScheduleBlock(block, time)) || null
+    candidates.find(
+      (block) =>
+        dateMatchesScheduleBlock(block, day) &&
+        timeIsInsideScheduleBlock(block, time)
+    ) || null
   );
 }
 
@@ -2326,7 +2245,6 @@ async function createAppointmentForTargetUser({
   bypassWindow = false,
   bypassCredits = false,
   allowDebtIfNoCredits = false,
-  bypassScheduleBlocks = false,
   fixedScheduleId = null,
   monthlyRolloverMonthKey = "",
   skipActivityLog = false,
@@ -2390,14 +2308,12 @@ async function createAppointmentForTargetUser({
 
   const t = String(time).slice(0, 5);
 
-  if (!bypassScheduleBlocks) {
-    await assertSlotNotBlocked({
-      date,
-      time: t,
-      serviceKey: basic.serviceKey,
-      session,
-    });
-  }
+  await assertSlotNotBlocked({
+    date,
+    time: t,
+    serviceKey: basic.serviceKey,
+    session,
+  });
 
   const alreadyByUserQuery = Appointment.findOne(
     buildReservedSlotQuery(date, t, { user: targetUser._id })
@@ -3252,111 +3168,6 @@ router.delete("/waitlist/:id", ensureStaff, async (req, res) => {
 });
 
 /* =========================
-   GET /appointments/availability/month
-   Devuelve estado por día para que el front desactive días bloqueados completos.
-========================= */
-router.get("/availability/month", async (req, res) => {
-  try {
-    const service = String(req.query?.service || "").trim();
-    const serviceKey = String(req.query?.serviceKey || "").trim();
-    const month = String(req.query?.month || "").slice(0, 7);
-
-    let from = String(req.query?.from || "").slice(0, 10);
-    let to = String(req.query?.to || "").slice(0, 10);
-
-    if ((!from || !to) && /^\d{4}-\d{2}$/.test(month)) {
-      const [y, m] = month.split("-").map(Number);
-      from = ymdAR(new Date(y, m - 1, 1));
-      to = ymdAR(new Date(y, m, 0));
-    }
-
-    const identity = normalizeServiceIdentity({ service, serviceKey });
-
-    if (!identity?.serviceKey) {
-      return res.status(400).json({ error: "Falta service." });
-    }
-
-    if (!isValidYMD(from) || !isValidYMD(to) || from > to) {
-      return res.status(400).json({ error: "Rango de fechas inválido." });
-    }
-
-    const start = buildSlotDate(from, "00:00");
-    const end = buildSlotDate(to, "00:00");
-    if (!start || !end) {
-      return res.status(400).json({ error: "Rango de fechas inválido." });
-    }
-
-    const diffDays = Math.floor((end.getTime() - start.getTime()) / (24 * 60 * 60 * 1000)) + 1;
-    if (diffDays > 62) {
-      return res.status(400).json({ error: "El rango máximo permitido es de 62 días." });
-    }
-
-    const normalizedServiceKey = identity.serviceKey;
-    const normalizedServiceName = identity.serviceName;
-    const days = [];
-    const cursor = new Date(start);
-
-    while (cursor.getTime() <= end.getTime()) {
-      const date = ymdAR(cursor);
-      const allowedTimes = getAllowedTimesForService(normalizedServiceKey, date);
-
-      if (!allowedTimes.length || isSunday(date) || isSaturday(date)) {
-        days.push({
-          date,
-          service: normalizedServiceName,
-          serviceKey: normalizedServiceKey,
-          state: "closed",
-          dayBlocked: false,
-          dayDisabled: true,
-          reason: isSunday(date)
-            ? "Domingos no disponibles"
-            : isSaturday(date)
-              ? "Sábados no disponibles para este servicio"
-              : "Sin horarios disponibles",
-          blockIds: [],
-        });
-        cursor.setDate(cursor.getDate() + 1);
-        continue;
-      }
-
-      const fullDayBlockInfo = await getFullDayScheduleBlockInfo({
-        date,
-        serviceKey: normalizedServiceKey,
-        times: allowedTimes,
-      });
-
-      days.push({
-        date,
-        service: normalizedServiceName,
-        serviceKey: normalizedServiceKey,
-        state: fullDayBlockInfo.blocked ? "blocked" : "available",
-        dayBlocked: !!fullDayBlockInfo.blocked,
-        dayDisabled: !!fullDayBlockInfo.blocked,
-        reason: fullDayBlockInfo.blocked ? fullDayBlockInfo.reason : "",
-        blockIds: fullDayBlockInfo.blockIds || [],
-      });
-
-      cursor.setDate(cursor.getDate() + 1);
-    }
-
-    return res.json({
-      ok: true,
-      from,
-      to,
-      service: normalizedServiceName,
-      serviceKey: normalizedServiceKey,
-      days,
-      blockedDays: days
-        .filter((day) => day.dayBlocked)
-        .map((day) => day.date),
-    });
-  } catch (err) {
-    console.error("Error en GET /appointments/availability/month:", err);
-    return res.status(500).json({ error: "Error calculando disponibilidad mensual." });
-  }
-});
-
-/* =========================
    GET /appointments/availability
 ========================= */
 router.get("/availability", async (req, res) => {
@@ -3384,19 +3195,8 @@ router.get("/availability", async (req, res) => {
 
     const requesterId = req.user?._id || req.user?.id;
     const requesterRole = String(req.user?.role || "");
-    const staffAvailabilityRequest = isStaffActor(req);
-    const ignoreScheduleBlocks =
-      staffAvailabilityRequest &&
-      ["1", "true", "yes", "si", "sí"].includes(
-        String(req.query?.ignoreScheduleBlocks || "").toLowerCase().trim()
-      );
-    const bypassWindowForAvailability =
-      staffAvailabilityRequest &&
-      ["1", "true", "yes", "si", "sí"].includes(
-        String(req.query?.bypassWindow || req.query?.adminFixed || "").toLowerCase().trim()
-      );
 
-    if (requesterId && !staffAvailabilityRequest) {
+    if (requesterId && requesterRole !== "admin") {
       await syncPastAppointmentsForUserId(requesterId);
 
       const me = await User.findById(requesterId)
@@ -3442,12 +3242,6 @@ router.get("/availability", async (req, res) => {
         date,
         service: normalizedServiceName,
         serviceKey: normalizedServiceKey,
-        dayState: "closed",
-        dayBlocked: false,
-        dayDisabled: true,
-        reason: isSunday(date)
-          ? "Domingos no disponibles"
-          : "Sábados no disponibles para este servicio",
         slots: times.map((t) => ({
           time: t,
           state: "closed",
@@ -3458,76 +3252,39 @@ router.get("/availability", async (req, res) => {
       });
     }
 
-    if (!ignoreScheduleBlocks) {
-      const fullDayBlockInfo = await getFullDayScheduleBlockInfo({
-        date,
-        serviceKey: normalizedServiceKey,
-        times,
-      });
-
-      if (fullDayBlockInfo.blocked) {
-        return res.json({
-          date,
-          service: normalizedServiceName,
-          serviceKey: normalizedServiceKey,
-          dayState: "blocked",
-          dayBlocked: true,
-          dayDisabled: true,
-          reason: fullDayBlockInfo.reason,
-          blockIds: fullDayBlockInfo.blockIds || [],
-          slots: buildScheduleBlockedSlots(times, fullDayBlockInfo),
-        });
-      }
-    }
-
     const out = [];
 
     for (const time of times) {
       const t = String(time).slice(0, 5);
-      const basic = bypassWindowForAvailability
-        ? validateBasicSlotRulesAdmin({
-            date,
-            time: t,
-            service: normalizedServiceName,
-            serviceKey: normalizedServiceKey,
-            bypassWindow: true,
-          })
-        : validateBasicSlotRules({
-            date,
-            time: t,
-            service: normalizedServiceName,
-            serviceKey: normalizedServiceKey,
-          });
+      const basic = validateBasicSlotRules({ date, time: t, service: normalizedServiceName, serviceKey: normalizedServiceKey });
 
       if (!basic.ok) {
         out.push({ time: t, state: "closed", reason: basic.error });
         continue;
       }
 
-      if (!ignoreScheduleBlocks) {
-        const block = await findActiveScheduleBlock({
-          date,
-          time: t,
-          serviceKey: normalizedServiceKey,
-        });
+      const block = await findActiveScheduleBlock({
+        date,
+        time: t,
+        serviceKey: normalizedServiceKey,
+      });
 
-        if (block) {
-          out.push({
-            time: t,
-            state: "blocked",
-            reason: scheduleBlockReason(block),
-            totalReserved: 0,
-            capacity: 0,
-            reserved: 0,
-            available: 0,
-            availableVacancies: 0,
-            blockId: String(block._id || block.id || ""),
-          });
-          continue;
-        }
+      if (block) {
+        out.push({
+          time: t,
+          state: "blocked",
+          reason: scheduleBlockReason(block),
+          totalReserved: 0,
+          capacity: 0,
+          reserved: 0,
+          available: 0,
+          availableVacancies: 0,
+          blockId: String(block._id || block.id || ""),
+        });
+        continue;
       }
 
-      if (requesterId && !staffAvailabilityRequest) {
+      if (requesterId && requesterRole !== "admin") {
         const me = await User.findById(requesterId)
           .select("credits creditLots firstEvaluationCompleted")
           .lean();
@@ -4110,13 +3867,9 @@ router.post("/admin/fixed-schedules", async (req, res) => {
           fixedScheduleId: fixed._id,
           date: occ.date,
           time: occ.time,
-          status: { $in: ["reserved", "completed"] },
+          status: "reserved",
         }).lean();
 
-        // Blindaje contra duplicados: si ese turno fijo ya existe reservado o
-        // completado para la misma fecha/hora, no lo volvemos a crear. Esto evita
-        // que el job mensual o una reasignación duplique clases ya procesadas y
-        // vuelva a inflar deuda.
         if (existingSameFixed) continue;
 
         const ap = await createAppointmentForTargetUser({
@@ -4129,7 +3882,6 @@ router.post("/admin/fixed-schedules", async (req, res) => {
           notes,
           bypassWindow: true,
           bypassCredits: true,
-          bypassScheduleBlocks: true,
           fixedScheduleId: fixed._id,
           skipActivityLog: true,
         });
@@ -4811,6 +4563,217 @@ router.post("/batch", async (req, res) => {
     }
 
     return res.status(500).json({ error: "No se pudieron reservar los turnos." });
+  } finally {
+    await session.endSession();
+  }
+});
+
+
+/* =========================
+   POST /appointments/:id/reschedule
+   Modificar un turno futuro propio sin consumir créditos extra
+========================= */
+router.post("/:id/reschedule", async (req, res) => {
+  const session = await mongoose.startSession();
+
+  try {
+    const appointmentId = String(req.params?.id || "").trim();
+    const { date, time, notes } = req.body || {};
+
+    if (!mongoose.Types.ObjectId.isValid(appointmentId)) {
+      return res.status(400).json({ error: "ID de turno inválido." });
+    }
+
+    const tokenUserId = req.user?._id || req.user?.id;
+    const role = String(req.user?.role || "").toLowerCase();
+
+    let out = null;
+
+    await session.withTransaction(async () => {
+      const ap = await Appointment.findById(appointmentId).session(session);
+      if (!ap) throw new Error("APPOINTMENT_NOT_FOUND");
+
+      const isOwner = String(ap.user) === String(tokenUserId);
+      const isStaff = ["admin", "profesor", "staff"].includes(role);
+
+      if (!isOwner && !isStaff) throw new Error("NOT_AUTHORIZED");
+      if (String(ap.status || "") !== "reserved") throw new Error("APPOINTMENT_NOT_RESERVED");
+
+      const user = await User.findById(ap.user).session(session);
+      if (!user) throw new Error("USER_NOT_FOUND");
+      if (user.suspended) throw new Error("USER_SUSPENDED");
+      if (requiresApto(user)) throw new Error("APTO_REQUIRED");
+
+      const oldDate = String(ap.date || "").slice(0, 10);
+      const oldTime = String(ap.time || "").slice(0, 5);
+      const oldSlotDate = buildSlotDate(oldDate, oldTime);
+      if (!oldSlotDate) throw new Error("INVALID_SLOT_DATE");
+      if (oldSlotDate.getTime() <= Date.now()) throw new Error("APPOINTMENT_NOT_FUTURE");
+
+      const basic = validateBasicSlotRules({
+        date,
+        time,
+        service: ap.service,
+        serviceKey: ap.serviceKey,
+      });
+
+      if (!basic.ok) {
+        throw new Error(`BASIC_SLOT:${basic.error || "Fecha u horario inválido."}`);
+      }
+
+      const nextDate = String(date || "").slice(0, 10);
+      const nextTime = String(time || "").slice(0, 5);
+
+      if (nextDate === oldDate && nextTime === oldTime) {
+        out = {
+          ...serializeAppointment(ap),
+          ok: true,
+          unchanged: true,
+          message: "El turno ya estaba en ese día y horario.",
+        };
+        return;
+      }
+
+      await assertSlotNotBlocked({
+        date: nextDate,
+        time: nextTime,
+        serviceKey: basic.serviceKey,
+        session,
+      });
+
+      const alreadyByUser = await Appointment.findOne({
+        ...buildReservedSlotQuery(nextDate, nextTime, { user: ap.user }),
+        _id: { $ne: ap._id },
+      }).session(session).lean();
+
+      if (alreadyByUser) throw new Error("ALREADY_HAVE_SLOT");
+
+      const existingAtSlot = await Appointment.find({
+        ...buildReservedSlotQuery(nextDate, nextTime),
+        _id: { $ne: ap._id },
+      }).session(session).lean();
+
+      const stats = getSlotReservationStats(existingAtSlot, nextDate, nextTime);
+      const requestedSk = serviceToKey(ap.serviceKey || ap.service);
+
+      if (requestedSk === "PE" && stats.peReserved >= stats.peCap) {
+        throw new Error("SERVICE_CAP_REACHED");
+      }
+
+      if (requestedSk === "EP" && stats.epReserved >= stats.epCap) {
+        throw new Error("SERVICE_CAP_REACHED");
+      }
+
+      if (isTherapyService(requestedSk) && stats.therapyReserved >= stats.therapyCap) {
+        throw new Error("SERVICE_CAP_REACHED");
+      }
+
+      if (requestedSk === "NUT" && stats.nutReserved >= stats.nutCap) {
+        throw new Error("SERVICE_CAP_REACHED");
+      }
+
+      user.history = Array.isArray(user.history) ? user.history : [];
+      user.history.push({
+        action: "appointment_rescheduled",
+        title: `Turno modificado ${requestedSk}`,
+        message: `El usuario modificó su turno de ${serviceKeyToName(requestedSk)}: ${oldDate} ${oldTime} hs → ${nextDate} ${nextTime} hs.`,
+        date: nextDate,
+        time: nextTime,
+        serviceKey: requestedSk,
+        serviceName: serviceKeyToName(requestedSk),
+        service: serviceKeyToName(requestedSk),
+        oldDate,
+        oldTime,
+        newDate: nextDate,
+        newTime: nextTime,
+        createdAt: new Date(),
+      });
+
+      ap.date = nextDate;
+      ap.time = nextTime;
+      ap.serviceKey = requestedSk;
+      ap.service = serviceKeyToName(requestedSk);
+      if (typeof notes === "string") ap.notes = notes.trim();
+
+      await user.save({ session });
+      await ap.save({ session });
+
+      out = {
+        ...serializeAppointment(ap),
+        ok: true,
+        rescheduled: true,
+        oldDate,
+        oldTime,
+        date: nextDate,
+        time: nextTime,
+        serviceKey: requestedSk,
+        service: serviceKeyToName(requestedSk),
+      };
+    });
+
+    await logActivity({
+      req,
+      category: "appointments",
+      action: "appointment_rescheduled",
+      entity: "appointment",
+      entityId: String(appointmentId),
+      title: "Turno modificado",
+      description: "El usuario modificó un turno futuro desde Reservar.",
+      subject: buildUserSubject(req.user),
+      meta: {
+        oldDate: out?.oldDate || "",
+        oldTime: out?.oldTime || "",
+        date: out?.date || "",
+        time: out?.time || "",
+        serviceKey: out?.serviceKey || "",
+      },
+    });
+
+    return res.json(out);
+  } catch (err) {
+    console.error("Error en POST /appointments/:id/reschedule:", err);
+    const msg = String(err?.message || "");
+
+    if (msg === "APPOINTMENT_NOT_FOUND") {
+      return res.status(404).json({ error: "Turno no encontrado." });
+    }
+    if (msg === "NOT_AUTHORIZED") {
+      return res.status(403).json({ error: "No autorizado para modificar este turno." });
+    }
+    if (msg === "APPOINTMENT_NOT_RESERVED") {
+      return res.status(409).json({ error: "El turno ya no está reservado." });
+    }
+    if (msg === "USER_NOT_FOUND") {
+      return res.status(404).json({ error: "Usuario no encontrado." });
+    }
+    if (msg === "USER_SUSPENDED") {
+      return res.status(403).json({ error: "Cuenta suspendida." });
+    }
+    if (msg === "APTO_REQUIRED") {
+      return res.status(403).json({ error: "Falta apto médico." });
+    }
+    if (msg === "INVALID_SLOT_DATE") {
+      return res.status(400).json({ error: "Fecha u horario inválido en el turno." });
+    }
+    if (msg === "APPOINTMENT_NOT_FUTURE") {
+      return res.status(409).json({ error: "Solo se pueden modificar turnos futuros." });
+    }
+    if (msg === "ALREADY_HAVE_SLOT") {
+      return res.status(409).json({ error: "Ya tenés un turno reservado en ese horario." });
+    }
+    if (msg.startsWith("BASIC_SLOT:")) {
+      return res.status(400).json({ error: msg.replace("BASIC_SLOT:", "") || "Fecha u horario inválido." });
+    }
+    if (msg.startsWith("SCHEDULE_BLOCKED:")) {
+      return res.status(409).json({
+        error: msg.replace("SCHEDULE_BLOCKED:", "") || "Agenda bloqueada para ese horario.",
+      });
+    }
+    if (msg === "SERVICE_CAP_REACHED") {
+      return res.status(409).json({ error: "Ese horario ya no tiene cupo disponible." });
+    }
+
+    return res.status(500).json({ error: "No se pudo modificar el turno." });
   } finally {
     await session.endSession();
   }
