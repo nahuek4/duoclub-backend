@@ -61,6 +61,8 @@ function summarizeUser(user = {}) {
 }
 
 function summarizeSchedule(schedule = {}) {
+  const projection = schedule?._subscriptionProjection || null;
+
   return {
     id: objectIdString(schedule),
     serviceKey: normalizeServiceKey(schedule?.serviceKey || schedule?.service),
@@ -68,6 +70,21 @@ function summarizeSchedule(schedule = {}) {
     active: schedule?.active !== false,
     startDate: cleanString(schedule?.startDate).slice(0, 10),
     endDate: cleanString(schedule?.endDate).slice(0, 10),
+    legacyStartDate: projection
+      ? cleanString(projection?.legacyStartDate).slice(0, 10)
+      : cleanString(schedule?.startDate).slice(0, 10),
+    legacyEndDate: projection
+      ? cleanString(projection?.legacyEndDate).slice(0, 10)
+      : cleanString(schedule?.endDate).slice(0, 10),
+    projection: projection
+      ? {
+          mode: cleanString(projection?.mode),
+          monthKey: cleanString(projection?.monthKey),
+          legacyExpiredBeforeMonth:
+            projection?.legacyExpiredBeforeMonth === true,
+          legacyEndsDuringMonth: projection?.legacyEndsDuringMonth === true,
+        }
+      : null,
     items: (Array.isArray(schedule?.items) ? schedule.items : []).map((item) => ({
       weekday: Number(item?.weekday || 0),
       time: cleanString(item?.time).slice(0, 5),
