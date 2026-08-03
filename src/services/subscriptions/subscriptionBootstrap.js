@@ -1,5 +1,7 @@
 // backend/src/services/subscriptions/subscriptionBootstrap.js
-// Construye candidatos y payloads de suscripción inicial sin escribir en MongoDB.
+// Construye candidatos y payloads de suscripción inicial sin escribir MongoDB.
+// La suscripción siempre se vincula a un PricingPlan publicado; nunca se crea
+// un plan adaptado a la cantidad de turnos fijos del mes.
 
 import {
   isValidMonthKey,
@@ -47,6 +49,7 @@ function summarizeExistingSubscription(subscription = null) {
   return {
     id: objectIdString(subscription),
     serviceKey: normalizeServiceKey(subscription?.serviceKey),
+    pricingPlanId: objectIdString(subscription?.pricingPlan),
     status: cleanString(subscription?.status),
     monthlySessions: Number(subscription?.monthlySessions || 0),
     price: Number(subscription?.price || 0),
@@ -86,7 +89,10 @@ export function summarizePaidOrderForService(order = null, serviceKey = "") {
 
   if (!matching.length && normalizeServiceKey(order?.serviceKey) === key) {
     sessions = Math.max(0, Math.trunc(Number(order?.credits || 0)));
-    amount = Math.max(0, Number(order?.totalFinal ?? order?.total ?? order?.price ?? 0));
+    amount = Math.max(
+      0,
+      Number(order?.totalFinal ?? order?.total ?? order?.price ?? 0)
+    );
   }
 
   if (!matching.length && !sessions) return null;
@@ -102,72 +108,89 @@ export function summarizePaidOrderForService(order = null, serviceKey = "") {
   };
 }
 
-function resolveExplicitPlan({
+function resolvePublishedPlan({
   pricingPlans = [],
   selectedPricingPlanId = "",
-  manualMonthlySessions = null,
-  manualPrice = null,
-  manualPayMethod = "",
+  serviceKey,
+  includeCustomPlans = false,
 } = {}) {
   const planId = cleanString(selectedPricingPlanId);
-
-  if (planId) {
-    const plan = (Array.isArray(pricingPlans) ? pricingPlans : []).find(
-      (item) => objectIdString(item) === planId
-    );
-    if (!plan) {
-      return {
-        ok: false,
-        error: "El plan seleccionado no está disponible para este servicio.",
-      };
-    }
-
-    const sessions = cleanPositiveInteger(plan?.credits);
-    const price = cleanMoney(plan?.price);
-    const payMethod = cleanString(plan?.payMethod).toUpperCase();
-
-    if (!sessions || price === null || !["CASH", "MP"].includes(payMethod)) {
-      return { ok: false, error: "El plan seleccionado tiene datos inválidos." };
-    }
-
-    return {
-      ok: true,
-      source: "pricing_plan",
-      pricingPlanId: objectIdString(plan),
-      monthlySessions: sessions,
-      price,
-      regularPrice: price,
-      payMethod,
-      label:
-        cleanString(plan?.customTitle) ||
-        cleanString(plan?.label) ||
-        `${sessions} sesiones`,
-      isCustom: plan?.isCustom === true,
-    };
-  }
-
-  const sessions = cleanPositiveInteger(manualMonthlySessions);
-  const price = cleanMoney(manualPrice);
-  const payMethod = cleanString(manualPayMethod).toUpperCase();
-
-  if (!sessions || price === null || !["CASH", "MP"].includes(payMethod)) {
+  if (!planId) {
     return {
       ok: false,
       error:
-        "Indicá pricingPlanId o completá monthlySessions, price y payMethod.",
+        "Seleccioná pricingPlanId de uno de los planes activos publicados. No se permiten planes manuales.",
     };
+  }
+
+  const plan = (Array.isArray(pricingPlans) ? pricingPlans : []).find(
+    (item) => objectIdString(item) === planId
+  );
+  if (!plan) {
+    return {
+      ok: false,
+      error:
+        "El plan seleccionado no está disponible entre los planes publicados para este servicio.",
+    };
+  }
+
+  if (plan?.active === false) {
+    return { ok: false, error: "El plan seleccionado está inactivo." };
+  }
+  if (!includeCustomPlans && plan?.isCustom === true) {
+    return {
+      ok: false,
+      error:
+        "Las tarjetas personalizadas no se usan como plan mensual recurrente.",
+    };
+  }
+
+  const normalizedServiceKey = normalizeServiceKey(serviceKey);
+  if (normalizeServiceKey(plan?.serviceKey) !== normalizedServiceKey) {
+    return {
+      ok: false,
+      error: "El plan seleccionado pertenece a otro servicio.",
+    };
+  }
+
+  const monthlySessions = cleanPositiveInteger(plan?.credits);
+  const price = cleanMoney(plan?.price);
+  const payMethod = cleanString(plan?.payMethod).toUpperCase();
+
+  if (!monthlySessions || price === null || !["CASH", "MP"].includes(payMethod)) {
+    return { ok: false, error: "El plan publicado tiene datos inválidos." };
   }
 
   return {
     ok: true,
-    source: "manual",
-    pricingPlanId: "",
-    monthlySessions: sessions,
+    source: "published_pricing_plan",
+    pricingPlanId: objectIdString(plan),
+    monthlySessions,
     price,
     regularPrice: price,
     payMethod,
-    label: `Plan manual · ${sessions} sesiones`,
-    isCustom: false,
+    label:
+      cleanString(plan?.customTitle) ||
+      cleanString(plan?.label) ||
+      `${monthlySessions} sesiones`,
+    isCustom: plan?.isCustom === true,
+  };
+}
+
+function buildPaidOrderPlanEvidence({ latestPaidOrder, pricingPlans, serviceKey }) {
+  const order = summarizePaidOrderForService(latestPaidOrder, serviceKey);
+  if (!order) return null;
+
+  const publishedPlan = order.pricingPlanId
+    ? (Array.isArray(pricingPlans) ? pricingPlans : []).find(
+        (plan) => objectIdString(plan) === order.pricingPlanId
+      )
+    : null;
+
+  return {
+    ...order,
+    matchesActivePublishedPlan: Boolean(publishedPlan),
+    activePublishedPlanId: publishedPlan ? objectIdString(publishedPlan) : "",
   };
 }
 
@@ -179,9 +202,6 @@ export function buildInitialSubscriptionCandidate({
   blocks = [],
   pricingPlans = [],
   selectedPricingPlanId = "",
-  manualMonthlySessions = null,
-  manualPrice = null,
-  manualPayMethod = "",
   autoRenew = true,
   existingSubscription = null,
   latestPaidOrder = null,
@@ -199,12 +219,11 @@ export function buildInitialSubscriptionCandidate({
     throw new Error("INVALID_USER");
   }
 
-  const explicitPlan = resolveExplicitPlan({
+  const publishedPlan = resolvePublishedPlan({
     pricingPlans,
     selectedPricingPlanId,
-    manualMonthlySessions,
-    manualPrice,
-    manualPayMethod,
+    serviceKey: normalizedServiceKey,
+    includeCustomPlans,
   });
 
   const errors = [];
@@ -217,8 +236,8 @@ export function buildInitialSubscriptionCandidate({
   if (existingSubscription) {
     errors.push("El usuario ya tiene una suscripción para este servicio.");
   }
-  if (!explicitPlan.ok) {
-    errors.push(explicitPlan.error);
+  if (!publishedPlan.ok) {
+    errors.push(publishedPlan.error);
   }
 
   const preview = buildSubscriptionCoveragePreview({
@@ -228,10 +247,10 @@ export function buildInitialSubscriptionCandidate({
     schedules,
     blocks,
     pricingPlans,
-    selectedPricingPlanId: explicitPlan.ok ? explicitPlan.pricingPlanId : "",
-    manualMonthlySessions: explicitPlan.ok ? explicitPlan.monthlySessions : 0,
+    selectedPricingPlanId: publishedPlan.ok
+      ? publishedPlan.pricingPlanId
+      : selectedPricingPlanId,
     extraSessionsSelected: 0,
-    manualPayMethod: explicitPlan.ok ? explicitPlan.payMethod : "",
     includeCustomPlans,
     now,
   });
@@ -241,34 +260,39 @@ export function buildInitialSubscriptionCandidate({
       "Existe deuda legacy para este servicio. Se fotografiará, pero no se modificará ni se trasladará a la suscripción."
     );
   }
-  if (preview.coverage.additionalSessionsStillNeeded > 0) {
+  if (preview.coverage.extraSessionsPending > 0 && publishedPlan.ok) {
     warnings.push(
-      `El plan seleccionado no cubre ${preview.coverage.additionalSessionsStillNeeded} turno(s) fijo(s) del mes. Esas sesiones se resolverán en el ciclo mensual, no durante el bootstrap.`
+      `El plan publicado se mantiene en ${publishedPlan.monthlySessions} sesiones. Para cubrir ${monthKey} el usuario deberá comprar ${preview.coverage.extraSessionsPending} sesión(es) adicional(es).`
     );
   }
   if (!preview.fixedSchedules.length) {
-    warnings.push("El usuario no tiene turnos fijos activos para este servicio y período.");
+    warnings.push(
+      "El usuario no tiene turnos fijos proyectados para este servicio y período."
+    );
   }
   if (preview.coverage.duplicateOccurrences.length) {
-    warnings.push("Se detectaron ocurrencias fijas duplicadas; se contabilizó una sola por fecha y horario.");
+    warnings.push(
+      "Se detectaron ocurrencias fijas duplicadas; se contabilizó una sola por fecha y horario."
+    );
   }
 
-  const paidOrder = summarizePaidOrderForService(
+  const paidOrderPlanEvidence = buildPaidOrderPlanEvidence({
     latestPaidOrder,
-    normalizedServiceKey
-  );
+    pricingPlans,
+    serviceKey: normalizedServiceKey,
+  });
   const period = monthRangeFromKey(monthKey);
 
-  const selectedPlan = explicitPlan.ok
+  const selectedPlan = publishedPlan.ok
     ? {
-        source: explicitPlan.source,
-        pricingPlanId: explicitPlan.pricingPlanId,
-        monthlySessions: explicitPlan.monthlySessions,
-        price: explicitPlan.price,
-        regularPrice: explicitPlan.regularPrice,
-        payMethod: explicitPlan.payMethod,
-        label: explicitPlan.label,
-        isCustom: explicitPlan.isCustom,
+        source: publishedPlan.source,
+        pricingPlanId: publishedPlan.pricingPlanId,
+        monthlySessions: publishedPlan.monthlySessions,
+        price: publishedPlan.price,
+        regularPrice: publishedPlan.regularPrice,
+        payMethod: publishedPlan.payMethod,
+        label: publishedPlan.label,
+        isCustom: publishedPlan.isCustom,
       }
     : null;
 
@@ -292,38 +316,43 @@ export function buildInitialSubscriptionCandidate({
       startDate: period.startYmd,
       endDate: period.endYmd,
     },
+    publishedPlan: selectedPlan,
+    // Alias temporal para consumidores de la Etapa 3 anterior.
     selectedPlan,
     coverage: preview.coverage,
     fixedSchedules: preview.fixedSchedules,
     fixedScheduleIds,
     legacySnapshot: preview.legacySnapshot,
-    latestPaidOrder: paidOrder,
+    latestPaidOrder: paidOrderPlanEvidence,
     existingSubscription: summarizeExistingSubscription(existingSubscription),
     autoRenew: autoRenew !== false,
+    commercialRule: {
+      createsCustomPlan: false,
+      basePlanChangesWithCalendar: false,
+      extraSessionsArePeriodOnly: true,
+    },
   };
 }
 
-export function buildServiceSubscriptionCreatePayload(candidate, {
-  actorId = null,
-  batchId,
-  notes = "",
-  now = new Date(),
-} = {}) {
-  if (!candidate?.canCreate || !candidate?.selectedPlan) {
+export function buildServiceSubscriptionCreatePayload(
+  candidate,
+  { actorId = null, batchId, notes = "", now = new Date() } = {}
+) {
+  if (!candidate?.canCreate || !candidate?.publishedPlan) {
     throw new Error("CANDIDATE_NOT_CREATABLE");
   }
 
   const cleanBatchId = cleanString(batchId);
   if (!cleanBatchId) throw new Error("BATCH_ID_REQUIRED");
 
-  const plan = candidate.selectedPlan;
+  const plan = candidate.publishedPlan;
   const latestOrder = candidate.latestPaidOrder;
 
   return {
     user: candidate.user.id,
     serviceKey: candidate.service.key,
     serviceName: candidate.service.name,
-    pricingPlan: plan.pricingPlanId || null,
+    pricingPlan: plan.pricingPlanId,
     status: "active",
     autoRenew: candidate.autoRenew !== false,
     monthlySessions: plan.monthlySessions,
@@ -342,12 +371,18 @@ export function buildServiceSubscriptionCreatePayload(candidate, {
     pendingChange: null,
     bootstrap: {
       source: "admin_initialization",
-      version: "subscriptions-v1",
+      version: "subscriptions-v1-published-plans",
       batchId: cleanBatchId,
       initializedAt: now,
       initializedBy: actorId,
       monthKey: candidate.period.monthKey,
       fixedScheduleIdsAtBootstrap: candidate.fixedScheduleIds,
+      publishedPricingPlanId: plan.pricingPlanId,
+      basePlanSessions: plan.monthlySessions,
+      projectedFixedOccurrences:
+        candidate.coverage.fixedOccurrencesCount || 0,
+      extraSessionsRequired:
+        candidate.coverage.extraSessionsRequired || 0,
       legacyAvailableSessions:
         candidate.legacySnapshot.availableSessionsNow || 0,
       legacyFixedScheduleDebt:
@@ -355,7 +390,9 @@ export function buildServiceSubscriptionCreatePayload(candidate, {
       latestPaidOrder: latestOrder
         ? {
             orderId: latestOrder.orderId || null,
-            paidAt: latestOrder.paidAt ? new Date(latestOrder.paidAt) : null,
+            paidAt: latestOrder.paidAt
+              ? new Date(latestOrder.paidAt)
+              : null,
             sessions: latestOrder.sessions || 0,
             amount: latestOrder.amount || 0,
             payMethod: latestOrder.payMethod || "",

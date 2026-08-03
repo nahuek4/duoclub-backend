@@ -1,5 +1,8 @@
 // backend/src/services/subscriptions/subscriptionCoveragePreview.js
 // Constructor puro de previsualizaciones. No consulta ni escribe MongoDB.
+// Regla comercial: el plan base siempre debe existir en PricingPlan.
+// Si el calendario mensual supera sus sesiones, la diferencia queda como
+// sesiones adicionales del período; nunca se crea un plan a medida.
 
 import {
   calculateServiceMonthCoverage,
@@ -113,7 +116,7 @@ function summarizeBlock(block = {}) {
   };
 }
 
-function summarizePricingPlan(plan = {}) {
+export function summarizePublishedPricingPlan(plan = {}) {
   return {
     id: objectIdString(plan),
     serviceKey: normalizeServiceKey(plan?.serviceKey),
@@ -141,17 +144,14 @@ function buildLegacySnapshot(user = {}, serviceKey, now = new Date()) {
       expiresAt: dateIsoOrNull(lot?.expiresAt),
       createdAt: dateIsoOrNull(lot?.createdAt),
     }))
-    .sort((a, b) => String(b.createdAt || "").localeCompare(String(a.createdAt || "")));
+    .sort((a, b) =>
+      String(b.createdAt || "").localeCompare(String(a.createdAt || ""))
+    );
 
   const activeLots = lots.filter((lot) => {
     if (!lot.expiresAt) return lot.remaining > 0;
     return lot.remaining > 0 && new Date(lot.expiresAt) > now;
   });
-
-  const debt = Math.max(
-    0,
-    Number(user?.fixedScheduleDebt?.[key] || 0)
-  );
 
   return {
     informationalOnly: true,
@@ -161,84 +161,93 @@ function buildLegacySnapshot(user = {}, serviceKey, now = new Date()) {
       0
     ),
     lastPurchasedLot: lots[0] || null,
-    legacyFixedScheduleDebt: debt,
+    legacyFixedScheduleDebt: Math.max(
+      0,
+      Number(user?.fixedScheduleDebt?.[key] || 0)
+    ),
+  };
+}
+
+function enrichCoverage(coverage = {}) {
+  const basePlanSessions = cleanNonNegativeInteger(coverage?.baseSessions);
+  const extraSessionsRequired = cleanNonNegativeInteger(
+    coverage?.extraSessionsNeeded
+  );
+  const extraSessionsSelected = cleanNonNegativeInteger(
+    coverage?.extraSessionsSelected
+  );
+  const extraSessionsPending = cleanNonNegativeInteger(
+    coverage?.additionalSessionsStillNeeded
+  );
+
+  return {
+    ...coverage,
+    basePlanSessions,
+    extraSessionsRequired,
+    extraSessionsSelected,
+    extraSessionsPending,
   };
 }
 
 function comparisonForPlan({ plan, schedules, blocks, monthKey, serviceKey }) {
-  const normalizedPlan = summarizePricingPlan(plan);
-  const coverage = calculateServiceMonthCoverage({
+  const publishedPlan = summarizePublishedPricingPlan(plan);
+  const rawCoverage = calculateServiceMonthCoverage({
     schedules,
     blocks,
     monthKey,
     serviceKey,
-    monthlySessions: normalizedPlan.monthlySessions,
+    monthlySessions: publishedPlan.monthlySessions,
     extraSessionsSelected: 0,
   });
 
   return {
-    plan: normalizedPlan,
-    coverage: {
-      status: coverage.status,
-      fixedOccurrencesCount: coverage.fixedOccurrencesCount,
-      monthlySessions: coverage.baseSessions,
-      extraSessionsNeeded: coverage.extraSessionsNeeded,
-      additionalSessionsStillNeeded: coverage.additionalSessionsStillNeeded,
-      freeSessions: coverage.freeSessions,
-      coveredFixedOccurrences: coverage.coveredFixedOccurrences,
-      uncoveredFixedOccurrences: coverage.uncoveredFixedOccurrences,
-    },
+    publishedPlan,
+    // Compatibilidad temporal con la respuesta de Etapa 2.
+    plan: publishedPlan,
+    coverage: enrichCoverage(rawCoverage),
   };
 }
 
-function resolveSelectedPlan({
-  pricingPlans,
-  selectedPricingPlanId,
-  manualMonthlySessions,
-  manualPayMethod,
-}) {
+function resolveSelectedPublishedPlan({ pricingPlans, selectedPricingPlanId }) {
   const planId = cleanString(selectedPricingPlanId);
   const plans = Array.isArray(pricingPlans) ? pricingPlans : [];
 
-  if (planId) {
-    const found = plans.find((plan) => objectIdString(plan) === planId);
-    if (found) {
-      return {
-        source: "pricing_plan",
-        plan: summarizePricingPlan(found),
-      };
-    }
-  }
-
-  if (manualMonthlySessions !== null && manualMonthlySessions !== undefined) {
-    const sessions = cleanNonNegativeInteger(manualMonthlySessions);
+  if (!planId) {
     return {
-      source: "manual_preview",
+      source: "unconfigured",
       plan: {
         id: "",
         serviceKey: "",
-        payMethod: cleanString(manualPayMethod).toUpperCase(),
-        monthlySessions: sessions,
+        payMethod: "",
+        monthlySessions: 0,
         price: 0,
-        label: `Previsualización manual · ${sessions} sesiones`,
+        label: "Sin plan publicado seleccionado",
         isCustom: false,
-        active: true,
+        active: false,
+      },
+    };
+  }
+
+  const found = plans.find((plan) => objectIdString(plan) === planId);
+  if (!found) {
+    return {
+      source: "invalid_published_plan",
+      plan: {
+        id: planId,
+        serviceKey: "",
+        payMethod: "",
+        monthlySessions: 0,
+        price: 0,
+        label: "Plan publicado no disponible",
+        isCustom: false,
+        active: false,
       },
     };
   }
 
   return {
-    source: "unconfigured",
-    plan: {
-      id: "",
-      serviceKey: "",
-      payMethod: "",
-      monthlySessions: 0,
-      price: 0,
-      label: "Sin plan seleccionado",
-      isCustom: false,
-      active: false,
-    },
+    source: "published_pricing_plan",
+    plan: summarizePublishedPricingPlan(found),
   };
 }
 
@@ -250,9 +259,7 @@ export function buildSubscriptionCoveragePreview({
   blocks = [],
   pricingPlans = [],
   selectedPricingPlanId = "",
-  manualMonthlySessions = null,
   extraSessionsSelected = 0,
-  manualPayMethod = "",
   includeCustomPlans = false,
   now = new Date(),
 } = {}) {
@@ -276,15 +283,13 @@ export function buildSubscriptionCoveragePreview({
     }
   );
 
-  const selected = resolveSelectedPlan({
+  const selected = resolveSelectedPublishedPlan({
     pricingPlans: filteredPlans,
     selectedPricingPlanId,
-    manualMonthlySessions,
-    manualPayMethod,
   });
   selected.plan.serviceKey = normalizedServiceKey;
 
-  const coverage = calculateServiceMonthCoverage({
+  const rawCoverage = calculateServiceMonthCoverage({
     schedules: filteredSchedules,
     blocks,
     monthKey,
@@ -292,8 +297,9 @@ export function buildSubscriptionCoveragePreview({
     monthlySessions: selected.plan.monthlySessions,
     extraSessionsSelected,
   });
+  const coverage = enrichCoverage(rawCoverage);
 
-  const planComparisons = filteredPlans
+  const publishedPlanComparisons = filteredPlans
     .map((plan) =>
       comparisonForPlan({
         plan,
@@ -304,17 +310,33 @@ export function buildSubscriptionCoveragePreview({
       })
     )
     .sort((a, b) => {
-      if (a.plan.monthlySessions !== b.plan.monthlySessions) {
-        return a.plan.monthlySessions - b.plan.monthlySessions;
+      if (a.publishedPlan.monthlySessions !== b.publishedPlan.monthlySessions) {
+        return (
+          a.publishedPlan.monthlySessions - b.publishedPlan.monthlySessions
+        );
       }
-      if (a.plan.price !== b.plan.price) return a.plan.price - b.plan.price;
-      return a.plan.payMethod.localeCompare(b.plan.payMethod);
+      if (a.publishedPlan.price !== b.publishedPlan.price) {
+        return a.publishedPlan.price - b.publishedPlan.price;
+      }
+      return a.publishedPlan.payMethod.localeCompare(
+        b.publishedPlan.payMethod
+      );
     });
 
   const warnings = [];
   if (selected.source === "unconfigured") {
     warnings.push(
-      "No se seleccionó un plan. La cobertura se calcula con 0 sesiones para mostrar todas las ocurrencias pendientes."
+      "Seleccioná uno de los planes publicados. No se crean planes adaptados a los turnos fijos."
+    );
+  }
+  if (selected.source === "invalid_published_plan") {
+    warnings.push(
+      "El plan indicado no está entre los planes activos publicados para este servicio."
+    );
+  }
+  if (coverage.extraSessionsPending > 0 && selected.plan.id) {
+    warnings.push(
+      `El plan base se mantiene en ${selected.plan.monthlySessions} sesiones. Para cubrir el mes hacen falta ${coverage.extraSessionsPending} sesión(es) adicional(es).`
     );
   }
   if (coverage.duplicateOccurrences.length) {
@@ -327,6 +349,11 @@ export function buildSubscriptionCoveragePreview({
       "Las ocurrencias bloqueadas no se incluyen dentro de las sesiones necesarias del mes."
     );
   }
+
+  const publishedPlan = {
+    source: selected.source,
+    ...selected.plan,
+  };
 
   return {
     readOnly: true,
@@ -341,13 +368,16 @@ export function buildSubscriptionCoveragePreview({
       startDate: period.startYmd,
       endDate: period.endYmd,
     },
+    publishedPlan,
+    // Alias temporal para no romper consumidores de Etapa 2.
     selectedPlan: {
-      source: selected.source,
-      ...selected.plan,
+      ...publishedPlan,
       extraSessionsSelected: cleanNonNegativeInteger(extraSessionsSelected),
     },
     coverage,
-    planComparisons,
+    publishedPlanComparisons,
+    // Alias temporal para no romper consumidores de Etapa 2.
+    planComparisons: publishedPlanComparisons,
     fixedSchedules: filteredSchedules.map(summarizeSchedule),
     applicableBlocks: (Array.isArray(blocks) ? blocks : []).map(summarizeBlock),
     legacySnapshot: buildLegacySnapshot(user, normalizedServiceKey, now),

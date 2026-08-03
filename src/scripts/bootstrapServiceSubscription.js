@@ -1,11 +1,10 @@
 // backend/scripts/bootstrapServiceSubscription.js
-// Inicializa UNA suscripción. Por defecto solo previsualiza.
+// Inicializa UNA suscripción vinculada a un plan publicado.
+// Por defecto solo previsualiza.
 //
-// Plan del catálogo:
-// node scripts/bootstrapServiceSubscription.js --user=mail@ejemplo.com --service=EP --month=2026-09 --plan=ID_PLAN
-//
-// Plan manual:
-// node scripts/bootstrapServiceSubscription.js --user=mail@ejemplo.com --service=EP --month=2026-09 --sessions=8 --price=70000 --pay=CASH
+// Previsualizar:
+// node scripts/bootstrapServiceSubscription.js \
+//   --user=mail@ejemplo.com --service=EP --month=2026-09 --plan=ID_PLAN
 //
 // Aplicar:
 // agregar --apply --confirm=CREATE_INITIAL_SUBSCRIPTION
@@ -164,13 +163,18 @@ try {
     }
 
     const planId = clean(args.plan);
-    if (planId && !mongoose.Types.ObjectId.isValid(planId)) {
-      throw new Error("--plan debe ser un ObjectId válido.");
+    if (!mongoose.Types.ObjectId.isValid(planId)) {
+      throw new Error(
+        "Debés indicar --plan con el ObjectId de un plan activo publicado."
+      );
     }
 
-    const manualSessions = args.sessions === undefined ? null : Number(args.sessions);
-    const manualPrice = args.price === undefined ? null : Number(args.price);
-    const manualPayMethod = clean(args.pay).toUpperCase();
+    if (args.sessions !== undefined || args.price !== undefined || args.pay !== undefined) {
+      throw new Error(
+        "Ya no se permiten planes manuales. Usá únicamente --plan=ID_PLAN_PUBLICADO."
+      );
+    }
+
     const range = monthRangeFromKey(monthKey);
 
     const [schedules, blocks, pricingPlans, existingSubscription, latestPaidOrder] =
@@ -185,7 +189,7 @@ try {
         PricingPlan.find({
           active: true,
           serviceKey,
-          ...(toBoolean(args.custom) ? {} : { isCustom: { $ne: true } }),
+          isCustom: { $ne: true },
         }).lean(),
         ServiceSubscription.findOne({ user: user._id, serviceKey }).lean(),
         Order.findOne(paidOrderQuery(user._id, serviceKey))
@@ -207,19 +211,16 @@ try {
       blocks,
       pricingPlans,
       selectedPricingPlanId: planId,
-      manualMonthlySessions: manualSessions,
-      manualPrice,
-      manualPayMethod,
       autoRenew: args.autoRenew === undefined ? true : toBoolean(args.autoRenew),
       existingSubscription,
       latestPaidOrder,
-      includeCustomPlans: toBoolean(args.custom),
+      includeCustomPlans: false,
     });
 
     console.log(
       JSON.stringify(
         {
-          mode: "bootstrap",
+          mode: "bootstrap_published_plan",
           dryRun: !toBoolean(args.apply),
           projection: {
             diagnostics: projection.diagnostics,
@@ -247,6 +248,10 @@ try {
 
       const created = await ServiceSubscription.create(payload);
       console.log(`✅ Suscripción creada: ${created._id}`);
+      console.log(
+        `Plan base: ${created.monthlySessions} sesiones. ` +
+          `Adicionales requeridas en ${monthKey}: ${candidate.coverage.extraSessionsRequired}.`
+      );
       console.log("No se modificaron créditos, deuda, turnos, órdenes ni ciclos.");
     }
   }

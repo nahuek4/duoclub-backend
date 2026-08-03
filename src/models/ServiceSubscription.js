@@ -169,7 +169,11 @@ const bootstrapSchema = new mongoose.Schema(
       required: true,
       default: "admin_initialization",
     },
-    version: { type: String, default: "subscriptions-v1", trim: true },
+    version: {
+      type: String,
+      default: "subscriptions-v1-published-plans",
+      trim: true,
+    },
     batchId: { type: String, required: true, trim: true, index: true },
     initializedAt: { type: Date, default: Date.now },
     initializedBy: {
@@ -188,6 +192,14 @@ const bootstrapSchema = new mongoose.Schema(
       ref: "FixedSchedule",
       default: [],
     },
+    publishedPricingPlanId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "PricingPlan",
+      default: null,
+    },
+    basePlanSessions: { type: Number, default: 0, min: 0 },
+    projectedFixedOccurrences: { type: Number, default: 0, min: 0 },
+    extraSessionsRequired: { type: Number, default: 0, min: 0 },
     legacyAvailableSessions: { type: Number, default: 0, min: 0 },
     legacyFixedScheduleDebt: { type: Number, default: 0, min: 0 },
     latestPaidOrder: { type: bootstrapOrderSnapshotSchema, default: null },
@@ -359,7 +371,7 @@ serviceSubscriptionSchema.pre("validate", function normalizeSubscription() {
   if (this.bootstrap) {
     this.bootstrap.batchId = String(this.bootstrap.batchId || "").trim();
     this.bootstrap.version = String(
-      this.bootstrap.version || "subscriptions-v1"
+      this.bootstrap.version || "subscriptions-v1-published-plans"
     ).trim();
     this.bootstrap.notes = String(this.bootstrap.notes || "").trim();
 
@@ -372,6 +384,18 @@ serviceSubscriptionSchema.pre("validate", function normalizeSubscription() {
       )
     );
 
+    this.bootstrap.basePlanSessions = Math.max(
+      0,
+      Math.trunc(Number(this.bootstrap.basePlanSessions || 0))
+    );
+    this.bootstrap.projectedFixedOccurrences = Math.max(
+      0,
+      Math.trunc(Number(this.bootstrap.projectedFixedOccurrences || 0))
+    );
+    this.bootstrap.extraSessionsRequired = Math.max(
+      0,
+      Math.trunc(Number(this.bootstrap.extraSessionsRequired || 0))
+    );
     this.bootstrap.legacyAvailableSessions = Math.max(
       0,
       Math.trunc(Number(this.bootstrap.legacyAvailableSessions || 0))

@@ -1,5 +1,5 @@
 // backend/src/routes/adminSubscriptions.js
-// Etapa 3: previsualización + bootstrap controlado de suscripciones iniciales.
+// Etapa 3 corregida: bootstrap controlado usando únicamente planes publicados.
 // No modifica créditos, deuda legacy, órdenes, turnos ni jobs.
 
 import crypto from "crypto";
@@ -26,6 +26,7 @@ import {
   buildServiceSubscriptionCreatePayload,
   canRollbackBootstrapSubscription,
 } from "../services/subscriptions/subscriptionBootstrap.js";
+import { projectActiveFixedSchedulesForMonth } from "../services/subscriptions/subscriptionScheduleProjection.js";
 
 const router = express.Router();
 router.use(protect, adminOnly);
@@ -166,12 +167,11 @@ async function loadSubscriptionContext({
   serviceKey,
   monthKey,
   payMethod = "",
-  includeCustomPlans = false,
 } = {}) {
   const range = monthRangeFromKey(monthKey);
   const pricingQuery = { active: true, serviceKey };
   if (payMethod) pricingQuery.payMethod = payMethod;
-  if (!includeCustomPlans) pricingQuery.isCustom = { $ne: true };
+  pricingQuery.isCustom = { $ne: true };
 
   const [user, schedules, blocks, pricingPlans, existingSubscription, latestPaidOrder] =
     await Promise.all([
@@ -186,7 +186,6 @@ async function loadSubscriptionContext({
         active: true,
         serviceKey,
         startDate: { $lte: range.endYmd },
-        endDate: { $gte: range.startYmd },
       })
         .sort({ startDate: 1, createdAt: 1 })
         .lean(),
@@ -212,9 +211,17 @@ async function loadSubscriptionContext({
     throw error;
   }
 
+  const projection = projectActiveFixedSchedulesForMonth({
+    schedules,
+    monthKey,
+    serviceKey,
+  });
+
   return {
     user,
-    schedules,
+    sourceSchedules: schedules,
+    schedules: projection.projectedSchedules,
+    projection,
     blocks,
     pricingPlans,
     existingSubscription,
@@ -226,17 +233,9 @@ function parseBootstrapInput(source = {}) {
   const userId = assertObjectId(source?.userId, "userId");
   const serviceKey = assertServiceKey(source?.serviceKey);
   const monthKey = assertMonthKey(source?.monthKey);
-  const pricingPlanId = cleanString(source?.pricingPlanId);
+  const pricingPlanId = assertObjectId(source?.pricingPlanId, "pricingPlanId");
   const payMethod = assertPayMethod(source?.payMethod, { optional: true });
-  const monthlySessions = parseOptionalPositiveInteger(
-    source?.monthlySessions,
-    "monthlySessions"
-  );
-  const price = parseOptionalMoney(source?.price, "price");
-  const includeCustomPlans = parseBoolean(source?.includeCustomPlans, false);
   const autoRenew = parseBoolean(source?.autoRenew, true);
-
-  if (pricingPlanId) assertObjectId(pricingPlanId, "pricingPlanId");
 
   return {
     userId,
@@ -244,9 +243,6 @@ function parseBootstrapInput(source = {}) {
     monthKey,
     pricingPlanId,
     payMethod,
-    monthlySessions,
-    price,
-    includeCustomPlans,
     autoRenew,
   };
 }
@@ -300,17 +296,8 @@ router.get("/coverage-preview", async (req, res) => {
     const monthKey = assertMonthKey(req.query?.monthKey);
     const pricingPlanId = cleanString(req.query?.pricingPlanId);
     const payMethod = assertPayMethod(req.query?.payMethod, { optional: true });
-    const includeCustomPlans = parseBoolean(
-      req.query?.includeCustomPlans,
-      false
-    );
-
     if (pricingPlanId) assertObjectId(pricingPlanId, "pricingPlanId");
 
-    const manualMonthlySessions = parseOptionalNonNegativeInteger(
-      req.query?.monthlySessions,
-      "monthlySessions"
-    );
     const extraSessionsSelected =
       parseOptionalNonNegativeInteger(
         req.query?.extraSessionsSelected,
@@ -322,7 +309,6 @@ router.get("/coverage-preview", async (req, res) => {
       serviceKey,
       monthKey,
       payMethod,
-      includeCustomPlans,
     });
 
     if (
@@ -346,13 +332,19 @@ router.get("/coverage-preview", async (req, res) => {
       blocks: context.blocks,
       pricingPlans: context.pricingPlans,
       selectedPricingPlanId: pricingPlanId,
-      manualMonthlySessions,
       extraSessionsSelected,
-      manualPayMethod: payMethod,
-      includeCustomPlans,
+      includeCustomPlans: false,
     });
 
-    return res.json({ ok: true, ...preview });
+    return res.json({
+      ok: true,
+      projection: {
+        mode: "active_pattern_full_month",
+        diagnostics: context.projection.diagnostics,
+        excludedSchedules: context.projection.excludedSchedules,
+      },
+      ...preview,
+    });
   } catch (error) {
     const status = Number(error?.status || 500);
     console.error("GET /admin/subscriptions/coverage-preview error:", error);
@@ -383,17 +375,23 @@ router.get("/bootstrap-preview", async (req, res) => {
       schedules: context.schedules,
       blocks: context.blocks,
       pricingPlans: context.pricingPlans,
+
       selectedPricingPlanId: input.pricingPlanId,
-      manualMonthlySessions: input.monthlySessions,
-      manualPrice: input.price,
-      manualPayMethod: input.payMethod,
       autoRenew: input.autoRenew,
       existingSubscription: context.existingSubscription,
       latestPaidOrder: context.latestPaidOrder,
-      includeCustomPlans: input.includeCustomPlans,
+      includeCustomPlans: false,
     });
 
-    return res.json({ ok: true, candidate });
+    return res.json({
+      ok: true,
+      projection: {
+        mode: "active_pattern_full_month",
+        diagnostics: context.projection.diagnostics,
+        excludedSchedules: context.projection.excludedSchedules,
+      },
+      candidate,
+    });
   } catch (error) {
     const status = Number(error?.status || 500);
     console.error("GET /admin/subscriptions/bootstrap-preview error:", error);
@@ -434,14 +432,12 @@ router.post("/bootstrap", async (req, res) => {
       schedules: context.schedules,
       blocks: context.blocks,
       pricingPlans: context.pricingPlans,
+
       selectedPricingPlanId: input.pricingPlanId,
-      manualMonthlySessions: input.monthlySessions,
-      manualPrice: input.price,
-      manualPayMethod: input.payMethod,
       autoRenew: input.autoRenew,
       existingSubscription: context.existingSubscription,
       latestPaidOrder: context.latestPaidOrder,
-      includeCustomPlans: input.includeCustomPlans,
+      includeCustomPlans: false,
     });
 
     if (!candidate.canCreate) {

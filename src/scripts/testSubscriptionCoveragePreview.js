@@ -1,4 +1,3 @@
-// backend/scripts/testSubscriptionCoveragePreview.js
 import assert from "node:assert/strict";
 import { buildSubscriptionCoveragePreview } from "../src/services/subscriptions/subscriptionCoveragePreview.js";
 
@@ -55,6 +54,16 @@ const plans = [
     active: true,
     isCustom: false,
   },
+  {
+    _id: "custom-1",
+    serviceKey: "EP",
+    payMethod: "CASH",
+    credits: 9,
+    price: 90000,
+    label: "Tarjeta personalizada",
+    active: true,
+    isCustom: true,
+  },
 ];
 
 const preview4 = buildSubscriptionCoveragePreview({
@@ -68,21 +77,38 @@ const preview4 = buildSubscriptionCoveragePreview({
 });
 
 assert.equal(preview4.readOnly, true);
-assert.equal(preview4.selectedPlan.source, "pricing_plan");
+assert.equal(preview4.publishedPlan.source, "published_pricing_plan");
+assert.equal(preview4.publishedPlan.monthlySessions, 4);
 assert.equal(preview4.coverage.fixedOccurrencesCount, 5);
-assert.equal(preview4.coverage.extraSessionsNeeded, 1);
-assert.equal(preview4.coverage.additionalSessionsStillNeeded, 1);
+assert.equal(preview4.coverage.basePlanSessions, 4);
+assert.equal(preview4.coverage.extraSessionsRequired, 1);
+assert.equal(preview4.coverage.extraSessionsPending, 1);
 assert.equal(preview4.coverage.pendingOccurrences.length, 1);
 assert.equal(preview4.coverage.pendingOccurrences[0].date, "2026-09-29");
 assert.equal(preview4.legacySnapshot.availableSessionsNow, 3);
 assert.equal(preview4.legacySnapshot.legacyFixedScheduleDebt, 2);
-
-const plan8Comparison = preview4.planComparisons.find(
-  (item) => item.plan.id === "plan-8"
+assert.equal(preview4.publishedPlanComparisons.length, 2);
+assert.equal(
+  preview4.publishedPlanComparisons.some((item) => item.publishedPlan.id === "custom-1"),
+  false
 );
-assert.ok(plan8Comparison);
-assert.equal(plan8Comparison.coverage.freeSessions, 3);
-assert.equal(plan8Comparison.coverage.additionalSessionsStillNeeded, 0);
+
+const previewWithExtra = buildSubscriptionCoveragePreview({
+  user,
+  serviceKey: "EP",
+  monthKey: "2026-09",
+  schedules: fiveTuesdays,
+  pricingPlans: plans,
+  selectedPricingPlanId: "plan-4",
+  extraSessionsSelected: 1,
+});
+
+assert.equal(previewWithExtra.publishedPlan.monthlySessions, 4);
+assert.equal(previewWithExtra.coverage.totalSessions, 5);
+assert.equal(previewWithExtra.coverage.extraSessionsRequired, 1);
+assert.equal(previewWithExtra.coverage.extraSessionsSelected, 1);
+assert.equal(previewWithExtra.coverage.extraSessionsPending, 0);
+assert.equal(previewWithExtra.coverage.status, "covered");
 
 const previewWithBlock = buildSubscriptionCoveragePreview({
   user,
@@ -102,29 +128,12 @@ const previewWithBlock = buildSubscriptionCoveragePreview({
   ],
   pricingPlans: plans,
   selectedPricingPlanId: "plan-4",
-  now: new Date("2026-08-03T12:00:00.000Z"),
 });
 
 assert.equal(previewWithBlock.coverage.fixedOccurrencesCount, 4);
 assert.equal(previewWithBlock.coverage.blockedOccurrencesCount, 1);
-assert.equal(previewWithBlock.coverage.additionalSessionsStillNeeded, 0);
+assert.equal(previewWithBlock.coverage.extraSessionsPending, 0);
 assert.equal(previewWithBlock.coverage.status, "covered");
-
-const manualPreview = buildSubscriptionCoveragePreview({
-  user,
-  serviceKey: "EP",
-  monthKey: "2026-09",
-  schedules: fiveTuesdays,
-  pricingPlans: plans,
-  manualMonthlySessions: 2,
-  extraSessionsSelected: 1,
-  now: new Date("2026-08-03T12:00:00.000Z"),
-});
-
-assert.equal(manualPreview.selectedPlan.source, "manual_preview");
-assert.equal(manualPreview.coverage.totalSessions, 3);
-assert.equal(manualPreview.coverage.additionalSessionsStillNeeded, 2);
-assert.equal(manualPreview.coverage.status, "pending_coverage");
 
 const unconfigured = buildSubscriptionCoveragePreview({
   user,
@@ -132,12 +141,22 @@ const unconfigured = buildSubscriptionCoveragePreview({
   monthKey: "2026-09",
   schedules: fiveTuesdays,
   pricingPlans: plans,
-  now: new Date("2026-08-03T12:00:00.000Z"),
 });
 
-assert.equal(unconfigured.selectedPlan.source, "unconfigured");
-assert.equal(unconfigured.coverage.baseSessions, 0);
+assert.equal(unconfigured.publishedPlan.source, "unconfigured");
+assert.equal(unconfigured.coverage.basePlanSessions, 0);
 assert.equal(unconfigured.coverage.pendingOccurrences.length, 5);
-assert.ok(unconfigured.warnings.length > 0);
+assert.ok(unconfigured.warnings.some((item) => item.includes("planes publicados")));
+
+const invalid = buildSubscriptionCoveragePreview({
+  user,
+  serviceKey: "EP",
+  monthKey: "2026-09",
+  schedules: fiveTuesdays,
+  pricingPlans: plans,
+  selectedPricingPlanId: "plan-inexistente",
+});
+assert.equal(invalid.publishedPlan.source, "invalid_published_plan");
+assert.equal(invalid.coverage.basePlanSessions, 0);
 
 console.log("✅ subscriptionCoveragePreview: todas las pruebas pasaron.");

@@ -1,6 +1,7 @@
 // backend/scripts/auditInitialSubscriptions.js
 // SOLO LECTURA. Audita patrones fijos activos y los proyecta al mes objetivo.
-// No modifica FixedSchedule, User, créditos, deuda ni suscripciones.
+// Los planes base son exclusivamente PricingPlan activos publicados.
+// No crea planes a medida ni modifica MongoDB.
 //
 // Uso:
 // node scripts/auditInitialSubscriptions.js --month=2026-09 \
@@ -14,6 +15,7 @@ import User from "../src/models/User.js";
 import FixedSchedule from "../src/models/FixedSchedule.js";
 import ScheduleBlock from "../src/models/ScheduleBlock.js";
 import PricingPlan from "../src/models/PricingPlan.js";
+import Order from "../src/models/Order.js";
 import ServiceSubscription from "../src/models/ServiceSubscription.js";
 import {
   isValidMonthKey,
@@ -25,6 +27,7 @@ import {
   projectActiveFixedSchedulesForMonth,
   scheduleLegacyOverlapsMonth,
 } from "../src/services/subscriptions/subscriptionScheduleProjection.js";
+import { summarizePaidOrderForService } from "../src/services/subscriptions/subscriptionBootstrap.js";
 
 dotenv.config();
 
@@ -72,6 +75,33 @@ function summarizeExcludedSchedule(schedule, reason) {
   };
 }
 
+function serviceKeysFromOrder(order = {}) {
+  const keys = [];
+  for (const item of Array.isArray(order?.items) ? order.items : []) {
+    if (!["CREDITS", "MANUAL_SERVICE"].includes(clean(item?.kind).toUpperCase())) {
+      continue;
+    }
+    const key = normalizeServiceKey(item?.serviceKey);
+    if (key) keys.push(key);
+  }
+  const legacyKey = normalizeServiceKey(order?.serviceKey);
+  if (legacyKey) keys.push(legacyKey);
+  return [...new Set(keys)];
+}
+
+function latestOrderMap(orders = []) {
+  const map = new Map();
+  for (const order of orders) {
+    const userId = idOf(order?.user);
+    if (!userId) continue;
+    for (const serviceKey of serviceKeysFromOrder(order)) {
+      const key = `${userId}__${serviceKey}`;
+      if (!map.has(key)) map.set(key, order);
+    }
+  }
+  return map;
+}
+
 const args = argsMap(process.argv.slice(2));
 const monthKey = clean(args.month);
 const serviceFilter = normalizeServiceKey(args.service);
@@ -115,7 +145,7 @@ try {
       isCustom: { $ne: true },
       ...(serviceFilter ? { serviceKey: serviceFilter } : {}),
     })
-      .sort({ serviceKey: 1, credits: 1, price: 1 })
+      .sort({ serviceKey: 1, credits: 1, price: 1, payMethod: 1 })
       .lean(),
     ServiceSubscription.find(
       serviceFilter ? { serviceKey: serviceFilter } : {}
@@ -159,6 +189,20 @@ try {
     }
     groups.get(key).schedules.push(schedule);
   }
+
+  const groupUserIds = [...new Set(
+    [...groups.values()].map((group) => String(group.user._id))
+  )];
+
+  const paidOrders = groupUserIds.length
+    ? await Order.find({
+        user: { $in: groupUserIds },
+        status: { $in: ["paid", "approved"] },
+      })
+        .sort({ paidAt: -1, createdAt: -1 })
+        .lean()
+    : [];
+  const paidOrdersByUserService = latestOrderMap(paidOrders);
 
   const rows = [];
 
@@ -209,24 +253,27 @@ try {
       includeCustomPlans: false,
     });
 
-    const planComparisons = projectedPreview.planComparisons
-      .slice()
-      .sort((a, b) => {
-        if (a.plan.monthlySessions !== b.plan.monthlySessions) {
-          return a.plan.monthlySessions - b.plan.monthlySessions;
-        }
-        return a.plan.price - b.plan.price;
-      });
-
-    const smallestAvailablePlan = planComparisons[0]?.plan || null;
-    const smallestCoveringPlan =
-      planComparisons.find(
-        (item) => item.coverage.additionalSessionsStillNeeded === 0
-      )?.plan || null;
-
-    const existingSubscription = existingMap.get(
-      `${group.user._id}__${group.serviceKey}`
+    const publishedPlans = projectedPreview.publishedPlanComparisons.map(
+      ({ publishedPlan, coverage }) => ({
+        ...publishedPlan,
+        projectedFixedOccurrences: coverage.fixedOccurrencesCount,
+        extraSessionsRequired: coverage.extraSessionsRequired,
+        freeSessions: coverage.freeSessions,
+      })
     );
+
+    const groupKey = `${group.user._id}__${group.serviceKey}`;
+    const existingSubscription = existingMap.get(groupKey);
+    const latestPaidOrder = paidOrdersByUserService.get(groupKey) || null;
+    const paidOrderEvidence = summarizePaidOrderForService(
+      latestPaidOrder,
+      group.serviceKey
+    );
+    const suggestedPublishedPlan = paidOrderEvidence?.pricingPlanId
+      ? publishedPlans.find(
+          (plan) => plan.id === paidOrderEvidence.pricingPlanId
+        ) || null
+      : null;
 
     rows.push({
       user: projectedPreview.user,
@@ -253,32 +300,41 @@ try {
         ? {
             id: String(existingSubscription._id),
             status: existingSubscription.status,
+            pricingPlanId: idOf(existingSubscription.pricingPlan),
             monthlySessions: existingSubscription.monthlySessions,
           }
         : null,
-      smallestAvailablePlan,
-      smallestCoveringPlan,
-      planComparisons,
+      latestPaidOrderEvidence: paidOrderEvidence,
+      suggestedPublishedPlan,
+      publishedPlans,
       projectedFixedSchedules: projectedPreview.fixedSchedules,
-      action: existingSubscription ? "skip_existing" : "select_plan",
+      action: existingSubscription
+        ? "skip_existing"
+        : suggestedPublishedPlan
+          ? "confirm_suggested_published_plan"
+          : "select_published_plan",
       requiresManualDecision: !existingSubscription,
       notes: [
         "La proyección usa el patrón active:true durante todo el mes.",
         "El endDate legacy se conserva solo como dato de auditoría.",
-        "La selección del plan debe confirmarse explícitamente; no se autoasigna.",
+        "El plan base debe ser uno de los PricingPlan activos publicados.",
+        "Si el plan tiene menos sesiones que el mes, la diferencia se compra como sesiones adicionales del período.",
+        "La sugerencia por última compra es solo evidencia y debe confirmarse explícitamente.",
       ],
     });
   }
 
   rows.sort((a, b) =>
     `${a.user.fullName} ${a.service.key}`.localeCompare(
-      `${b.user.fullName} ${b.service.key}`
+      `${b.user.fullName} ${b.service.key}`,
+      "es"
     )
   );
 
   const report = {
     readOnly: true,
     projectionMode: "active_pattern_full_month",
+    planMode: "published_pricing_plan_only",
     generatedAt: new Date().toISOString(),
     monthKey,
     serviceFilter: serviceFilter || "ALL",
@@ -293,13 +349,19 @@ try {
     requiresManualDecisionCount: rows.filter(
       (row) => row.requiresManualDecision
     ).length,
+    candidatesWithPublishedPlanSuggestion: rows.filter(
+      (row) => row.suggestedPublishedPlan
+    ).length,
+    candidatesWithoutPublishedPlans: rows.filter(
+      (row) => !row.publishedPlans.length
+    ).length,
     candidates: rows,
   };
 
   const json = JSON.stringify(report, null, 2);
   if (outFile) {
     fs.writeFileSync(outFile, json, "utf8");
-    console.log(`✅ Auditoría proyectada guardada en ${outFile}`);
+    console.log(`✅ Auditoría de planes publicados guardada en ${outFile}`);
   } else {
     console.log(json);
   }
