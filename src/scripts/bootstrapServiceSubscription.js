@@ -35,6 +35,7 @@ import {
   buildServiceSubscriptionCreatePayload,
   canRollbackBootstrapSubscription,
 } from "../src/services/subscriptions/subscriptionBootstrap.js";
+import { projectActiveFixedSchedulesForMonth } from "../src/services/subscriptions/subscriptionScheduleProjection.js";
 
 dotenv.config();
 
@@ -179,7 +180,6 @@ try {
           active: true,
           serviceKey,
           startDate: { $lte: range.endYmd },
-          endDate: { $gte: range.startYmd },
         }).lean(),
         ScheduleBlock.find(blockQuery(range.startYmd, range.endYmd)).lean(),
         PricingPlan.find({
@@ -193,11 +193,17 @@ try {
           .lean(),
       ]);
 
+    const projection = projectActiveFixedSchedulesForMonth({
+      schedules,
+      monthKey,
+      serviceKey,
+    });
+
     const candidate = buildInitialSubscriptionCandidate({
       user,
       serviceKey,
       monthKey,
-      schedules,
+      schedules: projection.projectedSchedules,
       blocks,
       pricingPlans,
       selectedPricingPlanId: planId,
@@ -215,6 +221,10 @@ try {
         {
           mode: "bootstrap",
           dryRun: !toBoolean(args.apply),
+          projection: {
+            diagnostics: projection.diagnostics,
+            excludedSchedules: projection.excludedSchedules,
+          },
           candidate,
         },
         null,
