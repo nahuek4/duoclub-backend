@@ -139,6 +139,63 @@ const pendingChangeSchema = new mongoose.Schema(
   { _id: false }
 );
 
+
+const bootstrapOrderSnapshotSchema = new mongoose.Schema(
+  {
+    orderId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "Order",
+      default: null,
+    },
+    paidAt: { type: Date, default: null },
+    sessions: { type: Number, default: 0, min: 0 },
+    amount: { type: Number, default: 0, min: 0 },
+    payMethod: {
+      type: String,
+      enum: ["", "CASH", "MP"],
+      default: "",
+      uppercase: true,
+      trim: true,
+    },
+  },
+  { _id: false }
+);
+
+const bootstrapSchema = new mongoose.Schema(
+  {
+    source: {
+      type: String,
+      enum: ["admin_initialization", "legacy_migration"],
+      required: true,
+      default: "admin_initialization",
+    },
+    version: { type: String, default: "subscriptions-v1", trim: true },
+    batchId: { type: String, required: true, trim: true, index: true },
+    initializedAt: { type: Date, default: Date.now },
+    initializedBy: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "User",
+      default: null,
+    },
+    monthKey: {
+      type: String,
+      required: true,
+      trim: true,
+      match: /^\d{4}-\d{2}$/,
+    },
+    fixedScheduleIdsAtBootstrap: {
+      type: [mongoose.Schema.Types.ObjectId],
+      ref: "FixedSchedule",
+      default: [],
+    },
+    legacyAvailableSessions: { type: Number, default: 0, min: 0 },
+    legacyFixedScheduleDebt: { type: Number, default: 0, min: 0 },
+    latestPaidOrder: { type: bootstrapOrderSnapshotSchema, default: null },
+    notes: { type: String, default: "", trim: true },
+  },
+  { _id: false }
+);
+
 const serviceSubscriptionSchema = new mongoose.Schema(
   {
     user: {
@@ -233,6 +290,9 @@ const serviceSubscriptionSchema = new mongoose.Schema(
     terminatedAt: { type: Date, default: null },
     terminationReason: { type: String, default: "", trim: true },
 
+
+    bootstrap: { type: bootstrapSchema, default: null },
+
     createdBy: {
       type: mongoose.Schema.Types.ObjectId,
       ref: "User",
@@ -295,6 +355,32 @@ serviceSubscriptionSchema.pre("validate", function normalizeSubscription() {
       .toUpperCase()
       .trim();
   }
+
+  if (this.bootstrap) {
+    this.bootstrap.batchId = String(this.bootstrap.batchId || "").trim();
+    this.bootstrap.version = String(
+      this.bootstrap.version || "subscriptions-v1"
+    ).trim();
+    this.bootstrap.notes = String(this.bootstrap.notes || "").trim();
+
+    this.bootstrap.fixedScheduleIdsAtBootstrap = Array.from(
+      new Set(
+        (Array.isArray(this.bootstrap.fixedScheduleIdsAtBootstrap)
+          ? this.bootstrap.fixedScheduleIdsAtBootstrap
+          : []
+        ).map(String)
+      )
+    );
+
+    this.bootstrap.legacyAvailableSessions = Math.max(
+      0,
+      Math.trunc(Number(this.bootstrap.legacyAvailableSessions || 0))
+    );
+    this.bootstrap.legacyFixedScheduleDebt = Math.max(
+      0,
+      Math.trunc(Number(this.bootstrap.legacyFixedScheduleDebt || 0))
+    );
+  }
 });
 
 // Una sola suscripción por usuario y servicio. Los períodos históricos viven
@@ -307,6 +393,7 @@ serviceSubscriptionSchema.index(
 serviceSubscriptionSchema.index({ status: 1, autoRenew: 1, currentPeriodKey: 1 });
 serviceSubscriptionSchema.index({ "pendingChange.effectivePeriodKey": 1, status: 1 });
 serviceSubscriptionSchema.index({ fixedSlotsProtectedUntil: 1, status: 1 });
+serviceSubscriptionSchema.index({ "bootstrap.batchId": 1, createdAt: -1 });
 
 const ServiceSubscription =
   mongoose.models.ServiceSubscription ||
