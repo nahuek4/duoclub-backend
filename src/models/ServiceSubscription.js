@@ -171,7 +171,7 @@ const bootstrapSchema = new mongoose.Schema(
     },
     version: {
       type: String,
-      default: "subscriptions-v1-published-plans",
+      default: "subscriptions-v1-paid-history-auto",
       trim: true,
     },
     batchId: { type: String, required: true, trim: true, index: true },
@@ -196,6 +196,20 @@ const bootstrapSchema = new mongoose.Schema(
       type: mongoose.Schema.Types.ObjectId,
       ref: "PricingPlan",
       default: null,
+    },
+    planResolutionMethod: { type: String, default: "", trim: true },
+    paidPricingPlanId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "PricingPlan",
+      default: null,
+    },
+    paidCredits: { type: Number, default: 0, min: 0 },
+    paidPayMethod: {
+      type: String,
+      enum: ["", "CASH", "MP"],
+      default: "",
+      uppercase: true,
+      trim: true,
     },
     basePlanSessions: { type: Number, default: 0, min: 0 },
     projectedFixedOccurrences: { type: Number, default: 0, min: 0 },
@@ -371,9 +385,19 @@ serviceSubscriptionSchema.pre("validate", function normalizeSubscription() {
   if (this.bootstrap) {
     this.bootstrap.batchId = String(this.bootstrap.batchId || "").trim();
     this.bootstrap.version = String(
-      this.bootstrap.version || "subscriptions-v1-published-plans"
+      this.bootstrap.version || "subscriptions-v1-paid-history-auto"
     ).trim();
     this.bootstrap.notes = String(this.bootstrap.notes || "").trim();
+    this.bootstrap.planResolutionMethod = String(
+      this.bootstrap.planResolutionMethod || ""
+    ).trim();
+    this.bootstrap.paidPayMethod = String(
+      this.bootstrap.paidPayMethod || ""
+    ).toUpperCase().trim();
+    this.bootstrap.paidCredits = Math.max(
+      0,
+      Math.trunc(Number(this.bootstrap.paidCredits || 0))
+    );
 
     this.bootstrap.fixedScheduleIdsAtBootstrap = Array.from(
       new Set(

@@ -9,6 +9,12 @@ import {
   normalizeServiceKey,
 } from "./fixedScheduleCoverage.js";
 import { buildSubscriptionCoveragePreview } from "./subscriptionCoveragePreview.js";
+import {
+  resolvePublishedPlanFromPaidOrder,
+  summarizePaidOrderForService,
+} from "./paidPlanResolver.js";
+
+export { resolvePublishedPlanFromPaidOrder, summarizePaidOrderForService };
 
 const RECURRING_SERVICE_KEYS = new Set(["EP", "RA", "RF", "KD", "SYN", "NUT"]);
 const SERVICE_NAMES = {
@@ -57,54 +63,6 @@ function summarizeExistingSubscription(subscription = null) {
     currentPeriodKey: cleanString(subscription?.currentPeriodKey),
     autoRenew: subscription?.autoRenew !== false,
     createdAt: dateOrNull(subscription?.createdAt)?.toISOString() || null,
-  };
-}
-
-export function summarizePaidOrderForService(order = null, serviceKey = "") {
-  if (!order) return null;
-  const key = normalizeServiceKey(serviceKey);
-  if (!key) return null;
-
-  const items = Array.isArray(order?.items) ? order.items : [];
-  const matching = items.filter((item) => {
-    const kind = cleanString(item?.kind).toUpperCase();
-    return (
-      ["CREDITS", "MANUAL_SERVICE"].includes(kind) &&
-      normalizeServiceKey(item?.serviceKey) === key
-    );
-  });
-
-  let sessions = 0;
-  let amount = 0;
-  let pricingPlanId = "";
-
-  for (const item of matching) {
-    const qty = Math.max(1, Math.trunc(Number(item?.qty || 1)));
-    sessions += Math.max(0, Math.trunc(Number(item?.credits || 0))) * qty;
-    amount += Math.max(0, Number(item?.price || 0)) * qty;
-    if (!pricingPlanId && item?.pricingPlanId) {
-      pricingPlanId = objectIdString(item.pricingPlanId);
-    }
-  }
-
-  if (!matching.length && normalizeServiceKey(order?.serviceKey) === key) {
-    sessions = Math.max(0, Math.trunc(Number(order?.credits || 0)));
-    amount = Math.max(
-      0,
-      Number(order?.totalFinal ?? order?.total ?? order?.price ?? 0)
-    );
-  }
-
-  if (!matching.length && !sessions) return null;
-
-  return {
-    orderId: objectIdString(order),
-    status: cleanString(order?.status).toLowerCase(),
-    paidAt: dateOrNull(order?.paidAt || order?.createdAt)?.toISOString() || null,
-    sessions,
-    amount: Math.round(amount || Number(order?.totalFinal || 0)),
-    payMethod: cleanString(order?.payMethod).toUpperCase(),
-    pricingPlanId,
   };
 }
 
@@ -178,22 +136,13 @@ function resolvePublishedPlan({
 }
 
 function buildPaidOrderPlanEvidence({ latestPaidOrder, pricingPlans, serviceKey }) {
-  const order = summarizePaidOrderForService(latestPaidOrder, serviceKey);
-  if (!order) return null;
-
-  const publishedPlan = order.pricingPlanId
-    ? (Array.isArray(pricingPlans) ? pricingPlans : []).find(
-        (plan) => objectIdString(plan) === order.pricingPlanId
-      )
-    : null;
-
-  return {
-    ...order,
-    matchesActivePublishedPlan: Boolean(publishedPlan),
-    activePublishedPlanId: publishedPlan ? objectIdString(publishedPlan) : "",
-  };
+  return resolvePublishedPlanFromPaidOrder({
+    latestPaidOrder,
+    pricingPlans,
+    serviceKey,
+    includeCustomPlans: false,
+  });
 }
-
 export function buildInitialSubscriptionCandidate({
   user,
   serviceKey,
@@ -219,12 +168,29 @@ export function buildInitialSubscriptionCandidate({
     throw new Error("INVALID_USER");
   }
 
-  const publishedPlan = resolvePublishedPlan({
+  const automaticPlanResolution = resolvePublishedPlanFromPaidOrder({
+    latestPaidOrder,
     pricingPlans,
-    selectedPricingPlanId,
     serviceKey: normalizedServiceKey,
     includeCustomPlans,
   });
+
+  const explicitPlanId = cleanString(selectedPricingPlanId);
+  const effectivePlanId =
+    explicitPlanId || automaticPlanResolution?.publishedPlan?.pricingPlanId || "";
+
+  const publishedPlan = resolvePublishedPlan({
+    pricingPlans,
+    selectedPricingPlanId: effectivePlanId,
+    serviceKey: normalizedServiceKey,
+    includeCustomPlans,
+  });
+
+  if (publishedPlan.ok) {
+    publishedPlan.source = explicitPlanId
+      ? "explicit_pricing_plan"
+      : automaticPlanResolution.method;
+  }
 
   const errors = [];
   const warnings = [];
@@ -237,7 +203,11 @@ export function buildInitialSubscriptionCandidate({
     errors.push("El usuario ya tiene una suscripción para este servicio.");
   }
   if (!publishedPlan.ok) {
-    errors.push(publishedPlan.error);
+    errors.push(
+      explicitPlanId
+        ? publishedPlan.error
+        : automaticPlanResolution.reason || publishedPlan.error
+    );
   }
 
   const preview = buildSubscriptionCoveragePreview({
@@ -249,7 +219,7 @@ export function buildInitialSubscriptionCandidate({
     pricingPlans,
     selectedPricingPlanId: publishedPlan.ok
       ? publishedPlan.pricingPlanId
-      : selectedPricingPlanId,
+      : effectivePlanId,
     extraSessionsSelected: 0,
     includeCustomPlans,
     now,
@@ -323,7 +293,23 @@ export function buildInitialSubscriptionCandidate({
     fixedSchedules: preview.fixedSchedules,
     fixedScheduleIds,
     legacySnapshot: preview.legacySnapshot,
-    latestPaidOrder: paidOrderPlanEvidence,
+    latestPaidOrder: paidOrderPlanEvidence?.order || null,
+    planResolution: {
+      ok: Boolean(publishedPlan.ok),
+      method: explicitPlanId
+        ? "explicit_pricing_plan"
+        : automaticPlanResolution.method,
+      reason: explicitPlanId
+        ? "Plan publicado indicado explícitamente."
+        : automaticPlanResolution.reason,
+      pricingPlanId: publishedPlan.ok ? publishedPlan.pricingPlanId : "",
+      paidCredits: automaticPlanResolution?.order?.sessions || 0,
+      paidPayMethod: automaticPlanResolution?.order?.payMethod || "",
+      paidPricingPlanId:
+        automaticPlanResolution?.order?.pricingPlanId || "",
+      candidatePlanIds:
+        automaticPlanResolution?.candidatePlanIds || [],
+    },
     existingSubscription: summarizeExistingSubscription(existingSubscription),
     autoRenew: autoRenew !== false,
     commercialRule: {
@@ -336,7 +322,13 @@ export function buildInitialSubscriptionCandidate({
 
 export function buildServiceSubscriptionCreatePayload(
   candidate,
-  { actorId = null, batchId, notes = "", now = new Date() } = {}
+  {
+    actorId = null,
+    batchId,
+    notes = "",
+    bootstrapSource = "admin_initialization",
+    now = new Date(),
+  } = {}
 ) {
   if (!candidate?.canCreate || !candidate?.publishedPlan) {
     throw new Error("CANDIDATE_NOT_CREATABLE");
@@ -370,14 +362,18 @@ export function buildServiceSubscriptionCreatePayload(
     lastRenewedAt: null,
     pendingChange: null,
     bootstrap: {
-      source: "admin_initialization",
-      version: "subscriptions-v1-published-plans",
+      source: bootstrapSource,
+      version: "subscriptions-v1-paid-history-auto",
       batchId: cleanBatchId,
       initializedAt: now,
       initializedBy: actorId,
       monthKey: candidate.period.monthKey,
       fixedScheduleIdsAtBootstrap: candidate.fixedScheduleIds,
       publishedPricingPlanId: plan.pricingPlanId,
+      planResolutionMethod: candidate.planResolution?.method || "",
+      paidPricingPlanId: candidate.planResolution?.paidPricingPlanId || null,
+      paidCredits: candidate.planResolution?.paidCredits || 0,
+      paidPayMethod: candidate.planResolution?.paidPayMethod || "",
       basePlanSessions: plan.monthlySessions,
       projectedFixedOccurrences:
         candidate.coverage.fixedOccurrencesCount || 0,
@@ -412,7 +408,11 @@ export function canRollbackBootstrapSubscription({
   if (!subscription) {
     return { allowed: false, reason: "SUBSCRIPTION_NOT_FOUND" };
   }
-  if (subscription?.bootstrap?.source !== "admin_initialization") {
+  if (
+    !["admin_initialization", "legacy_migration"].includes(
+      subscription?.bootstrap?.source
+    )
+  ) {
     return { allowed: false, reason: "NOT_BOOTSTRAP_SUBSCRIPTION" };
   }
   if (Number(billingCyclesCount || 0) > 0) {

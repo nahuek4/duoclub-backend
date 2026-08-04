@@ -1,11 +1,7 @@
-// backend/scripts/auditInitialSubscriptions.js
-// SOLO LECTURA. Audita patrones fijos activos y los proyecta al mes objetivo.
-// Los planes base son exclusivamente PricingPlan activos publicados.
-// No crea planes a medida ni modifica MongoDB.
-//
-// Uso:
-// node scripts/auditInitialSubscriptions.js --month=2026-09 \
-//   [--service=EP] [--limit=2000] [--out=archivo.json]
+// SOLO LECTURA.
+// Proyecta los turnos fijos activos al mes objetivo y resuelve automáticamente
+// el plan base desde la última compra pagada de créditos del mismo servicio.
+// Los turnos fijos solo calculan sesiones adicionales; nunca eligen el plan.
 
 import fs from "node:fs";
 import dotenv from "dotenv";
@@ -27,7 +23,10 @@ import {
   projectActiveFixedSchedulesForMonth,
   scheduleLegacyOverlapsMonth,
 } from "../src/services/subscriptions/subscriptionScheduleProjection.js";
-import { summarizePaidOrderForService } from "../src/services/subscriptions/subscriptionBootstrap.js";
+import {
+  resolvePublishedPlanFromPaidOrder,
+  summarizePaidOrderForService,
+} from "../src/services/subscriptions/paidPlanResolver.js";
 
 dotenv.config();
 
@@ -89,14 +88,16 @@ function serviceKeysFromOrder(order = {}) {
   return [...new Set(keys)];
 }
 
-function latestOrderMap(orders = []) {
+function latestValidPaidOrderMap(orders = []) {
   const map = new Map();
   for (const order of orders) {
     const userId = idOf(order?.user);
     if (!userId) continue;
     for (const serviceKey of serviceKeysFromOrder(order)) {
       const key = `${userId}__${serviceKey}`;
-      if (!map.has(key)) map.set(key, order);
+      if (map.has(key)) continue;
+      if (!summarizePaidOrderForService(order, serviceKey)) continue;
+      map.set(key, order);
     }
   }
   return map;
@@ -202,7 +203,7 @@ try {
         .sort({ paidAt: -1, createdAt: -1 })
         .lean()
     : [];
-  const paidOrdersByUserService = latestOrderMap(paidOrders);
+  const paidOrdersByUserService = latestValidPaidOrderMap(paidOrders);
 
   const rows = [];
 
@@ -263,17 +264,47 @@ try {
     );
 
     const groupKey = `${group.user._id}__${group.serviceKey}`;
-    const existingSubscription = existingMap.get(groupKey);
+    const existingSubscription = existingMap.get(groupKey) || null;
     const latestPaidOrder = paidOrdersByUserService.get(groupKey) || null;
-    const paidOrderEvidence = summarizePaidOrderForService(
+    const planResolution = resolvePublishedPlanFromPaidOrder({
       latestPaidOrder,
-      group.serviceKey
-    );
-    const suggestedPublishedPlan = paidOrderEvidence?.pricingPlanId
+      pricingPlans: servicePlans,
+      serviceKey: group.serviceKey,
+      includeCustomPlans: false,
+    });
+
+    const resolvedPublishedPlan = planResolution.ok
       ? publishedPlans.find(
-          (plan) => plan.id === paidOrderEvidence.pricingPlanId
-        ) || null
+          (plan) => plan.id === planResolution.publishedPlan.pricingPlanId
+        ) || {
+          id: planResolution.publishedPlan.pricingPlanId,
+          ...planResolution.publishedPlan,
+          projectedFixedOccurrences:
+            projectedPreview.coverage.fixedOccurrencesCount,
+          extraSessionsRequired: Math.max(
+            0,
+            projectedPreview.coverage.fixedOccurrencesCount -
+              planResolution.publishedPlan.monthlySessions
+          ),
+          freeSessions: Math.max(
+            0,
+            planResolution.publishedPlan.monthlySessions -
+              projectedPreview.coverage.fixedOccurrencesCount
+          ),
+        }
       : null;
+
+    const automaticMigrationReady =
+      !existingSubscription && planResolution.ok && Boolean(resolvedPublishedPlan);
+    const requiresManualDecision =
+      !existingSubscription && !automaticMigrationReady;
+
+    let action = "skip_existing";
+    if (!existingSubscription && automaticMigrationReady) {
+      action = "auto_create_from_paid_history";
+    } else if (!existingSubscription) {
+      action = `review_${planResolution.method}`;
+    }
 
     rows.push({
       user: projectedPreview.user,
@@ -304,22 +335,25 @@ try {
             monthlySessions: existingSubscription.monthlySessions,
           }
         : null,
-      latestPaidOrderEvidence: paidOrderEvidence,
-      suggestedPublishedPlan,
+      latestPaidOrderEvidence: planResolution.order,
+      planResolution: {
+        ok: planResolution.ok,
+        method: planResolution.method,
+        reason: planResolution.reason,
+        candidatePlanIds: planResolution.candidatePlanIds,
+      },
+      resolvedPublishedPlan,
       publishedPlans,
       projectedFixedSchedules: projectedPreview.fixedSchedules,
-      action: existingSubscription
-        ? "skip_existing"
-        : suggestedPublishedPlan
-          ? "confirm_suggested_published_plan"
-          : "select_published_plan",
-      requiresManualDecision: !existingSubscription,
+      automaticMigrationReady,
+      requiresManualDecision,
+      action,
       notes: [
+        "El plan base se obtiene de la última compra pagada del servicio.",
+        "La cantidad de turnos fijos no cambia el plan contratado.",
         "La proyección usa el patrón active:true durante todo el mes.",
         "El endDate legacy se conserva solo como dato de auditoría.",
-        "El plan base debe ser uno de los PricingPlan activos publicados.",
-        "Si el plan tiene menos sesiones que el mes, la diferencia se compra como sesiones adicionales del período.",
-        "La sugerencia por última compra es solo evidencia y debe confirmarse explícitamente.",
+        "La diferencia entre turnos del mes y sesiones del plan se compra como adicional del período.",
       ],
     });
   }
@@ -334,7 +368,7 @@ try {
   const report = {
     readOnly: true,
     projectionMode: "active_pattern_full_month",
-    planMode: "published_pricing_plan_only",
+    planMode: "latest_paid_credits",
     generatedAt: new Date().toISOString(),
     monthKey,
     serviceFilter: serviceFilter || "ALL",
@@ -346,11 +380,32 @@ try {
     excludedSchedulesCount: excluded.length,
     excludedSchedules: excluded,
     candidatesCount: rows.length,
+    readyForAutomaticMigrationCount: rows.filter(
+      (row) => row.automaticMigrationReady
+    ).length,
     requiresManualDecisionCount: rows.filter(
       (row) => row.requiresManualDecision
     ).length,
-    candidatesWithPublishedPlanSuggestion: rows.filter(
-      (row) => row.suggestedPublishedPlan
+    existingSubscriptionsCount: rows.filter(
+      (row) => row.existingSubscription
+    ).length,
+    exactPricingPlanCount: rows.filter(
+      (row) => row.planResolution.method === "exact_pricing_plan"
+    ).length,
+    matchedByPaidCreditsCount: rows.filter((row) =>
+      [
+        "matched_by_paid_credits",
+        "matched_by_paid_credits_and_price",
+      ].includes(row.planResolution.method)
+    ).length,
+    noPaidPlanHistoryCount: rows.filter(
+      (row) => row.planResolution.method === "no_paid_plan_history"
+    ).length,
+    missingPublishedEquivalentCount: rows.filter(
+      (row) => row.planResolution.method === "no_active_plan_for_paid_credits"
+    ).length,
+    ambiguousPaidPlanCount: rows.filter(
+      (row) => row.planResolution.method === "ambiguous_paid_plan"
     ).length,
     candidatesWithoutPublishedPlans: rows.filter(
       (row) => !row.publishedPlans.length
@@ -361,7 +416,7 @@ try {
   const json = JSON.stringify(report, null, 2);
   if (outFile) {
     fs.writeFileSync(outFile, json, "utf8");
-    console.log(`✅ Auditoría de planes publicados guardada en ${outFile}`);
+    console.log(`✅ Auditoría automática guardada en ${outFile}`);
   } else {
     console.log(json);
   }

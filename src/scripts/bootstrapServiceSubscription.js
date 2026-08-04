@@ -1,10 +1,12 @@
 // backend/scripts/bootstrapServiceSubscription.js
-// Inicializa UNA suscripción vinculada a un plan publicado.
-// Por defecto solo previsualiza.
+// Inicializa UNA suscripción. Por defecto resuelve el plan automáticamente
+// desde la última compra pagada del servicio y solo previsualiza.
 //
-// Previsualizar:
+// Previsualizar automático:
 // node scripts/bootstrapServiceSubscription.js \
-//   --user=mail@ejemplo.com --service=EP --month=2026-09 --plan=ID_PLAN
+//   --user=mail@ejemplo.com --service=EP --month=2026-09
+//
+// --plan=ID_PLAN queda disponible solo como override explícito.
 //
 // Aplicar:
 // agregar --apply --confirm=CREATE_INITIAL_SUBSCRIPTION
@@ -163,10 +165,8 @@ try {
     }
 
     const planId = clean(args.plan);
-    if (!mongoose.Types.ObjectId.isValid(planId)) {
-      throw new Error(
-        "Debés indicar --plan con el ObjectId de un plan activo publicado."
-      );
+    if (planId && !mongoose.Types.ObjectId.isValid(planId)) {
+      throw new Error("--plan debe ser un ObjectId válido cuando se utiliza.");
     }
 
     if (args.sessions !== undefined || args.price !== undefined || args.pay !== undefined) {
@@ -220,7 +220,9 @@ try {
     console.log(
       JSON.stringify(
         {
-          mode: "bootstrap_published_plan",
+          mode: planId
+            ? "bootstrap_explicit_published_plan"
+            : "bootstrap_auto_from_paid_history",
           dryRun: !toBoolean(args.apply),
           projection: {
             diagnostics: projection.diagnostics,
@@ -244,6 +246,7 @@ try {
         actorId: null,
         batchId: clean(args.batch) || crypto.randomUUID(),
         notes: clean(args.notes),
+        bootstrapSource: "legacy_migration",
       });
 
       const created = await ServiceSubscription.create(payload);

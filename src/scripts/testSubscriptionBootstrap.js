@@ -3,11 +3,14 @@ import {
   buildInitialSubscriptionCandidate,
   buildServiceSubscriptionCreatePayload,
   canRollbackBootstrapSubscription,
+  resolvePublishedPlanFromPaidOrder,
   summarizePaidOrderForService,
 } from "../src/services/subscriptions/subscriptionBootstrap.js";
 
 const userId = "64a000000000000000000001";
-const planId = "64a000000000000000000002";
+const cashPlanId = "64a000000000000000000002";
+const mpPlanId = "64a000000000000000000012";
+const inactiveOldPlanId = "64a000000000000000000022";
 const fixedId = "64a000000000000000000003";
 const orderId = "64a000000000000000000004";
 const actorId = "64a000000000000000000005";
@@ -47,11 +50,21 @@ const schedules = [
 
 const plans = [
   {
-    _id: planId,
+    _id: cashPlanId,
     serviceKey: "EP",
     payMethod: "CASH",
     credits: 4,
     price: 40000,
+    label: "4 sesiones",
+    active: true,
+    isCustom: false,
+  },
+  {
+    _id: mpPlanId,
+    serviceKey: "EP",
+    payMethod: "MP",
+    credits: 4,
+    price: 43000,
     label: "4 sesiones",
     active: true,
     isCustom: false,
@@ -70,8 +83,9 @@ const paidOrder = {
       serviceKey: "EP",
       credits: 4,
       qty: 1,
+      basePrice: 40000,
       price: 40000,
-      pricingPlanId: planId,
+      pricingPlanId: cashPlanId,
     },
   ],
 };
@@ -79,7 +93,40 @@ const paidOrder = {
 const orderSummary = summarizePaidOrderForService(paidOrder, "EP");
 assert.equal(orderSummary.sessions, 4);
 assert.equal(orderSummary.amount, 40000);
-assert.equal(orderSummary.pricingPlanId, planId);
+assert.equal(orderSummary.pricingPlanId, cashPlanId);
+
+const exactResolution = resolvePublishedPlanFromPaidOrder({
+  latestPaidOrder: paidOrder,
+  pricingPlans: plans,
+  serviceKey: "EP",
+});
+assert.equal(exactResolution.ok, true);
+assert.equal(exactResolution.method, "exact_pricing_plan");
+assert.equal(exactResolution.publishedPlan.pricingPlanId, cashPlanId);
+
+const legacyPaidOrder = {
+  ...paidOrder,
+  payMethod: "MP",
+  items: [
+    {
+      kind: "CREDITS",
+      serviceKey: "EP",
+      credits: 4,
+      qty: 1,
+      basePrice: 43000,
+      price: 43000,
+      pricingPlanId: inactiveOldPlanId,
+    },
+  ],
+};
+const matchedResolution = resolvePublishedPlanFromPaidOrder({
+  latestPaidOrder: legacyPaidOrder,
+  pricingPlans: plans,
+  serviceKey: "EP",
+});
+assert.equal(matchedResolution.ok, true);
+assert.equal(matchedResolution.method, "matched_by_paid_credits");
+assert.equal(matchedResolution.publishedPlan.pricingPlanId, mpPlanId);
 
 const candidate = buildInitialSubscriptionCandidate({
   user,
@@ -88,14 +135,14 @@ const candidate = buildInitialSubscriptionCandidate({
   schedules,
   blocks: [],
   pricingPlans: plans,
-  selectedPricingPlanId: planId,
+  selectedPricingPlanId: "",
   existingSubscription: null,
   latestPaidOrder: paidOrder,
   now: new Date("2026-08-03T12:00:00.000Z"),
 });
 
 assert.equal(candidate.canCreate, true);
-assert.equal(candidate.publishedPlan.source, "published_pricing_plan");
+assert.equal(candidate.planResolution.method, "exact_pricing_plan");
 assert.equal(candidate.publishedPlan.monthlySessions, 4);
 assert.equal(candidate.coverage.fixedOccurrencesCount, 5);
 assert.equal(candidate.coverage.extraSessionsRequired, 1);
@@ -105,34 +152,38 @@ assert.equal(candidate.legacySnapshot.availableSessionsNow, 3);
 assert.equal(candidate.legacySnapshot.legacyFixedScheduleDebt, 2);
 assert.equal(candidate.commercialRule.createsCustomPlan, false);
 assert.ok(candidate.warnings.some((item) => item.includes("adicional")));
-assert.equal(candidate.latestPaidOrder.matchesActivePublishedPlan, true);
 
 const payload = buildServiceSubscriptionCreatePayload(candidate, {
   actorId,
   batchId: "test-batch-1",
   notes: "Prueba controlada",
+  bootstrapSource: "legacy_migration",
   now: new Date("2026-08-03T12:30:00.000Z"),
 });
 
-assert.equal(String(payload.pricingPlan), planId);
+assert.equal(String(payload.pricingPlan), cashPlanId);
 assert.equal(payload.monthlySessions, 4);
 assert.equal(payload.price, 40000);
-assert.equal(payload.bootstrap.batchId, "test-batch-1");
-assert.equal(payload.bootstrap.basePlanSessions, 4);
-assert.equal(payload.bootstrap.projectedFixedOccurrences, 5);
+assert.equal(payload.bootstrap.source, "legacy_migration");
+assert.equal(payload.bootstrap.version, "subscriptions-v1-paid-history-auto");
+assert.equal(payload.bootstrap.planResolutionMethod, "exact_pricing_plan");
+assert.equal(payload.bootstrap.paidCredits, 4);
+assert.equal(payload.bootstrap.paidPayMethod, "CASH");
 assert.equal(payload.bootstrap.extraSessionsRequired, 1);
-assert.equal(payload.bootstrap.legacyFixedScheduleDebt, 2);
 assert.equal(String(payload.bootstrap.latestPaidOrder.orderId), orderId);
 
-const noPlanCandidate = buildInitialSubscriptionCandidate({
+const noHistoryCandidate = buildInitialSubscriptionCandidate({
   user,
   serviceKey: "EP",
   monthKey: "2026-09",
   schedules,
+  blocks: [],
   pricingPlans: plans,
+  selectedPricingPlanId: "",
+  latestPaidOrder: null,
 });
-assert.equal(noPlanCandidate.canCreate, false);
-assert.ok(noPlanCandidate.errors.some((item) => item.includes("pricingPlanId")));
+assert.equal(noHistoryCandidate.canCreate, false);
+assert.equal(noHistoryCandidate.planResolution.method, "no_paid_plan_history");
 
 const duplicateCandidate = buildInitialSubscriptionCandidate({
   user,
@@ -141,7 +192,7 @@ const duplicateCandidate = buildInitialSubscriptionCandidate({
   schedules,
   blocks: [],
   pricingPlans: plans,
-  selectedPricingPlanId: planId,
+  selectedPricingPlanId: "",
   existingSubscription: {
     _id: "64a000000000000000000007",
     user: userId,
@@ -153,24 +204,23 @@ const duplicateCandidate = buildInitialSubscriptionCandidate({
   },
   latestPaidOrder: paidOrder,
 });
-
 assert.equal(duplicateCandidate.canCreate, false);
 assert.ok(duplicateCandidate.errors.some((item) => item.includes("ya tiene")));
 
-assert.deepEqual(
+assert.equal(
   canRollbackBootstrapSubscription({
     subscription: {
-      bootstrap: { source: "admin_initialization" },
+      bootstrap: { source: "legacy_migration" },
       lastRenewedAt: null,
     },
     billingCyclesCount: 0,
-  }),
-  { allowed: true, reason: "" }
+  }).allowed,
+  true
 );
 assert.equal(
   canRollbackBootstrapSubscription({
     subscription: {
-      bootstrap: { source: "admin_initialization" },
+      bootstrap: { source: "legacy_migration" },
       lastRenewedAt: null,
     },
     billingCyclesCount: 1,

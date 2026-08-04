@@ -1,5 +1,5 @@
 // backend/src/routes/adminSubscriptions.js
-// Etapa 3 corregida: bootstrap controlado usando únicamente planes publicados.
+// Etapa 3: bootstrap automático desde la última compra pagada del servicio.
 // No modifica créditos, deuda legacy, órdenes, turnos ni jobs.
 
 import crypto from "crypto";
@@ -25,6 +25,7 @@ import {
   buildInitialSubscriptionCandidate,
   buildServiceSubscriptionCreatePayload,
   canRollbackBootstrapSubscription,
+  summarizePaidOrderForService,
 } from "../services/subscriptions/subscriptionBootstrap.js";
 import { projectActiveFixedSchedulesForMonth } from "../services/subscriptions/subscriptionScheduleProjection.js";
 
@@ -173,7 +174,7 @@ async function loadSubscriptionContext({
   if (payMethod) pricingQuery.payMethod = payMethod;
   pricingQuery.isCustom = { $ne: true };
 
-  const [user, schedules, blocks, pricingPlans, existingSubscription, latestPaidOrder] =
+  const [user, schedules, blocks, pricingPlans, existingSubscription, paidOrders] =
     await Promise.all([
       User.findById(userId)
         .select(
@@ -200,8 +201,9 @@ async function loadSubscriptionContext({
 
       ServiceSubscription.findOne({ user: userId, serviceKey }).lean(),
 
-      Order.findOne(buildPaidOrderQuery(userId, serviceKey))
+      Order.find(buildPaidOrderQuery(userId, serviceKey))
         .sort({ paidAt: -1, createdAt: -1 })
+        .limit(100)
         .lean(),
     ]);
 
@@ -216,6 +218,10 @@ async function loadSubscriptionContext({
     monthKey,
     serviceKey,
   });
+
+  const latestPaidOrder = (Array.isArray(paidOrders) ? paidOrders : []).find(
+    (order) => summarizePaidOrderForService(order, serviceKey)
+  ) || null;
 
   return {
     user,
@@ -233,7 +239,8 @@ function parseBootstrapInput(source = {}) {
   const userId = assertObjectId(source?.userId, "userId");
   const serviceKey = assertServiceKey(source?.serviceKey);
   const monthKey = assertMonthKey(source?.monthKey);
-  const pricingPlanId = assertObjectId(source?.pricingPlanId, "pricingPlanId");
+  const pricingPlanId = cleanString(source?.pricingPlanId);
+  if (pricingPlanId) assertObjectId(pricingPlanId, "pricingPlanId");
   const payMethod = assertPayMethod(source?.payMethod, { optional: true });
   const autoRenew = parseBoolean(source?.autoRenew, true);
 
