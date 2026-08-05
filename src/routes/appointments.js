@@ -18,6 +18,7 @@ import {
   sendAdminAppointmentCancelledEmail,
 } from "../mail.js";
 import { logActivity, buildUserSubject } from "../lib/activityLogger.js";
+import { syncExtraSessionNoticeForUserService } from "../services/subscriptions/subscriptionExtraSessions.js";
 
 const router = express.Router();
 
@@ -3906,6 +3907,27 @@ router.post("/admin/fixed-schedules", async (req, res) => {
       }
     }
 
+    let extraSessionNotice = null;
+    let extraSessionNoticeError = "";
+
+    try {
+      extraSessionNotice = await syncExtraSessionNoticeForUserService({
+        userId,
+        serviceKey: serviceIdentity.serviceKey,
+        actorId: req.user?._id || req.user?.id || null,
+        source: updated ? "fixed_schedule_updated" : "fixed_schedule_created",
+        now: assignmentMoment,
+      });
+    } catch (noticeError) {
+      extraSessionNoticeError = noticeError?.message || "No se pudo calcular el faltante de sesiones.";
+      console.warn("FIXED SCHEDULE EXTRA SESSION NOTICE:", {
+        userId,
+        serviceKey: serviceIdentity.serviceKey,
+        fixedScheduleId: String(fixed._id),
+        error: extraSessionNoticeError,
+      });
+    }
+
     if (created.length || cancelledOldCount) {
       const targetUserForLog = await User.findById(userId)
         .select("name lastName email role")
@@ -3973,6 +3995,8 @@ router.post("/admin/fixed-schedules", async (req, res) => {
       generatedFrom: currentMonthRange.startYmd,
       generatedTo: currentMonthRange.endYmd,
       billingResults,
+      extraSessionNotice,
+      extraSessionNoticeError,
       billingSummary: {
         debited: billingResults.filter((x) => x?.action === "debited").length,
         debt: billingResults.filter((x) => x?.action === "debt").length,

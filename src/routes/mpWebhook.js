@@ -5,6 +5,10 @@ import mongoose from "mongoose";
 import Order from "../models/Order.js";
 import User from "../models/User.js";
 import ExternalPaymentCard from "../models/ExternalPaymentCard.js";
+import {
+  applyExtraSessionsFromOrder,
+  releaseExtraSessionOrder,
+} from "../services/subscriptions/subscriptionExtraSessions.js";
 
 import {
   fireAndForget,
@@ -494,7 +498,7 @@ async function applyApprovedOrderOnce({ orderId, paymentInfo }) {
         return;
       }
 
-      if (order.applied) {
+      if (order.applied && order.subscriptionExtraApplied) {
         await order.save({ session });
         result = { ok: true, alreadyApplied: true, orderId: String(order._id) };
         return;
@@ -524,6 +528,11 @@ async function applyApprovedOrderOnce({ orderId, paymentInfo }) {
       });
 
       await user.save({ session });
+
+      if (!order.subscriptionExtraApplied) {
+        await applyExtraSessionsFromOrder({ order, session });
+        order.subscriptionExtraApplied = true;
+      }
 
       await countExternalPaymentApprovalIfNeeded({ order, paymentInfo, session });
 
@@ -646,6 +655,7 @@ async function notifyUserPaidIfNeeded(orderId) {
   try {
     const { order, user } = await getOrderAndUserLean(orderId);
     if (!order) return;
+    if (order.suppressUserEmails) return;
 
     const email = String(user?.email || order?.customerEmail || "").trim();
     if (!email) return;
@@ -685,7 +695,26 @@ async function saveNonApprovedPaymentState({ orderId, paymentInfo }) {
     }`
   );
 
+  const terminalFailure = ["rejected", "cancelled", "canceled"].includes(
+    String(paymentInfo.status || "").toLowerCase()
+  );
+
+  if (terminalFailure) {
+    order.status = "cancelled";
+  }
+
   await order.save();
+
+  if (terminalFailure) {
+    for (const item of Array.isArray(order.items) ? order.items : []) {
+      if (String(item?.kind || "").toUpperCase() !== "SUBSCRIPTION_EXTRA") continue;
+      await releaseExtraSessionOrder({
+        noticeId: item.extraSessionNotice,
+        orderId: order._id,
+      }).catch(() => null);
+    }
+  }
+
   return { ok: true };
 }
 

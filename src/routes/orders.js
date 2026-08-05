@@ -15,6 +15,13 @@ import {
   sendUserOrderPaidEmail,
 } from "../mail.js";
 import { logActivity, buildUserSubject } from "../lib/activityLogger.js";
+import {
+  applyExtraSessionsFromOrder,
+  markExtraSessionOrderPending,
+  orderContainsOnlySubscriptionExtras,
+  releaseExtraSessionOrder,
+  resolveExtraSessionCheckoutItem,
+} from "../services/subscriptions/subscriptionExtraSessions.js";
 
 const router = express.Router();
 
@@ -226,14 +233,19 @@ function safeServiceFromOrder(order) {
       .map((it) => String(it?.kind || "").toUpperCase())
       .filter(Boolean);
 
-    if (kinds.includes("MEMBERSHIP") && kinds.includes("CREDITS")) {
-      return "MEMBERSHIP+CREDITS";
+    const hasSessionItems = kinds.includes("CREDITS") || kinds.includes("SUBSCRIPTION_EXTRA");
+    if (kinds.includes("MEMBERSHIP") && hasSessionItems) {
+      return "MEMBERSHIP+SESSIONS";
     }
     if (kinds.includes("MEMBERSHIP")) return "MEMBERSHIP";
 
-    if (kinds.includes("CREDITS")) {
+    if (hasSessionItems) {
       const sks = order.items
-        .filter((it) => String(it?.kind || "").toUpperCase() === "CREDITS")
+        .filter((it) =>
+          ["CREDITS", "SUBSCRIPTION_EXTRA"].includes(
+            String(it?.kind || "").toUpperCase()
+          )
+        )
         .map((it) => normalizeServiceKey(it?.serviceKey, { allowEmpty: true }))
         .filter(Boolean);
       const uniq = Array.from(new Set(sks));
@@ -263,8 +275,10 @@ function buildOrderHistoryTitle(order) {
   const items = Array.isArray(order?.items) ? order.items : [];
 
   if (items.length) {
-    const creditItems = items.filter(
-      (it) => String(it?.kind || "").toUpperCase() === "CREDITS"
+    const creditItems = items.filter((it) =>
+      ["CREDITS", "SUBSCRIPTION_EXTRA"].includes(
+        String(it?.kind || "").toUpperCase()
+      )
     );
     const membershipItems = items.filter(
       (it) => String(it?.kind || "").toUpperCase() === "MEMBERSHIP"
@@ -447,7 +461,7 @@ function publicStatusFor(order = {}) {
 function buildOrderPaymentTitle(order = {}) {
   const items = Array.isArray(order?.items) ? order.items : [];
   const serviceItems = items.filter((it) =>
-    ["CREDITS", "MANUAL_SERVICE"].includes(String(it?.kind || "").toUpperCase())
+    ["CREDITS", "MANUAL_SERVICE", "SUBSCRIPTION_EXTRA"].includes(String(it?.kind || "").toUpperCase())
   );
 
   if (serviceItems.length) {
@@ -543,15 +557,21 @@ async function notifyAdminIfNeeded(order) {
    Notificar pago
 ======================= */
 async function notifyOrderPaidIfNeeded(order) {
-  if (!order || order.userPaidNotifiedAt) return;
+  if (!order) return;
 
   try {
     const u = await User.findById(order.user).lean().catch(() => null);
 
-    if (u?.email) await sendUserOrderPaidEmail(order, u);
-    await sendAdminOrderPaidEmail(order, u);
+    if (!order.suppressUserEmails && !order.userPaidNotifiedAt && u?.email) {
+      await sendUserOrderPaidEmail(order, u);
+      order.userPaidNotifiedAt = new Date();
+    }
 
-    order.userPaidNotifiedAt = new Date();
+    if (!order.adminPaidNotifiedAt) {
+      await sendAdminOrderPaidEmail(order, u);
+      order.adminPaidNotifiedAt = new Date();
+    }
+
     await order.save();
   } catch (e) {
     console.warn("ORDERS: no se pudo enviar mail de pago:", e?.message || e);
@@ -564,7 +584,7 @@ async function notifyOrderPaidIfNeeded(order) {
 async function applyCreditsOnlyIfNeeded(order) {
   if (!order) return { ok: false, error: "Orden inválida." };
 
-  if (order.creditsApplied) {
+  if (order.creditsApplied && order.subscriptionExtraApplied) {
     return { ok: true, message: "Créditos ya habilitados." };
   }
 
@@ -572,44 +592,49 @@ async function applyCreditsOnlyIfNeeded(order) {
   if (!user) return { ok: false, error: "Usuario no encontrado." };
 
   const hasItems = Array.isArray(order.items) && order.items.length > 0;
-
   ensureBasicIfExpired(user);
 
-  if (hasItems) {
-    for (const it of order.items) {
-      const kind = String(it.kind || "").toUpperCase();
-      if (kind !== "CREDITS") continue;
+  if (!order.creditsApplied) {
+    if (hasItems) {
+      for (const it of order.items) {
+        const kind = String(it.kind || "").toUpperCase();
+        if (kind !== "CREDITS") continue;
 
-      const qty = Math.max(1, Number(it.qty) || 1);
-      const creditsPer = Math.max(0, Number(it.credits) || 0);
-      const totalCredits = creditsPer * qty;
+        const qty = Math.max(1, Number(it.qty) || 1);
+        const creditsPer = Math.max(0, Number(it.credits) || 0);
+        const totalCredits = creditsPer * qty;
 
+        if (totalCredits > 0) {
+          addCreditLot(user, {
+            amount: totalCredits,
+            source: "order-credits-only",
+            orderId: order._id,
+            serviceKey: assertServiceKey(it.serviceKey),
+          });
+        }
+      }
+    } else {
+      const totalCredits = Math.max(0, Number(order.credits) || 0);
       if (totalCredits > 0) {
         addCreditLot(user, {
           amount: totalCredits,
-          source: "order-credits-only",
+          source: "order-legacy-credits-only",
           orderId: order._id,
-          serviceKey: assertServiceKey(it.serviceKey),
+          serviceKey: assertServiceKey(order.serviceKey),
         });
       }
     }
-  } else {
-    const totalCredits = Math.max(0, Number(order.credits) || 0);
-    if (totalCredits > 0) {
-      addCreditLot(user, {
-        amount: totalCredits,
-        source: "order-legacy-credits-only",
-        orderId: order._id,
-        serviceKey: assertServiceKey(order.serviceKey),
-      });
-    }
+
+    await user.save();
+    order.creditsApplied = true;
   }
 
-  await user.save();
+  if (!order.subscriptionExtraApplied) {
+    await applyExtraSessionsFromOrder({ order });
+    order.subscriptionExtraApplied = true;
+  }
 
-  order.creditsApplied = true;
   await order.save();
-
   return { ok: true };
 }
 
@@ -619,7 +644,7 @@ async function applyCreditsOnlyIfNeeded(order) {
 async function applyOrderIfNeeded(order) {
   if (!order) return { ok: false, error: "Orden inválida." };
 
-  if (order.applied) {
+  if (order.applied && order.subscriptionExtraApplied) {
     return { ok: true, message: "Orden ya aplicada." };
   }
 
@@ -628,26 +653,25 @@ async function applyOrderIfNeeded(order) {
 
   const hasItems = Array.isArray(order.items) && order.items.length > 0;
 
-  if (hasItems) {
-    const membershipItems = order.items.filter(
-      (it) => String(it.kind || "").toUpperCase() === "MEMBERSHIP"
-    );
+  if (!order.applied) {
+    if (hasItems) {
+      const membershipItems = order.items.filter(
+        (it) => String(it.kind || "").toUpperCase() === "MEMBERSHIP"
+      );
 
-    if (membershipItems.length > 0) {
-      let monthsToAdd = 0;
-
-      for (const it of membershipItems) {
-        const qty = Math.max(1, Number(it.qty) || 1);
-        monthsToAdd += qty;
+      if (membershipItems.length > 0) {
+        let monthsToAdd = 0;
+        for (const it of membershipItems) {
+          monthsToAdd += Math.max(1, Number(it.qty) || 1);
+        }
+        if (monthsToAdd > 0) addPlusMonths(user, monthsToAdd);
+      } else {
+        ensureBasicIfExpired(user);
       }
-
-      if (monthsToAdd > 0) addPlusMonths(user, monthsToAdd);
     } else {
-      ensureBasicIfExpired(user);
+      if (order.plusIncluded) activatePlus(user);
+      else ensureBasicIfExpired(user);
     }
-  } else {
-    if (order.plusIncluded) activatePlus(user);
-    else ensureBasicIfExpired(user);
   }
 
   if (!order.creditsApplied) {
@@ -680,14 +704,18 @@ async function applyOrderIfNeeded(order) {
         });
       }
     }
+    order.creditsApplied = true;
   }
 
   await user.save();
 
-  order.applied = true;
-  order.creditsApplied = true;
-  await order.save();
+  if (!order.subscriptionExtraApplied) {
+    await applyExtraSessionsFromOrder({ order });
+    order.subscriptionExtraApplied = true;
+  }
 
+  order.applied = true;
+  await order.save();
   return { ok: true };
 }
 
@@ -900,6 +928,7 @@ router.post("/checkout", protect, async (req, res) => {
     const plusActiveNow = isPlusActive(freshUser);
 
     const items = [];
+    const extraNoticeReservations = [];
 
     for (const it of rawItems) {
       const kind = String(it?.kind || "").toUpperCase();
@@ -934,6 +963,17 @@ router.post("/checkout", protect, async (req, res) => {
           discountType: base.discountType || "",
           coverageApplied: Boolean(base.coverageApplied),
           price: base.basePrice * qty,
+        });
+      } else if (kind === "SUBSCRIPTION_EXTRA") {
+        const resolved = await resolveExtraSessionCheckoutItem({
+          noticeId: it.extraSessionNoticeId || it.extraSessionNotice || it.noticeId,
+          userId: req.user._id,
+          payMethod: pm,
+        });
+
+        items.push(resolved.item);
+        extraNoticeReservations.push({
+          noticeId: String(resolved.notice._id),
         });
       } else if (kind === "MEMBERSHIP") {
         const base = resolveMembershipItem();
@@ -996,7 +1036,29 @@ router.post("/checkout", protect, async (req, res) => {
       status: "pending",
       applied: false,
       creditsApplied: false,
+      subscriptionExtraApplied: false,
+      suppressUserEmails: orderContainsOnlySubscriptionExtras({ items }),
     });
+
+    const reservedNoticeIds = [];
+    try {
+      for (const reservation of extraNoticeReservations) {
+        await markExtraSessionOrderPending({
+          noticeId: reservation.noticeId,
+          orderId: order._id,
+          userId: req.user._id,
+        });
+        reservedNoticeIds.push(reservation.noticeId);
+      }
+    } catch (reservationError) {
+      for (const noticeId of reservedNoticeIds) {
+        await releaseExtraSessionOrder({ noticeId, orderId: order._id }).catch(() => null);
+      }
+      order.status = "cancelled";
+      order.notes = `No se pudo reservar el faltante de sesiones: ${reservationError?.message || reservationError}`;
+      await order.save().catch(() => null);
+      throw reservationError;
+    }
 
     try {
       const userDoc = await User.findById(req.user._id);
@@ -1042,10 +1104,12 @@ router.post("/checkout", protect, async (req, res) => {
 
       fireAndForget(() => notifyAdminIfNeeded(order), "MAIL_ADMIN_NEW_ORDER_CASH");
 
-      fireAndForget(async () => {
-        const u = await User.findById(order.user).lean().catch(() => null);
-        if (u?.email) await sendUserOrderCashCreatedEmail(order, u);
-      }, "MAIL_USER_CASH_CREATED");
+      if (!order.suppressUserEmails) {
+        fireAndForget(async () => {
+          const u = await User.findById(order.user).lean().catch(() => null);
+          if (u?.email) await sendUserOrderCashCreatedEmail(order, u);
+        }, "MAIL_USER_CASH_CREATED");
+      }
 
       return;
     }
@@ -1053,7 +1117,14 @@ router.post("/checkout", protect, async (req, res) => {
     const mp = await createMpPreference({ order, user: req.user });
     if (!mp.ok) {
       order.notes = mp.error;
+      order.status = "cancelled";
       await order.save();
+      for (const reservation of extraNoticeReservations) {
+        await releaseExtraSessionOrder({
+          noticeId: reservation.noticeId,
+          orderId: order._id,
+        }).catch(() => null);
+      }
       return res.status(500).json({ error: mp.error });
     }
 
@@ -1071,7 +1142,10 @@ router.post("/checkout", protect, async (req, res) => {
     });
   } catch (err) {
     console.error("POST /orders/checkout", err);
-    return res.status(500).json({ error: err?.message || "Error creando orden." });
+    return res.status(Number(err?.status || 500)).json({
+      error: err?.message || "Error creando orden.",
+      code: err?.code || "ORDER_CHECKOUT_FAILED",
+    });
   }
 });
 
@@ -1845,6 +1919,16 @@ router.delete("/:id", protect, adminOnly, async (req, res) => {
       meta: { impacted, total: Number(order.totalFinal || order.total || 0) },
       deletedSnapshot: order.toObject(),
     });
+
+    if (!impacted) {
+      for (const item of Array.isArray(order.items) ? order.items : []) {
+        if (String(item?.kind || "").toUpperCase() !== "SUBSCRIPTION_EXTRA") continue;
+        await releaseExtraSessionOrder({
+          noticeId: item.extraSessionNotice,
+          orderId: order._id,
+        }).catch(() => null);
+      }
+    }
 
     await Order.deleteOne({ _id: order._id });
 

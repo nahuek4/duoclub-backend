@@ -26,6 +26,7 @@ import scheduleBlocksRoutes from "./routes/scheduleBlocks.js";
 import adminApprovalLinksRoutes from "./routes/adminApprovalLinks.js";
 import adminDashboardRoutes from "./routes/adminDashboard.js";
 import adminSubscriptionsRoutes from "./routes/adminSubscriptions.js";
+import subscriptionExtrasRoutes from "./routes/subscriptionExtras.js";
 
 import { startAppointmentReminderScheduler } from "./jobs/startReminders.js";
 import { startWaitlistScheduler } from "./jobs/startWaitlist.js";
@@ -190,6 +191,7 @@ function mountRoutes(prefix = "") {
   app.use(`${prefix}/evaluations`, evaluationsRoutes);
   app.use(`${prefix}/admin/dashboard`, adminDashboardRoutes);
   app.use(`${prefix}/admin/subscriptions`, adminSubscriptionsRoutes);
+  app.use(`${prefix}/subscription-extras`, subscriptionExtrasRoutes);
   app.use(`${prefix}/api/test-mail`, testMailRouter);
   app.use(`${prefix}/waitlist`, waitlistRouter);
   app.use(`${prefix}/schedule-blocks`, scheduleBlocksRoutes);

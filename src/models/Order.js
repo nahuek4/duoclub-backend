@@ -23,7 +23,7 @@ const orderItemSchema = new mongoose.Schema(
       required: true,
       uppercase: true,
       trim: true,
-      enum: ["CREDITS", "MEMBERSHIP", "MANUAL_SERVICE"],
+      enum: ["CREDITS", "MEMBERSHIP", "MANUAL_SERVICE", "SUBSCRIPTION_EXTRA"],
     },
 
     // CREDITS
@@ -37,7 +37,7 @@ const orderItemSchema = new mongoose.Schema(
           const kind = String(this?.kind || "").toUpperCase().trim();
           const normalized = normalizeServiceKey(value);
 
-          if (kind === "CREDITS") {
+          if (kind === "CREDITS" || kind === "SUBSCRIPTION_EXTRA") {
             return isValidServiceKey(normalized);
           }
 
@@ -58,6 +58,24 @@ const orderItemSchema = new mongoose.Schema(
       default: null,
     },
     isCustom: { type: Boolean, default: false },
+
+    // Sesiones adicionales de una suscripción para un período puntual.
+    subscription: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "ServiceSubscription",
+      default: null,
+    },
+    extraSessionNotice: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "SubscriptionExtraSessionNotice",
+      default: null,
+    },
+    periodKey: {
+      type: String,
+      default: "",
+      trim: true,
+      match: /^$|^\d{4}-\d{2}$/,
+    },
 
     // MEMBERSHIP
     membershipTier: { type: String, default: "", lowercase: true, trim: true },
@@ -129,6 +147,8 @@ const orderSchema = new mongoose.Schema(
     },
 
     applied: { type: Boolean, default: false },
+    subscriptionExtraApplied: { type: Boolean, default: false },
+    suppressUserEmails: { type: Boolean, default: false },
 
     // idempotencia mails
     adminNotifiedAt: { type: Date, default: null },
@@ -222,13 +242,18 @@ orderSchema.pre("validate", function () {
       const item = typeof it?.toObject === "function" ? it.toObject() : { ...it };
       const kind = String(item?.kind || "").toUpperCase().trim();
 
-      if (kind === "CREDITS" || kind === "MANUAL_SERVICE") {
+      if (
+        kind === "CREDITS" ||
+        kind === "MANUAL_SERVICE" ||
+        kind === "SUBSCRIPTION_EXTRA"
+      ) {
         item.serviceKey = normalizeServiceKey(item.serviceKey);
       } else {
         item.serviceKey = "";
       }
 
-      item.qty = Math.max(1, Number(item.qty || 1));
+      item.qty = kind === "SUBSCRIPTION_EXTRA" ? 1 : Math.max(1, Number(item.qty || 1));
+      item.periodKey = String(item.periodKey || "").trim();
       item.basePrice = Math.max(0, Number(item.basePrice || 0));
       item.price = Math.max(0, Number(item.price || 0));
       item.discountAmount = Math.max(0, Number(item.discountAmount || 0));
@@ -282,6 +307,8 @@ orderSchema.pre("validate", function () {
   this.discountAmount = Math.max(0, Number(this.discountAmount || 0));
   this.coverageDiscountAmount = Math.max(0, Number(this.coverageDiscountAmount || 0));
   this.coverageApplied = Boolean(this.coverageApplied);
+  this.subscriptionExtraApplied = Boolean(this.subscriptionExtraApplied);
+  this.suppressUserEmails = Boolean(this.suppressUserEmails);
   this.discountReason = String(this.discountReason || "").trim();
   this.discountType = String(this.discountType || "").toUpperCase().trim();
 
@@ -294,6 +321,7 @@ orderSchema.index({ user: 1, createdAt: -1 });
 orderSchema.index({ createdAt: -1 });
 orderSchema.index({ status: 1, createdAt: -1 });
 orderSchema.index({ serviceKey: 1, createdAt: -1 });
+orderSchema.index({ "items.extraSessionNotice": 1, status: 1, createdAt: -1 });
 orderSchema.index(
   { publicPaymentToken: 1 },
   {
