@@ -230,3 +230,4 @@ app.use((req, res) => {
 app.listen(PORT, HOST, () => {
   console.log(`✅ Servidor escuchando en http://${HOST}:${PORT}`);
 });
+ 
