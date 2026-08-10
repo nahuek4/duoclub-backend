@@ -4,6 +4,7 @@
 
 import mongoose from "mongoose";
 
+import Appointment from "../../models/Appointment.js";
 import FixedSchedule from "../../models/FixedSchedule.js";
 import Order from "../../models/Order.js";
 import PricingPlan from "../../models/PricingPlan.js";
@@ -53,6 +54,11 @@ export function currentMonthKeyArgentina(now = new Date()) {
   const year = parts.find((part) => part.type === "year")?.value;
   const month = parts.find((part) => part.type === "month")?.value;
   return year && month ? `${year}-${month}` : "";
+}
+
+
+export function shouldUseActualCurrentMonthAppointments(periodKey, now = new Date()) {
+  return clean(periodKey) === currentMonthKeyArgentina(now);
 }
 
 export function resolveExtraSessionPeriodKey(subscription = {}, now = new Date()) {
@@ -179,7 +185,68 @@ async function calculateExtraSessionStateForUserService({
   const periodKey = resolveExtraSessionPeriodKey(subscription, now);
   const range = monthRangeFromKey(periodKey);
 
-  const [rawSchedules, blocks, existing] = await Promise.all([
+  const existing = await SubscriptionExtraSessionNotice.findOne({
+    user: userId,
+    serviceKey: normalizedServiceKey,
+    periodKey,
+  });
+
+  const basePlanSessions = Math.max(1, nonNegativeInt(subscription.monthlySessions));
+  const purchased = nonNegativeInt(existing?.extraSessionsPurchased);
+  const currentPeriodKey = currentMonthKeyArgentina(now);
+
+  // Para el mes actual, la fuente de verdad son los turnos fijos que realmente
+  // existen en Appointment. Esto evita cobrar ocurrencias teóricas del patrón
+  // que no fueron creadas (por ejemplo, horarios/días anteriores al momento en
+  // que el admin asignó el turno fijo durante el mes).
+  if (shouldUseActualCurrentMonthAppointments(periodKey, now)) {
+    const appointments = await Appointment.find({
+      user: userId,
+      serviceKey: normalizedServiceKey,
+      fixedScheduleId: { $ne: null },
+      status: "reserved",
+      date: { $gte: range.startYmd, $lte: range.endYmd },
+    })
+      .select("_id fixedScheduleId date time status")
+      .sort({ date: 1, time: 1 })
+      .lean();
+
+    const fixedScheduleIds = Array.from(
+      new Set(
+        appointments
+          .map((appointment) => idOf(appointment?.fixedScheduleId))
+          .filter((id) => mongoose.Types.ObjectId.isValid(id))
+      )
+    );
+
+    const actualFixedOccurrences = appointments.length;
+    const extraSessionsRequired = Math.max(
+      0,
+      actualFixedOccurrences - basePlanSessions
+    );
+
+    return {
+      ok: true,
+      skipped: false,
+      userId: String(userId),
+      serviceKey: normalizedServiceKey,
+      subscription,
+      existing,
+      periodKey,
+      fixedScheduleIds,
+      basePlanSessions,
+      projectedFixedOccurrences: actualFixedOccurrences,
+      blockedOccurrencesCount: 0,
+      extraSessionsRequired,
+      extraSessionsPurchased: purchased,
+      remainingSessions: Math.max(0, extraSessionsRequired - purchased),
+      occurrenceSource: "actual_current_month_appointments",
+    };
+  }
+
+  // Para períodos futuros todavía no existen Appointment materializados. Ahí
+  // sí proyectamos el patrón semanal activo para conocer la cobertura necesaria.
+  const [rawSchedules, blocks] = await Promise.all([
     FixedSchedule.find({
       user: userId,
       serviceKey: normalizedServiceKey,
@@ -189,11 +256,6 @@ async function calculateExtraSessionStateForUserService({
       .sort({ createdAt: 1 })
       .lean(),
     ScheduleBlock.find(scheduleBlockQuery(range.startYmd, range.endYmd)).lean(),
-    SubscriptionExtraSessionNotice.findOne({
-      user: userId,
-      serviceKey: normalizedServiceKey,
-      periodKey,
-    }),
   ]);
 
   const projection = projectActiveFixedSchedulesForMonth({
@@ -201,9 +263,6 @@ async function calculateExtraSessionStateForUserService({
     monthKey: periodKey,
     serviceKey: normalizedServiceKey,
   });
-
-  const basePlanSessions = Math.max(1, nonNegativeInt(subscription.monthlySessions));
-  const purchased = nonNegativeInt(existing?.extraSessionsPurchased);
 
   const coverage = calculateServiceMonthCoverage({
     schedules: projection.projectedSchedules,
@@ -233,6 +292,7 @@ async function calculateExtraSessionStateForUserService({
     extraSessionsRequired: coverage.extraSessionsNeeded,
     extraSessionsPurchased: purchased,
     remainingSessions: Math.max(0, coverage.extraSessionsNeeded - purchased),
+    occurrenceSource: "projected_future_pattern",
   };
 }
 
@@ -254,6 +314,7 @@ export async function previewExtraSessionNoticeForUserService(args = {}) {
     extraSessionsRequired: state.extraSessionsRequired,
     extraSessionsPurchased: state.extraSessionsPurchased,
     remainingSessions: state.remainingSessions,
+    occurrenceSource: state.occurrenceSource || "",
   };
 }
 
@@ -341,6 +402,7 @@ export async function syncExtraSessionNoticeForUserService({
     extraSessionsPurchased,
     remainingSessions,
     status: notice.status,
+    occurrenceSource: state.occurrenceSource || "",
   };
 }
 

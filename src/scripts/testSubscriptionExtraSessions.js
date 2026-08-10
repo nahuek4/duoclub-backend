@@ -7,6 +7,7 @@ import SubscriptionExtraSessionNotice from "../src/models/SubscriptionExtraSessi
 import {
   calculateProportionalExtraPrice,
   resolveExtraSessionPeriodKey,
+  shouldUseActualCurrentMonthAppointments,
 } from "../src/services/subscriptions/subscriptionExtraSessions.js";
 
 const price = calculateProportionalExtraPrice({
@@ -39,6 +40,22 @@ assert.equal(
     new Date("2026-08-04T06:00:00.000Z")
   ),
   "2026-08"
+);
+
+
+assert.equal(
+  shouldUseActualCurrentMonthAppointments(
+    "2026-08",
+    new Date("2026-08-10T18:00:00-03:00")
+  ),
+  true
+);
+assert.equal(
+  shouldUseActualCurrentMonthAppointments(
+    "2026-09",
+    new Date("2026-08-10T18:00:00-03:00")
+  ),
+  false
 );
 
 const ids = {
