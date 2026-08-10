@@ -2,12 +2,13 @@
 // Renovación mensual DUO.
 // - Expira créditos vencidos.
 // - Asegura turnos fijos activos del mes.
-// - Al reservar el mes, genera deuda mensual por servicio según la cantidad de turnos fijos creados.
-// - Al llegar cada horario fijo, el job solo marca el turno como completado; no vuelve a debitar.
+// - Asegura los turnos fijos del mes sin generar deuda.
+// - Los turnos sin cobertura quedan pendientes y la app informa las sesiones adicionales necesarias.
 
 import User from "../models/User.js";
 import FixedSchedule from "../models/FixedSchedule.js";
 import Appointment from "../models/Appointment.js";
+import { syncExtraSessionNoticeForUserService } from "../services/subscriptions/subscriptionExtraSessions.js";
 
 const TZ = "America/Argentina/Buenos_Aires";
 
@@ -233,12 +234,13 @@ async function slotHasCapacity({ date, time, serviceKey }) {
 
 async function ensureFixedAppointmentsForMonth(monthKey, { now = new Date() } = {}) {
   const { startYmd, endYmd } = monthStartEnd(monthKey);
-  const debtCounts = new Map();
+  const affectedUserServices = new Map();
 
+  // En el modelo nuevo, active:true representa un patrón fijo vigente.
+  // endDate pertenece al esquema legacy mensual y NO debe cortar la proyección.
   const schedules = await FixedSchedule.find({
     active: true,
     startDate: { $lte: endYmd },
-    endDate: { $gte: startYmd },
   }).lean();
 
   let created = 0;
@@ -260,7 +262,6 @@ async function ensureFixedAppointmentsForMonth(monthKey, { now = new Date() } = 
     for (const occ of occurrences) {
       if (occ.date < startYmd || occ.date > endYmd) continue;
       if (schedule.startDate && occ.date < schedule.startDate) continue;
-      if (schedule.endDate && occ.date > schedule.endDate) continue;
       if (isPastOccurrence(occ.date, occ.time, now)) {
         skipped += 1;
         continue;
@@ -309,15 +310,15 @@ async function ensureFixedAppointmentsForMonth(monthKey, { now = new Date() } = 
           assignedManually: true,
           fixedScheduleId: schedule._id,
           monthlyRolloverMonthKey: monthKey,
-          creditDebitStatus: "debt",
-          fixedDebtAmount: 1,
+          creditDebitStatus: "pending",
+          fixedDebtAmount: 0,
           notes: schedule.notes
             ? `Turno fijo mensual. ${String(schedule.notes).trim()}`
             : "Turno fijo mensual.",
         });
         created += 1;
-        const debtKey = `${String(userId)}__${sk}`;
-        debtCounts.set(debtKey, { userId, serviceKey: sk, count: (debtCounts.get(debtKey)?.count || 0) + 1 });
+        const affectedKey = `${String(userId)}__${sk}`;
+        affectedUserServices.set(affectedKey, { userId, serviceKey: sk });
       } catch (err) {
         // Conflictos por índice único u otro proceso paralelo: no tumbar el job.
         skipped += 1;
@@ -333,32 +334,29 @@ async function ensureFixedAppointmentsForMonth(monthKey, { now = new Date() } = 
     }
   }
 
-  let monthlyDebtAdded = 0;
+  let noticesSynced = 0;
+  let noticeErrors = 0;
 
-  for (const item of debtCounts.values()) {
-    const user = await User.findById(item.userId).select("fixedScheduleDebt credits creditLots history");
-    if (!user) continue;
-
-    ensureFixedDebt(user);
-    user.fixedScheduleDebt[item.serviceKey] = Math.max(0, Number(user.fixedScheduleDebt?.[item.serviceKey] || 0)) + item.count;
-    user.markModified?.("fixedScheduleDebt");
-    user.history = Array.isArray(user.history) ? user.history : [];
-    user.history.push({
-      action: "fixed_schedule_monthly_reserved",
-      title: `Deuda mensual de turnos fijos ${item.serviceKey}`,
-      message: `Se reservaron ${item.count} turno${item.count === 1 ? "" : "s"} fijo${item.count === 1 ? "" : "s"} de ${serviceName(item.serviceKey)} para ${monthKey}. Se generó deuda mensual de ${item.count} sesión${item.count === 1 ? "" : "es"}.`,
-      serviceKey: item.serviceKey,
-      serviceName: serviceName(item.serviceKey),
-      service: serviceName(item.serviceKey),
-      qty: -item.count,
-      createdAt: now,
-    });
-    recalcUserCredits(user);
-    await user.save();
-    monthlyDebtAdded += item.count;
+  for (const item of affectedUserServices.values()) {
+    try {
+      await syncExtraSessionNoticeForUserService({
+        userId: item.userId,
+        serviceKey: item.serviceKey,
+        source: "monthly_rollover",
+        now,
+      });
+      noticesSynced += 1;
+    } catch (error) {
+      noticeErrors += 1;
+      console.log("[MONTHLY] extra notice sync skipped", {
+        userId: String(item.userId || ""),
+        serviceKey: item.serviceKey,
+        error: error?.message || error,
+      });
+    }
   }
 
-  return { schedules: schedules.length, created, skipped, monthlyDebtAdded };
+  return { schedules: schedules.length, created, skipped, monthlyDebtAdded: 0, noticesSynced, noticeErrors };
 }
 
 export async function runMonthlyRollover({ force = false } = {}) {
@@ -397,7 +395,7 @@ export async function runMonthlyRollover({ force = false } = {}) {
     user.history.push({
       action: "monthly_rollover",
       title: "Renovación mensual aplicada",
-      message: "Se actualizó el vencimiento mensual de créditos y se aseguraron los turnos fijos del mes, generando la deuda mensual correspondiente por servicio.",
+      message: "Se actualizó el vencimiento mensual de créditos y se aseguraron los turnos fijos del mes sin generar deuda. Los faltantes se informan como sesiones adicionales.",
       createdAt: now,
     });
 

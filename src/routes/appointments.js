@@ -1693,21 +1693,21 @@ async function applyFixedAppointmentMonthlyBilling({ appointment, actorReq = nul
     };
   }
 
-  ensureFixedScheduleDebtObject(user);
-  user.fixedScheduleDebt[serviceKey] = Number(user.fixedScheduleDebt?.[serviceKey] || 0) + 1;
-  user.markModified?.("fixedScheduleDebt");
-
+  // Nuevo modelo de suscripciones: un turno fijo sin crédito NO genera deuda.
+  // Queda reservado y pendiente de cobertura. Si el usuario compra/renueva su
+  // plan, el pago consume los créditos base contra estos turnos pendientes y
+  // el excedente mensual se informa como sesión adicional dentro de la app.
   user.history = Array.isArray(user.history) ? user.history : [];
   user.history.push({
-    action: "fixed_schedule_monthly_debt",
-    title: `Deuda mensual de turno fijo ${serviceKey}`,
-    message: "Se generó 1 sesión adeudada por turno fijo sin crédito disponible.",
+    action: "fixed_schedule_pending_coverage",
+    title: `Turno fijo pendiente de cobertura ${serviceKey}`,
+    message: "El turno fijo quedó reservado sin generar deuda. Se cubrirá con el plan del servicio o con una sesión adicional del período.",
     date: ap.date,
     time: ap.time,
     service: serviceKeyToName(serviceKey) || ap.service,
     serviceName: serviceKeyToName(serviceKey) || ap.service,
     serviceKey,
-    qty: 1,
+    qty: 0,
     appointmentId: ap._id,
     fixedScheduleId: ap.fixedScheduleId,
     policyMonthKey: monthKey,
@@ -1719,22 +1719,21 @@ async function applyFixedAppointmentMonthlyBilling({ appointment, actorReq = nul
   else await user.save();
 
   ap.serviceKey = serviceKey;
-  ap.creditDebitStatus = "debt";
+  ap.creditDebitStatus = "pending";
   ap.creditLotId = null;
   ap.creditExpiresAt = null;
   ap.creditDebitedAt = null;
-  ap.fixedDebitProcessedAt = now;
-  ap.fixedDebtAmount = 1;
+  ap.fixedDebitProcessedAt = null;
+  ap.fixedDebtAmount = 0;
   if (session) await ap.save({ session });
   else await ap.save();
 
   return {
     ok: true,
-    action: "debt",
+    action: "pending_coverage",
     appointmentId: String(ap._id),
     serviceKey,
     userCredits: Number(user.credits || 0),
-    debt: Number(user.fixedScheduleDebt?.[serviceKey] || 0),
     monthKey,
   };
 }
@@ -3958,6 +3957,7 @@ router.post("/admin/fixed-schedules", async (req, res) => {
           billingSummary: {
             debited: billingResults.filter((x) => x?.action === "debited").length,
             debt: billingResults.filter((x) => x?.action === "debt").length,
+            pendingCoverage: billingResults.filter((x) => x?.action === "pending_coverage").length,
             skipped: billingResults.filter((x) => x?.skipped).length,
             oldRefunded: cancelledOldFinancialResults.filter((x) => x?.refundMode === "fixed-plan-delete-refund").length,
             oldDebtSettled: cancelledOldFinancialResults.filter((x) => x?.refundMode === "fixed-debt-settlement").length,
@@ -4000,6 +4000,7 @@ router.post("/admin/fixed-schedules", async (req, res) => {
       billingSummary: {
         debited: billingResults.filter((x) => x?.action === "debited").length,
         debt: billingResults.filter((x) => x?.action === "debt").length,
+        pendingCoverage: billingResults.filter((x) => x?.action === "pending_coverage").length,
         skipped: billingResults.filter((x) => x?.skipped).length,
       },
       items: created,

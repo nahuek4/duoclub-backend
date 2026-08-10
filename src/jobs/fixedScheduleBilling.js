@@ -296,24 +296,25 @@ async function processAppointment(apId, now = new Date()) {
         });
         result = { ok: true, status: "debited", serviceKey: sk };
       } else {
-        user.fixedScheduleDebt[sk] = Math.max(0, Number(user.fixedScheduleDebt[sk] || 0)) + 1;
-        user.markModified?.("fixedScheduleDebt");
-        ap.creditDebitStatus = "debt";
+        // Modelo de suscripciones: nunca generar deuda nueva por un turno fijo.
+        // El turno se completa pero queda financieramente pendiente de cobertura;
+        // la diferencia se informa como sesión adicional dentro de la app.
+        ap.creditDebitStatus = "pending";
         ap.creditDebitedAt = null;
-        ap.fixedDebtAmount = 1;
+        ap.fixedDebtAmount = 0;
         user.history.push({
-          action: "fixed_schedule_debt_created",
-          title: `Deuda por turno fijo ${sk}`,
-          message: `El turno fijo de ${serviceName(sk)} (${ap.date} ${ap.time} hs) llegó sin crédito disponible. Se generó deuda de 1 sesión.`,
+          action: "fixed_schedule_pending_coverage",
+          title: `Turno fijo pendiente de cobertura ${sk}`,
+          message: `El turno fijo de ${serviceName(sk)} (${ap.date} ${ap.time} hs) se procesó sin generar deuda.`,
           date: ap.date,
           time: ap.time,
           serviceKey: sk,
           serviceName: serviceName(sk),
           service: serviceName(sk),
-          qty: -1,
+          qty: 0,
           createdAt: now,
         });
-        result = { ok: true, status: "debt", serviceKey: sk };
+        result = { ok: true, status: "pending", serviceKey: sk };
       }
 
       ap.status = "completed";
@@ -340,7 +341,7 @@ export async function runFixedScheduleBillingTick({ limit = 300 } = {}) {
     date: { $lte: today },
   }).sort({ date: 1, time: 1 }).limit(limit).select("_id date time status").lean();
 
-  let checked = 0, debited = 0, debt = 0, monthlyCompleted = 0, skipped = 0;
+  let checked = 0, debited = 0, debt = 0, pending = 0, monthlyCompleted = 0, skipped = 0;
   for (const ap of candidates) {
     if (!slotDue(ap.date, ap.time, now)) continue;
     checked += 1;
@@ -348,6 +349,7 @@ export async function runFixedScheduleBillingTick({ limit = 300 } = {}) {
       const r = await processAppointment(ap._id, now);
       if (r?.status === "debited") debited += 1;
       else if (r?.status === "debt") debt += 1;
+      else if (r?.status === "pending") pending += 1;
       else if (r?.status === "monthly_completed") monthlyCompleted += 1;
       else skipped += 1;
     } catch (e) {
@@ -355,7 +357,7 @@ export async function runFixedScheduleBillingTick({ limit = 300 } = {}) {
       console.log("[FIXED BILLING] appointment error", { apId: String(ap._id), error: e?.message || e });
     }
   }
-  const out = { ok: true, checked, debited, debt, monthlyCompleted, skipped, today };
+  const out = { ok: true, checked, debited, debt, pending, monthlyCompleted, skipped, today };
   console.log("[FIXED BILLING] tick", out);
   return out;
 }

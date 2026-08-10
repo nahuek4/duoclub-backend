@@ -9,6 +9,10 @@ import {
   applyExtraSessionsFromOrder,
   releaseExtraSessionOrder,
 } from "../services/subscriptions/subscriptionExtraSessions.js";
+import {
+  activateSubscriptionsFromPaidOrder,
+  finalizePaidPlanOrder,
+} from "../services/subscriptions/subscriptionPlanPurchase.js";
 
 import {
   fireAndForget,
@@ -297,7 +301,7 @@ function settleFixedScheduleDebt(user, { amount, serviceKey, source = "credits" 
   return { settled, remaining };
 }
 
-function addCreditLot(user, { amount, source, orderId, serviceKey }) {
+function addCreditLot(user, { amount, source, orderId, serviceKey, skipFixedDebtSettlement = false }) {
   const now = new Date();
   ensureBasicIfExpired(user);
 
@@ -305,11 +309,13 @@ function addCreditLot(user, { amount, source, orderId, serviceKey }) {
   const qty = Math.max(0, Number(amount || 0));
   if (!qty) return;
 
-  const debtSettlement = settleFixedScheduleDebt(user, {
-    amount: qty,
-    serviceKey: sk,
-    source,
-  });
+  const debtSettlement = skipFixedDebtSettlement
+    ? { settled: 0, remaining: qty }
+    : settleFixedScheduleDebt(user, {
+        amount: qty,
+        serviceKey: sk,
+        source,
+      });
 
   const remainingQty = Math.max(0, Number(debtSettlement.remaining || 0));
 
@@ -378,7 +384,7 @@ function applyMembershipFromOrder(user, order) {
   else ensureBasicIfExpired(user);
 }
 
-function applyCreditsFromOrder(user, order) {
+function applyCreditsFromOrder(user, order, { subscriptionServiceKeys = new Set() } = {}) {
   if (order.creditsApplied) return;
 
   const hasItems = Array.isArray(order.items) && order.items.length > 0;
@@ -398,6 +404,7 @@ function applyCreditsFromOrder(user, order) {
           source: "mp",
           orderId: order._id,
           serviceKey: assertServiceKey(it.serviceKey),
+          skipFixedDebtSettlement: subscriptionServiceKeys.has(assertServiceKey(it.serviceKey)),
         });
       }
     }
@@ -412,6 +419,7 @@ function applyCreditsFromOrder(user, order) {
       source: "mp-legacy",
       orderId: order._id,
       serviceKey: assertServiceKey(order.serviceKey),
+      skipFixedDebtSettlement: subscriptionServiceKeys.has(assertServiceKey(order.serviceKey)),
     });
   } else {
     recalcCreditsCache(user);
@@ -512,8 +520,13 @@ async function applyApprovedOrderOnce({ orderId, paymentInfo }) {
         return;
       }
 
+      const activation = await activateSubscriptionsFromPaidOrder({ order, session });
+      const subscriptionServiceKeys = new Set(
+        (activation.activated || []).map((row) => String(row.serviceKey || "").toUpperCase())
+      );
+
       applyMembershipFromOrder(user, order);
-      applyCreditsFromOrder(user, order);
+      applyCreditsFromOrder(user, order, { subscriptionServiceKeys });
 
       user.history = Array.isArray(user.history) ? user.history : [];
       user.history.push({
@@ -540,8 +553,25 @@ async function applyApprovedOrderOnce({ orderId, paymentInfo }) {
       order.creditsApplied = true;
       await order.save({ session });
 
-      result = { ok: true, applied: true, orderId: String(order._id), userId: String(user._id) };
+      result = {
+        ok: true,
+        applied: true,
+        orderId: String(order._id),
+        userId: String(user._id),
+        activated: activation.activated || [],
+      };
     });
+
+    if (result?.ok && result?.applied && Array.isArray(result?.activated) && result.activated.length) {
+      try {
+        const appliedOrder = await Order.findById(orderId);
+        if (appliedOrder) {
+          await finalizePaidPlanOrder({ order: appliedOrder, activated: result.activated });
+        }
+      } catch (syncError) {
+        console.warn("MP SUBSCRIPTION POST-APPLY SYNC:", syncError?.message || syncError);
+      }
+    }
 
     return result;
   } finally {

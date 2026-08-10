@@ -22,6 +22,10 @@ import {
   releaseExtraSessionOrder,
   resolveExtraSessionCheckoutItem,
 } from "../services/subscriptions/subscriptionExtraSessions.js";
+import {
+  activateSubscriptionsFromPaidOrder,
+  finalizePaidPlanOrder,
+} from "../services/subscriptions/subscriptionPlanPurchase.js";
 
 const router = express.Router();
 
@@ -176,7 +180,7 @@ function settleFixedScheduleDebt(user, { amount, serviceKey, source = "credits" 
   return { settled, remaining };
 }
 
-function addCreditLot(user, { amount, source, orderId, serviceKey }) {
+function addCreditLot(user, { amount, source, orderId, serviceKey, skipFixedDebtSettlement = false }) {
   const now = new Date();
   ensureBasicIfExpired(user);
 
@@ -184,7 +188,9 @@ function addCreditLot(user, { amount, source, orderId, serviceKey }) {
   const qty = Math.max(0, Number(amount || 0));
   if (!qty) return;
 
-  const debtSettlement = settleFixedScheduleDebt(user, { amount: qty, serviceKey: sk, source });
+  const debtSettlement = skipFixedDebtSettlement
+    ? { settled: 0, remaining: qty }
+    : settleFixedScheduleDebt(user, { amount: qty, serviceKey: sk, source });
   const remainingQty = Math.max(0, Number(debtSettlement.remaining || 0));
   if (!remainingQty) {
     recalcCreditsCache(user);
@@ -591,6 +597,11 @@ async function applyCreditsOnlyIfNeeded(order) {
   const user = await User.findById(order.user);
   if (!user) return { ok: false, error: "Usuario no encontrado." };
 
+  const activation = await activateSubscriptionsFromPaidOrder({ order });
+  const subscriptionServiceKeys = new Set(
+    (activation.activated || []).map((row) => String(row.serviceKey || "").toUpperCase())
+  );
+
   const hasItems = Array.isArray(order.items) && order.items.length > 0;
   ensureBasicIfExpired(user);
 
@@ -610,6 +621,7 @@ async function applyCreditsOnlyIfNeeded(order) {
             source: "order-credits-only",
             orderId: order._id,
             serviceKey: assertServiceKey(it.serviceKey),
+            skipFixedDebtSettlement: subscriptionServiceKeys.has(assertServiceKey(it.serviceKey)),
           });
         }
       }
@@ -621,6 +633,7 @@ async function applyCreditsOnlyIfNeeded(order) {
           source: "order-legacy-credits-only",
           orderId: order._id,
           serviceKey: assertServiceKey(order.serviceKey),
+          skipFixedDebtSettlement: subscriptionServiceKeys.has(assertServiceKey(order.serviceKey)),
         });
       }
     }
@@ -635,6 +648,7 @@ async function applyCreditsOnlyIfNeeded(order) {
   }
 
   await order.save();
+  await finalizePaidPlanOrder({ order, activated: activation.activated || [] });
   return { ok: true };
 }
 
@@ -650,6 +664,11 @@ async function applyOrderIfNeeded(order) {
 
   const user = await User.findById(order.user);
   if (!user) return { ok: false, error: "Usuario no encontrado." };
+
+  const activation = await activateSubscriptionsFromPaidOrder({ order });
+  const subscriptionServiceKeys = new Set(
+    (activation.activated || []).map((row) => String(row.serviceKey || "").toUpperCase())
+  );
 
   const hasItems = Array.isArray(order.items) && order.items.length > 0;
 
@@ -690,6 +709,7 @@ async function applyOrderIfNeeded(order) {
             source: "order",
             orderId: order._id,
             serviceKey: assertServiceKey(it.serviceKey),
+            skipFixedDebtSettlement: subscriptionServiceKeys.has(assertServiceKey(it.serviceKey)),
           });
         }
       }
@@ -701,6 +721,7 @@ async function applyOrderIfNeeded(order) {
           source: "order-legacy",
           orderId: order._id,
           serviceKey: assertServiceKey(order.serviceKey),
+          skipFixedDebtSettlement: subscriptionServiceKeys.has(assertServiceKey(order.serviceKey)),
         });
       }
     }
@@ -716,6 +737,7 @@ async function applyOrderIfNeeded(order) {
 
   order.applied = true;
   await order.save();
+  await finalizePaidPlanOrder({ order, activated: activation.activated || [] });
   return { ok: true };
 }
 
