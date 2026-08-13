@@ -27,6 +27,7 @@ import adminApprovalLinksRoutes from "./routes/adminApprovalLinks.js";
 import adminDashboardRoutes from "./routes/adminDashboard.js";
 import adminSubscriptionsRoutes from "./routes/adminSubscriptions.js";
 import subscriptionExtrasRoutes from "./routes/subscriptionExtras.js";
+import subscriptionsRoutes from "./routes/subscriptions.js";
 
 import { startAppointmentReminderScheduler } from "./jobs/startReminders.js";
 import { startWaitlistScheduler } from "./jobs/startWaitlist.js";
@@ -192,6 +193,7 @@ function mountRoutes(prefix = "") {
   app.use(`${prefix}/admin/dashboard`, adminDashboardRoutes);
   app.use(`${prefix}/admin/subscriptions`, adminSubscriptionsRoutes);
   app.use(`${prefix}/subscription-extras`, subscriptionExtrasRoutes);
+  app.use(`${prefix}/subscriptions`, subscriptionsRoutes);
   app.use(`${prefix}/api/test-mail`, testMailRouter);
   app.use(`${prefix}/waitlist`, waitlistRouter);
   app.use(`${prefix}/schedule-blocks`, scheduleBlocksRoutes);
@@ -230,4 +232,3 @@ app.use((req, res) => {
 app.listen(PORT, HOST, () => {
   console.log(`✅ Servidor escuchando en http://${HOST}:${PORT}`);
 });
- 

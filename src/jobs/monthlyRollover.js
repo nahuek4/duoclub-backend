@@ -8,7 +8,9 @@
 import User from "../models/User.js";
 import FixedSchedule from "../models/FixedSchedule.js";
 import Appointment from "../models/Appointment.js";
+import ServiceSubscription from "../models/ServiceSubscription.js";
 import { syncExtraSessionNoticeForUserService } from "../services/subscriptions/subscriptionExtraSessions.js";
+import { runSubscriptionLifecycleTick } from "../services/subscriptions/subscriptionLifecycle.js";
 
 const TZ = "America/Argentina/Buenos_Aires";
 
@@ -151,9 +153,10 @@ function isMonthlyRunWindow(date = new Date()) {
   const p = arParts(date);
   const today = ymdFromParts(p);
 
-  // Corre durante la primera semana hábil, desde las 06:00 ARG.
-  // Cada usuario queda marcado por monthKey para no repetir el proceso.
-  return p.day <= 7 && p.hour >= 6 && isBusinessDayYmd(today);
+  // Materialización mensual: día 1 y ventana de recuperación hasta día 3.
+  // El motor de ciclo corre todo el mes; esta ventana solo controla la creación
+  // de Appointment de turnos fijos y el cierre de créditos vencidos.
+  return p.day <= 3 && p.hour >= 6;
 }
 
 function buildOccurrencesForMonth({ monthKey, items = [] }) {
@@ -243,6 +246,18 @@ async function ensureFixedAppointmentsForMonth(monthKey, { now = new Date() } = 
     startDate: { $lte: endYmd },
   }).lean();
 
+  // Solo materializamos turnos fijos para servicios que realmente tienen una
+  // suscripción renovada y activa en este período. Los 10 casos legacy sin
+  // suscripción no se renuevan automáticamente.
+  const subscriptions = await ServiceSubscription.find({
+    autoRenew: true,
+    status: { $in: ["active", "pending_change"] },
+    currentPeriodKey: monthKey,
+  }).select("user serviceKey").lean();
+  const renewableKeys = new Set(
+    subscriptions.map((sub) => `${String(sub.user)}__${String(sub.serviceKey)}`)
+  );
+
   let created = 0;
   let skipped = 0;
 
@@ -250,6 +265,11 @@ async function ensureFixedAppointmentsForMonth(monthKey, { now = new Date() } = 
     const userId = schedule.user;
     const sk = normalizeServiceKey(schedule.serviceKey || schedule.service);
     if (!userId || !sk || !FIXED_SERVICE_KEYS.includes(sk)) {
+      skipped += 1;
+      continue;
+    }
+
+    if (!renewableKeys.has(`${String(userId)}__${sk}`)) {
       skipped += 1;
       continue;
     }
@@ -342,7 +362,7 @@ async function ensureFixedAppointmentsForMonth(monthKey, { now = new Date() } = 
       await syncExtraSessionNoticeForUserService({
         userId: item.userId,
         serviceKey: item.serviceKey,
-        source: "monthly_rollover",
+        source: "manual_refresh",
         now,
       });
       noticesSynced += 1;
@@ -364,12 +384,17 @@ export async function runMonthlyRollover({ force = false } = {}) {
   const p = arParts(now);
   const monthKey = monthKeyFromParts(p);
 
+  // El motor de suscripciones debe correr durante todo el mes para detectar
+  // preview, día 1, suspensión y baja. `force` solo fuerza la renovación/cierre
+  // mensual; nunca fuerza una baja anticipada por falta de pago.
+  const lifecycle = await runSubscriptionLifecycleTick({ now, force });
+
   if (!force && !isMonthlyRunWindow(now)) {
     return {
       ok: true,
-      skipped: true,
-      reason: "OUTSIDE_RUN_WINDOW",
       monthKey,
+      lifecycle,
+      fixed: { skipped: true, reason: "OUTSIDE_FIXED_MATERIALIZATION_WINDOW" },
     };
   }
 
@@ -394,8 +419,8 @@ export async function runMonthlyRollover({ force = false } = {}) {
     user.history = Array.isArray(user.history) ? user.history : [];
     user.history.push({
       action: "monthly_rollover",
-      title: "Renovación mensual aplicada",
-      message: "Se actualizó el vencimiento mensual de créditos y se aseguraron los turnos fijos del mes sin generar deuda. Los faltantes se informan como sesiones adicionales.",
+      title: "Cierre mensual aplicado",
+      message: "Se cerraron créditos vencidos y se materializaron los turnos fijos de suscripciones activas sin generar deuda.",
       createdAt: now,
     });
 
@@ -408,6 +433,7 @@ export async function runMonthlyRollover({ force = false } = {}) {
   return {
     ok: true,
     monthKey,
+    lifecycle,
     usersTouched,
     expiredLotsChanged,
     fixed,

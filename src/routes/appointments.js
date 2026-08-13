@@ -19,6 +19,7 @@ import {
 } from "../mail.js";
 import { logActivity, buildUserSubject } from "../lib/activityLogger.js";
 import { syncExtraSessionNoticeForUserService } from "../services/subscriptions/subscriptionExtraSessions.js";
+import { assertSubscriptionServiceAccess } from "../services/subscriptions/subscriptionAccess.js";
 
 const router = express.Router();
 
@@ -2706,6 +2707,12 @@ router.post("/waitlist/claim", async (req, res, next) => {
     if (msg === "USER_SUSPENDED") {
       return res.status(403).json({ error: "Cuenta suspendida." });
     }
+    if (msg === "SUBSCRIPTION_SERVICE_BLOCKED") {
+      return res.status(403).json({
+        error: "Este servicio está suspendido o dado de baja por el estado de tu plan.",
+        code: "SUBSCRIPTION_SERVICE_BLOCKED",
+      });
+    }
     if (msg === "APTO_REQUIRED") {
       return res.status(403).json({ error: "Falta apto médico." });
     }
@@ -4055,6 +4062,12 @@ router.post("/", async (req, res) => {
       recalcUserCredits(user);
 
       const requestedSk = basic.serviceKey;
+      await assertSubscriptionServiceAccess({
+        userId: user._id,
+        serviceKey: requestedSk,
+        session,
+      });
+
       if ((user.credits || 0) <= 0 || getServiceBalance(user, requestedSk, basic.slotDate) <= 0) throw new Error("NO_CREDITS");
 
       if (!hasValidCreditsForServiceAndSlot(user, requestedSk, basic.slotDate)) {
@@ -4295,6 +4308,12 @@ router.post("/", async (req, res) => {
     if (msg === "USER_SUSPENDED") {
       return res.status(403).json({ error: "Cuenta suspendida." });
     }
+    if (msg === "SUBSCRIPTION_SERVICE_BLOCKED") {
+      return res.status(403).json({
+        error: "Este servicio está suspendido o dado de baja por el estado de tu plan.",
+        code: "SUBSCRIPTION_SERVICE_BLOCKED",
+      });
+    }
     if (msg === "APTO_REQUIRED") {
       return res.status(403).json({ error: "Falta apto médico." });
     }
@@ -4390,6 +4409,15 @@ router.post("/batch", async (req, res) => {
       });
 
       // La primera evaluación ya no bloquea reservas múltiples de otros servicios.
+
+      const uniqueServices = Array.from(new Set(basicItems.map((item) => item.serviceKey)));
+      for (const serviceKey of uniqueServices) {
+        await assertSubscriptionServiceAccess({
+          userId: user._id,
+          serviceKey,
+          session,
+        });
+      }
 
       recalcUserCredits(user);
       const needed = basicItems.length;
@@ -4553,6 +4581,12 @@ router.post("/batch", async (req, res) => {
     if (msg === "USER_SUSPENDED") {
       return res.status(403).json({ error: "Cuenta suspendida." });
     }
+    if (msg === "SUBSCRIPTION_SERVICE_BLOCKED") {
+      return res.status(403).json({
+        error: "Este servicio está suspendido o dado de baja por el estado de tu plan.",
+        code: "SUBSCRIPTION_SERVICE_BLOCKED",
+      });
+    }
     if (msg === "APTO_REQUIRED") {
       return res.status(403).json({ error: "Falta apto médico." });
     }
@@ -4628,6 +4662,14 @@ router.post("/:id/reschedule", async (req, res) => {
       if (!user) throw new Error("USER_NOT_FOUND");
       if (user.suspended) throw new Error("USER_SUSPENDED");
       if (requiresApto(user)) throw new Error("APTO_REQUIRED");
+
+      if (!isStaff) {
+        await assertSubscriptionServiceAccess({
+          userId: user._id,
+          serviceKey: ap.serviceKey,
+          session,
+        });
+      }
 
       const oldDate = String(ap.date || "").slice(0, 10);
       const oldTime = String(ap.time || "").slice(0, 5);
@@ -4773,6 +4815,12 @@ router.post("/:id/reschedule", async (req, res) => {
     }
     if (msg === "USER_SUSPENDED") {
       return res.status(403).json({ error: "Cuenta suspendida." });
+    }
+    if (msg === "SUBSCRIPTION_SERVICE_BLOCKED") {
+      return res.status(403).json({
+        error: "Este servicio está suspendido o dado de baja por el estado de tu plan.",
+        code: "SUBSCRIPTION_SERVICE_BLOCKED",
+      });
     }
     if (msg === "APTO_REQUIRED") {
       return res.status(403).json({ error: "Falta apto médico." });

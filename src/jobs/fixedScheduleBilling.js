@@ -5,6 +5,7 @@ import User from "../models/User.js";
 import FixedSchedule from "../models/FixedSchedule.js";
 import { fireAndForget } from "../mail.js";
 import { sendAdminFixedScheduleDebtSummaryEmail } from "../mail/creditsEmails.js";
+import { getSubscriptionAccessState } from "../services/subscriptions/subscriptionAccess.js";
 
 const TZ = "America/Argentina/Buenos_Aires";
 const FIXED_SERVICE_KEYS = ["EP", "RA", "RF", "KD", "SYN"];
@@ -245,6 +246,37 @@ async function processAppointment(apId, now = new Date()) {
 
       const user = await User.findById(ap.user).session(session);
       if (!user) throw new Error("USER_NOT_FOUND");
+
+      const subscriptionAccess = await getSubscriptionAccessState({
+        userId: user._id,
+        serviceKey: sk,
+        session,
+      });
+
+      if (!subscriptionAccess.allowed) {
+        // El horario se mantuvo protegido hasta este momento, pero el usuario
+        // no puede consumir la sesión mientras el servicio está suspendido.
+        // Al llegar la hora cancelamos solo esta ocurrencia; NO liberamos el
+        // patrón fijo de las próximas fechas antes del día 21.
+        ap.status = "cancelled";
+        ap.cancelledAt = now;
+        ap.cancelReason =
+          subscriptionAccess.subscription?.status === "suspended"
+            ? "Servicio suspendido por pago mensual pendiente."
+            : "Servicio no disponible por estado de la suscripción.";
+        ap.creditDebitStatus = "skipped";
+        ap.fixedDebtAmount = 0;
+        ap.fixedDebitProcessedAt = now;
+        await ap.save({ session });
+        result = {
+          ok: true,
+          status: "subscription_blocked",
+          serviceKey: sk,
+          subscriptionStatus: subscriptionAccess.subscription?.status || "",
+        };
+        return;
+      }
+
       ensureDebt(user);
       user.history = Array.isArray(user.history) ? user.history : [];
 
