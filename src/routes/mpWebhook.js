@@ -13,6 +13,11 @@ import {
   activateSubscriptionsFromPaidOrder,
   finalizePaidPlanOrder,
 } from "../services/subscriptions/subscriptionPlanPurchase.js";
+import {
+  applySubscriptionRenewalFromOrder,
+  getSubscriptionRenewalItems,
+  releaseSubscriptionRenewalOrder,
+} from "../services/subscriptions/subscriptionCyclePayments.js";
 
 import {
   fireAndForget,
@@ -42,7 +47,7 @@ const router = express.Router();
 const CREDITS_EXPIRE_DAYS = 30;
 const APPLY_MAX_RETRIES = Number(process.env.MP_APPLY_MAX_RETRIES || 4);
 
-const ALLOWED_SERVICE_KEYS = new Set(["PE", "EP", "RA", "RF", "KD", "NUT"]);
+const ALLOWED_SERVICE_KEYS = new Set(["PE", "EP", "RA", "RF", "KD", "SYN", "NUT"]);
 
 const SERVICE_KEY_TO_NAME = {
   PE: "Primera evaluación presencial",
@@ -50,6 +55,7 @@ const SERVICE_KEY_TO_NAME = {
   RA: "Rehabilitación Activa",
   RF: "Reeducación Funcional",
   KD: "Kinefilaxia Deportiva",
+  SYN: "Synergy",
   NUT: "Nutrición",
 };
 
@@ -506,7 +512,12 @@ async function applyApprovedOrderOnce({ orderId, paymentInfo }) {
         return;
       }
 
-      if (order.applied && order.subscriptionExtraApplied) {
+      const hasRenewalItems = getSubscriptionRenewalItems(order).length > 0;
+      if (
+        order.applied &&
+        order.subscriptionExtraApplied &&
+        (!hasRenewalItems || order.subscriptionCycleApplied)
+      ) {
         await order.save({ session });
         result = { ok: true, alreadyApplied: true, orderId: String(order._id) };
         return;
@@ -545,6 +556,17 @@ async function applyApprovedOrderOnce({ orderId, paymentInfo }) {
       if (!order.subscriptionExtraApplied) {
         await applyExtraSessionsFromOrder({ order, session });
         order.subscriptionExtraApplied = true;
+      }
+
+      if (!order.subscriptionCycleApplied) {
+        await applySubscriptionRenewalFromOrder({
+          order,
+          session,
+          paymentProvider: "MP",
+          paymentId: paymentInfo.paymentId || "",
+          paidAt: order.paidAt || new Date(),
+        });
+        order.subscriptionCycleApplied = true;
       }
 
       await countExternalPaymentApprovalIfNeeded({ order, paymentInfo, session });
@@ -743,6 +765,7 @@ async function saveNonApprovedPaymentState({ orderId, paymentInfo }) {
         orderId: order._id,
       }).catch(() => null);
     }
+    await releaseSubscriptionRenewalOrder({ order }).catch(() => null);
   }
 
   return { ok: true };

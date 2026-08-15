@@ -1,6 +1,8 @@
 import express from "express";
 
 import PricingPlan from "../models/PricingPlan.js";
+import Order from "../models/Order.js";
+import User from "../models/User.js";
 import ServiceSubscription from "../models/ServiceSubscription.js";
 import SubscriptionBillingCycle from "../models/SubscriptionBillingCycle.js";
 import SubscriptionLifecycleNotice from "../models/SubscriptionLifecycleNotice.js";
@@ -9,12 +11,90 @@ import {
   addMonthsToMonthKey,
   monthKeyFromDateArgentina,
 } from "../services/subscriptions/subscriptionLifecycle.js";
+import {
+  buildSubscriptionRenewalItem,
+  applySubscriptionRenewalFromOrder,
+} from "../services/subscriptions/subscriptionCyclePayments.js";
 
 const router = express.Router();
 router.use(protect);
 
 function userId(req) {
   return String(req.user?._id || req.user?.id || "");
+}
+
+
+function getFrontBaseUrl() {
+  return String(
+    process.env.FRONTEND_URL ||
+      process.env.FRONT_BASE_URL ||
+      process.env.APP_URL ||
+      "https://duoclub.ar"
+  ).replace(/\/+$/, "");
+}
+
+async function createMpPreferenceForRenewal({ order, user, cycle }) {
+  const accessToken = process.env.MP_ACCESS_TOKEN;
+  if (!accessToken) throw new Error("MP_ACCESS_TOKEN no configurado.");
+
+  const amount = Math.max(0, Number(order.totalFinal ?? order.total ?? 0));
+  if (!(amount > 0)) throw new Error("El ciclo no tiene un importe válido para Mercado Pago.");
+
+  const frontBase = getFrontBaseUrl();
+  const body = {
+    items: [
+      {
+        title: `DUO - Renovación ${cycle.serviceKey} ${cycle.periodKey}`,
+        quantity: 1,
+        currency_id: "ARS",
+        unit_price: amount,
+      },
+    ],
+    external_reference: String(order._id),
+    metadata: {
+      orderId: String(order._id),
+      userId: String(user?._id || order.user || ""),
+      subscriptionCycleId: String(cycle._id),
+      subscriptionId: String(cycle.subscription),
+      periodKey: cycle.periodKey,
+      kind: "SUBSCRIPTION_RENEWAL",
+    },
+    back_urls: {
+      success: `${frontBase}/?mp=success`,
+      pending: `${frontBase}/?mp=pending`,
+      failure: `${frontBase}/?mp=failure`,
+    },
+    auto_return: "approved",
+    notification_url: process.env.MP_WEBHOOK_URL || undefined,
+  };
+
+  if (user?.email) body.payer = { email: String(user.email).trim() };
+
+  const response = await fetch("https://api.mercadopago.com/checkout/preferences", {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${accessToken}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify(body),
+  });
+
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    throw new Error(data?.message || "No se pudo crear la preferencia de Mercado Pago.");
+  }
+
+  return { preferenceId: data.id, initPoint: data.init_point };
+}
+
+function renewalOrderResponse(order) {
+  return {
+    orderId: String(order._id),
+    status: order.status,
+    payMethod: order.payMethod,
+    amount: Number(order.totalFinal ?? order.total ?? 0),
+    init_point: order.mpInitPoint || "",
+  };
 }
 
 function serializeSubscription(subscription, cycles = []) {
@@ -127,6 +207,130 @@ router.patch("/notices/:id/read", async (req, res) => {
     return res.json({ ok: true });
   } catch (error) {
     return res.status(500).json({ error: "No se pudo actualizar la notificación." });
+  }
+});
+
+
+router.post("/cycles/:cycleId/pay", async (req, res) => {
+  try {
+    const uid = userId(req);
+    const cycle = await SubscriptionBillingCycle.findOne({
+      _id: req.params.cycleId,
+      user: uid,
+    });
+
+    if (!cycle) return res.status(404).json({ error: "Ciclo mensual no encontrado." });
+
+    if (cycle.billing?.status === "paid") {
+      return res.json({
+        ok: true,
+        alreadyPaid: true,
+        cycleId: String(cycle._id),
+        billingStatus: "paid",
+      });
+    }
+
+    if (!["pending", "overdue"].includes(String(cycle.billing?.status || ""))) {
+      return res.status(400).json({ error: "Este ciclo no admite pagos en su estado actual." });
+    }
+
+    const subscription = await ServiceSubscription.findOne({
+      _id: cycle.subscription,
+      user: uid,
+    });
+    if (!subscription) return res.status(404).json({ error: "Suscripción no encontrada." });
+
+    const expectedMethod = String(cycle.planSnapshot?.payMethod || subscription.payMethod || "CASH")
+      .toUpperCase()
+      .trim();
+    const requestedMethod = String(req.body?.payMethod || expectedMethod).toUpperCase().trim();
+
+    if (requestedMethod !== expectedMethod) {
+      return res.status(400).json({
+        error: `Este plan se renueva mediante ${expectedMethod === "MP" ? "Mercado Pago" : "efectivo/transferencia"}. Para cambiar el medio de pago, modificá el plan del próximo período.`,
+      });
+    }
+
+    if (cycle.billing?.order) {
+      const existingOrder = await Order.findById(cycle.billing.order);
+      if (existingOrder) {
+        const status = String(existingOrder.status || "").toLowerCase();
+
+        if (status === "paid" || status === "approved") {
+          if (!existingOrder.subscriptionCycleApplied) {
+            await applySubscriptionRenewalFromOrder({
+              order: existingOrder,
+              paymentProvider: existingOrder.payMethod,
+              paymentId: existingOrder.mpPaymentId || "",
+              paidAt: existingOrder.paidAt || new Date(),
+            });
+            existingOrder.subscriptionCycleApplied = true;
+            existingOrder.applied = true;
+            await existingOrder.save();
+          }
+          return res.json({ ok: true, alreadyPaid: true, ...renewalOrderResponse(existingOrder) });
+        }
+
+        if (status === "pending") {
+          if (expectedMethod === "MP" && !existingOrder.mpInitPoint) {
+            const user = await User.findById(uid).lean();
+            const mp = await createMpPreferenceForRenewal({ order: existingOrder, user, cycle });
+            existingOrder.mpPreferenceId = mp.preferenceId;
+            existingOrder.mpInitPoint = mp.initPoint;
+            await existingOrder.save();
+          }
+
+          return res.json({ ok: true, reused: true, ...renewalOrderResponse(existingOrder) });
+        }
+      }
+    }
+
+    const item = buildSubscriptionRenewalItem({ cycle, subscription });
+    const amount = Math.max(0, Math.round(Number(cycle.billing?.total || 0)));
+    if (!(amount > 0)) {
+      return res.status(400).json({ error: "El ciclo mensual no tiene saldo pendiente." });
+    }
+
+    const order = await Order.create({
+      user: uid,
+      payMethod: expectedMethod,
+      items: [item],
+      totalBase: amount,
+      total: amount,
+      totalFinal: amount,
+      status: "pending",
+      applied: false,
+      creditsApplied: false,
+      subscriptionExtraApplied: false,
+      subscriptionCycleApplied: false,
+      suppressUserEmails: true,
+      notes: `Renovación mensual ${cycle.serviceKey} ${cycle.periodKey}. Las sesiones ya fueron acreditadas por el ciclo; esta orden solo registra el cobro.`,
+    });
+
+    cycle.billing.order = order._id;
+    await cycle.save();
+
+    if (expectedMethod === "MP") {
+      try {
+        const user = await User.findById(uid).lean();
+        const mp = await createMpPreferenceForRenewal({ order, user, cycle });
+        order.mpPreferenceId = mp.preferenceId;
+        order.mpInitPoint = mp.initPoint;
+        await order.save();
+      } catch (error) {
+        order.status = "cancelled";
+        order.notes = `${order.notes}\nNo se pudo generar Mercado Pago: ${error?.message || error}`;
+        await order.save();
+        cycle.billing.order = null;
+        await cycle.save();
+        throw error;
+      }
+    }
+
+    return res.status(201).json({ ok: true, ...renewalOrderResponse(order) });
+  } catch (error) {
+    console.error("POST /subscriptions/cycles/:cycleId/pay", error);
+    return res.status(500).json({ error: error?.message || "No se pudo generar el pago mensual." });
   }
 });
 

@@ -26,6 +26,11 @@ import {
   activateSubscriptionsFromPaidOrder,
   finalizePaidPlanOrder,
 } from "../services/subscriptions/subscriptionPlanPurchase.js";
+import {
+  applySubscriptionRenewalFromOrder,
+  getSubscriptionRenewalItems,
+  releaseSubscriptionRenewalOrder,
+} from "../services/subscriptions/subscriptionCyclePayments.js";
 
 const router = express.Router();
 
@@ -658,7 +663,12 @@ async function applyCreditsOnlyIfNeeded(order) {
 async function applyOrderIfNeeded(order) {
   if (!order) return { ok: false, error: "Orden inválida." };
 
-  if (order.applied && order.subscriptionExtraApplied) {
+  const hasRenewalItems = getSubscriptionRenewalItems(order).length > 0;
+  if (
+    order.applied &&
+    order.subscriptionExtraApplied &&
+    (!hasRenewalItems || order.subscriptionCycleApplied)
+  ) {
     return { ok: true, message: "Orden ya aplicada." };
   }
 
@@ -733,6 +743,16 @@ async function applyOrderIfNeeded(order) {
   if (!order.subscriptionExtraApplied) {
     await applyExtraSessionsFromOrder({ order });
     order.subscriptionExtraApplied = true;
+  }
+
+  if (!order.subscriptionCycleApplied) {
+    await applySubscriptionRenewalFromOrder({
+      order,
+      paymentProvider: order.payMethod,
+      paymentId: order.mpPaymentId || "",
+      paidAt: order.paidAt || new Date(),
+    });
+    order.subscriptionCycleApplied = true;
   }
 
   order.applied = true;
@@ -1950,6 +1970,7 @@ router.delete("/:id", protect, adminOnly, async (req, res) => {
           orderId: order._id,
         }).catch(() => null);
       }
+      await releaseSubscriptionRenewalOrder({ order }).catch(() => null);
     }
 
     await Order.deleteOne({ _id: order._id });

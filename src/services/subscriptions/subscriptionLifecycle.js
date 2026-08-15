@@ -785,80 +785,127 @@ export async function terminateUnpaidSubscriptions({ periodKey, now = new Date()
   };
 }
 
-export async function markSubscriptionCyclePaid({ cycleId, paymentProvider = "", paymentId = "", orderId = null, paidAt = new Date() } = {}) {
-  const session = await mongoose.startSession();
+async function markSubscriptionCyclePaidCore({
+  cycleId,
+  paymentProvider = "",
+  paymentId = "",
+  orderId = null,
+  paidAt = new Date(),
+  session = null,
+} = {}) {
+  const cycleQuery = SubscriptionBillingCycle.findById(cycleId);
+  if (session) cycleQuery.session(session);
+  const cycle = await cycleQuery;
+  if (!cycle) throw new Error("SUBSCRIPTION_CYCLE_NOT_FOUND");
+
+  if (cycle.billing.status === "paid") {
+    return {
+      ok: true,
+      alreadyPaid: true,
+      cycleId: String(cycle._id),
+      subscriptionId: String(cycle.subscription),
+      periodKey: cycle.periodKey,
+    };
+  }
+
+  const subscriptionQuery = ServiceSubscription.findById(cycle.subscription);
+  if (session) subscriptionQuery.session(session);
+  const subscription = await subscriptionQuery;
+  if (!subscription) throw new Error("SUBSCRIPTION_NOT_FOUND");
+
+  cycle.billing.status = "paid";
+  cycle.billing.paidAt = paidAt;
+  cycle.billing.paymentProvider = clean(paymentProvider);
+  cycle.billing.paymentId = clean(paymentId);
+  if (orderId) cycle.billing.order = orderId;
+
+  let reactivated = false;
+  if (subscription.status === "suspended") {
+    subscription.status = "active";
+    subscription.suspendedAt = null;
+    subscription.suspensionReason = "";
+    cycle.lifecycle.planStatus = "active";
+    cycle.lifecycle.suspendedAt = null;
+    reactivated = true;
+  }
+
+  await cycle.save({ session: session || undefined });
+  await subscription.save({ session: session || undefined });
+
+  const noticeOptions = session ? { session } : undefined;
+  await SubscriptionLifecycleNotice.updateMany(
+    {
+      user: subscription.user,
+      subscription: subscription._id,
+      periodKey: cycle.periodKey,
+      type: { $in: ["payment_pending", "suspended"] },
+    },
+    { $set: { status: "resolved", resolvedAt: paidAt } },
+    noticeOptions
+  );
+
+  if (reactivated) {
+    await upsertLifecycleNotice({
+      userId: subscription.user,
+      subscriptionId: subscription._id,
+      cycleId: cycle._id,
+      serviceKey: subscription.serviceKey,
+      periodKey: cycle.periodKey,
+      type: "reactivated",
+      title: `Servicio ${subscription.serviceKey} reactivado`,
+      message: "El pago fue acreditado y el servicio volvió a estar activo.",
+      action: "none",
+      actionRequired: false,
+      session,
+    });
+  }
+
+  return {
+    ok: true,
+    alreadyPaid: false,
+    reactivated,
+    cycleId: String(cycle._id),
+    subscriptionId: String(subscription._id),
+    periodKey: cycle.periodKey,
+  };
+}
+
+export async function markSubscriptionCyclePaid({
+  cycleId,
+  paymentProvider = "",
+  paymentId = "",
+  orderId = null,
+  paidAt = new Date(),
+  session = null,
+} = {}) {
+  // Permite reutilizar la misma transacción de Order/MP sin abrir una transacción anidada.
+  if (session) {
+    return markSubscriptionCyclePaidCore({
+      cycleId,
+      paymentProvider,
+      paymentId,
+      orderId,
+      paidAt,
+      session,
+    });
+  }
+
+  const ownedSession = await mongoose.startSession();
   let output = null;
   try {
-    await session.withTransaction(async () => {
-      const cycle = await SubscriptionBillingCycle.findById(cycleId).session(session);
-      if (!cycle) throw new Error("SUBSCRIPTION_CYCLE_NOT_FOUND");
-
-      if (cycle.billing.status === "paid") {
-        output = { ok: true, alreadyPaid: true, cycleId: String(cycle._id) };
-        return;
-      }
-
-      const subscription = await ServiceSubscription.findById(cycle.subscription).session(session);
-      if (!subscription) throw new Error("SUBSCRIPTION_NOT_FOUND");
-
-      cycle.billing.status = "paid";
-      cycle.billing.paidAt = paidAt;
-      cycle.billing.paymentProvider = clean(paymentProvider);
-      cycle.billing.paymentId = clean(paymentId);
-      if (orderId) cycle.billing.order = orderId;
-
-      let reactivated = false;
-      if (subscription.status === "suspended") {
-        subscription.status = "active";
-        subscription.suspendedAt = null;
-        subscription.suspensionReason = "";
-        cycle.lifecycle.planStatus = "active";
-        cycle.lifecycle.suspendedAt = null;
-        reactivated = true;
-      }
-
-      await cycle.save({ session });
-      await subscription.save({ session });
-
-      await SubscriptionLifecycleNotice.updateMany(
-        {
-          user: subscription.user,
-          subscription: subscription._id,
-          periodKey: cycle.periodKey,
-          type: { $in: ["payment_pending", "suspended"] },
-        },
-        { $set: { status: "resolved", resolvedAt: paidAt } },
-        { session }
-      );
-
-      if (reactivated) {
-        await upsertLifecycleNotice({
-          userId: subscription.user,
-          subscriptionId: subscription._id,
-          cycleId: cycle._id,
-          serviceKey: subscription.serviceKey,
-          periodKey: cycle.periodKey,
-          type: "reactivated",
-          title: `Servicio ${subscription.serviceKey} reactivado`,
-          message: "El pago fue acreditado y el servicio volvió a estar activo.",
-          action: "none",
-          actionRequired: false,
-          session,
-        });
-      }
-
-      output = {
-        ok: true,
-        alreadyPaid: false,
-        reactivated,
-        cycleId: String(cycle._id),
-        subscriptionId: String(subscription._id),
-        periodKey: cycle.periodKey,
-      };
+    await ownedSession.withTransaction(async () => {
+      output = await markSubscriptionCyclePaidCore({
+        cycleId,
+        paymentProvider,
+        paymentId,
+        orderId,
+        paidAt,
+        session: ownedSession,
+      });
     });
     return output;
   } finally {
-    await session.endSession();
+    await ownedSession.endSession();
   }
 }
 
