@@ -1380,11 +1380,11 @@ function buildCancellationClientMessage({ appointment, decision, counters }) {
   const sk = serviceToKey(appointment?.service || "");
 
   if (decision?.reason === "FIXED_SCHEDULE_DEBT_RELEASED_BY_CANCEL") {
-    return "Cancelaste con el mínimo de anticipación. Este turno fijo estaba en deuda, por eso no se agregó un crédito positivo: se descontó de la deuda pendiente. Esta cancelación cuenta dentro de tus reintegros disponibles del mes.";
+    return "Cancelaste con el mínimo de anticipación. Este turno tenía un marcador financiero legacy y no generó un reintegro positivo. Esta cancelación cuenta dentro de tus reintegros disponibles del mes.";
   }
 
   if (decision?.reason === "FIXED_SCHEDULE_DEBT_SETTLED_BY_CANCEL") {
-    return "Cancelaste con el mínimo de anticipación. Como tenías deuda del mismo servicio, el crédito de este turno se usó primero para compensar esa deuda. Esta cancelación cuenta dentro de tus reintegros disponibles del mes.";
+    return "Cancelaste con el mínimo de anticipación. El turno tenía un marcador financiero legacy. Esta cancelación cuenta dentro de tus reintegros disponibles del mes.";
   }
 
   if (decision?.reason === "FIXED_SCHEDULE_SETTLED_DEBT_REFUNDED_BY_CANCEL") {
@@ -1509,7 +1509,7 @@ function lotsDebug(user) {
 
 
 /* =========================
-   Turnos fijos: débito/deuda mensual y reversa por baja de plan
+   Turnos fijos: cobertura mensual (deuda legacy deshabilitada)
 ========================= */
 const FIXED_BILLING_SERVICE_KEYS = new Set(["EP", "RA", "RF", "KD", "SYN"]);
 const FIXED_BILLING_DONE_STATUSES = new Set(["monthly_reserved", "debited", "debt", "skipped"]);
@@ -1519,10 +1519,9 @@ function isFixedBillingServiceKey(value) {
   return FIXED_BILLING_SERVICE_KEYS.has(sk);
 }
 
-// Los turnos manuales del admin también tienen que impactar en la cuenta
-// del usuario: si hay crédito, se debita; si no hay crédito, queda deuda.
-// Reutilizamos fixedScheduleDebt como saldo/deuda por servicio para no abrir
-// otro modelo paralelo ni romper la visualización actual del perfil.
+// Los turnos manuales del admin pueden quedar asignados aunque no haya crédito.
+// En el modelo de suscripciones eso NO genera deuda: queda pendiente de cobertura
+// y, si corresponde, se informa como sesión adicional del período.
 const ADMIN_MANUAL_DEBT_SERVICE_KEYS = new Set(["EP", "RA", "RF", "KD", "SYN", "NUT"]);
 
 function isAdminManualDebtServiceKey(value) {
@@ -1590,17 +1589,6 @@ function isSlotStrictlyAfterMoment(date, time, moment = new Date()) {
   // todavía es posterior al momento exacto de la acción del admin.
   // Ej: si son 10:01, el turno de hoy 10:00 ya no entra.
   return slotDate.getTime() > ref.getTime();
-}
-
-function ensureFixedScheduleDebtObject(user) {
-  user.fixedScheduleDebt = user.fixedScheduleDebt || {};
-
-  for (const sk of ["EP", "RA", "RF", "KD", "SYN", "NUT"]) {
-    const n = Number(user.fixedScheduleDebt?.[sk] || 0);
-    user.fixedScheduleDebt[sk] = Number.isFinite(n) ? Math.max(0, Math.trunc(n)) : 0;
-  }
-
-  return user.fixedScheduleDebt;
 }
 
 async function applyFixedAppointmentMonthlyBilling({ appointment, actorReq = null, session = null } = {}) {
@@ -1762,168 +1750,39 @@ function isBackfillablePastFixedDebtAppointment(ap, now = new Date()) {
   return true;
 }
 
-async function backfillPastFixedAppointmentDebt({ appointment, session = null } = {}) {
-  const ap = appointment;
-  if (!isBackfillablePastFixedDebtAppointment(ap)) {
-    return { ok: false, skipped: true, reason: "NOT_BACKFILLABLE" };
-  }
-
-  const serviceKey = serviceToKey(ap.serviceKey || ap.service || "");
-  const slotDate = buildSlotDate(ap.date, ap.time);
-  const monthKey = slotDate ? getMonthKey(slotDate) : getMonthKey(new Date());
-  const now = new Date();
-
-  const userQuery = User.findById(ap.user);
-  if (session) userQuery.session(session);
-  const user = await userQuery;
-  if (!user) {
-    return { ok: false, skipped: true, reason: "USER_NOT_FOUND" };
-  }
-
-  ensureFixedScheduleDebtObject(user);
-  user.fixedScheduleDebt[serviceKey] = Number(user.fixedScheduleDebt?.[serviceKey] || 0) + 1;
-  user.markModified?.("fixedScheduleDebt");
-
-  user.history = Array.isArray(user.history) ? user.history : [];
-  user.history.push({
-    action: "fixed_schedule_monthly_debt",
-    title: `Deuda regularizada de turno fijo ${serviceKey}`,
-    message:
-      "Se regularizó 1 sesión adeudada de un turno fijo pasado que no tenía procesamiento financiero.",
-    date: ap.date,
-    time: ap.time,
-    service: serviceKeyToName(serviceKey) || ap.service,
-    serviceName: serviceKeyToName(serviceKey) || ap.service,
-    serviceKey,
-    qty: 1,
-    appointmentId: ap._id,
-    fixedScheduleId: ap.fixedScheduleId,
-    policyMonthKey: monthKey,
-    createdAt: now,
-  });
-
-  recalcUserCredits(user);
-  if (session) await user.save({ session });
-  else await user.save();
-
-  ap.creditDebitStatus = "debt";
-  ap.creditLotId = null;
-  ap.creditExpiresAt = null;
-  ap.creditDebitedAt = null;
-  ap.fixedDebitProcessedAt = now;
-  ap.fixedDebtAmount = 1;
-  if (String(ap.status || "") === "reserved") {
-    ap.status = "completed";
-    ap.completedAt = ap.completedAt || now;
-  }
-
-  if (session) await ap.save({ session });
-  else await ap.save();
-
+async function backfillPastFixedAppointmentDebt({ appointment } = {}) {
+  // LEGACY: la deuda por turnos fijos dejó de ser operativa.
+  // Conservamos la función para compatibilidad con referencias antiguas, pero
+  // nunca crea deuda ni modifica créditos/usuario/turno.
   return {
-    ok: true,
-    action: "debt_backfilled",
-    appointmentId: String(ap._id),
-    userId: String(user._id),
-    serviceKey,
-    date: ap.date,
-    time: ap.time,
-    debt: Number(user.fixedScheduleDebt?.[serviceKey] || 0),
+    ok: false,
+    skipped: true,
+    reason: "LEGACY_DEBT_DISABLED",
+    appointmentId: appointment?._id ? String(appointment._id) : "",
   };
 }
 
-async function settleFixedScheduleDebtWithCancelledCreditOnCancel({ user, appointment, historyItem = {}, session = null } = {}) {
-  const ap = appointment;
-  const serviceKey = serviceToKey(ap?.serviceKey || ap?.service || "");
-  const isDebitedTrackedAppointment =
-    isFinanciallyTrackedAppointment(ap) &&
-    !!ap?.creditLotId &&
-    isAdminManualDebtServiceKey(serviceKey);
-
-  if (!user?._id || !isDebitedTrackedAppointment) {
-    return { settled: false, amount: 0, serviceKey, user };
-  }
-
-  ensureFixedScheduleDebtObject(user);
-
-  const currentDebt = Math.max(0, Number(user.fixedScheduleDebt?.[serviceKey] || 0));
-  if (currentDebt <= 0) {
-    return { settled: false, amount: 0, serviceKey, user };
-  }
-
-  const settled = Math.min(currentDebt, 1);
-  user.fixedScheduleDebt[serviceKey] = currentDebt - settled;
-  user.markModified?.("fixedScheduleDebt");
-
-  user.history = Array.isArray(user.history) ? user.history : [];
-  user.history.push({
-    ...historyItem,
-    action: historyItem?.action || "fixed_schedule_debt_settled_by_cancelled_credit",
-    title: historyItem?.title || `Deuda de turno fijo compensada ${serviceKey}`,
-    message:
-      historyItem?.message ||
-      "Se canceló un turno fijo que ya tenía crédito debitado. Como existía deuda del mismo servicio, no se generó crédito positivo: se compensó la deuda pendiente.",
-    serviceKey,
-    service: serviceKeyToName(serviceKey) || ap.service,
-    serviceName: serviceKeyToName(serviceKey) || ap.service,
-    qty: settled,
-    createdAt: new Date(),
-  });
-
-  recalcUserCredits(user);
-  if (session) await user.save({ session });
-  else await user.save();
-
-  ap.creditDebitStatus = "skipped";
-  ap.fixedDebtAmount = 0;
-
-  return { settled: true, amount: settled, serviceKey, user };
+async function settleFixedScheduleDebtWithCancelledCreditOnCancel({ user, appointment } = {}) {
+  // LEGACY: créditos nuevos/reintegros nunca compensan fixedScheduleDebt.
+  // Un crédito debitado se devuelve según la política normal de cancelación.
+  return {
+    settled: false,
+    amount: 0,
+    serviceKey: serviceToKey(appointment?.serviceKey || appointment?.service || ""),
+    user,
+    legacyDebtIgnored: true,
+  };
 }
 
-async function releaseFixedAppointmentDebtOnCancel({ user, appointment, historyItem = {}, session = null } = {}) {
-  const ap = appointment;
-  const serviceKey = serviceToKey(ap?.serviceKey || ap?.service || "");
-  const fixedDebtAmount = Math.max(0, Number(ap?.fixedDebtAmount || 0));
-  const isDebtAppointment = isUnpaidDebtAppointment(ap);
-
-  if (!user?._id || !isDebtAppointment || !isAdminManualDebtServiceKey(serviceKey)) {
-    return { released: false, amount: 0, serviceKey };
-  }
-
-  ensureFixedScheduleDebtObject(user);
-
-  const amount = Math.max(1, fixedDebtAmount || 1);
-  const currentDebt = Math.max(0, Number(user.fixedScheduleDebt?.[serviceKey] || 0));
-  const released = Math.min(currentDebt, amount);
-
-  if (released > 0) {
-    user.fixedScheduleDebt[serviceKey] = currentDebt - released;
-    user.markModified?.("fixedScheduleDebt");
-  }
-
-  user.history = Array.isArray(user.history) ? user.history : [];
-  user.history.push({
-    ...historyItem,
-    action: historyItem?.action || "fixed_schedule_debt_released_by_cancel",
-    title: historyItem?.title || `Deuda liberada por cancelación ${serviceKey}`,
-    message:
-      historyItem?.message ||
-      `Se liberó ${released || amount} sesión adeudada por cancelar un turno fijo que estaba marcado como deuda.`,
-    serviceKey,
-    service: serviceKeyToName(serviceKey) || ap.service,
-    serviceName: serviceKeyToName(serviceKey) || ap.service,
-    qty: released || amount,
-    createdAt: new Date(),
-  });
-
-  recalcUserCredits(user);
-  if (session) await user.save({ session });
-  else await user.save();
-
-  ap.fixedDebtAmount = 0;
-  ap.creditDebitStatus = "skipped";
-
-  return { released: true, amount: released || amount, serviceKey };
+async function releaseFixedAppointmentDebtOnCancel({ appointment } = {}) {
+  // LEGACY: fixedScheduleDebt se conserva como histórico y no se altera al
+  // cancelar turnos. Un turno antiguo marcado como deuda no genera reintegro.
+  return {
+    released: false,
+    amount: 0,
+    serviceKey: serviceToKey(appointment?.serviceKey || appointment?.service || ""),
+    legacyDebtIgnored: true,
+  };
 }
 
 async function reverseFixedAppointmentBillingForPlanDelete({ user, appointment, req, session = null } = {}) {
@@ -2295,7 +2154,7 @@ async function createAppointmentForTargetUser({
 
   if (!bypassCredits && !hasCreditsForRequestedService) {
     if (allowDebtIfNoCredits && isAdminManualDebtServiceKey(requestedSk)) {
-      // El admin puede asignar igual: después generamos deuda del servicio.
+      // El admin puede asignar igual: quedará pendiente de cobertura, sin deuda.
     } else if ((targetUser.credits || 0) <= 0 || getServiceBalance(targetUser, requestedSk, basic.slotDate) <= 0) {
       const e = new Error("NO_CREDITS");
       e.http = 403;
@@ -2399,22 +2258,18 @@ async function createAppointmentForTargetUser({
   } else if (!bypassCredits && allowDebtIfNoCredits && isAdminManualDebtServiceKey(requestedSk)) {
     const now = new Date();
 
-    ensureFixedScheduleDebtObject(targetUser);
-    targetUser.fixedScheduleDebt[requestedSk] =
-      Number(targetUser.fixedScheduleDebt?.[requestedSk] || 0) + 1;
-    targetUser.markModified?.("fixedScheduleDebt");
-
     targetUser.history = Array.isArray(targetUser.history) ? targetUser.history : [];
     targetUser.history.push({
-      action: "manual_admin_debt",
-      title: `Deuda generada por turno manual ${requestedSk}`,
-      message: "El admin asignó un turno manual sin crédito disponible. Se generó 1 sesión adeudada del servicio.",
+      action: "manual_admin_pending_coverage",
+      title: `Turno manual pendiente de cobertura ${requestedSk}`,
+      message:
+        "El admin asignó el turno sin crédito disponible. No se generó deuda; la cobertura se resolverá con el plan o una sesión adicional del período.",
       date,
       time: t,
       service: basic.serviceName,
       serviceName: basic.serviceName,
       serviceKey: basic.serviceKey,
-      qty: 1,
+      qty: 0,
       createdAt: now,
     });
 
@@ -2423,10 +2278,10 @@ async function createAppointmentForTargetUser({
     else await targetUser.save();
 
     effectiveUser = targetUser;
-    creditDebitStatus = "debt";
-    fixedDebtAmount = 1;
-    fixedDebitProcessedAt = now;
-    manualBillingAction = "debt";
+    creditDebitStatus = "pending";
+    fixedDebtAmount = 0;
+    fixedDebitProcessedAt = null;
+    manualBillingAction = "pending_coverage";
   } else if (bypassCredits) {
     targetUser.history = Array.isArray(targetUser.history) ? targetUser.history : [];
     targetUser.history.push({
@@ -2927,183 +2782,14 @@ router.post("/admin/:userId/complete-apto", ensureStaff, async (req, res) => {
   }
 });
 
-router.post("/admin/backfill-fixed-debt", ensureStaff, async (req, res) => {
-  const session = await mongoose.startSession();
-
-  try {
-    const dryRun =
-      req.body?.dryRun !== false &&
-      String(req.query?.dryRun || "1") !== "0" &&
-      String(req.query?.dryRun || "true") !== "false";
-
-    const userId = String(req.body?.userId || req.query?.userId || "").trim();
-    const serviceKey = serviceToKey(req.body?.serviceKey || req.query?.serviceKey || "");
-    const from = String(req.body?.from || req.query?.from || "").slice(0, 10);
-    const to = String(req.body?.to || req.query?.to || ymdAR()).slice(0, 10);
-    const limit = Math.min(1000, Math.max(1, Number(req.body?.limit || req.query?.limit || 500)));
-    const now = new Date();
-
-    const query = {
-      fixedScheduleId: { $ne: null },
-      status: { $in: ["reserved", "completed"] },
-      date: { $lte: to || ymdAR() },
-      creditLotId: null,
-      $or: [
-        { fixedDebitProcessedAt: null },
-        { fixedDebitProcessedAt: { $exists: false } },
-      ],
-      $and: [
-        {
-          $or: [
-            { creditDebitStatus: "" },
-            { creditDebitStatus: null },
-            { creditDebitStatus: { $exists: false } },
-          ],
-        },
-        {
-          $or: [
-            { fixedDebtAmount: 0 },
-            { fixedDebtAmount: null },
-            { fixedDebtAmount: { $exists: false } },
-          ],
-        },
-      ],
-    };
-
-    if (from) query.date.$gte = from;
-
-    if (userId) {
-      if (!mongoose.Types.ObjectId.isValid(userId)) {
-        return res.status(400).json({ error: "userId inválido." });
-      }
-      query.user = userId;
-    }
-
-    if (serviceKey) query.serviceKey = serviceKey;
-
-    const candidatesRaw = await Appointment.find(query)
-      .sort({ date: 1, time: 1, createdAt: 1 })
-      .limit(limit)
-      .populate("user", "name lastName email")
-      .lean();
-
-    const candidates = (candidatesRaw || []).filter((ap) =>
-      isBackfillablePastFixedDebtAppointment(ap, now)
-    );
-
-    const summaryByService = {};
-    const summaryByUser = {};
-
-    for (const ap of candidates) {
-      const sk = serviceToKey(ap.serviceKey || ap.service || "");
-      summaryByService[sk] = Number(summaryByService[sk] || 0) + 1;
-
-      const userObj = ap.user || {};
-      const uid = String(userObj?._id || ap.user || "");
-      const userName = [userObj?.name, userObj?.lastName].filter(Boolean).join(" ").trim();
-
-      if (!summaryByUser[uid]) {
-        summaryByUser[uid] = {
-          userId: uid,
-          fullName: userName || "Usuario",
-          email: userObj?.email || "",
-          count: 0,
-          byService: {},
-        };
-      }
-
-      summaryByUser[uid].count += 1;
-      summaryByUser[uid].byService[sk] = Number(summaryByUser[uid].byService[sk] || 0) + 1;
-    }
-
-    if (dryRun) {
-      return res.json({
-        ok: true,
-        dryRun: true,
-        message:
-          "Simulación: no se modificó nada. Enviar dryRun=false en el body para aplicar.",
-        scanned: candidatesRaw.length,
-        candidates: candidates.length,
-        summaryByService,
-        summaryByUser: Object.values(summaryByUser),
-        sample: candidates.slice(0, 50).map((ap) => ({
-          appointmentId: String(ap._id),
-          userId: String(ap.user?._id || ap.user || ""),
-          fullName: [ap.user?.name, ap.user?.lastName].filter(Boolean).join(" ").trim(),
-          email: ap.user?.email || "",
-          date: ap.date,
-          time: ap.time,
-          service: ap.service,
-          serviceKey: serviceToKey(ap.serviceKey || ap.service || ""),
-          status: ap.status,
-        })),
-      });
-    }
-
-    const applied = [];
-    const skipped = [];
-
-    await session.withTransaction(async () => {
-      for (const candidate of candidates) {
-        const ap = await Appointment.findById(candidate._id).session(session);
-
-        if (!ap || !isBackfillablePastFixedDebtAppointment(ap, now)) {
-          skipped.push({
-            appointmentId: String(candidate._id),
-            reason: "NOT_BACKFILLABLE_AT_APPLY_TIME",
-          });
-          continue;
-        }
-
-        const result = await backfillPastFixedAppointmentDebt({
-          appointment: ap,
-          session,
-        });
-
-        if (result?.ok) applied.push(result);
-        else {
-          skipped.push({
-            appointmentId: String(candidate._id),
-            reason: result?.reason || "SKIPPED",
-          });
-        }
-      }
-    });
-
-    await logActivity({
-      req,
-      category: "appointments",
-      action: "fixed_schedule_past_debt_backfilled",
-      entity: "appointment_batch",
-      entityId: "fixed_schedule_past_debt_backfill",
-      title: "Deuda de turnos fijos pasados regularizada",
-      description:
-        "Se regularizaron como deuda turnos fijos pasados que no tenían procesamiento financiero.",
-      subject: buildUserSubject({ _id: req.user?._id || req.user?.id || "" }),
-      meta: {
-        appliedCount: applied.length,
-        skippedCount: skipped.length,
-        filters: { userId, serviceKey, from, to, limit },
-        summaryByService,
-      },
-    });
-
-    return res.json({
-      ok: true,
-      dryRun: false,
-      appliedCount: applied.length,
-      skippedCount: skipped.length,
-      applied,
-      skipped,
-    });
-  } catch (err) {
-    console.error("POST /appointments/admin/backfill-fixed-debt error:", err);
-    return res.status(500).json({
-      error: err?.message || "No se pudo regularizar la deuda de turnos pasados.",
-    });
-  } finally {
-    await session.endSession();
-  }
+router.post("/admin/backfill-fixed-debt", ensureStaff, async (_req, res) => {
+  return res.status(410).json({
+    ok: false,
+    disabled: true,
+    code: "LEGACY_DEBT_DISABLED",
+    error:
+      "La regularización de deuda legacy está deshabilitada. Los turnos sin cobertura se gestionan con suscripciones y sesiones adicionales.",
+  });
 });
 
 /* =========================
@@ -3682,7 +3368,8 @@ router.post("/admin/assign", async (req, res) => {
 
     const billingSummary = {
       debited: created.filter((x) => x?.manualBillingAction === "debited" || x?.billingAction === "debited").length,
-      debt: created.filter((x) => x?.manualBillingAction === "debt" || x?.billingAction === "debt").length,
+      pendingCoverage: created.filter((x) => ["pending_coverage", "pending_fixed_billing"].includes(String(x?.manualBillingAction || x?.billingAction || ""))).length,
+      debt: 0,
       skipped: created.filter((x) => ["skipped", "none"].includes(String(x?.manualBillingAction || x?.billingAction || ""))).length,
     };
 

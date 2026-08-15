@@ -419,13 +419,13 @@ function computeServiceAccessFromLots(u) {
     if (byKey[sk] !== undefined) byKey[sk] += remaining;
   }
 
-  const debtByServiceKey = fixedScheduleDebtByServiceKey(u);
+  const debtByServiceKey = fixedScheduleDebtByServiceKey(u); // histórico, no operativo
   const creditsByServiceKey = { PE: 0, EP: 0, RF: 0, RA: 0, KD: 0, SYN: 0, NUT: 0 };
   const availableCreditsByServiceKey = { PE: 0, EP: 0, RF: 0, RA: 0, KD: 0, SYN: 0, NUT: 0 };
 
   for (const k of Object.keys(availableCreditsByServiceKey)) {
     availableCreditsByServiceKey[k] = Number(byKey[k] || 0);
-    creditsByServiceKey[k] = Number(byKey[k] || 0) - Number(debtByServiceKey[k] || 0);
+    creditsByServiceKey[k] = Number(byKey[k] || 0);
   }
 
   const allowedServices = [];
@@ -433,14 +433,11 @@ function computeServiceAccessFromLots(u) {
 
   for (const k of ["EP", "RF", "RA", "KD", "SYN", "NUT"]) {
     const available = Number(availableCreditsByServiceKey[k] || 0);
-    const debt = Number(debtByServiceKey[k] || 0);
-    const net = Number(creditsByServiceKey[k] || 0);
 
-    // Mostrar como servicio activo si tiene créditos, deuda o saldo neto distinto de cero.
-    if (available > 0 || debt > 0 || net !== 0) {
+    if (available > 0) {
       const label = SERVICE_KEY_TO_NAME[k] || k;
       allowedServices.push(label);
-      serviceCredits[label] = net;
+      serviceCredits[label] = available;
     }
   }
 
@@ -526,90 +523,6 @@ function consumeCreditsForService(user, toRemove, serviceKey) {
 }
 
 
-function ensureFixedScheduleDebt(user) {
-  user.fixedScheduleDebt = user.fixedScheduleDebt || {};
-  for (const k of ["EP", "RA", "RF", "KD", "SYN", "NUT"]) {
-    const n = Number(user.fixedScheduleDebt?.[k] || 0);
-    user.fixedScheduleDebt[k] = Number.isFinite(n) ? Math.max(0, Math.trunc(n)) : 0;
-  }
-}
-
-async function settleFixedScheduleDebt(user, { amount, serviceKey, source = "credits" } = {}) {
-  const sk = canonicalServiceKeyFromValue(serviceKey);
-  if (!sk) return { settled: 0, remaining: Math.max(0, Math.trunc(Number(amount || 0))), settledAppointmentIds: [] };
-
-  const qty = Math.max(0, Math.trunc(Number(amount || 0)));
-  if (!qty) return { settled: 0, remaining: 0, settledAppointmentIds: [] };
-
-  ensureFixedScheduleDebt(user);
-
-  const currentDebt = Math.max(0, Number(user.fixedScheduleDebt?.[sk] || 0));
-  if (!currentDebt) return { settled: 0, remaining: qty, settledAppointmentIds: [] };
-
-  const settled = Math.min(currentDebt, qty);
-  const remaining = qty - settled;
-  const now = nowDate();
-
-  user.fixedScheduleDebt[sk] = currentDebt - settled;
-  user.markModified?.("fixedScheduleDebt");
-
-  // IMPORTANTE:
-  // Cuando el admin agrega créditos y esos créditos se usan para saldar deuda,
-  // también marcamos los turnos asociados en deuda como "mensualmente reservados".
-  // Esto aplica tanto a turnos fijos como a turnos manuales asignados por admin.
-  // Si no hacemos esto, después al cancelar el turno el sistema no sabe que esa
-  // deuda ya fue pagada con créditos y no puede devolver correctamente.
-  const debtCandidates = await Appointment.find({
-    user: user._id,
-    status: { $in: ["reserved", "completed"] },
-    creditLotId: null,
-    $or: [
-      { creditDebitStatus: "debt" },
-      { fixedDebtAmount: { $gt: 0 } },
-    ],
-  })
-    .sort({ date: 1, time: 1, createdAt: 1 })
-    .limit(Math.max(settled * 5, settled + 20));
-
-  const settledAppointments = debtCandidates
-    .filter((ap) =>
-      canonicalServiceKeyFromValue(ap?.serviceKey || ap?.service || ap?.serviceName || "") === sk
-    )
-    .slice(0, settled);
-
-  const settledAppointmentIds = settledAppointments.map((ap) => ap._id);
-
-  if (settledAppointmentIds.length) {
-    await Appointment.updateMany(
-      { _id: { $in: settledAppointmentIds } },
-      {
-        $set: {
-          serviceKey: sk,
-          creditDebitStatus: "monthly_reserved",
-          fixedDebtAmount: 0,
-          creditDebitedAt: now,
-          fixedDebitProcessedAt: now,
-          refundReason: "DEBT_SETTLED_BY_ADMIN_CREDITS",
-        },
-      }
-    );
-  }
-
-  user.history = Array.isArray(user.history) ? user.history : [];
-  user.history.push({
-    action: "fixed_schedule_debt_settled",
-    title: `Deuda saldada ${sk}`,
-    message: `Se usaron ${settled} crédito(s) acreditados para saldar deuda pendiente.${settledAppointmentIds.length ? " Los turnos asociados quedaron marcados como pagados para permitir reintegro si se cancelan dentro de política." : ""}`,
-    serviceKey: sk,
-    serviceName: SERVICE_KEY_TO_NAME[sk] || sk,
-    service: SERVICE_KEY_TO_NAME[sk] || sk,
-    qty: settled,
-    createdAt: now,
-  });
-
-  return { settled, remaining, settledAppointmentIds };
-}
-
 async function addCreditLot(
   user,
   { amount, serviceKey, source = "admin-adjust" }
@@ -625,33 +538,13 @@ async function addCreditLot(
   if (!qty) return;
 
   const now = nowDate();
-  const debtSettlement = await settleFixedScheduleDebt(user, { amount: qty, serviceKey: sk, source });
-  const remainingQty = Math.max(0, Number(debtSettlement.remaining || 0));
-  if (!remainingQty) {
-    user.history = Array.isArray(user.history) ? user.history : [];
-    user.history.push({
-      action: "credits_added_monthly",
-      title: `Créditos acreditados ${sk}`,
-      message: `Se cargaron ${qty} crédito(s) de ${SERVICE_KEY_TO_NAME[sk] || sk}. Se usaron ${debtSettlement.settled || qty} para saldar deuda pendiente; no quedaron créditos disponibles.`,
-      serviceKey: sk,
-      serviceName: SERVICE_KEY_TO_NAME[sk] || sk,
-      service: SERVICE_KEY_TO_NAME[sk] || sk,
-      qty: 0,
-      loadedQty: qty,
-      settledDebtQty: Number(debtSettlement.settled || qty),
-      createdAt: now,
-    });
-    recalcUserCredits(user);
-    return;
-  }
-
   const exp = lastDayOfCurrentMonth();
 
   user.creditLots = user.creditLots || [];
   user.creditLots.push({
     serviceKey: sk,
-    amount: remainingQty,
-    remaining: remainingQty,
+    amount: qty,
+    remaining: qty,
     expiresAt: exp,
     source,
     orderId: null,
@@ -662,11 +555,11 @@ async function addCreditLot(
   user.history.push({
     action: "credits_added_monthly",
     title: `Créditos acreditados ${sk}`,
-    message: `Se acreditaron ${remainingQty} crédito(s), con vencimiento el último día del mes.${debtSettlement.settled ? ` Antes se saldaron ${debtSettlement.settled} crédito(s) adeudados.` : ""}`,
+    message: `Se acreditaron ${qty} crédito(s), con vencimiento el último día del mes.`,
     serviceKey: sk,
     serviceName: SERVICE_KEY_TO_NAME[sk] || sk,
     service: SERVICE_KEY_TO_NAME[sk] || sk,
-    qty: remainingQty,
+    qty,
     createdAt: now,
   });
 
@@ -675,15 +568,14 @@ async function addCreditLot(
 
 function buildCreditsByService(user) {
   const firstEvaluationCompleted = !!user?.firstEvaluationCompleted;
-  const debt = fixedScheduleDebtByServiceKey(user);
 
   const result = {
-    EP: sumCreditsForService(user, "EP") - Number(debt.EP || 0),
-    RF: sumCreditsForService(user, "RF") - Number(debt.RF || 0),
-    RA: sumCreditsForService(user, "RA") - Number(debt.RA || 0),
-    KD: sumCreditsForService(user, "KD") - Number(debt.KD || 0),
-    SYN: sumCreditsForService(user, "SYN") - Number(debt.SYN || 0),
-    NUT: sumCreditsForService(user, "NUT") - Number(debt.NUT || 0),
+    EP: sumCreditsForService(user, "EP"),
+    RF: sumCreditsForService(user, "RF"),
+    RA: sumCreditsForService(user, "RA"),
+    KD: sumCreditsForService(user, "KD"),
+    SYN: sumCreditsForService(user, "SYN"),
+    NUT: sumCreditsForService(user, "NUT"),
   };
 
   if (!firstEvaluationCompleted) {
