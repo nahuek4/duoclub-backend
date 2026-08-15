@@ -25,6 +25,7 @@ import {
   sendAdminOrderPaidEmail,
   sendUserOrderPaidEmail,
 } from "../mail.js";
+import { creditExpiryForDate } from "../utils/creditExpiry.js";
 
 const router = express.Router();
 
@@ -84,11 +85,6 @@ function ymd(d = new Date()) {
 
 function hm(d = new Date()) {
   return `${pad2(d.getHours())}:${pad2(d.getMinutes())}`;
-}
-
-function lastDayOfCurrentMonth() {
-  const now = new Date();
-  return new Date(now.getFullYear(), now.getMonth() + 1, 0, 23, 59, 59, 999);
 }
 
 function appendNote(current, note) {
@@ -273,7 +269,7 @@ function addCreditLot(user, { amount, source, orderId, serviceKey }) {
   const qty = Math.max(0, Number(amount || 0));
   if (!qty) return;
 
-  const exp = lastDayOfCurrentMonth();
+  const exp = creditExpiryForDate(now);
 
   user.creditLots = user.creditLots || [];
   user.creditLots.push({
@@ -290,7 +286,7 @@ function addCreditLot(user, { amount, source, orderId, serviceKey }) {
   user.history.push({
     action: "credits_added_monthly",
     title: `Créditos acreditados ${sk}`,
-    message: `Se acreditaron ${qty} crédito(s), con vencimiento el último día del mes.`,
+    message: `Se acreditaron ${qty} crédito(s), con vencimiento el día 1 del mes siguiente.`,
     serviceKey: sk,
     serviceName: SERVICE_KEY_TO_NAME[sk] || sk,
     service: SERVICE_KEY_TO_NAME[sk] || sk,

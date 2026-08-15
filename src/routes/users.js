@@ -29,6 +29,7 @@ import {
   buildUserSubject,
   buildDiff,
 } from "../lib/activityLogger.js";
+import { creditExpiryForDate } from "../utils/creditExpiry.js";
 
 const router = express.Router();
 const APTO_DEBUG_VERSION = "APTO_UPLOAD_FIX_V17_DIRECT_2026-07-02";
@@ -375,11 +376,6 @@ function recalcUserCredits(user) {
   user.credits = sum;
 }
 
-function lastDayOfCurrentMonth() {
-  const now = nowDate();
-  return new Date(now.getFullYear(), now.getMonth() + 1, 0, 23, 59, 59, 999);
-}
-
 
 function normalizeLotServiceKey(lot) {
   return (
@@ -538,7 +534,7 @@ async function addCreditLot(
   if (!qty) return;
 
   const now = nowDate();
-  const exp = lastDayOfCurrentMonth();
+  const exp = creditExpiryForDate(now);
 
   user.creditLots = user.creditLots || [];
   user.creditLots.push({
@@ -555,7 +551,7 @@ async function addCreditLot(
   user.history.push({
     action: "credits_added_monthly",
     title: `Créditos acreditados ${sk}`,
-    message: `Se acreditaron ${qty} crédito(s), con vencimiento el último día del mes.`,
+    message: `Se acreditaron ${qty} crédito(s), con vencimiento el día 1 del mes siguiente.`,
     serviceKey: sk,
     serviceName: SERVICE_KEY_TO_NAME[sk] || sk,
     service: SERVICE_KEY_TO_NAME[sk] || sk,

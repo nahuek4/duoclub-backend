@@ -17,6 +17,7 @@ import ServiceSubscription from "../../models/ServiceSubscription.js";
 import SubscriptionBillingCycle from "../../models/SubscriptionBillingCycle.js";
 import SubscriptionLifecycleNotice from "../../models/SubscriptionLifecycleNotice.js";
 import User from "../../models/User.js";
+import { creditExpiryForMonthKey } from "../../utils/creditExpiry.js";
 
 import {
   calculateServiceMonthCoverage,
@@ -286,6 +287,7 @@ async function buildCoverageSnapshot(subscription, periodKey, planSessions) {
 
 async function grantCycleCredits({ user, cycle, subscription, periodKey, session, now }) {
   const source = `subscription_cycle:${String(cycle._id)}:${periodKey}`;
+  const expiresAt = creditExpiryForMonthKey(periodKey);
   const existingLot = (Array.isArray(user.creditLots) ? user.creditLots : []).find(
     (lot) => clean(lot?.source) === source
   );
@@ -295,7 +297,7 @@ async function grantCycleCredits({ user, cycle, subscription, periodKey, session
     cycle.creditGrant.grantedSessions = asInt(existingLot.amount);
     cycle.creditGrant.grantedAt = existingLot.createdAt || now;
     cycle.creditGrant.lotId = existingLot._id || null;
-    cycle.creditGrant.expiresAt = existingLot.expiresAt || cycle.periodEnd;
+    cycle.creditGrant.expiresAt = existingLot.expiresAt || expiresAt;
     return existingLot;
   }
 
@@ -305,7 +307,7 @@ async function grantCycleCredits({ user, cycle, subscription, periodKey, session
     serviceName: SERVICE_NAME[subscription.serviceKey] || subscription.serviceKey,
     amount: cycle.planSnapshot.monthlySessions,
     remaining: cycle.planSnapshot.monthlySessions,
-    expiresAt: cycle.periodEnd,
+    expiresAt,
     source,
     orderId: null,
     createdAt: now,
@@ -330,7 +332,7 @@ async function grantCycleCredits({ user, cycle, subscription, periodKey, session
   cycle.creditGrant.grantedSessions = cycle.planSnapshot.monthlySessions;
   cycle.creditGrant.grantedAt = now;
   cycle.creditGrant.lotId = lot?._id || null;
-  cycle.creditGrant.expiresAt = cycle.periodEnd;
+  cycle.creditGrant.expiresAt = expiresAt;
   return lot;
 }
 

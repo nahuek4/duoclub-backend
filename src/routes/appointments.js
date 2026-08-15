@@ -20,6 +20,7 @@ import {
 import { logActivity, buildUserSubject } from "../lib/activityLogger.js";
 import { syncExtraSessionNoticeForUserService } from "../services/subscriptions/subscriptionExtraSessions.js";
 import { assertSubscriptionServiceAccess } from "../services/subscriptions/subscriptionAccess.js";
+import { creditExpiryForDate } from "../utils/creditExpiry.js";
 
 const router = express.Router();
 
@@ -47,11 +48,6 @@ const MIN_BOOKING_MINUTES_BY_SERVICE = {
   NUT: DEFAULT_MIN_BOOKING_MINUTES,
   OTHER: DEFAULT_MIN_BOOKING_MINUTES,
 };
-
-/* =========================
-   CRÉDITOS
-========================= */
-const CREDITS_EXPIRE_DAYS = 30;
 
 /* =========================
    WAITLIST
@@ -365,10 +361,6 @@ function sameService(a, b) {
 ========================= */
 function nowDate() {
   return new Date();
-}
-
-function getCreditsExpireDays(_user) {
-  return CREDITS_EXPIRE_DAYS;
 }
 
 
@@ -797,8 +789,7 @@ async function refundCreditAtomicNewLot({
   const now = nowDate();
   const sk = serviceToKey(apService);
   if (!sk) throw new Error("INVALID_SERVICE");
-  const exp = new Date(now);
-  exp.setDate(exp.getDate() + Number(getCreditsExpireDays() || 30));
+  const exp = creditExpiryForDate(now);
 
   console.log("[REFUND NEW LOT DEBUG - BEFORE PUSH]", {
     userId: String(userId),
