@@ -26,6 +26,7 @@ import scheduleBlocksRoutes from "./routes/scheduleBlocks.js";
 import adminApprovalLinksRoutes from "./routes/adminApprovalLinks.js";
 import adminDashboardRoutes from "./routes/adminDashboard.js";
 import adminSubscriptionsRoutes from "./routes/adminSubscriptions.js";
+import adminPlansRoutes from "./routes/adminPlans.js";
 import subscriptionExtrasRoutes from "./routes/subscriptionExtras.js";
 import subscriptionsRoutes from "./routes/subscriptions.js";
 
@@ -192,6 +193,7 @@ function mountRoutes(prefix = "") {
   app.use(`${prefix}/evaluations`, evaluationsRoutes);
   app.use(`${prefix}/admin/dashboard`, adminDashboardRoutes);
   app.use(`${prefix}/admin/subscriptions`, adminSubscriptionsRoutes);
+  app.use(`${prefix}/admin/plans`, adminPlansRoutes);
   app.use(`${prefix}/subscription-extras`, subscriptionExtrasRoutes);
   app.use(`${prefix}/subscriptions`, subscriptionsRoutes);
   app.use(`${prefix}/api/test-mail`, testMailRouter);
