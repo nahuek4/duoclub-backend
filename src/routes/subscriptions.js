@@ -432,4 +432,58 @@ router.post("/:id/suspend-next", async (req, res) => {
   }
 });
 
+router.post("/:id/clear-change", async (req, res) => {
+  try {
+    const subscription = await ServiceSubscription.findOne({
+      _id: req.params.id,
+      user: userId(req),
+    });
+
+    if (!subscription) {
+      return res.status(404).json({ error: "Plan no encontrado." });
+    }
+
+    if (["cancelled", "terminated_for_non_payment"].includes(String(subscription.status || ""))) {
+      return res.status(400).json({
+        error: "Este plan ya está finalizado y no tiene un cambio programado que pueda deshacerse.",
+      });
+    }
+
+    if (!subscription.pendingChange) {
+      return res.json({
+        ok: true,
+        alreadyClear: true,
+        status: subscription.status,
+        autoRenew: subscription.autoRenew !== false,
+      });
+    }
+
+    const clearedType = String(subscription.pendingChange?.type || "change");
+    subscription.pendingChange = null;
+
+    // Deshacer una suspensión/cancelación futura significa conservar la renovación.
+    subscription.autoRenew = true;
+
+    // Solo revertimos el estado de cambio programado. Una suspensión real por falta
+    // de pago no se puede saltear desde Mi Plan.
+    if (subscription.status === "pending_change") {
+      subscription.status = "active";
+    }
+
+    await subscription.save();
+
+    return res.json({
+      ok: true,
+      clearedType,
+      status: subscription.status,
+      autoRenew: subscription.autoRenew !== false,
+    });
+  } catch (error) {
+    console.error("POST /subscriptions/:id/clear-change", error);
+    return res.status(500).json({
+      error: "No se pudo deshacer el cambio programado.",
+    });
+  }
+});
+
 export default router;
