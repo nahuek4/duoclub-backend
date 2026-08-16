@@ -92,7 +92,9 @@ function validateObjectIdParam(req, res, next) {
   next();
 }
 
+// Claves legacy para lectura de historial.
 const ALLOWED_SERVICE_KEYS = new Set(["PE", "EP", "RF", "RA", "KD", "SYN", "NUT"]);
+const ACTIVE_SERVICE_KEYS = new Set(["EP", "RF", "RA", "SYN"]);
 
 const SERVICE_KEY_TO_NAME = {
   PE: "Primera evaluación presencial",
@@ -427,7 +429,7 @@ function computeServiceAccessFromLots(u) {
   const allowedServices = [];
   const serviceCredits = {};
 
-  for (const k of ["EP", "RF", "RA", "KD", "SYN", "NUT"]) {
+  for (const k of ["EP", "RF", "RA", "SYN"]) {
     const available = Number(availableCreditsByServiceKey[k] || 0);
 
     if (available > 0) {
@@ -437,14 +439,6 @@ function computeServiceAccessFromLots(u) {
     }
   }
 
-  if (!u?.firstEvaluationCompleted) {
-    const peCredits = Number(byKey.PE || 0);
-    if (peCredits > 0) {
-      allowedServices.unshift("Primera evaluación presencial");
-      serviceCredits["Primera evaluación presencial"] = peCredits;
-    }
-    creditsByServiceKey.PE = peCredits;
-  }
 
   return {
     allowedServices,
@@ -524,8 +518,8 @@ async function addCreditLot(
   { amount, serviceKey, source = "admin-adjust" }
 ) {
   const sk = canonicalServiceKeyFromValue(serviceKey);
-  if (!sk) {
-    const err = new Error("serviceKey inválido.");
+  if (!sk || !ACTIVE_SERVICE_KEYS.has(sk)) {
+    const err = new Error("Ese servicio ya no está disponible para nuevas cargas.");
     err.status = 400;
     throw err;
   }
@@ -1915,14 +1909,8 @@ async function updateCredits(req, res) {
       } = rawItem || {};
 
       const sk = canonicalServiceKeyFromValue(skRaw);
-      if (!sk || !ALLOWED_SERVICE_KEYS.has(sk)) {
-        const err = new Error("serviceKey inválido.");
-        err.status = 400;
-        throw err;
-      }
-
-      if (sk === "NUT") {
-        const err = new Error("Nutrición no permite carga manual de sesiones desde admin.");
+      if (!sk || !ACTIVE_SERVICE_KEYS.has(sk)) {
+        const err = new Error("Ese servicio ya no está disponible para modificar créditos.");
         err.status = 400;
         throw err;
       }

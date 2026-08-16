@@ -3,21 +3,22 @@ import express from "express";
 
 const router = express.Router();
 
+/**
+ * Servicios operativos actuales.
+ *
+ * RETIRADOS de compra/reserva/asignación:
+ * - PE  Primera evaluación presencial
+ * - KD  Kinefilaxia Deportiva
+ * - NUT Nutrición
+ *
+ * Los datos históricos de esos servicios no se borran de MongoDB.
+ */
 const SERVICES = [
-  {
-    serviceKey: "PE",
-    name: "Primera evaluación presencial",
-    description:
-      "Evaluación inicial obligatoria antes de reservar el resto de los servicios.",
-    duration: 60,
-    active: true,
-    category: "evaluation",
-  },
   {
     serviceKey: "EP",
     name: "Entrenamiento Personal",
     description:
-      "Sesiones personalizadas de entrenamiento con seguimiento profesional.",
+      "DUO TRAINING · Entrenamiento personalizado con seguimiento profesional.",
     duration: 60,
     active: true,
     category: "training",
@@ -26,37 +27,28 @@ const SERVICES = [
     serviceKey: "RA",
     name: "Rehabilitación Activa",
     description:
-      "Proceso de rehabilitación con trabajo activo y progresivo según objetivos terapéuticos.",
+      "DUO PERFORMANCE · Rehabilitación con trabajo activo y progresivo según objetivos terapéuticos.",
     duration: 60,
     active: true,
-    category: "therapy",
+    category: "performance",
   },
   {
     serviceKey: "RF",
     name: "Reeducación Funcional",
     description:
-      "Sesiones orientadas a recuperar función, control y movimiento según cada caso.",
+      "DUO PERFORMANCE · Trabajo orientado a recuperar función, control y movimiento.",
     duration: 60,
     active: true,
-    category: "therapy",
+    category: "performance",
   },
   {
-    serviceKey: "KD",
-    name: "Kinefilaxia Deportiva",
+    serviceKey: "SYN",
+    name: "Synergy",
     description:
-      "Sesiones orientadas a prevención, cuidado físico y acompañamiento deportivo.",
+      "DUO PERFORMANCE · Trabajo integral con cupo compartido en el salón Performance.",
     duration: 60,
     active: true,
-    category: "therapy",
-  },
-  {
-    serviceKey: "NUT",
-    name: "Nutrición",
-    description:
-      "Consultas y seguimiento nutricional adaptado a cada persona.",
-    duration: 60,
-    active: true,
-    category: "nutrition",
+    category: "performance",
   },
 ];
 

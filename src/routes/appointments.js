@@ -57,7 +57,7 @@ const ACTIVE_WAITLIST_STATUSES = ["waiting", "notified"];
 function waitlistQueueServiceKeys(serviceKeyOrName) {
   const sk = serviceToKey(serviceKeyOrName);
   if (!sk) return [];
-  if (isTherapyService(sk)) return ["RA", "RF", "KD", "SYN"];
+  if (isTherapyService(sk)) return ["RA", "RF", "SYN"];
   return [sk];
 }
 
@@ -214,7 +214,7 @@ function getWaitlistCloseMinutesForService(serviceName) {
   const sk = serviceToKey(serviceName);
 
   if (sk === "EP") return 30;
-  if (["RA", "RF", "KD", "SYN"].includes(sk)) return 12 * 60;
+  if (["RA", "RF", "SYN"].includes(sk)) return 12 * 60;
 
   return null;
 }
@@ -271,7 +271,11 @@ function getTurnoFromTime(time) {
 /* =========================
    HELPERS: normalización servicios
 ========================= */
+// Reconocemos claves legacy para poder leer historial sin romper datos viejos.
 const ALLOWED_SERVICE_KEYS = new Set(["PE", "EP", "RA", "RF", "KD", "SYN", "NUT"]);
+
+// Únicos servicios operativos desde este cambio.
+const ACTIVE_SERVICE_KEYS = new Set(["EP", "RA", "RF", "SYN"]);
 
 const SERVICE_KEY_TO_NAME = {
   PE: "Primera evaluación presencial",
@@ -325,7 +329,7 @@ function serviceKeyToName(serviceKey) {
 
 function normalizeServiceIdentity({ service = "", serviceKey = "" } = {}) {
   const key = normalizeServiceKey(serviceKey) || serviceToKey(service);
-  if (!key) return null;
+  if (!key || !ACTIVE_SERVICE_KEYS.has(key)) return null;
 
   return {
     serviceKey: key,
@@ -983,10 +987,10 @@ function requiresApto(user) {
 /* =========================
    Cupos + horarios por servicio
 ========================= */
-const PE_CAP_PER_SLOT = 1;
-const EP_CAP_PER_SLOT = 12;
-const THERAPY_SHARED_CAP_PER_SLOT = 8; // RA + RF + KD + SYN comparten este cupo total por horario.
-const NUT_CAP_PER_SLOT = 1;
+const PE_CAP_PER_SLOT = 1; // legacy/histórico
+const EP_CAP_PER_SLOT = 11;
+const THERAPY_SHARED_CAP_PER_SLOT = 6; // DUO PERFORMANCE: RA + RF + SYN comparten 6 vacantes.
+const NUT_CAP_PER_SLOT = 1; // legacy/histórico
 
 const PE_NAME = "Primera evaluación presencial";
 const EP_NAME = "Entrenamiento Personal";
@@ -1002,12 +1006,12 @@ const TIMES_EP_WEEKDAY = [
   "18:00", "19:00", "20:00",
 ];
 
-// Sala PERFORMANCE: lunes a viernes de 07 a 13 (última 12)
-// y 16 a 20 (última 19).
+// DUO PERFORMANCE: lunes a viernes 07 a 19 hs.
+// Como cada sesión dura 60 minutos, el último turno comienza a las 18:00.
 const TIMES_PERFORMANCE_WEEKDAY = [
   "07:00", "08:00", "09:00", "10:00",
-  "11:00", "12:00",
-  "16:00", "17:00", "18:00", "19:00",
+  "11:00", "12:00", "13:00", "14:00",
+  "15:00", "16:00", "17:00", "18:00",
 ];
 
 const TIMES_DEFAULT = [
@@ -1018,7 +1022,7 @@ const TIMES_DEFAULT = [
 
 function isTherapyService(serviceNameOrKey) {
   const sk = serviceToKey(serviceNameOrKey);
-  return ["RA", "RF", "KD", "SYN"].includes(sk);
+  return ["RA", "RF", "SYN"].includes(sk);
 }
 
 function getRehabTimesForDate(dateStr) {
@@ -1046,9 +1050,8 @@ function getAllowedTimesForService(serviceNameOrKey, dateStr = "") {
 
   if (isSaturday(dateStr)) return [];
 
-  if (sk === "PE" || sk === "EP") return TIMES_EP_WEEKDAY;
-  if (["RA", "RF", "KD", "SYN"].includes(sk)) return getPerformanceTimesForDate(dateStr);
-  if (sk === "NUT") return TIMES_DEFAULT;
+  if (sk === "EP") return TIMES_EP_WEEKDAY;
+  if (["RA", "RF", "SYN"].includes(sk)) return getPerformanceTimesForDate(dateStr);
 
   return [];
 }
@@ -1085,6 +1088,7 @@ function getSlotReservationStats(existing, dateStr, time) {
   const kdReserved = list.filter((a) => appointmentServiceKey(a) === "KD").length;
   const nutReserved = list.filter((a) => appointmentServiceKey(a) === "NUT").length;
   const synReserved = list.filter((a) => appointmentServiceKey(a) === "SYN").length;
+  // Un KD legacy futuro, si todavía existe, sigue ocupando físicamente una vacante hasta cancelarse/completarse.
   const therapyReserved = raReserved + rfReserved + kdReserved + synReserved;
 
   return {
@@ -1383,7 +1387,7 @@ function buildCancellationClientMessage({ appointment, decision, counters }) {
   }
 
   if (decision?.refundMode === "timely") {
-    if (["RA", "RF", "KD", "SYN"].includes(sk)) {
+    if (["RA", "RF", "SYN"].includes(sk)) {
       if (counters.timelyRemaining > 0) {
         return `Cancelaste con el mínimo de anticipación. Te devolvimos el crédito. Te queda ${counters.timelyRemaining} cancelación en término disponible este mes.`;
       }
@@ -1502,7 +1506,7 @@ function lotsDebug(user) {
 /* =========================
    Turnos fijos: cobertura mensual (deuda legacy deshabilitada)
 ========================= */
-const FIXED_BILLING_SERVICE_KEYS = new Set(["EP", "RA", "RF", "KD", "SYN"]);
+const FIXED_BILLING_SERVICE_KEYS = new Set(["EP", "RA", "RF", "SYN"]);
 const FIXED_BILLING_DONE_STATUSES = new Set(["monthly_reserved", "debited", "debt", "skipped"]);
 
 function isFixedBillingServiceKey(value) {
@@ -1513,7 +1517,7 @@ function isFixedBillingServiceKey(value) {
 // Los turnos manuales del admin pueden quedar asignados aunque no haya crédito.
 // En el modelo de suscripciones eso NO genera deuda: queda pendiente de cobertura
 // y, si corresponde, se informa como sesión adicional del período.
-const ADMIN_MANUAL_DEBT_SERVICE_KEYS = new Set(["EP", "RA", "RF", "KD", "SYN", "NUT"]);
+const ADMIN_MANUAL_DEBT_SERVICE_KEYS = new Set(["EP", "RA", "RF", "SYN"]);
 
 function isAdminManualDebtServiceKey(value) {
   const sk = serviceToKey(value);
@@ -2530,7 +2534,7 @@ router.post("/waitlist/claim", async (req, res, next) => {
 
       // La sala de espera queda bajo gestión manual del admin.
       // No cerramos automáticamente el resto de la cola: puede quedar cupo
-      // disponible para más de una persona o para otro servicio del pool RA/RF/KD/SYN.
+      // disponible para más de una persona o para otro servicio del pool RA/RF/SYN.
     });
 
     return res.status(201).json({
@@ -5160,7 +5164,7 @@ router.post("/waitlist/claim", ensureStaff, async (req, res) => {
 
       // La sala de espera queda bajo gestión manual del admin.
       // No cerramos automáticamente el resto de la cola: puede quedar cupo
-      // disponible para más de una persona o para otro servicio del pool RA/RF/KD/SYN.
+      // disponible para más de una persona o para otro servicio del pool RA/RF/SYN.
     });
 
     return res.status(201).json({

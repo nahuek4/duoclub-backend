@@ -33,6 +33,7 @@ const SERVICE_KEY_TO_NAME = {
 
 const SERVICE_KEYS = ["PE", "EP", "RF", "RA", "KD", "SYN", "NUT"];
 const SERVICE_KEY_SET = new Set(SERVICE_KEYS);
+const ACTIVE_SERVICE_KEYS = ["EP", "RF", "RA", "SYN"];
 
 function signToken(user) {
   const secret = process.env.JWT_SECRET || "dev_secret";
@@ -242,36 +243,25 @@ function computeServiceAccessFromLots(u) {
 
   for (const k of SERVICE_KEYS) {
     availableCreditsByServiceKey[k] = Number(byKey[k] || 0);
-    creditsByServiceKey[k] = Number(byKey[k] || 0) - Number(debtByServiceKey[k] || 0);
+    creditsByServiceKey[k] = Number(byKey[k] || 0);
   }
 
   const allowedServices = [];
   const serviceCredits = {};
 
-  for (const k of SERVICE_KEYS) {
-    if (k === "PE") continue;
-
+  for (const k of ACTIVE_SERVICE_KEYS) {
     const net = Number(creditsByServiceKey[k] || 0);
     const available = Number(availableCreditsByServiceKey[k] || 0);
-    const debt = Number(debtByServiceKey[k] || 0);
 
-    // Se considera servicio activo si tiene créditos, deuda o saldo neto distinto de 0.
-    if (available > 0 || debt > 0 || net !== 0) {
+    // Solo los servicios operativos actuales habilitan acceso.
+    // La deuda legacy y los servicios retirados quedan únicamente como histórico.
+    if (available > 0) {
       const label = SERVICE_KEY_TO_NAME[k];
       if (label) {
         allowedServices.push(label);
         serviceCredits[label] = net;
       }
     }
-  }
-
-  if (!u?.firstEvaluationCompleted) {
-    const peCredits = Number(byKey.PE || 0);
-    if (peCredits > 0) {
-      allowedServices.unshift(SERVICE_KEY_TO_NAME.PE);
-      serviceCredits[SERVICE_KEY_TO_NAME.PE] = peCredits;
-    }
-    creditsByServiceKey.PE = peCredits;
   }
 
   return {
