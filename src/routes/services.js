@@ -3,16 +3,6 @@ import express from "express";
 
 const router = express.Router();
 
-/**
- * Servicios operativos actuales.
- *
- * RETIRADOS de compra/reserva/asignación:
- * - PE  Primera evaluación presencial
- * - KD  Kinefilaxia Deportiva
- * - NUT Nutrición
- *
- * Los datos históricos de esos servicios no se borran de MongoDB.
- */
 const SERVICES = [
   {
     serviceKey: "EP",
@@ -27,7 +17,7 @@ const SERVICES = [
     serviceKey: "RA",
     name: "Rehabilitación Activa",
     description:
-      "DUO PERFORMANCE · Rehabilitación con trabajo activo y progresivo según objetivos terapéuticos.",
+      "DUO PERFORMANCE · Rehabilitación activa con trabajo progresivo según objetivos terapéuticos.",
     duration: 60,
     active: true,
     category: "performance",
@@ -36,7 +26,7 @@ const SERVICES = [
     serviceKey: "RF",
     name: "Reeducación Funcional",
     description:
-      "DUO PERFORMANCE · Trabajo orientado a recuperar función, control y movimiento.",
+      "DUO PERFORMANCE · Reeducación funcional orientada a recuperar función, control y movimiento.",
     duration: 60,
     active: true,
     category: "performance",
@@ -45,7 +35,7 @@ const SERVICES = [
     serviceKey: "SYN",
     name: "Synergy",
     description:
-      "DUO PERFORMANCE · Trabajo integral con cupo compartido en el salón Performance.",
+      "DUO PERFORMANCE · Trabajo integral dentro del salón Performance.",
     duration: 60,
     active: true,
     category: "performance",

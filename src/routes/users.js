@@ -92,9 +92,8 @@ function validateObjectIdParam(req, res, next) {
   next();
 }
 
-// Claves legacy para lectura de historial.
 const ALLOWED_SERVICE_KEYS = new Set(["PE", "EP", "RF", "RA", "KD", "SYN", "NUT"]);
-const ACTIVE_SERVICE_KEYS = new Set(["EP", "RF", "RA", "SYN"]);
+const OPERATIONAL_SERVICE_KEYS = new Set(["EP", "RF", "RA", "SYN"]);
 
 const SERVICE_KEY_TO_NAME = {
   PE: "Primera evaluación presencial",
@@ -439,6 +438,14 @@ function computeServiceAccessFromLots(u) {
     }
   }
 
+  if (!u?.firstEvaluationCompleted) {
+    const peCredits = Number(byKey.PE || 0);
+    if (peCredits > 0) {
+      allowedServices.unshift("Primera evaluación presencial");
+      serviceCredits["Primera evaluación presencial"] = peCredits;
+    }
+    creditsByServiceKey.PE = peCredits;
+  }
 
   return {
     allowedServices,
@@ -518,8 +525,8 @@ async function addCreditLot(
   { amount, serviceKey, source = "admin-adjust" }
 ) {
   const sk = canonicalServiceKeyFromValue(serviceKey);
-  if (!sk || !ACTIVE_SERVICE_KEYS.has(sk)) {
-    const err = new Error("Ese servicio ya no está disponible para nuevas cargas.");
+  if (!sk) {
+    const err = new Error("serviceKey inválido.");
     err.status = 400;
     throw err;
   }
@@ -1909,8 +1916,14 @@ async function updateCredits(req, res) {
       } = rawItem || {};
 
       const sk = canonicalServiceKeyFromValue(skRaw);
-      if (!sk || !ACTIVE_SERVICE_KEYS.has(sk)) {
-        const err = new Error("Ese servicio ya no está disponible para modificar créditos.");
+      if (!sk || !ALLOWED_SERVICE_KEYS.has(sk)) {
+        const err = new Error("serviceKey inválido.");
+        err.status = 400;
+        throw err;
+      }
+
+      if (!OPERATIONAL_SERVICE_KEYS.has(sk)) {
+        const err = new Error("Este servicio ya no admite nuevas cargas de sesiones.");
         err.status = 400;
         throw err;
       }
