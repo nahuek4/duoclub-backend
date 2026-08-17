@@ -208,7 +208,9 @@ const creditGrantSchema = new mongoose.Schema(
 const notificationSchema = new mongoose.Schema(
   {
     renewalPreviewSentAt: { type: Date, default: null },
+    renewalConfirmationSendingAt: { type: Date, default: null },
     renewalConfirmationSentAt: { type: Date, default: null },
+    renewalConfirmationLastError: { type: String, default: "", trim: true },
     paymentReminderSentAt: { type: Date, default: null },
     suspensionSentAt: { type: Date, default: null },
     finalWarningSentAt: { type: Date, default: null },

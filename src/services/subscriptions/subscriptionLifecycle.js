@@ -5,7 +5,7 @@
 // - Día 11 impago: suspende SOLO el servicio. Conserva horarios fijos hasta día 20.
 // - Día 21 impago: libera turnos fijos, invalida saldo del ciclo y termina la suscripción.
 // - Pago antes del día 21: reactiva automáticamente si estaba suspendida.
-// No genera deuda y no envía mails.
+// No genera deuda. La renovación del día 1 envía un mail idempotente al usuario.
 
 import mongoose from "mongoose";
 
@@ -18,6 +18,7 @@ import SubscriptionBillingCycle from "../../models/SubscriptionBillingCycle.js";
 import SubscriptionLifecycleNotice from "../../models/SubscriptionLifecycleNotice.js";
 import User from "../../models/User.js";
 import { creditExpiryForMonthKey } from "../../utils/creditExpiry.js";
+import { sendSubscriptionRenewalEmail } from "../../mail/subscriptionEmails.js";
 
 import {
   calculateServiceMonthCoverage,
@@ -336,6 +337,125 @@ async function grantCycleCredits({ user, cycle, subscription, periodKey, session
   return lot;
 }
 
+
+async function sendRenewalConfirmationEmailOnce({
+  cycleId,
+  subscriptionId,
+  now = new Date(),
+} = {}) {
+  if (!cycleId || !subscriptionId) {
+    return { ok: false, skipped: true, reason: "MISSING_IDS" };
+  }
+
+  // Claim temporal para evitar que dos ticks/envíos concurrentes manden el mismo mail.
+  // Si un proceso muere durante el envío, el claim vence a los 15 minutos y puede reintentarse.
+  const staleClaimBefore = new Date(now.getTime() - 15 * 60 * 1000);
+
+  const claimedCycle = await SubscriptionBillingCycle.findOneAndUpdate(
+    {
+      _id: cycleId,
+      "notifications.renewalConfirmationSentAt": null,
+      $or: [
+        { "notifications.renewalConfirmationSendingAt": null },
+        { "notifications.renewalConfirmationSendingAt": { $exists: false } },
+        { "notifications.renewalConfirmationSendingAt": { $lt: staleClaimBefore } },
+      ],
+    },
+    {
+      $set: {
+        "notifications.renewalConfirmationSendingAt": now,
+        "notifications.renewalConfirmationLastError": "",
+      },
+    },
+    { new: true }
+  ).lean();
+
+  if (!claimedCycle) {
+    const existing = await SubscriptionBillingCycle.findById(cycleId)
+      .select("notifications.renewalConfirmationSentAt notifications.renewalConfirmationSendingAt")
+      .lean();
+
+    if (existing?.notifications?.renewalConfirmationSentAt) {
+      return { ok: true, skipped: true, reason: "ALREADY_SENT" };
+    }
+
+    return { ok: true, skipped: true, reason: "SEND_ALREADY_IN_PROGRESS" };
+  }
+
+  try {
+    const [subscription, user] = await Promise.all([
+      ServiceSubscription.findById(subscriptionId).lean(),
+      User.findById(claimedCycle.user).lean(),
+    ]);
+
+    if (!subscription) throw new Error("SUBSCRIPTION_NOT_FOUND_FOR_RENEWAL_EMAIL");
+    if (!user) throw new Error("USER_NOT_FOUND_FOR_RENEWAL_EMAIL");
+
+    const nextPeriodKey = addMonthsToMonthKey(claimedCycle.periodKey, 1);
+    const nextDates = periodDates(nextPeriodKey);
+
+    const mailResult = await sendSubscriptionRenewalEmail({
+      user,
+      serviceKey: claimedCycle.serviceKey,
+      serviceName: SERVICE_NAME[claimedCycle.serviceKey] || claimedCycle.serviceKey,
+      periodKey: claimedCycle.periodKey,
+      monthlySessions: claimedCycle.planSnapshot?.monthlySessions || 0,
+      amount: claimedCycle.billing?.total || claimedCycle.planSnapshot?.basePrice || 0,
+      payMethod: claimedCycle.planSnapshot?.payMethod || subscription.payMethod || "CASH",
+      dueAt: claimedCycle.billing?.dueAt || periodDates(claimedCycle.periodKey).dueAt,
+      nextRenewalAt: nextDates.start,
+      billingStatus: claimedCycle.billing?.status || "pending",
+      extraSessionsNeeded:
+        claimedCycle.coverage?.additionalSessionsStillNeeded ??
+        claimedCycle.coverage?.extraSessionsNeeded ??
+        0,
+    });
+
+    // Los mails .invalid de los scripts de simulación se omiten sin marcar "sent".
+    if (mailResult?.skipped) {
+      await SubscriptionBillingCycle.updateOne(
+        { _id: cycleId, "notifications.renewalConfirmationSentAt": null },
+        {
+          $set: {
+            "notifications.renewalConfirmationSendingAt": null,
+            "notifications.renewalConfirmationLastError": clean(mailResult.reason),
+          },
+        }
+      );
+      return { ok: true, skipped: true, reason: mailResult.reason };
+    }
+
+    const sentAt = new Date();
+    await SubscriptionBillingCycle.updateOne(
+      { _id: cycleId, "notifications.renewalConfirmationSentAt": null },
+      {
+        $set: {
+          "notifications.renewalConfirmationSentAt": sentAt,
+          "notifications.renewalConfirmationSendingAt": null,
+          "notifications.renewalConfirmationLastError": "",
+        },
+      }
+    );
+
+    return { ok: true, sent: true, sentAt };
+  } catch (error) {
+    const message = clean(error?.message || error || "RENEWAL_EMAIL_FAILED").slice(0, 500);
+
+    await SubscriptionBillingCycle.updateOne(
+      { _id: cycleId, "notifications.renewalConfirmationSentAt": null },
+      {
+        $set: {
+          "notifications.renewalConfirmationSendingAt": null,
+          "notifications.renewalConfirmationLastError": message,
+        },
+      }
+    );
+
+    // El mail nunca puede hacer rollback ni romper la renovación del plan.
+    return { ok: false, sent: false, error: message };
+  }
+}
+
 export async function ensureMonthlyCycleForSubscription({ subscriptionId, periodKey, now = new Date() } = {}) {
   const session = await mongoose.startSession();
   let result = null;
@@ -508,6 +628,14 @@ export async function ensureMonthlyCycleForSubscription({ subscriptionId, period
       } catch (error) {
         result.coverageWarning = error?.message || String(error);
       }
+
+      // El mail se envía FUERA de la transacción de renovación.
+      // Si SMTP falla, el ciclo/sesiones/plan siguen renovados normalmente.
+      result.renewalEmail = await sendRenewalConfirmationEmailOnce({
+        cycleId: result.cycleId,
+        subscriptionId: result.subscriptionId,
+        now,
+      });
     }
 
     return result;
