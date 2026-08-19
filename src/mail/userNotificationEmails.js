@@ -71,12 +71,10 @@ function renderMailFooterIcons() {
 }
 
 const SERVICE_LABELS = {
-  PE: "Primera evaluación presencial",
   EP: "Entrenamiento Personal",
   RA: "Rehabilitación Activa",
   RF: "Reeducación Funcional",
-  KD: "Kinefilaxia Deportiva",
-  NUT: "Nutrición",
+  SYN: "Synergy",
 };
 
 function cleanStr(v, fallback = "-") {
@@ -227,28 +225,6 @@ function renderCreditsPanel(summary = {}) {
   `;
 }
 
-function fixedScheduleRows(schedules = []) {
-  const list = Array.isArray(schedules) ? schedules : [];
-  if (!list.length) return [];
-
-  const weekday = {
-    1: "Lunes",
-    2: "Martes",
-    3: "Miércoles",
-    4: "Jueves",
-    5: "Viernes",
-  };
-
-  return list.flatMap((s) => {
-    const sk = String(s?.serviceKey || "").toUpperCase().trim();
-    const svc = serviceLabel(sk || s?.service);
-    const items = Array.isArray(s?.items) ? s.items : [];
-    return items.map((it) => ({
-      label: `${svc} · ${weekday[it?.weekday] || `Día ${it?.weekday || "-"}`}`,
-      value: `${String(it?.time || "-").slice(0, 5)} hs`,
-    }));
-  });
-}
 
 export async function sendCreditsExpiryReminderEmail(user = {}, summary = {}, meta = {}) {
   const to = String(user?.email || "").trim();
@@ -256,34 +232,46 @@ export async function sendCreditsExpiryReminderEmail(user = {}, summary = {}, me
 
   const name = firstNameOf(user);
   const monthLabel = cleanStr(meta?.monthLabel, "este mes");
-  const endDate = formatDateAR(meta?.monthEnd);
+  const lastUsableDate = formatDateAR(meta?.lastUsableAt || meta?.monthEnd);
+  const expiryDate = formatDateAR(meta?.expiryAt);
+
+  const visibleRows = Object.entries(SERVICE_LABELS)
+    .map(([key, label]) => ({
+      key,
+      label,
+      value: Math.max(0, Number(summary?.[key] || 0)),
+    }))
+    .filter((row) => row.value > 0);
+
+  if (!visibleRows.length) return;
 
   const text = [
     `Hola ${name},`,
     "",
-    `Te compartimos el estado de tus sesiones disponibles para ${monthLabel}.`,
+    `Te compartimos las sesiones que todavía tenés disponibles de ${monthLabel}.`,
     "",
-    ...Object.entries(SERVICE_LABELS).map(([key, label]) => `${label} (${key}): ${Math.max(0, Number(summary?.[key] || 0))}`),
+    ...visibleRows.map(({ key, label, value }) => `${label} (${key}): ${value}`),
     "",
-    `Recordá que las sesiones del mes vencen el ${endDate}, al finalizar el día.`,
+    `Podés utilizarlas hasta el ${lastUsableDate} inclusive.`,
+    `Estas sesiones vencen el ${expiryDate} y no se trasladan al mes siguiente.`,
     "",
     BRAND_URL ? `Ingresar: ${BRAND_URL}` : "",
   ].filter(Boolean).join("\n");
 
   const html = buildNotificationEmail({
-    title: "Sesiones del mes",
-    preheader: "Revisá tus sesiones disponibles antes del cierre del mes",
+    title: "Tus sesiones están por vencer",
+    preheader: "Revisá las sesiones disponibles antes del próximo mes",
     icon: "!",
     innerHtml: `
       ${renderExactBodyText(
-        `Hola <b>${escapeHtml(name)}</b>,<br/>Te compartimos el estado de tus sesiones disponibles para <b>${escapeHtml(monthLabel)}</b>.`,
+        `Hola <b>${escapeHtml(name)}</b>,<br/>Estas son las sesiones que todavía tenés disponibles de <b>${escapeHtml(monthLabel)}</b>.`,
         { fontSize: 14, lineHeight: 19, weight: 700, maxWidth: 320, marginBottom: 14 }
       )}
 
       ${renderCreditsPanel(summary)}
 
       ${renderExactBodyText(
-        `Recordá que las sesiones del mes vencen el <b>${escapeHtml(endDate)}</b>, al finalizar el día.`,
+        `Podés utilizarlas hasta el <b>${escapeHtml(lastUsableDate)}</b> inclusive.<br/>Vencen el <b>${escapeHtml(expiryDate)}</b> y no se trasladan al mes siguiente.`,
         { fontSize: 13, lineHeight: 18, weight: 700, maxWidth: 320, marginTop: 0, marginBottom: 10 }
       )}
 
@@ -291,124 +279,7 @@ export async function sendCreditsExpiryReminderEmail(user = {}, summary = {}, me
     `,
   });
 
-  await sendMail(to, `Sesiones del mes - ${BRAND_NAME}`, text, html);
-}
-
-export async function sendFinalWeekOfMonthEmail(user = {}, meta = {}) {
-  const to = String(user?.email || "").trim();
-  if (!to) return;
-
-  const name = firstNameOf(user);
-  const endDate = formatDateAR(meta?.monthEnd);
-
-  const text = [
-    `Hola ${name},`,
-    "",
-    "Entramos en la última semana del mes.",
-    `Las sesiones disponibles de este mes pueden usarse hasta el ${endDate}, al finalizar el día.`,
-    "",
-    "Si necesitás coordinar algo, escribinos por WhatsApp.",
-    BRAND_URL ? `Ingresar: ${BRAND_URL}` : "",
-  ].filter(Boolean).join("\n");
-
-  const html = buildNotificationEmail({
-    title: "Última semana del mes",
-    preheader: "Revisá tus sesiones y coordiná tus turnos",
-    icon: "!",
-    innerHtml: `
-      ${renderExactBodyText(
-        `Hola <b>${escapeHtml(name)}</b>,<br/>Entramos en la <b>última semana del mes</b>.`,
-        { fontSize: 14, lineHeight: 19, weight: 700, maxWidth: 320, marginBottom: 14 }
-      )}
-
-      ${renderAdminDetailPanel([
-        { label: "Cierre del mes", value: endDate },
-        { label: "Importante", value: "Revisá tus sesiones y coordiná tus turnos pendientes." },
-      ])}
-
-      ${BRAND_URL ? renderPrimaryButton(`Ingresar a ${BRAND_NAME}`, BRAND_URL) : ""}
-    `,
-  });
-
-  await sendMail(to, `Última semana del mes - ${BRAND_NAME}`, text, html);
-}
-
-export async function sendMonthEndEmail(user = {}, summary = {}, meta = {}) {
-  const to = String(user?.email || "").trim();
-  if (!to) return;
-
-  const name = firstNameOf(user);
-  const endDate = formatDateAR(meta?.monthEnd);
-
-  const text = [
-    `Hola ${name},`,
-    "",
-    "Hoy finaliza el mes en DUO.",
-    `Las sesiones disponibles de este mes vencen hoy (${endDate}) al finalizar el día.`,
-    "",
-    ...Object.entries(SERVICE_LABELS).map(([key, label]) => `${label} (${key}): ${Math.max(0, Number(summary?.[key] || 0))}`),
-    "",
-    BRAND_URL ? `Ingresar: ${BRAND_URL}` : "",
-  ].filter(Boolean).join("\n");
-
-  const html = buildNotificationEmail({
-    title: "Cierre del mes",
-    preheader: "Hoy es el último día del mes",
-    icon: "!",
-    innerHtml: `
-      ${renderExactBodyText(
-        `Hola <b>${escapeHtml(name)}</b>,<br/>Hoy finaliza el mes en DUO. Las sesiones disponibles vencen al finalizar el día.`,
-        { fontSize: 14, lineHeight: 19, weight: 700, maxWidth: 320, marginBottom: 14 }
-      )}
-
-      ${renderCreditsPanel(summary)}
-
-      ${renderAdminDetailPanel([{ label: "Vencimiento", value: endDate }])}
-
-      ${BRAND_URL ? renderPrimaryButton(`Ingresar a ${BRAND_NAME}`, BRAND_URL) : ""}
-    `,
-  });
-
-  await sendMail(to, `Cierre del mes - ${BRAND_NAME}`, text, html);
-}
-
-export async function sendMonthStartFixedSchedulesEmail(user = {}, schedules = [], meta = {}) {
-  const to = String(user?.email || "").trim();
-  if (!to) return;
-
-  const name = firstNameOf(user);
-  const monthLabel = cleanStr(meta?.monthLabel, "este mes");
-  const rows = fixedScheduleRows(schedules);
-
-  const text = [
-    `Hola ${name},`,
-    "",
-    `Arranca ${monthLabel} en DUO.`,
-    "Tenés turnos fijos asignados. Recordá coordinar la renovación con el equipo para conservar tu regularidad.",
-    "",
-    rows.length ? "Turnos fijos:" : "",
-    ...rows.map((r) => `• ${r.label}: ${r.value}`),
-    "",
-    BRAND_URL ? `Ingresar: ${BRAND_URL}` : "",
-  ].filter(Boolean).join("\n");
-
-  const html = buildNotificationEmail({
-    title: "Renovación mensual",
-    preheader: "Recordatorio de renovación para tus turnos fijos",
-    icon: "✓",
-    innerHtml: `
-      ${renderExactBodyText(
-        `Hola <b>${escapeHtml(name)}</b>,<br/>Arranca <b>${escapeHtml(monthLabel)}</b> en DUO. Tenés turnos fijos asignados: recordá coordinar la renovación con el equipo para conservar tu regularidad.`,
-        { fontSize: 14, lineHeight: 19, weight: 700, maxWidth: 320, marginBottom: 14 }
-      )}
-
-      ${rows.length ? renderAdminDetailPanel(rows) : ""}
-
-      ${BRAND_URL ? renderPrimaryButton(`Ingresar a ${BRAND_NAME}`, BRAND_URL) : ""}
-    `,
-  });
-
-  await sendMail(to, `Renovación mensual - ${BRAND_NAME}`, text, html);
+  await sendMail(to, `Tus sesiones están por vencer - ${BRAND_NAME}`, text, html);
 }
 
 export async function sendBirthdayEmail(user = {}) {

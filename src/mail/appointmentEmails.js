@@ -1,4 +1,4 @@
-import { ADMIN_EMAIL, BRAND_NAME, BRAND_URL, sendMail } from "./core.js";
+import { BRAND_NAME, BRAND_URL, sendMail } from "./core.js";
 import { escapeHtml, prettyDateAR } from "./helpers.js";
 import { buildEmailLayout } from "./layout.js";
 import {
@@ -1283,54 +1283,6 @@ export async function sendAppointmentBookedBatchEmail(user, items = []) {
   await sendMail(
     user.email,
     `Tus turnos fueron confirmados - ${BRAND_NAME}`,
-    text,
-    html
-  );
-}
-
-export async function sendAppointmentCancelledBatchEmail(user, items = []) {
-  console.log("[MAIL][APPT] cancelled batch ->", {
-    to: user?.email,
-    count: Array.isArray(items) ? items.length : 0,
-  });
-
-  if (!user?.email) return;
-
-  const list = normalizeItems(items);
-
-  const linesItems = list.map((it, i) => {
-    const date = it?.date || "-";
-    const time = it?.time || "-";
-    const svc = getServiceName(it, it?.serviceName);
-    return `${i + 1}. ${date} · ${time}${svc ? ` · ${svc}` : ""}`;
-  });
-
-  const text = [
-    `Hola ${user?.name || ""}`.trim() + ",",
-    "",
-    "Tus turnos fueron cancelados con éxito.",
-    "",
-    "Detalle:",
-    ...(linesItems.length ? linesItems : ["(sin items)"]),
-    "",
-    "Si querés, podés volver a reservar desde tu perfil.",
-  ].join("\n");
-
-  const html = buildAppointmentVisualEmail({
-    title: "Turnos cancelados<br />con éxito.",
-    preheader: "Tus turnos fueron cancelados",
-    kind: "cancelled",
-    user,
-    items: list,
-    introHtml: "Tus turnos fueron cancelados correctamente.",
-    noteHtml: `Ingresá a ${escapeHtml(BRAND_NAME)} para revisar el detalle.`,
-    buttonLabel: `Ingresar a ${BRAND_NAME}`,
-    buttonHref: BRAND_URL,
-  });
-
-  await sendMail(
-    user.email,
-    `Tus turnos fueron cancelados - ${BRAND_NAME}`,
     text,
     html
   );

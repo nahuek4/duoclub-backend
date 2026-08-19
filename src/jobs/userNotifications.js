@@ -1,22 +1,19 @@
 // backend/src/jobs/userNotifications.js
-// Notificaciones operativas mensuales y cumpleaños.
-// - Créditos/sesiones: el mes cierra el último día calendario (30/31/28/29), no día hábil.
-// - Primer día del mes: solo usuarios con turnos fijos activos.
-// - Cumpleaños: usuario + admin.
+// Notificaciones automáticas vigentes:
+// - 7 días antes del día 1: un único aviso de vencimiento de sesiones.
+// - Cumpleaños: usuario + administración.
+//
+// No envía mails de deuda, cierre de mes duplicados ni renovación manual de turnos fijos.
 
 import User from "../models/User.js";
-import FixedSchedule from "../models/FixedSchedule.js";
 import {
   sendCreditsExpiryReminderEmail,
-  sendFinalWeekOfMonthEmail,
-  sendMonthEndEmail,
-  sendMonthStartFixedSchedulesEmail,
   sendBirthdayEmail,
   sendAdminBirthdayEmail,
 } from "../mail.js";
 
 const TZ = "America/Argentina/Buenos_Aires";
-const SERVICE_KEYS = ["PE", "EP", "RA", "RF", "KD", "NUT"];
+const SERVICE_KEYS = ["EP", "RA", "RF", "SYN"];
 
 let schedulerStarted = false;
 let schedulerTimer = null;
@@ -58,25 +55,31 @@ function monthKeyFromParts(p) {
 
 function monthLabelFromParts(p) {
   try {
-    const d = new Date(p.year, p.month - 1, 1, 12, 0, 0, 0);
-    return d.toLocaleDateString("es-AR", {
+    const d = new Date(`${p.year}-${pad2(p.month)}-01T12:00:00-03:00`);
+    return new Intl.DateTimeFormat("es-AR", {
       timeZone: TZ,
       month: "long",
       year: "numeric",
-    });
+    }).format(d);
   } catch {
     return monthKeyFromParts(p);
   }
 }
 
-function lastDayOfMonth(year, month) {
-  return new Date(year, month, 0, 23, 59, 59, 999);
+function lastDayNumber(year, month) {
+  return new Date(Date.UTC(year, month, 0, 12, 0, 0, 0)).getUTCDate();
+}
+
+function nextMonthKey(p) {
+  const d = new Date(Date.UTC(p.year, p.month - 1, 15, 12, 0, 0, 0));
+  d.setUTCMonth(d.getUTCMonth() + 1);
+  return `${d.getUTCFullYear()}-${pad2(d.getUTCMonth() + 1)}`;
 }
 
 function normalizeServiceKey(v) {
   const sk = String(v || "").toUpperCase().trim();
   if (sk === "AR") return "RA";
-  if (sk === "KINEDEPO" || sk === "KINE-DEPO") return "KD";
+  if (sk === "SYNERGY" || sk === "SINERGIA") return "SYN";
   return SERVICE_KEYS.includes(sk) ? sk : "";
 }
 
@@ -87,9 +90,7 @@ function isApprovedClient(user = {}) {
   return !!String(user?.email || "").trim();
 }
 
-function serviceCreditSummary(user = {}, monthEnd = null) {
-  const now = new Date();
-  const end = monthEnd ? new Date(monthEnd) : null;
+function serviceCreditSummary(user = {}, now = new Date()) {
   const out = Object.fromEntries(SERVICE_KEYS.map((k) => [k, 0]));
 
   for (const lot of Array.isArray(user?.creditLots) ? user.creditLots : []) {
@@ -99,17 +100,18 @@ function serviceCreditSummary(user = {}, monthEnd = null) {
     const exp = lot?.expiresAt ? new Date(lot.expiresAt) : null;
     if (exp && exp <= now) continue;
 
-    // En DUO, las sesiones del mes vencen al cierre calendario del mes.
-    // Si un lote tuviera una fecha futura distinta, lo contamos igual como saldo actual del usuario.
-    if (end && exp && exp > end) {
-      // Lo dejamos dentro del resumen porque el usuario necesita ver su saldo por servicio.
-    }
-
     const sk = normalizeServiceKey(lot?.serviceKey || lot?.service || lot?.serviceName);
     if (sk && out[sk] !== undefined) out[sk] += remaining;
   }
 
   return out;
+}
+
+function summaryTotal(summary = {}) {
+  return SERVICE_KEYS.reduce(
+    (acc, key) => acc + Math.max(0, Number(summary?.[key] || 0)),
+    0
+  );
 }
 
 function hasBirthdayToday(user = {}, p = arParts()) {
@@ -127,101 +129,69 @@ async function baseUsersQuery() {
   }).select("name lastName email phone role approvalStatus creditLots notifications birthDate createdAt");
 }
 
-async function sendCreditsAndMonthNotifications({ now = new Date(), force = false } = {}) {
+async function sendMonthlyExpiryNotifications({ now = new Date(), force = false } = {}) {
   const p = arParts(now);
   const monthKey = monthKeyFromParts(p);
   const monthLabel = monthLabelFromParts(p);
   const todayYmd = ymdFromParts(p);
-  const lastDay = lastDayOfMonth(p.year, p.month).getDate();
-  const monthEnd = lastDayOfMonth(p.year, p.month);
-  const finalWeekStart = Math.max(1, lastDay - 6);
+  const lastDay = lastDayNumber(p.year, p.month);
 
-  const shouldRunFinalWeek = force || p.day === finalWeekStart;
-  const shouldRunMonthEnd = force || p.day === lastDay;
-
-  if (!shouldRunFinalWeek && !shouldRunMonthEnd) {
-    return { ok: true, skipped: true, reason: "NOT_FINAL_WEEK_OR_MONTH_END", todayYmd };
+  // Exactamente 7 días antes del 01 del mes siguiente.
+  const reminderDay = Math.max(1, lastDay - 6);
+  if (!force && p.day !== reminderDay) {
+    return {
+      ok: true,
+      skipped: true,
+      reason: "NOT_EXPIRY_REMINDER_DAY",
+      todayYmd,
+      reminderDay,
+    };
   }
 
+  const nextKey = nextMonthKey(p);
+  const lastUsableAt = new Date(
+    `${monthKey}-${pad2(lastDay)}T23:59:59-03:00`
+  );
+  const expiryAt = new Date(`${nextKey}-01T00:00:00-03:00`);
+
   const users = await baseUsersQuery();
-  let creditsSent = 0;
-  let finalWeekSent = 0;
-  let monthEndSent = 0;
+  let sent = 0;
+  let withoutCredits = 0;
 
   for (const user of users) {
     if (!isApprovedClient(user)) continue;
-    user.notifications = user.notifications || {};
 
-    const summary = serviceCreditSummary(user, monthEnd);
-    let changed = false;
-
-    if (shouldRunFinalWeek && user.notifications.lastCreditsExpiryMonthKey !== monthKey) {
-      await sendCreditsExpiryReminderEmail(user, summary, { monthKey, monthLabel, monthEnd });
-      user.notifications.lastCreditsExpiryMonthKey = monthKey;
-      creditsSent += 1;
-      changed = true;
+    const summary = serviceCreditSummary(user, now);
+    if (summaryTotal(summary) <= 0) {
+      withoutCredits += 1;
+      continue;
     }
-
-    if (shouldRunFinalWeek && user.notifications.lastFinalWeekMonthKey !== monthKey) {
-      await sendFinalWeekOfMonthEmail(user, { monthKey, monthLabel, monthEnd });
-      user.notifications.lastFinalWeekMonthKey = monthKey;
-      finalWeekSent += 1;
-      changed = true;
-    }
-
-    if (shouldRunMonthEnd && user.notifications.lastMonthEndMonthKey !== monthKey) {
-      await sendMonthEndEmail(user, summary, { monthKey, monthLabel, monthEnd });
-      user.notifications.lastMonthEndMonthKey = monthKey;
-      monthEndSent += 1;
-      changed = true;
-    }
-
-    if (changed) await user.save();
-  }
-
-  return { ok: true, monthKey, todayYmd, creditsSent, finalWeekSent, monthEndSent };
-}
-
-async function sendMonthStartFixedScheduleNotifications({ now = new Date(), force = false } = {}) {
-  const p = arParts(now);
-  const monthKey = monthKeyFromParts(p);
-  const monthLabel = monthLabelFromParts(p);
-  const todayYmd = ymdFromParts(p);
-
-  if (!force && p.day !== 1) {
-    return { ok: true, skipped: true, reason: "NOT_MONTH_START", todayYmd };
-  }
-
-  const schedules = await FixedSchedule.find({
-    active: true,
-    startDate: { $lte: todayYmd },
-    endDate: { $gte: todayYmd },
-  }).lean();
-
-  const byUser = new Map();
-  for (const s of schedules) {
-    const uid = String(s?.user || "");
-    if (!uid) continue;
-    if (!byUser.has(uid)) byUser.set(uid, []);
-    byUser.get(uid).push(s);
-  }
-
-  let sent = 0;
-
-  for (const [uid, userSchedules] of byUser.entries()) {
-    const user = await User.findById(uid).select("name lastName email phone role approvalStatus notifications");
-    if (!user || !isApprovedClient(user)) continue;
 
     user.notifications = user.notifications || {};
-    if (!force && user.notifications.lastMonthStartFixedMonthKey === monthKey) continue;
+    if (!force && user.notifications.lastCreditsExpiryMonthKey === monthKey) {
+      continue;
+    }
 
-    await sendMonthStartFixedSchedulesEmail(user, userSchedules, { monthKey, monthLabel });
-    user.notifications.lastMonthStartFixedMonthKey = monthKey;
+    await sendCreditsExpiryReminderEmail(user, summary, {
+      monthKey,
+      monthLabel,
+      lastUsableAt,
+      expiryAt,
+    });
+
+    user.notifications.lastCreditsExpiryMonthKey = monthKey;
     await user.save();
     sent += 1;
   }
 
-  return { ok: true, monthKey, todayYmd, fixedUsers: byUser.size, sent };
+  return {
+    ok: true,
+    monthKey,
+    todayYmd,
+    reminderDay,
+    sent,
+    withoutCredits,
+  };
 }
 
 async function sendBirthdayNotifications({ now = new Date(), force = false } = {}) {
@@ -264,13 +234,12 @@ export async function runUserNotifications(options = {}) {
   const now = options?.now || new Date();
   const force = !!options?.force;
 
-  const [monthStart, monthClose, birthdays] = await Promise.all([
-    sendMonthStartFixedScheduleNotifications({ now, force }),
-    sendCreditsAndMonthNotifications({ now, force }),
+  const [monthlyExpiry, birthdays] = await Promise.all([
+    sendMonthlyExpiryNotifications({ now, force }),
     sendBirthdayNotifications({ now, force }),
   ]);
 
-  return { ok: true, monthStart, monthClose, birthdays };
+  return { ok: true, monthlyExpiry, birthdays };
 }
 
 export async function userNotificationsTick(options = {}) {
@@ -289,9 +258,15 @@ export function startUserNotificationsScheduler({ everyMinutes } = {}) {
   schedulerStarted = true;
 
   const enabled = String(process.env.USER_NOTIFICATIONS_ENABLED || "true") !== "false";
-  const minutes = Math.max(30, Number(everyMinutes || process.env.USER_NOTIFICATIONS_EVERY_MINUTES || 360));
+  const minutes = Math.max(
+    30,
+    Number(everyMinutes || process.env.USER_NOTIFICATIONS_EVERY_MINUTES || 360)
+  );
 
-  console.log("[USER-NOTIFICATIONS] scheduler starting", { enabled, everyMinutes: minutes });
+  console.log("[USER-NOTIFICATIONS] scheduler starting", {
+    enabled,
+    everyMinutes: minutes,
+  });
 
   if (!enabled) return;
 

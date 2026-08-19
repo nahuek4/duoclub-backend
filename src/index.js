@@ -19,7 +19,6 @@ import mpWebhookRoutes from "./routes/mpWebhook.js";
 import admissionRoutes from "./routes/admission.js";
 import adminEvaluationsRoutes from "./routes/adminEvaluations.js";
 import evaluationsRoutes from "./routes/evaluations.js";
-import testMailRouter from "./routes/testMail.js";
 import waitlistRouter from "./routes/waitlist.js";
 import scheduleBlocksRoutes from "./routes/scheduleBlocks.js";
 
@@ -83,7 +82,6 @@ startUserNotificationsScheduler({
 
 startFixedScheduleBillingScheduler({
   everyMinutes: Number(process.env.FIXED_SCHEDULE_BILLING_EVERY_MINUTES || 2),
-  weeklySummaryEveryMinutes: Number(process.env.FIXED_DEBT_SUMMARY_EVERY_MINUTES || 60),
 });
 
 /* =========================
@@ -196,7 +194,6 @@ function mountRoutes(prefix = "") {
   app.use(`${prefix}/admin/plans`, adminPlansRoutes);
   app.use(`${prefix}/subscription-extras`, subscriptionExtrasRoutes);
   app.use(`${prefix}/subscriptions`, subscriptionsRoutes);
-  app.use(`${prefix}/api/test-mail`, testMailRouter);
   app.use(`${prefix}/waitlist`, waitlistRouter);
   app.use(`${prefix}/schedule-blocks`, scheduleBlocksRoutes);
 }

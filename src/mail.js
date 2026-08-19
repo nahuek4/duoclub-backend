@@ -1,6 +1,5 @@
 // backend/src/mail.js
-// Entry point único para centralizar exports y mantener compatibilidad
-// con nombres viejos usados por algunas rutas.
+// Entry point único del sistema de mails DUO.
 
 export * from "./mail/core.js";
 export * from "./mail/authEmails.js";
@@ -27,15 +26,48 @@ import {
   sendAdminCreditsChangedEmail,
 } from "./mail/creditsEmails.js";
 
-// Aliases legacy / compatibilidad
-export {
-  sendAdminOrderPendingEmail as sendAdminNewOrderEmail,
-  sendAdminOrderPendingEmail as sendAdminOrderEmail,
-  sendOrderPendingEmail as sendUserOrderCashCreatedEmail,
-  sendOrderPendingEmail as sendOrderCashCreatedEmail,
-  sendOrderPaidEmail as sendUserOrderPaidEmail,
-  sendOrderCancelledEmail as sendUserOrderCancelledEmail,
-  sendCreditsChangedEmail as sendUserCreditsAssignedEmail,
-  sendAdminCreditsChangedEmail as sendAdminCreditsAssignedEmail,
-  sendCreditsChangedEmail as sendCreditsAssignedEmail,
-};
+// Nombres públicos que siguen usando las rutas actuales de órdenes.
+export const sendAdminNewOrderEmail = sendAdminOrderPendingEmail;
+export const sendAdminOrderEmail = sendAdminOrderPendingEmail;
+export const sendUserOrderCashCreatedEmail = sendOrderPendingEmail;
+export const sendOrderCashCreatedEmail = sendOrderPendingEmail;
+export const sendUserOrderPaidEmail = sendOrderPaidEmail;
+export const sendUserOrderCancelledEmail = sendOrderCancelledEmail;
+
+function normalizeCreditsCall(first = {}, items = [], meta = {}) {
+  if (
+    first &&
+    typeof first === "object" &&
+    (Object.prototype.hasOwnProperty.call(first, "user") ||
+      Object.prototype.hasOwnProperty.call(first, "items"))
+  ) {
+    return {
+      user: first.user || {},
+      items: Array.isArray(first.items) ? first.items : [],
+      meta: {
+        ...(first.meta && typeof first.meta === "object" ? first.meta : {}),
+        ...(first.actorName ? { actorName: first.actorName } : {}),
+        ...(first.reason ? { reason: first.reason } : {}),
+      },
+    };
+  }
+
+  return {
+    user: first || {},
+    items: Array.isArray(items) ? items : [],
+    meta: meta && typeof meta === "object" ? meta : {},
+  };
+}
+
+// Compatibilidad con users.js: acepta tanto firma posicional como objeto payload.
+export async function sendUserCreditsAssignedEmail(first = {}, items = [], meta = {}) {
+  const call = normalizeCreditsCall(first, items, meta);
+  return sendCreditsChangedEmail(call.user, call.items, call.meta);
+}
+
+export async function sendAdminCreditsAssignedEmail(first = {}, items = [], meta = {}) {
+  const call = normalizeCreditsCall(first, items, meta);
+  return sendAdminCreditsChangedEmail(call.user, call.items, call.meta);
+}
+
+export const sendCreditsAssignedEmail = sendUserCreditsAssignedEmail;

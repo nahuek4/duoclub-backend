@@ -1,5 +1,5 @@
 // backend/src/mail/orderEmails.js
-import { ADMIN_EMAIL, BRAND_NAME, BRAND_URL, sendMail } from "./core.js";
+import { BRAND_NAME, BRAND_URL, sendMail } from "./core.js";
 import { escapeHtml, moneyARS } from "./helpers.js";
 import { buildEmailLayout } from "./layout.js";
 import {
