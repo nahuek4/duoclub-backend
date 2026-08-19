@@ -42,7 +42,7 @@ export function renderMailFooterSocialIcons({ align = "right", size = 20, gap = 
                   href="${escapeHtml(icon.href)}"
                   target="_blank"
                   rel="noopener noreferrer"
-                  style="display:inline-block; text-decoration:none; border:0; outline:none;; color:#ffffff;"
+                  style="display:inline-block; text-decoration:none !important; border:0; outline:none; color:#ffffff !important;"
                 >
                   <img
                     src="${IMG_BASE}/${icon.file}"
@@ -58,6 +58,78 @@ export function renderMailFooterSocialIcons({ align = "right", size = 20, gap = 
           .join("")}
       </tr>
     </table>
+  `;
+}
+
+
+/**
+ * Footer único para TODOS los mails DUO.
+ * Mantener este bloque como única fuente de verdad visual del footer.
+ */
+export function renderUnifiedMailFooter({ className = "duo-unified-footer" } = {}) {
+  const safeClass = String(className || "duo-unified-footer").trim() || "duo-unified-footer";
+
+  return `
+    <tr>
+      <td
+        class="${safeClass} duo-unified-footer"
+        style="
+          background:#0A0A0A;
+          padding:24px 22px;
+          border-radius:0 0 28px 28px;
+          font-family:${EMAIL_FONT};
+          color:#ffffff !important;
+        "
+      >
+        <style>
+          a[x-apple-data-detectors],
+          .duo-unified-footer a,
+          .duo-unified-footer a:link,
+          .duo-unified-footer a:visited,
+          .duo-unified-footer span {
+            color:#ffffff !important;
+            text-decoration:none !important;
+          }
+          @media only screen and (max-width:560px) {
+            .duo-unified-footer { padding:24px 22px !important; border-radius:0 0 22px 22px !important; }
+            .duo-unified-footer-info { font-size:9px !important; line-height:13px !important; }
+            .duo-unified-footer-brand { width:92px !important; max-width:92px !important; }
+          }
+        </style>
+
+        <table role="presentation" cellpadding="0" cellspacing="0" width="100%" style="border-collapse:collapse;width:100%;">
+          <tr>
+            <td valign="middle" style="width:42%;color:#ffffff !important;">
+              <img
+                src="${IMG_BASE}/duohealthclub.png"
+                alt="DUO Health Club"
+                width="92"
+                class="duo-unified-footer-brand"
+                style="display:block;width:92px;max-width:100%;height:auto;border:0;outline:none;text-decoration:none;filter:invert(1);"
+              />
+            </td>
+
+            <td
+              valign="middle"
+              align="right"
+              class="duo-unified-footer-info"
+              style="width:58%;font-size:10px;line-height:15px;font-weight:500;color:#ffffff !important;text-decoration:none !important;"
+            >
+              <div style="font-weight:700;letter-spacing:1.8px;color:#ffffff !important;text-decoration:none !important;">
+                <span style="color:#ffffff !important;text-decoration:none !important;">DUOCLUB.AR</span>
+              </div>
+              <div style="color:#ffffff !important;text-decoration:none !important;">
+                <span style="color:#ffffff !important;text-decoration:none !important;">+54 9 249 420 7343</span>
+              </div>
+              <div style="color:#ffffff !important;text-decoration:none !important;">
+                <span style="color:#ffffff !important;text-decoration:none !important;">Avellaneda 1425 of. 201, Tandil</span>
+              </div>
+              ${renderMailFooterSocialIcons({ align: "right", size: 20, gap: 6 })}
+            </td>
+          </tr>
+        </table>
+      </td>
+    </tr>
   `;
 }
 
@@ -138,20 +210,7 @@ export function renderExactUserShell(innerHtml) {
                       ${innerHtml}
                     </td>
                   </tr>
-                  <tr>
-                    <td class="duo-exact-footer" style="background:#0A0A0A; padding:40px 48px 42px; border-radius:0 0 28px 28px; font-family:${EMAIL_FONT};">
-                      <table role="presentation" cellpadding="0" cellspacing="0" width="100%" style="border-collapse:collapse; width:100%;">
-                        <tr>
-                          <td valign="middle" style="width:42%; color:#ffffff; font-family:${EMAIL_FONT};">
-                            <img src="${IMG_BASE}/duohealthclub.png" alt="DUO Health Club" width="92" class="duo-footer-brand-img" style="display:block; width:92px; max-width:92px; height:auto; border:0; outline:none; text-decoration:none; filter:invert(1);" />
-                          </td>
-                          <td valign="middle" align="right" class="duo-footer-info" style="width:58%; color:#ffffff; font-family:${EMAIL_FONT}; font-size:9px; line-height:13px; font-weight:500; letter-spacing:0.2px;">
-                            <div style="font-weight:700; letter-spacing:2.8px; color:#ffffff; text-decoration:none;"><span style="color:#ffffff; text-decoration:none;">DUOCLUB.AR</span></div>
-                            <div style="color:#ffffff; text-decoration:none;"><span style="color:#ffffff; text-decoration:none;">+54 249 420 7343</span></div>
-                            <div style="color:#ffffff; text-decoration:none;"><span style="color:#ffffff; text-decoration:none;">Avellaneda 1425 of. 201, Tandil</span></div>
-                            ${renderMailFooterSocialIcons({ align: "right", size: 20 })}
-                          </td>
-                        </tr>
+                  ${renderUnifiedMailFooter({ className: "duo-exact-footer" })}
                       </table>
                     </td>
                   </tr>
@@ -259,7 +318,7 @@ export function renderExactTitle(text, maxWidth = 300) {
       style="
         font-size:24px;
         line-height:28px;
-        font-weight:700;
+        font-weight:750;
         margin:0;
         max-width:${Number(maxWidth) || 300}px;
         font-family:${EMAIL_FONT};

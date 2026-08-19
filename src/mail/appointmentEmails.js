@@ -8,17 +8,13 @@ import {
   renderPrimaryButton,
   renderAdminMetaPanel,
   renderAdminDetailPanel,
-  renderRowCard,
+  renderRowCard,,
+  renderUnifiedMailFooter
 } from "./ui.js";
 import { adminRecipientsForAppointment } from "./recipients.js";
 
 const IMG_BASE = "https://api.duoclub.ar/images";
 
-const SOCIAL_LINKS = {
-  instagram: process.env.DUO_INSTAGRAM_URL || "https://www.instagram.com/duoclub.ar/",
-  linkedin: process.env.DUO_LINKEDIN_URL || "https://www.linkedin.com/company/duo-club-ar/",
-  spotify: process.env.DUO_SPOTIFY_URL || "https://open.spotify.com/",
-};
 
 
 const DUO_WATERMARK_BG = `background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='360' height='420' viewBox='0 0 360 420'%3E%3Ctext x='-8' y='84' font-family='Arial, Helvetica, sans-serif' font-size='86' font-weight='700' fill='%23ffffff' fill-opacity='0.72'%3EDUO%3C/text%3E%3Ctext x='-8' y='214' font-family='Arial, Helvetica, sans-serif' font-size='86' font-weight='700' fill='%23ffffff' fill-opacity='0.72'%3EDUO%3C/text%3E%3Ctext x='-8' y='344' font-family='Arial, Helvetica, sans-serif' font-size='86' font-weight='700' fill='%23ffffff' fill-opacity='0.72'%3EDUO%3C/text%3E%3C/svg%3E"); background-repeat:repeat-y; background-position:center top; background-size:360px auto;`;
@@ -160,7 +156,7 @@ function buildHeroHeader({ title, kind = "confirmed" }) {
                         font-family:${duoFontStack()};
                         font-size:25px;
                         line-height:31px;
-                        font-weight:700;
+                        font-weight:750;
                         letter-spacing:-0.8px;
                         color:#ffffff;
                       "
@@ -525,93 +521,8 @@ function buildAdminAppointmentVisualEmail({
 }
 
 
-function renderAppointmentFooterIcons() {
-  const icons = [
-    { file: "iconoig.png", alt: "Instagram", href: SOCIAL_LINKS.instagram },
-    { file: "iconolnkd.png", alt: "LinkedIn", href: SOCIAL_LINKS.linkedin },
-    { file: "iconospot.png", alt: "Spotify", href: SOCIAL_LINKS.spotify },
-  ];
-
-  return `
-    <table role="presentation" cellpadding="0" cellspacing="0" align="right" style="border-collapse:collapse; margin-top:10px; margin-left:auto;">
-      <tr>
-        ${icons
-          .map(
-            (icon, idx) => `
-              <td style="${idx > 0 ? "padding-left:6px;" : ""}">
-                <a
-                  href="${escapeHtml(icon.href)}"
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  style="display:inline-block; text-decoration:none; border:0; outline:none;; color:#ffffff;"
-                >
-                  <img
-                    src="${IMG_BASE}/${icon.file}"
-                    alt="${escapeHtml(icon.alt)}"
-                    width="17"
-                    height="17"
-                    style="display:block; width:17px; height:17px; border:0; outline:none; text-decoration:none;"
-                  />
-                </a>
-              </td>
-            `
-          )
-          .join("")}
-      </tr>
-    </table>
-  `;
-}
-
 function buildFooterBlock() {
-  return `
-    <tr>
-      <td
-        class="ap-footer"
-        style="
-          background:#0A0A0A;
-          padding:28px 24px 30px;
-          border-bottom-left-radius:28px;
-          border-bottom-right-radius:28px;
-        "
-      >
-        <table
-          role="presentation"
-          cellpadding="0"
-          cellspacing="0"
-          width="100%"
-          style="border-collapse:collapse; width:100%;"
-        >
-          <tr>
-            <td
-              valign="bottom"
-              style="
-                width:46%;
-                font-family:${duoFontStack()};
-                color:#ffffff;
-              "
-            >
-              <div style="font-size:26px; line-height:24px; font-weight:700; letter-spacing:1px;"><img src="${IMG_BASE}/duohealthclub.png" alt="DUO Health Club" width="92" style="display:block; width:92px; max-width:100%; height:auto; border:0; outline:none; text-decoration:none; filter:invert(1);" /></div>
-              <div style="font-size:5px; line-height:8px; opacity:0.95; letter-spacing:1.4px; margin-top:4px;"></div>
-            </td>
-            <td
-              valign="bottom"
-              align="right"
-              style="
-                width:54%;
-                font-family:${duoFontStack()};
-                color:#ffffff;
-              "
-            >
-              <div style="font-size:12px; line-height:16px; font-weight:700; letter-spacing:2px; color:#ffffff; text-decoration:none;"><span style="color:#ffffff; text-decoration:none;">DUOCLUB.AR</span></div>
-              <div style="font-size:10px; line-height:15px; font-weight:400; opacity:0.96; color:#ffffff; text-decoration:none;"><span style="color:#ffffff; text-decoration:none;">+549 249 420 7343</span></div>
-              <div style="font-size:10px; line-height:15px; font-weight:400; opacity:0.96; color:#ffffff; text-decoration:none;"><span style="color:#ffffff; text-decoration:none;">Avellaneda 1425 of. 201, Tandil</span></div>
-              ${renderAppointmentFooterIcons()}
-            </td>
-          </tr>
-        </table>
-      </td>
-    </tr>
-  `;
+  return renderUnifiedMailFooter({ className: "ap-footer" });
 }
 
 function buildAppointmentVisualEmail({
@@ -785,7 +696,7 @@ function buildReminderEmail({ items = [] }) {
       style="
         font-size:19px;
         line-height:20px;
-        font-weight:700;
+        font-weight:750;
         margin:0 auto 18px;
         max-width:285px;
         color:#111111;
@@ -856,6 +767,7 @@ function buildReminderEmail({ items = [] }) {
                   ${bodyHtml}
                 </td>
               </tr>
+              ${renderUnifiedMailFooter({ className: "ap-footer" })}
             </table>
           </td>
         </tr>

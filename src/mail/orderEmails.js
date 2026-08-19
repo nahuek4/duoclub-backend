@@ -8,18 +8,14 @@ import {
   renderPrimaryButton,
   renderAdminMetaPanel,
   renderAdminDetailPanel,
-  renderRowCard,
+  renderRowCard,,
+  renderUnifiedMailFooter
 } from "./ui.js";
 import { adminRecipientsForOrder } from "./recipients.js";
 
 
 const IMG_BASE = "https://api.duoclub.ar/images";
 
-const SOCIAL_LINKS = {
-  instagram: process.env.DUO_INSTAGRAM_URL || "https://www.instagram.com/duoclub.ar/",
-  linkedin: process.env.DUO_LINKEDIN_URL || "https://www.linkedin.com/company/duo-club-ar/",
-  spotify: process.env.DUO_SPOTIFY_URL || "https://open.spotify.com/",
-};
 
 
 const DUO_WATERMARK_BG = `background-color:#FBFBFB; background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='360' height='420' viewBox='0 0 360 420'%3E%3Ctext x='-8' y='84' font-family='Arial, Helvetica, sans-serif' font-size='86' font-weight='700' fill='%23ffffff' fill-opacity='0.72'%3EDUO%3C/text%3E%3Ctext x='-8' y='214' font-family='Arial, Helvetica, sans-serif' font-size='86' font-weight='700' fill='%23ffffff' fill-opacity='0.72'%3EDUO%3C/text%3E%3Ctext x='-8' y='344' font-family='Arial, Helvetica, sans-serif' font-size='86' font-weight='700' fill='%23ffffff' fill-opacity='0.72'%3EDUO%3C/text%3E%3C/svg%3E"); background-repeat:repeat-y; background-position:center top; background-size:360px auto;`;
@@ -35,47 +31,6 @@ function renderMailIcon(fileName = "iconocheck.png", size = 19) {
 
 function renderMailCheckIcon(size = 19) {
   return renderMailIcon("iconocheck.png", size);
-}
-
-function renderMailFooterBrand(width = 92) {
-  return `<img src="${IMG_BASE}/duohealthclub.png" alt="${escapeHtml(BRAND_NAME)} Health Club" width="${Number(width) || 92}" style="display:block; width:${Number(width) || 92}px; max-width:100%; height:auto; border:0; outline:none; text-decoration:none; filter:invert(1);" />`;
-}
-
-function renderMailFooterIcons() {
-  const icons = [
-    { file: "iconoig.png", alt: "Instagram", href: SOCIAL_LINKS.instagram },
-    { file: "iconolnkd.png", alt: "LinkedIn", href: SOCIAL_LINKS.linkedin },
-    { file: "iconospot.png", alt: "Spotify", href: SOCIAL_LINKS.spotify },
-  ];
-
-  return `
-    <table role="presentation" cellpadding="0" cellspacing="0" style="border-collapse:collapse; margin-top:8px; margin-left:auto;">
-      <tr>
-        ${icons
-          .map(
-            (icon, idx) => `
-              <td style="${idx > 0 ? "padding-left:6px;" : ""}">
-                <a
-                  href="${escapeHtml(icon.href)}"
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  style="display:inline-block; text-decoration:none; border:0; outline:none;; color:#ffffff;"
-                >
-                  <img
-                    src="${IMG_BASE}/${icon.file}"
-                    alt="${escapeHtml(icon.alt)}"
-                    width="20"
-                    height="20"
-                    style="display:block; width:20px; height:20px; border:0; outline:none; text-decoration:none;"
-                  />
-                </a>
-              </td>
-            `
-          )
-          .join("")}
-      </tr>
-    </table>
-  `;
 }
 
 /* =========================================================
@@ -401,7 +356,7 @@ function buildPaymentUserVisualEmail({
                                   <td valign="middle" style="width:24px; padding:0 10px 0 0;">
                                     <div style="width:19px; height:19px; border:2px solid #111111; border-radius:999px; font-size:11px; line-height:17px; text-align:center; font-weight:700; color:#111111;">${renderMailIcon(iconFile, 19)}</div>
                                   </td>
-                                  <td class="duo-pay-heading" valign="middle" style="font-family:Arial, Helvetica, sans-serif; font-size:24px; line-height:28px; font-weight:700; color:#111111; letter-spacing:-0.6px;">${escapeHtml(heading)}</td>
+                                  <td class="duo-pay-heading" valign="middle" style="font-family:Arial, Helvetica, sans-serif; font-size:24px; line-height:28px; font-weight:750; color:#111111; letter-spacing:-0.6px;">${escapeHtml(heading)}</td>
                                 </tr>
                               </table>
                             </td>
@@ -460,24 +415,7 @@ function buildPaymentUserVisualEmail({
                         </table>
                       </td>
                     </tr>
-                    <tr>
-                      <td class="duo-pay-footer" style="background:#0A0A0A; padding:40px 48px 42px; border-radius:0 0 28px 28px; font-family:Arial, Helvetica, sans-serif;">
-                        <table role="presentation" cellpadding="0" cellspacing="0" width="100%" style="border-collapse:collapse; width:100%;">
-                          <tr>
-                            <td valign="middle" style="width:42%; color:#ffffff; font-family:Arial, Helvetica, sans-serif;">
-                              <div class="duo-footer-brand" style="font-size:23px; line-height:23px; font-weight:700; letter-spacing:7px;">${renderMailFooterBrand()}</div>
-                              <div style="font-size:4px; line-height:7px; font-weight:700; letter-spacing:1.8px; margin-top:4px; opacity:0.95;"></div>
-                            </td>
-                            <td valign="middle" align="right" class="duo-footer-info" style="width:58%; color:#ffffff; font-family:Arial, Helvetica, sans-serif; font-size:9px; line-height:13px; font-weight:500; letter-spacing:0.2px;">
-                              <div style="font-weight:700; letter-spacing:2.8px; color:#ffffff; text-decoration:none;"><span style="color:#ffffff; text-decoration:none;">DUOCLUB.AR</span></div>
-                              <div style="color:#ffffff; text-decoration:none;"><span style="color:#ffffff; text-decoration:none;">+54 249 420 7343</span></div>
-                              <div style="color:#ffffff; text-decoration:none;"><span style="color:#ffffff; text-decoration:none;">Avellaneda 1425 of. 201, Tandil</span></div>
-                              <div style="padding-top:6px; font-size:10px; line-height:10px; letter-spacing:4px;">${renderMailFooterIcons()}</div>
-                            </td>
-                          </tr>
-                        </table>
-                      </td>
-                    </tr>
+                    ${renderUnifiedMailFooter({ className: "duo-pay-footer" })}
                   </table>
                 </td>
               </tr>

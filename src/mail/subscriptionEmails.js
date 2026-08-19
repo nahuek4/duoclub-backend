@@ -2,9 +2,11 @@
 import { BRAND_NAME, BRAND_URL, sendMail } from "./core.js";
 import { escapeHtml } from "./helpers.js";
 import { buildEmailLayout } from "./layout.js";
+import { renderUnifiedMailFooter } from "./ui.js";
 
 const TZ = "America/Argentina/Buenos_Aires";
 const IMG_BASE = "https://api.duoclub.ar/images";
+
 
 const SERVICE_LABELS = {
   EP: "Entrenamiento Personal",
@@ -88,26 +90,6 @@ function duoFont() {
   return `'Helvetica Neue', Helvetica, Arial, sans-serif`;
 }
 
-function infoCard(label, value) {
-  return `
-    <td width="50%" valign="top" style="padding:5px;">
-      <table role="presentation" cellpadding="0" cellspacing="0" width="100%"
-        style="border-collapse:separate;border-spacing:0;background:#F1F1EE;border-radius:16px;">
-        <tr>
-          <td style="padding:15px 14px 16px;font-family:${duoFont()};color:#111111;">
-            <div style="font-size:10px;line-height:13px;font-weight:800;letter-spacing:.7px;text-transform:uppercase;color:#777;margin-bottom:6px;">
-              ${escapeHtml(label)}
-            </div>
-            <div style="font-size:16px;line-height:21px;font-weight:800;color:#111111;">
-              ${escapeHtml(value)}
-            </div>
-          </td>
-        </tr>
-      </table>
-    </td>
-  `;
-}
-
 function buildRenewalEmailHtml({
   user,
   serviceKey,
@@ -134,6 +116,20 @@ function buildRenewalEmailHtml({
     footerNote: "",
     bodyHtml: `
       <style>
+        .sub-wrap b,
+        .sub-wrap strong {
+          font-weight:700 !important;
+        }
+
+        a[x-apple-data-detectors],
+        .sub-footer-info a,
+        .sub-footer-info a:link,
+        .sub-footer-info a:visited,
+        .sub-footer-info span {
+          color:#ffffff !important;
+          text-decoration:none !important;
+        }
+
         @media only screen and (max-width:560px){
           .sub-wrap{width:100%!important;max-width:390px!important}
           .sub-body{padding:22px 18px 26px!important}
@@ -162,7 +158,7 @@ function buildRenewalEmailHtml({
                     </tr>
                   </table>
 
-                  <div class="sub-title" style="margin-top:16px;font-family:${duoFont()};font-size:30px;line-height:34px;font-weight:800;letter-spacing:-1px;color:#fff;">
+                  <div class="sub-title" style="margin-top:16px;font-family:${duoFont()};font-size:30px;line-height:34px;font-weight:750;letter-spacing:-1px;color:#fff;">
                     Tu plan se renovó.
                   </div>
                   <div style="margin-top:7px;font-family:${duoFont()};font-size:14px;line-height:20px;color:#D7D7D7;">
@@ -196,19 +192,19 @@ function buildRenewalEmailHtml({
                     style="border-collapse:collapse;margin-top:15px;border-top:1px solid #deded8;">
                     <tr>
                       <td style="padding:15px 0 7px;font-size:13px;color:#666;">Período</td>
-                      <td align="right" style="padding:15px 0 7px;font-size:13px;font-weight:800;color:#111;">
+                      <td align="right" style="padding:15px 0 7px;font-size:13px;font-weight:700;color:#111;">
                         ${escapeHtml(period)}
                       </td>
                     </tr>
                     <tr>
                       <td style="padding:7px 0;font-size:13px;color:#666;">Facturación</td>
-                      <td align="right" style="padding:7px 0;font-size:13px;font-weight:800;color:#111;">
+                      <td align="right" style="padding:7px 0;font-size:13px;font-weight:700;color:#111;">
                         ${escapeHtml(statusText)}
                       </td>
                     </tr>
                     <tr>
                       <td style="padding:7px 0;font-size:13px;color:#666;">Vencimiento de pago</td>
-                      <td align="right" style="padding:7px 0;font-size:13px;font-weight:800;color:#111;">
+                      <td align="right" style="padding:7px 0;font-size:13px;font-weight:700;color:#111;">
                         ${escapeHtml(dateAR(dueAt))}
                       </td>
                     </tr>
@@ -234,7 +230,7 @@ function buildRenewalEmailHtml({
 
                   <div style="text-align:center;margin-top:22px;">
                     <a href="${escapeHtml(miPlanUrl())}"
-                      style="display:inline-block;background:#EEFF00;color:#111;text-decoration:none;border-radius:999px;padding:14px 22px;font-size:14px;line-height:18px;font-weight:900;">
+                      style="display:inline-block;background:#EEFF00;color:#111;text-decoration:none;border-radius:999px;padding:14px 22px;font-size:14px;line-height:18px;font-weight:700;">
                       Ver mi plan
                     </a>
                   </div>
@@ -242,19 +238,22 @@ function buildRenewalEmailHtml({
               </tr>
 
               <tr>
-                <td style="background:#0A0A0A;padding:24px 22px;color:#fff;font-family:${duoFont()};">
-                  <table role="presentation" cellpadding="0" cellspacing="0" width="100%">
-                    <tr>
-                      <td valign="middle">
-                        <img src="${IMG_BASE}/duohealthclub.png" alt="DUO Health Club" width="92"
-                          style="display:block;width:92px;max-width:100%;height:auto;border:0;filter:invert(1);" />
-                      </td>
-                      <td valign="middle" align="right" style="font-size:10px;line-height:15px;color:#fff;">
-                        DUOCLUB.AR<br />
-                        +549 249 420 7343<br />
-                        Avellaneda 1425 of. 201, Tandil
-                      </td>
-                    </tr>
+                <td
+                  style="
+                    background:#0A0A0A;
+                    padding:24px 22px;
+                    color:#ffffff;
+                    font-family:${duoFont()};
+                  "
+                >
+                  <table
+                    role="presentation"
+                    cellpadding="0"
+                    cellspacing="0"
+                    width="100%"
+                    style="border-collapse:collapse;width:100%;"
+                  >
+                    ${renderUnifiedMailFooter({ className: "sub-footer" })}
                   </table>
                 </td>
               </tr>
