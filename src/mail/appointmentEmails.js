@@ -8,7 +8,7 @@ import {
   renderPrimaryButton,
   renderAdminMetaPanel,
   renderAdminDetailPanel,
-  renderRowCard,,
+  renderRowCard,
   renderUnifiedMailFooter
 } from "./ui.js";
 import { adminRecipientsForAppointment } from "./recipients.js";

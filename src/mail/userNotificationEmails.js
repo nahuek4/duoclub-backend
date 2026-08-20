@@ -8,7 +8,7 @@ import {
   renderPrimaryButton,
   renderAdminDetailPanel,
   renderAdminMetaPanel,
-  renderRowCard,,
+  renderRowCard,
   renderUnifiedMailFooter
 } from "./ui.js";
 

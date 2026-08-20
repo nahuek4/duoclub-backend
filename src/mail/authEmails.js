@@ -12,7 +12,7 @@ import {
   renderLinksFallback,
   renderPrimaryButton,
   renderAdminMetaPanel,
-  renderAdminDetailPanel,,
+  renderAdminDetailPanel,
   renderUnifiedMailFooter
 } from "./ui.js";
 

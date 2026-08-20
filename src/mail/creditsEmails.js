@@ -7,7 +7,7 @@ import {
   renderExactBodyText,
   renderAdminMetaPanel,
   renderAdminDetailPanel,
-  renderRowCard,,
+  renderRowCard,
   renderUnifiedMailFooter
 } from "./ui.js";
 import { adminRecipientsForServiceItems } from "./recipients.js";
