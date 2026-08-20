@@ -7,7 +7,6 @@ import { renderUnifiedMailFooter } from "./ui.js";
 const TZ = "America/Argentina/Buenos_Aires";
 const IMG_BASE = "https://api.duoclub.ar/images";
 
-
 const SERVICE_LABELS = {
   EP: "Entrenamiento Personal",
   RA: "Rehabilitación Activa",
@@ -88,6 +87,26 @@ function miPlanUrl() {
 
 function duoFont() {
   return `'Helvetica Neue', Helvetica, Arial, sans-serif`;
+}
+
+function infoCard(label, value) {
+  return `
+    <td width="50%" valign="top" style="padding:5px;">
+      <table role="presentation" cellpadding="0" cellspacing="0" width="100%"
+        style="border-collapse:separate;border-spacing:0;background:#F1F1EE;border-radius:16px;">
+        <tr>
+          <td style="padding:15px 14px 16px;font-family:${duoFont()};color:#111111;">
+            <div style="font-size:10px;line-height:13px;font-weight:700;letter-spacing:.7px;text-transform:uppercase;color:#777;margin-bottom:6px;">
+              ${escapeHtml(label)}
+            </div>
+            <div style="font-size:16px;line-height:21px;font-weight:700;color:#111111;">
+              ${escapeHtml(value)}
+            </div>
+          </td>
+        </tr>
+      </table>
+    </td>
+  `;
 }
 
 function buildRenewalEmailHtml({
@@ -237,26 +256,7 @@ function buildRenewalEmailHtml({
                 </td>
               </tr>
 
-              <tr>
-                <td
-                  style="
-                    background:#0A0A0A;
-                    padding:24px 22px;
-                    color:#ffffff;
-                    font-family:${duoFont()};
-                  "
-                >
-                  <table
-                    role="presentation"
-                    cellpadding="0"
-                    cellspacing="0"
-                    width="100%"
-                    style="border-collapse:collapse;width:100%;"
-                  >
-                    ${renderUnifiedMailFooter({ className: "sub-footer" })}
-                  </table>
-                </td>
-              </tr>
+              ${renderUnifiedMailFooter({ className: "sub-footer" })}
             </table>
           </td>
         </tr>
@@ -281,15 +281,12 @@ export async function sendSubscriptionRenewalEmail({
   const to = clean(user?.email);
   if (!to) return { skipped: true, reason: "USER_WITHOUT_EMAIL" };
 
-  // Los scripts de simulación del lifecycle usan dominios .invalid.
-  // No intentamos entregar correo real en esos casos.
   if (/\.invalid$/i.test(to)) {
     return { skipped: true, reason: "TEST_EMAIL_DOMAIN" };
   }
 
   const svc = serviceLabel(serviceKey, serviceName);
   const period = monthLabel(periodKey);
-
   const subject = `Tu plan DUO se renovó · ${svc}`;
 
   const text = [
