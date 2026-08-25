@@ -16,7 +16,7 @@ import {
 
 export { resolvePublishedPlanFromPaidOrder, summarizePaidOrderForService };
 
-const RECURRING_SERVICE_KEYS = new Set(["EP", "RA", "RF", "KD", "SYN", "NUT"]);
+const RECURRING_SERVICE_KEYS = new Set(["EP", "RA", "RF", "SYN"]);
 const SERVICE_NAMES = {
   EP: "Entrenamiento Personal",
   RA: "Rehabilitación Activa",
