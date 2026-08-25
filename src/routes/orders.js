@@ -39,10 +39,14 @@ const PLUS_PRICE = Number(process.env.PLUS_PRICE || 20000);
 const PLUS_DISCOUNT_PCT = 15;
 const CREDITS_EXPIRE_DAYS = 30;
 const PERFORMANCE_COPAY_PRICE = Number(process.env.PERFORMANCE_COPAY_PRICE || 12500);
-const PERFORMANCE_COPAY_KEYS = new Set(["RA", "RF", "KD", "SYN"]);
+const PERFORMANCE_COPAY_KEYS = new Set(["RA", "RF", "SYN"]);
 const PUBLIC_EVALUATION_PRICE = Number(process.env.PUBLIC_EVALUATION_PRICE || 30000);
 
-const ALLOWED_SERVICE_KEYS = new Set(["PE", "EP", "RA", "RF", "KD", "SYN", "NUT"]);
+// Compatibilidad histórica: estos keys se siguen pudiendo leer en órdenes/historiales ya existentes.
+const LEGACY_SERVICE_KEYS = new Set(["PE", "EP", "RA", "RF", "KD", "SYN", "NUT"]);
+
+// Únicos servicios habilitados para NUEVA operatoria/compra.
+const OPERATIONAL_SERVICE_KEYS = new Set(["EP", "RA", "RF", "SYN"]);
 const SERVICE_KEY_TO_NAME = {
   PE: "Primera evaluación presencial",
   EP: "Entrenamiento Personal",
@@ -56,12 +60,29 @@ const SERVICE_KEY_TO_NAME = {
 function normalizeServiceKey(value, { allowEmpty = false } = {}) {
   const sk = String(value || "").toUpperCase().trim();
   if (!sk) return allowEmpty ? "" : null;
-  return ALLOWED_SERVICE_KEYS.has(sk) ? sk : null;
+  return LEGACY_SERVICE_KEYS.has(sk) ? sk : null;
+}
+
+function normalizeOperationalServiceKey(value, { allowEmpty = false } = {}) {
+  const sk = String(value || "").toUpperCase().trim();
+  if (!sk) return allowEmpty ? "" : null;
+  return OPERATIONAL_SERVICE_KEYS.has(sk) ? sk : null;
 }
 
 function assertServiceKey(value, label = "serviceKey") {
   const sk = normalizeServiceKey(value);
   if (!sk) throw new Error(`${label} inválido.`);
+  return sk;
+}
+
+function assertOperationalServiceKey(value, label = "serviceKey") {
+  const sk = normalizeOperationalServiceKey(value);
+  if (!sk) {
+    const err = new Error(`${label} no está habilitado para nuevas compras.`);
+    err.status = 410;
+    err.code = "SERVICE_RETIRED";
+    throw err;
+  }
   return sk;
 }
 
@@ -810,7 +831,7 @@ function isPerformanceCopayItem(input = {}) {
 }
 
 async function resolveCreditsItem({ serviceKey, credits, payMethod, planCode, label, pricingPlanId, id, itemId, user = null }) {
-  const sk = normalizeServiceKey(serviceKey);
+  const sk = normalizeOperationalServiceKey(serviceKey);
   const pm = String(payMethod || "").toUpperCase();
   const cr = Number(credits);
   const planId = String(pricingPlanId || id || itemId || "").trim();
@@ -1150,7 +1171,7 @@ router.post("/", protect, async (req, res) => {
   try {
     const { serviceKey, credits, payMethod, plus } = req.body || {};
 
-    const sk = normalizeServiceKey(serviceKey);
+    const sk = normalizeOperationalServiceKey(serviceKey);
     const pm = String(payMethod || "").toUpperCase();
     const cr = Number(credits);
     const wantsPlus = Boolean(plus);
@@ -1273,7 +1294,7 @@ router.post("/", protect, async (req, res) => {
 ========================================================= */
 router.post("/admin-payment-link", protect, adminOnly, async (req, res) => {
   try {
-    const sk = assertServiceKey(req.body?.serviceKey, "serviceKey");
+    const sk = assertOperationalServiceKey(req.body?.serviceKey, "serviceKey");
     const sessions = Math.trunc(Number(req.body?.sessions ?? req.body?.credits ?? 0));
     const amount = normalizeMoney(req.body?.amount ?? req.body?.price ?? req.body?.total);
     const customerName = normalizeCustomerName(req.body?.customerName || req.body?.name);
@@ -1447,6 +1468,12 @@ router.post("/public-payment/:token/pay", async (req, res) => {
 ========================================================= */
 router.post("/public-evaluation/pay", async (req, res) => {
   try {
+    // Evaluación PE retirada de la operatoria nueva. Se conserva la ruta para
+    // responder de forma explícita a clientes/versiones antiguas de la app.
+    return res.status(410).json({
+      error: "La evaluación pública ya no está disponible para nuevas compras.",
+      code: "SERVICE_RETIRED_PUBLIC_EVALUATION",
+    });
     const customerName = normalizeCustomerName(req.body?.customerName || req.body?.name);
     const customerEmail = normalizeCustomerEmail(req.body?.customerEmail || req.body?.email);
     const customerPhone = normalizeCustomerPhone(req.body?.customerPhone || req.body?.phone);
@@ -1573,7 +1600,7 @@ router.post("/admin-create", protect, adminOnly, async (req, res) => {
   try {
     const userId = String(req.body?.userId || "").trim();
     const userEmail = normalizeCustomerEmail(req.body?.userEmail || req.body?.email);
-    const sk = assertServiceKey(req.body?.serviceKey, "serviceKey");
+    const sk = assertOperationalServiceKey(req.body?.serviceKey, "serviceKey");
     const credits = Math.trunc(Number(req.body?.credits ?? req.body?.sessions ?? 0));
     const amount = normalizeMoney(req.body?.amount ?? req.body?.price ?? req.body?.total);
     const payMethodRaw = String(req.body?.payMethod || "CASH").toUpperCase().trim();

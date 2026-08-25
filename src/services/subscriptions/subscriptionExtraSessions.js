@@ -23,9 +23,14 @@ import { projectActiveFixedSchedulesForMonth } from "./subscriptionScheduleProje
 const ACTIVE_SUBSCRIPTION_STATUSES = ["active", "pending_change", "suspended"];
 const PAID_ORDER_STATUSES = new Set(["paid", "approved"]);
 const CLOSED_ORDER_STATUSES = new Set(["cancelled", "canceled", "expired"]);
+const OPERATIONAL_SERVICE_KEYS = new Set(["EP", "RA", "RF", "SYN"]);
 
 function clean(value) {
   return String(value || "").trim();
+}
+
+function isOperationalServiceKey(value) {
+  return OPERATIONAL_SERVICE_KEYS.has(clean(value).toUpperCase());
 }
 
 function idOf(value) {
@@ -164,6 +169,16 @@ async function calculateExtraSessionStateForUserService({
       400,
       "INVALID_USER_OR_SERVICE"
     );
+  }
+
+  if (!isOperationalServiceKey(normalizedServiceKey)) {
+    return {
+      ok: true,
+      skipped: true,
+      reason: "RETIRED_SERVICE",
+      userId: String(userId),
+      serviceKey: normalizedServiceKey,
+    };
   }
 
   const subscription = await ServiceSubscription.findOne({
@@ -413,6 +428,7 @@ export async function serializeExtraSessionNoticeForUser(noticeInput) {
       : await SubscriptionExtraSessionNotice.findById(noticeInput?._id || noticeInput);
 
   if (!notice) return null;
+  if (!isOperationalServiceKey(notice.serviceKey)) return null;
   await refreshNoticePendingOrder(notice);
 
   const remaining = Math.max(
@@ -504,6 +520,14 @@ export async function resolveExtraSessionCheckoutItem({
 
   if (!notice) {
     throw createHttpError("El aviso de sesiones adicionales no existe.", 404, "NOTICE_NOT_FOUND");
+  }
+
+  if (!isOperationalServiceKey(notice.serviceKey)) {
+    throw createHttpError(
+      "Este servicio ya no admite nuevas compras de sesiones adicionales.",
+      410,
+      "RETIRED_SERVICE_EXTRA_SESSIONS"
+    );
   }
 
   await refreshNoticePendingOrder(notice);

@@ -10,6 +10,7 @@ import {
 } from "./subscriptionExtraSessions.js";
 
 const RECURRING_SERVICE_KEYS = new Set(["EP", "RA", "RF", "KD", "SYN", "NUT"]);
+const OPERATIONAL_RECURRING_SERVICE_KEYS = new Set(["EP", "RA", "RF", "SYN"]);
 const ACTIVE_SUBSCRIPTION_STATUSES = new Set(["active", "pending_change"]);
 const PAID_STATUSES = new Set(["paid", "approved"]);
 
@@ -22,6 +23,11 @@ function normalizeServiceKey(value) {
   if (raw === "AR") return "RA";
   if (raw === "KINEDEPO" || raw === "KINE-DEPO") return "KD";
   return RECURRING_SERVICE_KEYS.has(raw) ? raw : "";
+}
+
+function isOperationalRecurringServiceKey(value) {
+  const key = normalizeServiceKey(value);
+  return Boolean(key && OPERATIONAL_RECURRING_SERVICE_KEYS.has(key));
 }
 
 function toPositiveInt(value) {
@@ -148,7 +154,9 @@ export async function activateSubscriptionsFromPaidOrder({ order, session = null
   }
 
   const payMethod = clean(order?.payMethod).toUpperCase();
-  const items = orderCreditItems(order);
+  const items = orderCreditItems(order).filter((item) =>
+    isOperationalRecurringServiceKey(item?.serviceKey)
+  );
   const activated = [];
 
   for (const item of items) {
@@ -248,6 +256,15 @@ export async function reconcilePendingFixedAppointmentsForUserService({
   const sk = normalizeServiceKey(serviceKey);
   if (!mongoose.Types.ObjectId.isValid(clean(userId)) || !sk) {
     return { ok: false, error: "INVALID_USER_OR_SERVICE" };
+  }
+
+  if (!isOperationalRecurringServiceKey(sk)) {
+    return {
+      ok: true,
+      skipped: true,
+      reason: "SERVICE_RETIRED",
+      serviceKey: sk,
+    };
   }
 
   const subscription = await ServiceSubscription.findOne({

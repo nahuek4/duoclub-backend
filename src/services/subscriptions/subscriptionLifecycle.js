@@ -28,6 +28,7 @@ import { projectActiveFixedSchedulesForMonth } from "./subscriptionScheduleProje
 
 const TZ = "America/Argentina/Buenos_Aires";
 const RENEWABLE_STATUSES = ["active", "pending_change"];
+const OPERATIONAL_SUBSCRIPTION_SERVICE_KEYS = new Set(["EP", "RA", "RF", "SYN"]);
 const SERVICE_NAME = {
   EP: "Entrenamiento Personal",
   RA: "Rehabilitación Activa",
@@ -43,6 +44,10 @@ function pad2(n) {
 
 function clean(value) {
   return String(value || "").trim();
+}
+
+function isOperationalSubscriptionServiceKey(value) {
+  return OPERATIONAL_SUBSCRIPTION_SERVICE_KEYS.has(clean(value).toUpperCase());
 }
 
 function asInt(value) {
@@ -468,6 +473,17 @@ export async function ensureMonthlyCycleForSubscription({ subscriptionId, period
         return;
       }
 
+      if (!isOperationalSubscriptionServiceKey(subscription.serviceKey)) {
+        result = {
+          ok: true,
+          skipped: true,
+          reason: "SERVICE_RETIRED",
+          subscriptionId: String(subscription._id),
+          serviceKey: clean(subscription.serviceKey).toUpperCase(),
+        };
+        return;
+      }
+
       if (!subscription.autoRenew || !RENEWABLE_STATUSES.includes(subscription.status)) {
         result = { ok: true, skipped: true, reason: "NOT_RENEWABLE", subscriptionId: String(subscription._id) };
         return;
@@ -653,6 +669,7 @@ export async function createRenewalPreviewNotices({ targetPeriodKey, now = new D
   const subscriptions = await ServiceSubscription.find({
     autoRenew: true,
     status: { $in: RENEWABLE_STATUSES },
+    serviceKey: { $in: [...OPERATIONAL_SUBSCRIPTION_SERVICE_KEYS] },
   }).lean();
 
   let createdOrUpdated = 0;
