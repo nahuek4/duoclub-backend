@@ -1,7 +1,8 @@
 #!/bin/bash
+set -euo pipefail
 
 echo "➡ Actualizando código desde Git..."
-git pull origin main
+git pull --ff-only origin main
 
 echo "➡ Instalando dependencias (si hay nuevas)..."
 npm install
