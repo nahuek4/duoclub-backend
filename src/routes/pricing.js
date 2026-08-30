@@ -7,7 +7,11 @@ import { logActivity } from "../lib/activityLogger.js";
 
 const router = express.Router();
 
-const ALLOWED_SERVICE_KEYS = new Set(["PE", "EP", "RF", "RA", "KD", "SYN", "NUT"]);
+// Se conserva el parser legacy para poder leer/auditar documentos históricos.
+const LEGACY_SERVICE_KEYS = new Set(["PE", "EP", "RF", "RA", "KD", "SYN", "NUT"]);
+
+// Únicos servicios publicables/creables desde ahora.
+const OPERATIONAL_SERVICE_KEYS = new Set(["EP", "RA", "RF", "SYN"]);
 const SERVICE_KEY_ALIASES = {
   AR: "RA",
 };
@@ -17,7 +21,12 @@ function normalizeServiceKey(value) {
   if (!raw) return "";
 
   const canonical = SERVICE_KEY_ALIASES[raw] || raw;
-  return ALLOWED_SERVICE_KEYS.has(canonical) ? canonical : "";
+  return LEGACY_SERVICE_KEYS.has(canonical) ? canonical : "";
+}
+
+function normalizeOperationalServiceKey(value) {
+  const canonical = normalizeServiceKey(value);
+  return OPERATIONAL_SERVICE_KEYS.has(canonical) ? canonical : "";
 }
 
 function normalizePayMethod(value) {
@@ -95,258 +104,18 @@ async function ensurePricingIndexesForCustomCards() {
   }
 }
 
-/* =========================
-   AUTO-SEED KD PRICING
-========================= */
-const KD_SERVICE_KEY = "KD";
-const KD_SEED_SOURCE_KEYS = ["RA", "RF"];
-
-
-/* =========================
-   AUTO-SEED EVALUACIONES PE
-   Se mantienen como créditos PE, pero se muestran como 2 variantes comerciales.
-========================= */
-const PE_EVALUATION_VARIANT_PLANS = [
-  {
-    customTitle: "Evaluación Performance",
-    label: "Evaluación Performance",
-    payMethod: "CASH",
-    price: 20000,
-  },
-  {
-    customTitle: "Evaluación Performance",
-    label: "Evaluación Performance",
-    payMethod: "MP",
-    price: 23000,
-  },
-  {
-    customTitle: "Evaluación Training",
-    label: "Evaluación Training",
-    payMethod: "CASH",
-    price: 15000,
-  },
-  {
-    customTitle: "Evaluación Training",
-    label: "Evaluación Training",
-    payMethod: "MP",
-    price: 18000,
-  },
-];
-
-async function ensurePEEvaluationVariantPlans() {
-  // Evitamos que conviva la tarjeta estándar genérica PE + 1 crédito
-  // con las dos variantes nuevas. No se borra: solo se desactiva.
-  const disabledStandard = await PricingPlan.updateMany(
-    {
-      serviceKey: "PE",
-      credits: 1,
-      isCustom: { $ne: true },
-      active: { $ne: false },
-    },
-    {
-      $set: { active: false },
-    }
-  );
-
-  const operations = PE_EVALUATION_VARIANT_PLANS.map((variant) => ({
-    updateOne: {
-      filter: {
-        serviceKey: "PE",
-        payMethod: variant.payMethod,
-        credits: 1,
-        isCustom: true,
-        customTitle: variant.customTitle,
-      },
-      update: {
-        $set: {
-          serviceKey: "PE",
-          payMethod: variant.payMethod,
-          credits: 1,
-          price: variant.price,
-          label: variant.label,
-          customTitle: variant.customTitle,
-          isCustom: true,
-          active: true,
-        },
-      },
-      upsert: true,
-    },
-  }));
-
-  const result = await PricingPlan.bulkWrite(operations, { ordered: false });
-
-  return {
-    disabledStandard: Number(disabledStandard?.modifiedCount || 0),
-    created: Number(result?.upsertedCount || 0),
-    modified: Number(result?.modifiedCount || 0),
-  };
-}
-
-function pricingIdentityKey(plan) {
-  return [
-    String(plan?.payMethod || "").toUpperCase().trim(),
-    Number(plan?.credits || 0),
-  ].join("__");
-}
-
-function planIsUsableForSeed(plan) {
-  // No copiamos tarjetas libres para evitar duplicaciones de promos personalizadas.
-  if (plan?.isCustom === true) return false;
-
-  const payMethod = normalizePayMethod(plan?.payMethod);
-  const credits = normalizeCredits(plan?.credits);
-  const price = normalizePrice(plan?.price);
-
-  return (
-    ["CASH", "MP"].includes(payMethod) &&
-    Number.isFinite(credits) &&
-    credits > 0 &&
-    Number.isFinite(price) &&
-    price >= 0
-  );
-}
-
-function labelForKDPlan(sourcePlan) {
-  const current = String(sourcePlan?.label || "").trim();
-  if (current) return current;
-
-  const credits = Number(sourcePlan?.credits || 0);
-  if (credits === 1) return "1 sesión";
-  if (credits > 1) return `${credits} sesiones`;
-  return "";
-}
-
-function pickSourcePlansForKD(allSourcePlans = []) {
-  const usable = allSourcePlans.filter(planIsUsableForSeed);
-
-  const activeRA = usable.filter(
-    (p) => String(p.serviceKey || "").toUpperCase() === "RA" && p.active !== false
-  );
-  if (activeRA.length) return activeRA;
-
-  const activeRF = usable.filter(
-    (p) => String(p.serviceKey || "").toUpperCase() === "RF" && p.active !== false
-  );
-  if (activeRF.length) return activeRF;
-
-  const anyRA = usable.filter((p) => String(p.serviceKey || "").toUpperCase() === "RA");
-  if (anyRA.length) return anyRA;
-
-  const anyRF = usable.filter((p) => String(p.serviceKey || "").toUpperCase() === "RF");
-  if (anyRF.length) return anyRF;
-
-  return [];
-}
-
-async function ensureKDPricingPlans() {
-  const existingKD = await PricingPlan.find({
-    serviceKey: KD_SERVICE_KEY,
-    isCustom: { $ne: true },
-  }).lean();
-  const activeKD = existingKD.filter((p) => p.active !== false);
-
-  if (activeKD.length > 0) {
-    return { created: 0, activated: 0, skipped: true, reason: "KD_ALREADY_ACTIVE" };
-  }
-
-  if (existingKD.length > 0) {
-    await PricingPlan.updateMany(
-      { serviceKey: KD_SERVICE_KEY, isCustom: { $ne: true } },
-      { $set: { active: true } }
-    );
-    return {
-      created: 0,
-      activated: existingKD.length,
-      skipped: false,
-      reason: "KD_EXISTING_PLANS_ACTIVATED",
-    };
-  }
-
-  const sourcePlans = await PricingPlan.find({
-    serviceKey: { $in: KD_SEED_SOURCE_KEYS },
-    isCustom: { $ne: true },
-  })
-    .sort({ serviceKey: 1, payMethod: 1, credits: 1 })
-    .lean();
-
-  const selectedSources = pickSourcePlansForKD(sourcePlans);
-
-  if (!selectedSources.length) {
-    console.warn(
-      "[PRICING][KD_SEED] No se encontraron planes RA/RF para copiar. Cargá al menos un plan RA o RF para crear KD automáticamente."
-    );
-    return { created: 0, activated: 0, skipped: true, reason: "NO_SOURCE_PLANS" };
-  }
-
-  const uniqueSources = new Map();
-  for (const source of selectedSources) {
-    const key = pricingIdentityKey(source);
-    if (!uniqueSources.has(key)) uniqueSources.set(key, source);
-  }
-
-  const operations = [...uniqueSources.values()].map((source) => {
-    const payMethod = normalizePayMethod(source.payMethod);
-    const credits = normalizeCredits(source.credits);
-    const price = normalizePrice(source.price);
-
-    return {
-      updateOne: {
-        filter: {
-          serviceKey: KD_SERVICE_KEY,
-          payMethod,
-          credits,
-          isCustom: { $ne: true },
-        },
-        update: {
-          $setOnInsert: {
-            serviceKey: KD_SERVICE_KEY,
-            payMethod,
-            credits,
-            price,
-            label: labelForKDPlan(source),
-            isCustom: false,
-            customTitle: "",
-          },
-          $set: { active: true },
-        },
-        upsert: true,
-      },
-    };
-  });
-
-  if (!operations.length) {
-    return { created: 0, activated: 0, skipped: true, reason: "NO_VALID_SOURCE_DOCS" };
-  }
-
-  const result = await PricingPlan.bulkWrite(operations, { ordered: false });
-  const created = Number(result?.upsertedCount || 0);
-  const modified = Number(result?.modifiedCount || 0);
-
-  console.log("[PRICING][KD_SEED] Planes KD sincronizados automáticamente:", {
-    created,
-    modified,
-  });
-
-  return {
-    created,
-    activated: modified,
-    skipped: false,
-    reason: "KD_CREATED_FROM_RA_OR_RF",
-  };
-}
-
 router.use(protect);
 
 // GET /pricing?active=1
 router.get("/", async (req, res) => {
   try {
     await ensurePricingIndexesForCustomCards();
-    await ensurePEEvaluationVariantPlans();
-    await ensureKDPricingPlans();
 
     const active = String(req.query.active ?? "1") === "1";
 
-    const query = active ? { active: true } : {};
+    const query = active
+      ? { active: true, serviceKey: { $in: [...OPERATIONAL_SERVICE_KEYS] } }
+      : {};
     const list = await PricingPlan.find(query)
       .sort({ isCustom: 1, serviceKey: 1, payMethod: 1, credits: 1, createdAt: 1 })
       .lean();
@@ -380,7 +149,7 @@ router.post("/upsert", adminOnly, async (req, res) => {
       customTitle,
     } = req.body || {};
 
-    const normalizedServiceKey = normalizeServiceKey(serviceKey);
+    const normalizedServiceKey = normalizeOperationalServiceKey(serviceKey);
     const normalizedPayMethod = normalizePayMethod(payMethod);
     const normalizedCredits = normalizeCredits(credits);
     const normalizedPrice = normalizePrice(price);
