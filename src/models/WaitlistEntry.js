@@ -2,7 +2,7 @@ import mongoose from "mongoose";
 
 const { Schema } = mongoose;
 
-const ALLOWED_SERVICE_KEYS = new Set(["PE", "EP", "RA", "RF", "KD", "NUT"]);
+const ALLOWED_SERVICE_KEYS = new Set(["PE", "EP", "RA", "RF", "KD", "SYN", "NUT"]);
 
 const SERVICE_KEY_TO_NAME = {
   PE: "Primera evaluación presencial",
@@ -10,6 +10,7 @@ const SERVICE_KEY_TO_NAME = {
   RA: "Rehabilitación Activa",
   RF: "Reeducación Funcional",
   KD: "Kinefilaxia Deportiva",
+  SYN: "Synergy",
   NUT: "Nutrición",
 };
 
@@ -43,6 +44,9 @@ function normalizeServiceKey(value) {
   }
   if (normalized.includes("kinefilaxia") || (normalized.includes("kine") && normalized.includes("deport"))) {
     return "KD";
+  }
+  if (normalized.includes("synergy") || normalized.includes("sinergia")) {
+    return "SYN";
   }
   if (normalized.includes("nutric")) {
     return "NUT";

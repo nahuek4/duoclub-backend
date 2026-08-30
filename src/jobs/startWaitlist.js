@@ -3,14 +3,14 @@ import WaitlistEntry from "../models/WaitlistEntry.js";
 import { notifyWaitlistForSlot } from "../routes/waitlist.js";
 
 /**
- * Scheduler:
- * - Revisa periódicamente si hay slots con gente esperando (status=waiting)
- * - Si el slot tiene disponibilidad REAL (según reglas), notifica a TODOS y les genera token.
- * - No hay orden: se notifica a todos juntos, como pediste.
+ * Scheduler de sala de espera.
  *
- * Nota:
- * - Para evitar spam, una vez notificado pasa a status="notified".
- * - El claim consume crédito recién cuando el usuario confirma.
+ * - Agrupa por fecha + hora + servicio.
+ * - Procesa primero el grupo cuyo usuario lleva más tiempo esperando.
+ * - notifyWaitlistForSlot valida el cupo general de TRAINING/PERFORMANCE,
+ *   el límite individual del servicio y los tokens vigentes ya ofrecidos.
+ * - Un token vigente cuenta temporalmente contra la vacante para evitar
+ *   notificar a dos servicios de PERFORMANCE por el mismo lugar libre.
  */
 export function startWaitlistScheduler({ everyMinutes = 2 } = {}) {
   const mins = Math.max(1, Number(everyMinutes || 2));
@@ -18,29 +18,40 @@ export function startWaitlistScheduler({ everyMinutes = 2 } = {}) {
 
   async function tick() {
     try {
-      // agarramos slots únicos con waiting
       const slots = await WaitlistEntry.aggregate([
         { $match: { status: "waiting" } },
-        { $group: { _id: { date: "$date", time: "$time" } } },
-        { $limit: 200 }, // seguridad
+        { $sort: { priorityOrder: 1, createdAt: 1 } },
+        {
+          $group: {
+            _id: {
+              date: "$date",
+              time: "$time",
+              serviceKey: "$serviceKey",
+            },
+            firstCreatedAt: { $first: "$createdAt" },
+            firstPriorityOrder: { $first: "$priorityOrder" },
+          },
+        },
+        { $sort: { firstPriorityOrder: 1, firstCreatedAt: 1 } },
+        { $limit: 300 },
       ]);
 
       for (const s of slots) {
         const date = s?._id?.date;
         const time = s?._id?.time;
-        if (!date || !time) continue;
+        const serviceKey = String(s?._id?.serviceKey || "").toUpperCase().trim();
 
-        // notifyWaitlistForSlot ya valida disponibilidad real + crea tokens + manda mails
-        await notifyWaitlistForSlot({ date, time });
+        if (!date || !time || !serviceKey) continue;
+
+        // Secuencial a propósito: cada notificación genera un token vigente y la
+        // siguiente iteración ya lo cuenta como lugar ofrecido del pool compartido.
+        await notifyWaitlistForSlot({ date, time, serviceKey });
       }
     } catch (e) {
       console.log("[WAITLIST] tick error:", e?.message || e);
     }
   }
 
-  // primer tick pronto
   setTimeout(tick, 1500);
-
-  // luego cada N minutos
   setInterval(tick, mins * 60 * 1000);
 }

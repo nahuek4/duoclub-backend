@@ -6,6 +6,7 @@ import User from "../models/User.js";
 import WaitlistEntry from "../models/WaitlistEntry.js";
 import FixedSchedule from "../models/FixedSchedule.js";
 import ScheduleBlock from "../models/ScheduleBlock.js";
+import CapacityRule from "../models/CapacityRule.js";
 
 import { protect } from "../middleware/auth.js";
 
@@ -993,9 +994,18 @@ function requiresApto(user) {
    Cupos + horarios por servicio
 ========================= */
 const PE_CAP_PER_SLOT = 1; // legacy
-const EP_CAP_PER_SLOT = 11;
-const THERAPY_SHARED_CAP_PER_SLOT = 6; // RA + RF + SYN comparten 6 lugares totales por horario.
+const DEFAULT_ZONE_CAPS = Object.freeze({
+  TRAINING: 11,
+  PERFORMANCE: 6,
+});
 const NUT_CAP_PER_SLOT = 1; // legacy
+
+const CAPACITY_SCOPE_PRIORITY = Object.freeze({
+  default: 0,
+  month: 1,
+  date: 2,
+  slot: 3,
+});
 
 const PE_NAME = "Primera evaluación presencial";
 const EP_NAME = "Entrenamiento Personal";
@@ -1028,6 +1038,13 @@ const TIMES_DEFAULT = [
 function isTherapyService(serviceNameOrKey) {
   const sk = serviceToKey(serviceNameOrKey);
   return ["RA", "RF", "SYN"].includes(sk);
+}
+
+function capacityZoneForService(serviceNameOrKey) {
+  const sk = serviceToKey(serviceNameOrKey);
+  if (sk === "EP") return "TRAINING";
+  if (["RA", "RF", "SYN"].includes(sk)) return "PERFORMANCE";
+  return "";
 }
 
 function getRehabTimesForDate(dateStr) {
@@ -1071,19 +1088,151 @@ function isTherapyAreaActiveAt(dateStr, time) {
   return getTherapySharedTimesForDate(dateStr).includes(t);
 }
 
-function getTherapyCapForSlot(dateStr, time) {
-  return isTherapyAreaActiveAt(dateStr, time) ? THERAPY_SHARED_CAP_PER_SLOT : 0;
+function capacityRuleMatchesSlot(rule, dateStr, time) {
+  if (!rule || rule.active === false) return false;
+
+  const scope = String(rule.scope || "default").toLowerCase().trim();
+  const day = String(dateStr || "").slice(0, 10);
+  const monthKey = day.slice(0, 7);
+  const t = String(time || "").slice(0, 5);
+
+  if (scope === "default") return true;
+  if (scope === "month") return String(rule.monthKey || "") === monthKey;
+  if (scope === "date") return String(rule.date || "").slice(0, 10) === day;
+  if (scope === "slot") {
+    return (
+      String(rule.date || "").slice(0, 10) === day &&
+      String(rule.time || "").slice(0, 5) === t
+    );
+  }
+
+  return false;
 }
 
-function getEpCapForSlot(dateStr, time) {
-  return EP_CAP_PER_SLOT;
+function pickCapacityRule(rules = [], predicate, dateStr, time) {
+  return (Array.isArray(rules) ? rules : [])
+    .filter((rule) => capacityRuleMatchesSlot(rule, dateStr, time))
+    .filter((rule) => predicate(rule))
+    .sort((a, b) => {
+      const ap = CAPACITY_SCOPE_PRIORITY[String(a?.scope || "default")] ?? -1;
+      const bp = CAPACITY_SCOPE_PRIORITY[String(b?.scope || "default")] ?? -1;
+      if (ap !== bp) return bp - ap;
+
+      const au = a?.updatedAt ? new Date(a.updatedAt).getTime() : 0;
+      const bu = b?.updatedAt ? new Date(b.updatedAt).getTime() : 0;
+      return bu - au;
+    })[0] || null;
+}
+
+function resolveZoneCapacityFromRules(rules, zone, dateStr, time) {
+  const normalizedZone = String(zone || "").toUpperCase().trim();
+  const fallback = Number(DEFAULT_ZONE_CAPS[normalizedZone] || 0);
+
+  const rule = pickCapacityRule(
+    rules,
+    (item) =>
+      String(item?.targetType || "").toLowerCase() === "zone" &&
+      String(item?.zone || "").toUpperCase() === normalizedZone,
+    dateStr,
+    time
+  );
+
+  return {
+    limit: rule ? Math.max(0, Number(rule.limit || 0)) : fallback,
+    rule,
+    inherited: !rule,
+  };
+}
+
+function resolveServiceCapacityFromRules(rules, serviceKey, dateStr, time) {
+  const sk = serviceToKey(serviceKey);
+  const zone = capacityZoneForService(sk);
+  if (!sk || !zone) {
+    return {
+      serviceKey: sk,
+      zone,
+      zoneLimit: 0,
+      serviceLimit: null,
+      effectiveLimit: 0,
+      zoneRule: null,
+      serviceRule: null,
+    };
+  }
+
+  const zoneResolved = resolveZoneCapacityFromRules(rules, zone, dateStr, time);
+
+  const serviceRule = pickCapacityRule(
+    rules,
+    (item) =>
+      String(item?.targetType || "").toLowerCase() === "service" &&
+      serviceToKey(item?.serviceKey) === sk,
+    dateStr,
+    time
+  );
+
+  const serviceLimit = serviceRule
+    ? Math.max(0, Number(serviceRule.limit || 0))
+    : null;
+
+  const effectiveLimit =
+    serviceLimit == null
+      ? zoneResolved.limit
+      : Math.min(zoneResolved.limit, serviceLimit);
+
+  return {
+    serviceKey: sk,
+    zone,
+    zoneLimit: zoneResolved.limit,
+    serviceLimit,
+    effectiveLimit,
+    zoneRule: zoneResolved.rule,
+    serviceRule,
+  };
+}
+
+async function loadCapacityRulesForDate(dateStr, session = null) {
+  const day = String(dateStr || "").slice(0, 10);
+  const monthKey = day.slice(0, 7);
+
+  const query = CapacityRule.find({
+    active: true,
+    $or: [
+      { scope: "default" },
+      { scope: "month", monthKey },
+      { scope: { $in: ["date", "slot"] }, date: day },
+    ],
+  }).sort({ updatedAt: 1 });
+
+  if (session) query.session(session);
+  return query.lean();
+}
+
+function getTherapyCapForSlot(dateStr, time, rules = []) {
+  if (!isTherapyAreaActiveAt(dateStr, time)) return 0;
+  return resolveZoneCapacityFromRules(rules, "PERFORMANCE", dateStr, time).limit;
+}
+
+function getEpCapForSlot(dateStr, time, rules = []) {
+  return resolveZoneCapacityFromRules(rules, "TRAINING", dateStr, time).limit;
 }
 
 function getNutCapForSlot(dateStr, time) {
   return NUT_CAP_PER_SLOT;
 }
 
-function getSlotReservationStats(existing, dateStr, time) {
+function reservedForServiceKey(counts, serviceKey) {
+  const sk = serviceToKey(serviceKey);
+  if (sk === "EP") return counts.epReserved;
+  if (sk === "RA") return counts.raReserved;
+  if (sk === "RF") return counts.rfReserved;
+  if (sk === "SYN") return counts.synReserved;
+  if (sk === "KD") return counts.kdReserved;
+  if (sk === "PE") return counts.peReserved;
+  if (sk === "NUT") return counts.nutReserved;
+  return 0;
+}
+
+function getSlotReservationStats(existing, dateStr, time, requestedServiceKey = "", capacityRules = []) {
   const list = Array.isArray(existing) ? existing : [];
 
   const peReserved = list.filter((a) => appointmentServiceKey(a) === "PE").length;
@@ -1095,10 +1244,8 @@ function getSlotReservationStats(existing, dateStr, time) {
   const synReserved = list.filter((a) => appointmentServiceKey(a) === "SYN").length;
   const therapyReserved = raReserved + rfReserved + kdReserved + synReserved;
 
-  return {
-    totalReserved: list.length,
+  const counts = {
     peReserved,
-    peCap: PE_CAP_PER_SLOT,
     epReserved,
     raReserved,
     rfReserved,
@@ -1106,14 +1253,121 @@ function getSlotReservationStats(existing, dateStr, time) {
     nutReserved,
     synReserved,
     therapyReserved,
-    therapyCap: getTherapyCapForSlot(dateStr, time),
-    epCap: getEpCapForSlot(dateStr, time),
+  };
+
+  const requestedSk = serviceToKey(requestedServiceKey);
+  const capacity = resolveServiceCapacityFromRules(
+    capacityRules,
+    requestedSk,
+    dateStr,
+    time
+  );
+
+  const zoneReserved =
+    capacity.zone === "TRAINING"
+      ? epReserved
+      : capacity.zone === "PERFORMANCE"
+        ? therapyReserved
+        : 0;
+
+  const serviceReserved = reservedForServiceKey(counts, requestedSk);
+  const zoneAvailable = Math.max(0, Number(capacity.zoneLimit || 0) - zoneReserved);
+  const serviceAvailable =
+    capacity.serviceLimit == null
+      ? null
+      : Math.max(0, Number(capacity.serviceLimit || 0) - serviceReserved);
+
+  const effectiveAvailable =
+    serviceAvailable == null
+      ? zoneAvailable
+      : Math.min(zoneAvailable, serviceAvailable);
+
+  return {
+    totalReserved: list.length,
+    ...counts,
+    peCap: PE_CAP_PER_SLOT,
+    epCap: getEpCapForSlot(dateStr, time, capacityRules),
+    therapyCap: getTherapyCapForSlot(dateStr, time, capacityRules),
     nutCap: getNutCapForSlot(dateStr, time),
-    synCap: getTherapyCapForSlot(dateStr, time),
+    synCap: resolveServiceCapacityFromRules(capacityRules, "SYN", dateStr, time).effectiveLimit,
+    raCap: resolveServiceCapacityFromRules(capacityRules, "RA", dateStr, time).effectiveLimit,
+    rfCap: resolveServiceCapacityFromRules(capacityRules, "RF", dateStr, time).effectiveLimit,
+    epServiceCap: resolveServiceCapacityFromRules(capacityRules, "EP", dateStr, time).effectiveLimit,
     therapyActive: isTherapyAreaActiveAt(dateStr, time),
+
+    requestedServiceKey: requestedSk,
+    zone: capacity.zone,
+    zoneCap: capacity.zoneLimit,
+    serviceCap: capacity.serviceLimit,
+    effectiveCap: capacity.effectiveLimit,
+    zoneReserved,
+    serviceReserved,
+    zoneAvailable,
+    serviceAvailable,
+    effectiveAvailable,
+    capacityRule: {
+      zoneRuleId: capacity.zoneRule?._id ? String(capacity.zoneRule._id) : "",
+      serviceRuleId: capacity.serviceRule?._id ? String(capacity.serviceRule._id) : "",
+      zoneScope: capacity.zoneRule?.scope || "default",
+      serviceScope: capacity.serviceRule?.scope || "",
+    },
   };
 }
 
+function isSlotCapacityReached(stats, serviceKey) {
+  const sk = serviceToKey(serviceKey);
+  if (sk === "PE") return Number(stats?.peReserved || 0) >= Number(stats?.peCap || 0);
+  if (sk === "NUT") return Number(stats?.nutReserved || 0) >= Number(stats?.nutCap || 0);
+  if (sk === "EP" || isTherapyService(sk)) {
+    return Number(stats?.effectiveAvailable || 0) <= 0;
+  }
+  return true;
+}
+
+function capacityResponseFields(stats, serviceKey) {
+  const sk = serviceToKey(serviceKey);
+
+  if (sk === "PE") {
+    const available = Math.max(0, Number(stats?.peCap || 0) - Number(stats?.peReserved || 0));
+    return {
+      capacity: Number(stats?.peCap || 0),
+      reserved: Number(stats?.peReserved || 0),
+      available,
+      availableVacancies: available,
+      slotGroup: "PE",
+    };
+  }
+
+  if (sk === "NUT") {
+    const available = Math.max(0, Number(stats?.nutCap || 0) - Number(stats?.nutReserved || 0));
+    return {
+      capacity: Number(stats?.nutCap || 0),
+      reserved: Number(stats?.nutReserved || 0),
+      available,
+      availableVacancies: available,
+      slotGroup: "NUT",
+    };
+  }
+
+  if (sk === "EP" || isTherapyService(sk)) {
+    const usingServiceLimit = stats?.serviceCap != null;
+    return {
+      capacity: Number(stats?.effectiveCap || 0),
+      reserved: Number(usingServiceLimit ? stats?.serviceReserved || 0 : stats?.zoneReserved || 0),
+      available: Math.max(0, Number(stats?.effectiveAvailable || 0)),
+      availableVacancies: Math.max(0, Number(stats?.effectiveAvailable || 0)),
+      slotGroup: sk === "EP" ? "EP" : "THERAPY_SHARED",
+    };
+  }
+
+  return {
+    capacity: 0,
+    reserved: 0,
+    available: 0,
+    availableVacancies: 0,
+    slotGroup: "OTHER",
+  };
+}
 
 function timeIsInsideScheduleBlock(block, time) {
   if (!block) return false;
@@ -2200,33 +2454,19 @@ async function createAppointmentForTargetUser({
   if (session) existingAtSlotQuery.session(session);
   const existingAtSlot = await existingAtSlotQuery.lean();
 
-  const stats = getSlotReservationStats(existingAtSlot, date, t);
+  const capacityRules = await loadCapacityRulesForDate(date, session);
+  const stats = getSlotReservationStats(
+    existingAtSlot,
+    date,
+    t,
+    requestedSk,
+    capacityRules
+  );
 
-  if (basic.isPeService) {
-    if (stats.peReserved >= stats.peCap) {
-      const e = new Error("SERVICE_CAP_REACHED");
-      e.http = 409;
-      throw e;
-    }
-  } else if (basic.isEpService) {
-    if (stats.epReserved >= stats.epCap) {
-      const e = new Error("SERVICE_CAP_REACHED");
-      e.http = 409;
-      throw e;
-    }
-  } else if (isTherapyService(requestedSk)) {
-
-    if (stats.therapyReserved >= stats.therapyCap) {
-      const e = new Error("SERVICE_CAP_REACHED");
-      e.http = 409;
-      throw e;
-    }
-  } else if (requestedSk === "NUT") {
-    if (stats.nutReserved >= stats.nutCap) {
-      const e = new Error("SERVICE_CAP_REACHED");
-      e.http = 409;
-      throw e;
-    }
+  if (isSlotCapacityReached(stats, requestedSk)) {
+    const e = new Error("SERVICE_CAP_REACHED");
+    e.http = 409;
+    throw e;
   }
 
   let effectiveUser = targetUser;
@@ -2867,6 +3107,215 @@ router.delete("/waitlist/:id", ensureStaff, async (req, res) => {
   }
 });
 
+
+/* =========================
+   ADMIN: reglas de capacidad / vacantes
+   Prioridad: horario > día > mes > habitual.
+========================= */
+function serializeCapacityRule(rule) {
+  const json = rule?.toObject ? rule.toObject() : rule || {};
+  return {
+    id: String(json?._id || json?.id || ""),
+    targetType: String(json?.targetType || ""),
+    zone: String(json?.zone || ""),
+    serviceKey: String(json?.serviceKey || ""),
+    scope: String(json?.scope || "default"),
+    monthKey: String(json?.monthKey || ""),
+    date: String(json?.date || ""),
+    time: String(json?.time || ""),
+    limit: Math.max(0, Number(json?.limit || 0)),
+    active: json?.active !== false,
+    createdAt: json?.createdAt || null,
+    updatedAt: json?.updatedAt || null,
+  };
+}
+
+function normalizeCapacityRulePayload(body = {}) {
+  const targetType = String(body?.targetType || "").toLowerCase().trim();
+  const scope = String(body?.scope || "default").toLowerCase().trim();
+  const rawZone = String(body?.zone || "").toUpperCase().trim();
+  const serviceKey = serviceToKey(body?.serviceKey || "");
+  const inferredZone = capacityZoneForService(serviceKey);
+  const zone = targetType === "service" ? inferredZone : rawZone;
+
+  if (!["zone", "service"].includes(targetType)) {
+    return { ok: false, error: "targetType inválido." };
+  }
+
+  if (!["TRAINING", "PERFORMANCE"].includes(zone)) {
+    return { ok: false, error: "Zona inválida." };
+  }
+
+  if (targetType === "service" && !["EP", "RA", "RF", "SYN"].includes(serviceKey)) {
+    return { ok: false, error: "Servicio inválido para configurar vacantes." };
+  }
+
+  if (targetType === "service" && capacityZoneForService(serviceKey) !== zone) {
+    return { ok: false, error: "El servicio no pertenece a la zona indicada." };
+  }
+
+  if (!["default", "month", "date", "slot"].includes(scope)) {
+    return { ok: false, error: "Alcance inválido." };
+  }
+
+  const limit = Number(body?.limit);
+  if (!Number.isFinite(limit) || limit < 0 || limit > 100 || !Number.isInteger(limit)) {
+    return { ok: false, error: "El límite debe ser un número entero entre 0 y 100." };
+  }
+
+  const monthKey = String(body?.monthKey || "").slice(0, 7);
+  const date = String(body?.date || "").slice(0, 10);
+  const time = String(body?.time || "").slice(0, 5);
+
+  if (scope === "month" && !/^\d{4}-\d{2}$/.test(monthKey)) {
+    return { ok: false, error: "Elegí un mes válido." };
+  }
+
+  if (["date", "slot"].includes(scope) && !/^\d{4}-\d{2}-\d{2}$/.test(date)) {
+    return { ok: false, error: "Elegí una fecha válida." };
+  }
+
+  if (scope === "slot" && !/^\d{2}:\d{2}$/.test(time)) {
+    return { ok: false, error: "Elegí un horario válido." };
+  }
+
+  return {
+    ok: true,
+    value: {
+      targetType,
+      zone,
+      serviceKey: targetType === "service" ? serviceKey : "",
+      scope,
+      monthKey: scope === "month" ? monthKey : "",
+      date: ["date", "slot"].includes(scope) ? date : "",
+      time: scope === "slot" ? time : "",
+      limit,
+      active: true,
+    },
+  };
+}
+
+router.get("/admin/capacity-rules", ensureStaff, async (req, res) => {
+  try {
+    const rules = await CapacityRule.find({ active: true })
+      .sort({ zone: 1, targetType: 1, serviceKey: 1, scope: 1, date: 1, time: 1, updatedAt: -1 })
+      .lean();
+
+    return res.json({
+      ok: true,
+      defaults: { ...DEFAULT_ZONE_CAPS },
+      zones: [
+        {
+          key: "TRAINING",
+          label: "TRAINING",
+          services: [{ key: "EP", label: EP_NAME }],
+        },
+        {
+          key: "PERFORMANCE",
+          label: "PERFORMANCE",
+          services: [
+            { key: "RA", label: "Rehabilitación Activa" },
+            { key: "RF", label: "Reeducación Funcional" },
+            { key: "SYN", label: SYN_NAME },
+          ],
+        },
+      ],
+      rules: rules.map(serializeCapacityRule),
+    });
+  } catch (err) {
+    console.error("GET /appointments/admin/capacity-rules:", err);
+    return res.status(500).json({ error: "No se pudieron cargar las reglas de vacantes." });
+  }
+});
+
+router.post("/admin/capacity-rules", ensureStaff, async (req, res) => {
+  try {
+    const parsed = normalizeCapacityRulePayload(req.body || {});
+    if (!parsed.ok) return res.status(400).json({ error: parsed.error });
+
+    const value = parsed.value;
+    const identity = {
+      targetType: value.targetType,
+      zone: value.zone,
+      serviceKey: value.serviceKey,
+      scope: value.scope,
+      monthKey: value.monthKey,
+      date: value.date,
+      time: value.time,
+    };
+
+    const actorId = req.user?._id || req.user?.id || null;
+
+    const rule = await CapacityRule.findOneAndUpdate(
+      identity,
+      {
+        $set: {
+          ...value,
+          updatedBy: actorId,
+        },
+        $setOnInsert: {
+          createdBy: actorId,
+        },
+      },
+      {
+        new: true,
+        upsert: true,
+        setDefaultsOnInsert: true,
+      }
+    );
+
+    await logActivity({
+      req,
+      category: "appointments",
+      action: "capacity_rule_saved",
+      entity: "capacityRule",
+      entityId: String(rule?._id || ""),
+      title: "Límite de vacantes actualizado",
+      description:
+        value.targetType === "zone"
+          ? `${value.zone}: máximo ${value.limit} por horario (${value.scope}).`
+          : `${value.serviceKey}: máximo ${value.limit} por horario (${value.scope}).`,
+      meta: serializeCapacityRule(rule),
+    }).catch(() => null);
+
+    return res.status(201).json({
+      ok: true,
+      rule: serializeCapacityRule(rule),
+    });
+  } catch (err) {
+    console.error("POST /appointments/admin/capacity-rules:", err);
+    return res.status(500).json({ error: "No se pudo guardar la regla de vacantes." });
+  }
+});
+
+router.delete("/admin/capacity-rules/:id", ensureStaff, async (req, res) => {
+  try {
+    const id = String(req.params?.id || "").trim();
+    if (!mongoose.Types.ObjectId.isValid(id)) {
+      return res.status(400).json({ error: "Regla inválida." });
+    }
+
+    const rule = await CapacityRule.findByIdAndDelete(id);
+    if (!rule) return res.status(404).json({ error: "Regla no encontrada." });
+
+    await logActivity({
+      req,
+      category: "appointments",
+      action: "capacity_rule_deleted",
+      entity: "capacityRule",
+      entityId: id,
+      title: "Límite de vacantes eliminado",
+      description: "Se eliminó una regla personalizada de capacidad.",
+      meta: serializeCapacityRule(rule),
+    }).catch(() => null);
+
+    return res.json({ ok: true, deletedId: id });
+  } catch (err) {
+    console.error("DELETE /appointments/admin/capacity-rules/:id:", err);
+    return res.status(500).json({ error: "No se pudo eliminar la regla de vacantes." });
+  }
+});
+
 /* =========================
    GET /appointments/availability
 ========================= */
@@ -2960,10 +3409,17 @@ router.get("/availability", async (req, res) => {
     }
 
     const out = [];
+    // Una sola lectura de reglas por fecha. Después resolvemos mes/día/hora en memoria.
+    const capacityRules = await loadCapacityRulesForDate(date);
 
     for (const time of times) {
       const t = String(time).slice(0, 5);
-      const basic = validateBasicSlotRules({ date, time: t, service: normalizedServiceName, serviceKey: normalizedServiceKey });
+      const basic = validateBasicSlotRules({
+        date,
+        time: t,
+        service: normalizedServiceName,
+        serviceKey: normalizedServiceKey,
+      });
 
       if (!basic.ok) {
         out.push({ time: t, state: "closed", reason: basic.error });
@@ -3010,147 +3466,16 @@ router.get("/availability", async (req, res) => {
         .select("service serviceKey serviceName")
         .lean();
 
-      const stats = getSlotReservationStats(existing, date, t);
-      const isTherapy = isTherapyService(normalizedServiceKey);
-      if (basic.isPeService) {
-        if (stats.peReserved >= stats.peCap) {
-          out.push({
-            time: t,
-            state: "full",
-            reason: "Sin cupo disponible",
-            totalReserved: stats.totalReserved,
-            peReserved: stats.peReserved,
-            peCap: stats.peCap,
-            epReserved: stats.epReserved,
-            epCap: stats.epCap,
-            therapyReserved: stats.therapyReserved,
-            therapyCap: stats.therapyCap,
-            raReserved: stats.raReserved,
-            rfReserved: stats.rfReserved,
-            kdReserved: stats.kdReserved,
-            nutReserved: stats.nutReserved,
-            nutCap: stats.nutCap,
-            synReserved: stats.synReserved,
-            synCap: stats.synCap,
-            capacity: stats.peCap,
-            reserved: stats.peReserved,
-            available: Math.max(0, stats.peCap - stats.peReserved),
-            availableVacancies: Math.max(0, stats.peCap - stats.peReserved),
-            slotGroup: "PE",
-          });
-          continue;
-        }
-      } else if (basic.isEpService) {
-        if (stats.epReserved >= stats.epCap) {
-          const waitlistCheck = validateWaitlistOpen(basic.slotDate, normalizedServiceKey);
+      const stats = getSlotReservationStats(
+        existing,
+        date,
+        t,
+        normalizedServiceKey,
+        capacityRules
+      );
 
-          out.push({
-            time: t,
-            state: waitlistCheck.ok ? "waitlist" : "waitlist_closed",
-            reason: waitlistCheck.ok ? "" : waitlistCheck.error,
-            totalReserved: stats.totalReserved,
-            peReserved: stats.peReserved,
-            peCap: stats.peCap,
-            epReserved: stats.epReserved,
-            epCap: stats.epCap,
-            therapyReserved: stats.therapyReserved,
-            therapyCap: stats.therapyCap,
-            raReserved: stats.raReserved,
-            rfReserved: stats.rfReserved,
-            kdReserved: stats.kdReserved,
-            nutReserved: stats.nutReserved,
-            nutCap: stats.nutCap,
-            synReserved: stats.synReserved,
-            synCap: stats.synCap,
-            capacity: stats.epCap,
-            reserved: stats.epReserved,
-            available: Math.max(0, stats.epCap - stats.epReserved),
-            availableVacancies: Math.max(0, stats.epCap - stats.epReserved),
-            slotGroup: "EP",
-          });
-          continue;
-        }
-      } else if (isTherapy) {
-        if (stats.therapyReserved >= stats.therapyCap) {
-          const waitlistCheck = validateWaitlistOpen(basic.slotDate, normalizedServiceKey);
-
-          out.push({
-            time: t,
-            state: waitlistCheck.ok ? "waitlist" : "waitlist_closed",
-            reason: waitlistCheck.ok ? "" : waitlistCheck.error,
-            totalReserved: stats.totalReserved,
-            epReserved: stats.epReserved,
-            epCap: stats.epCap,
-            therapyReserved: stats.therapyReserved,
-            therapyCap: stats.therapyCap,
-            raReserved: stats.raReserved,
-            rfReserved: stats.rfReserved,
-            kdReserved: stats.kdReserved,
-            nutReserved: stats.nutReserved,
-            nutCap: stats.nutCap,
-            synReserved: stats.synReserved,
-            synCap: stats.synCap,
-            capacity: stats.therapyCap,
-            reserved: stats.therapyReserved,
-            available: Math.max(0, stats.therapyCap - stats.therapyReserved),
-            availableVacancies: Math.max(0, stats.therapyCap - stats.therapyReserved),
-            slotGroup: "THERAPY_SHARED",
-          });
-          continue;
-        }
-      } else if (normalizedServiceKey === "NUT") {
-        if (stats.nutReserved >= stats.nutCap) {
-          out.push({
-            time: t,
-            state: "full",
-            reason: "Sin cupo disponible",
-            totalReserved: stats.totalReserved,
-            peReserved: stats.peReserved,
-            peCap: stats.peCap,
-            epReserved: stats.epReserved,
-            epCap: stats.epCap,
-            therapyReserved: stats.therapyReserved,
-            therapyCap: stats.therapyCap,
-            raReserved: stats.raReserved,
-            rfReserved: stats.rfReserved,
-            kdReserved: stats.kdReserved,
-            nutReserved: stats.nutReserved,
-            nutCap: stats.nutCap,
-            synReserved: stats.synReserved,
-            synCap: stats.synCap,
-            capacity: stats.nutCap,
-            reserved: stats.nutReserved,
-            available: Math.max(0, stats.nutCap - stats.nutReserved),
-            availableVacancies: Math.max(0, stats.nutCap - stats.nutReserved),
-            slotGroup: "NUT",
-          });
-          continue;
-        }
-      }
-
-      const slotCapacity = basic.isPeService
-        ? stats.peCap
-        : basic.isEpService
-          ? stats.epCap
-          : isTherapy
-            ? stats.therapyCap
-            : normalizedServiceKey === "NUT"
-              ? stats.nutCap
-              : 0;
-      const slotReserved = basic.isPeService
-        ? stats.peReserved
-        : basic.isEpService
-          ? stats.epReserved
-          : isTherapy
-            ? stats.therapyReserved
-            : normalizedServiceKey === "NUT"
-              ? stats.nutReserved
-              : stats.totalReserved;
-      const availableVacancies = Math.max(0, slotCapacity - slotReserved);
-
-      out.push({
-        time: t,
-        state: "available",
+      const capFields = capacityResponseFields(stats, normalizedServiceKey);
+      const common = {
         totalReserved: stats.totalReserved,
         peReserved: stats.peReserved,
         peCap: stats.peCap,
@@ -3159,27 +3484,69 @@ router.get("/availability", async (req, res) => {
         therapyReserved: stats.therapyReserved,
         therapyCap: stats.therapyCap,
         raReserved: stats.raReserved,
+        raCap: stats.raCap,
         rfReserved: stats.rfReserved,
+        rfCap: stats.rfCap,
         kdReserved: stats.kdReserved,
         nutReserved: stats.nutReserved,
         nutCap: stats.nutCap,
         synReserved: stats.synReserved,
         synCap: stats.synCap,
-        capacity: slotCapacity,
-        reserved: slotReserved,
-        available: availableVacancies,
-        availableVacancies,
-        slotGroup: basic.isPeService ? "PE" : basic.isEpService ? "EP" : isTherapy ? "THERAPY_SHARED" : normalizedServiceKey === "NUT" ? "NUT" : "OTHER",
+
+        zone: stats.zone,
+        zoneCap: stats.zoneCap,
+        zoneReserved: stats.zoneReserved,
+        zoneAvailable: stats.zoneAvailable,
+        serviceCap: stats.serviceCap,
+        serviceReserved: stats.serviceReserved,
+        serviceAvailable: stats.serviceAvailable,
+        effectiveCap: stats.effectiveCap,
+        capacityRule: stats.capacityRule,
+        ...capFields,
+      };
+
+      if (isSlotCapacityReached(stats, normalizedServiceKey)) {
+        if (normalizedServiceKey === "EP" || isTherapyService(normalizedServiceKey)) {
+          const waitlistCheck = validateWaitlistOpen(
+            basic.slotDate,
+            normalizedServiceKey
+          );
+
+          out.push({
+            time: t,
+            state: waitlistCheck.ok ? "waitlist" : "waitlist_closed",
+            reason: waitlistCheck.ok ? "" : waitlistCheck.error,
+            ...common,
+          });
+        } else {
+          out.push({
+            time: t,
+            state: "full",
+            reason: "Sin cupo disponible",
+            ...common,
+          });
+        }
+        continue;
+      }
+
+      out.push({
+        time: t,
+        state: "available",
+        ...common,
       });
     }
 
-    return res.json({ date, service: normalizedServiceName, serviceKey: normalizedServiceKey, slots: out });
+    return res.json({
+      date,
+      service: normalizedServiceName,
+      serviceKey: normalizedServiceKey,
+      slots: out,
+    });
   } catch (e) {
     console.error("Error en GET /appointments/availability:", e);
     return res.status(500).json({ error: "Error calculando disponibilidad." });
   }
 });
-
 /* =========================
    GET /appointments
 ========================= */
@@ -3800,18 +4167,19 @@ router.post("/", async (req, res) => {
       ).session(session).lean();
 
       let willWaitlist = false;
-      const stats = getSlotReservationStats(existingAtSlot, date, t);
+      const capacityRules = await loadCapacityRulesForDate(date, session);
+      const stats = getSlotReservationStats(
+        existingAtSlot,
+        date,
+        t,
+        requestedSk,
+        capacityRules
+      );
 
-      if (basic.isEpService) {
-        if (stats.epReserved >= stats.epCap) {
+      if (isSlotCapacityReached(stats, requestedSk)) {
+        if (basic.isEpService || isTherapyService(requestedSk)) {
           willWaitlist = true;
-        }
-      } else if (isTherapyService(requestedSk)) {
-        if (stats.therapyReserved >= stats.therapyCap) {
-          willWaitlist = true;
-        }
-      } else if (requestedSk === "NUT") {
-        if (stats.nutReserved >= stats.nutCap) {
+        } else {
           throw new Error("SERVICE_CAP_REACHED");
         }
       }
@@ -4159,20 +4527,17 @@ router.post("/batch", async (req, res) => {
           buildReservedSlotQuery(it.date, it.time)
         ).session(session).lean();
 
-        const stats = getSlotReservationStats(existingAtSlot, it.date, it.time);
+        const capacityRules = await loadCapacityRulesForDate(it.date, session);
+        const stats = getSlotReservationStats(
+          existingAtSlot,
+          it.date,
+          it.time,
+          requestedSk,
+          capacityRules
+        );
 
-        if (it.isEpService) {
-          if (stats.epReserved >= stats.epCap) {
-            throw new Error("SERVICE_CAP_REACHED");
-          }
-        } else if (isTherapyService(requestedSk)) {
-          if (stats.therapyReserved >= stats.therapyCap) {
-            throw new Error("SERVICE_CAP_REACHED");
-          }
-        } else if (requestedSk === "NUT") {
-          if (stats.nutReserved >= stats.nutCap) {
-            throw new Error("SERVICE_CAP_REACHED");
-          }
+        if (isSlotCapacityReached(stats, requestedSk)) {
+          throw new Error("SERVICE_CAP_REACHED");
         }
       }
 
@@ -4426,22 +4791,17 @@ router.post("/:id/reschedule", async (req, res) => {
         _id: { $ne: ap._id },
       }).session(session).lean();
 
-      const stats = getSlotReservationStats(existingAtSlot, nextDate, nextTime);
       const requestedSk = serviceToKey(ap.serviceKey || ap.service);
+      const capacityRules = await loadCapacityRulesForDate(nextDate, session);
+      const stats = getSlotReservationStats(
+        existingAtSlot,
+        nextDate,
+        nextTime,
+        requestedSk,
+        capacityRules
+      );
 
-      if (requestedSk === "PE" && stats.peReserved >= stats.peCap) {
-        throw new Error("SERVICE_CAP_REACHED");
-      }
-
-      if (requestedSk === "EP" && stats.epReserved >= stats.epCap) {
-        throw new Error("SERVICE_CAP_REACHED");
-      }
-
-      if (isTherapyService(requestedSk) && stats.therapyReserved >= stats.therapyCap) {
-        throw new Error("SERVICE_CAP_REACHED");
-      }
-
-      if (requestedSk === "NUT" && stats.nutReserved >= stats.nutCap) {
+      if (isSlotCapacityReached(stats, requestedSk)) {
         throw new Error("SERVICE_CAP_REACHED");
       }
 
