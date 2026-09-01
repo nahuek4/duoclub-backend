@@ -655,10 +655,14 @@ function capacityResponseFields(stats, serviceKey) {
     }`
       ),
       rep(
-        "fixed domingo",
+        "fixed domingo creación",
         `it.weekday >= 1 && it.weekday <= 6`,
-        `it.weekday >= 1 && it.weekday <= 7`,
-        2
+        `it.weekday >= 1 && it.weekday <= 7`
+      ),
+      rep(
+        "fixed domingo lectura legacy",
+        `x.weekday >= 1 && x.weekday <= 6`,
+        `x.weekday >= 1 && x.weekday <= 7`
       ),
       rep(
         "legacy derive domingo",
