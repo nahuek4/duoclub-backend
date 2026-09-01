@@ -188,9 +188,13 @@ const SERVICE_KEY_RE = /^[A-Z][A-Z0-9_]{1,23}$/;`
     serviceName:`
       ),
       replacement(
-        "history display dinámico",
-        `    const displayName = SERVICE_KEY_TO_NAME[normalized] || "";`,
-        `    const displayName = SERVICE_KEY_TO_NAME[normalized] || normalized;`
+        "history subdocument display dinámico",
+        `    const displayName = SERVICE_KEY_TO_NAME[normalized] || "";
+
+    if (!String(this.serviceName || "").trim())`,
+        `    const displayName = SERVICE_KEY_TO_NAME[normalized] || normalized;
+
+    if (!String(this.serviceName || "").trim())`
       ),
       replacement(
         "history root display dinámico",
