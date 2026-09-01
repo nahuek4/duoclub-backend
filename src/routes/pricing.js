@@ -1,33 +1,18 @@
 // backend/src/routes/pricing.js
 import express from "express";
 import mongoose from "mongoose";
-import PricingPlan from "../models/PricingPlan.js";
+
+import PricingPlan, { normalizeServiceKey } from "../models/PricingPlan.js";
+import ServiceDefinition from "../models/ServiceDefinition.js";
 import { protect, adminOnly } from "../middleware/auth.js";
 import { logActivity } from "../lib/activityLogger.js";
 
 const router = express.Router();
 
-// Se conserva el parser legacy para poder leer/auditar documentos históricos.
-const LEGACY_SERVICE_KEYS = new Set(["PE", "EP", "RF", "RA", "KD", "SYN", "NUT"]);
-
-// Únicos servicios publicables/creables desde ahora.
-const OPERATIONAL_SERVICE_KEYS = new Set(["EP", "RA", "RF", "SYN"]);
-const SERVICE_KEY_ALIASES = {
-  AR: "RA",
-};
-
-function normalizeServiceKey(value) {
-  const raw = String(value || "").toUpperCase().trim();
-  if (!raw) return "";
-
-  const canonical = SERVICE_KEY_ALIASES[raw] || raw;
-  return LEGACY_SERVICE_KEYS.has(canonical) ? canonical : "";
-}
-
-function normalizeOperationalServiceKey(value) {
-  const canonical = normalizeServiceKey(value);
-  return OPERATIONAL_SERVICE_KEYS.has(canonical) ? canonical : "";
-}
+// PASO 2: comprar/reservar todavía no está migrado a servicios dinámicos.
+// Por seguridad, /pricing?active=1 sigue exponiendo únicamente los cuatro
+// servicios que ya funcionan de punta a punta en producción.
+const RUNTIME_PRICING_KEYS = new Set(["EP", "RA", "RF", "SYN"]);
 
 function normalizePayMethod(value) {
   return String(value || "").toUpperCase().trim();
@@ -45,6 +30,13 @@ function normalizePrice(value) {
   return n;
 }
 
+function normalizeNullablePrice(value) {
+  if (value === null || value === undefined || String(value).trim() === "") {
+    return null;
+  }
+  return normalizePrice(value);
+}
+
 function cleanString(value) {
   return String(value || "").trim();
 }
@@ -52,7 +44,6 @@ function cleanString(value) {
 function validObjectId(value) {
   return mongoose.Types.ObjectId.isValid(String(value || ""));
 }
-
 
 function sameIndexKey(indexKey = {}, expectedKey = {}) {
   const a = JSON.stringify(indexKey || {});
@@ -65,11 +56,6 @@ async function ensurePricingIndexesForCustomCards() {
     const legacyUniqueKey = { serviceKey: 1, payMethod: 1, credits: 1 };
     const indexes = await PricingPlan.collection.indexes();
 
-    // Para poder tener 2 evaluaciones PE con la misma combinación
-    // serviceKey + payMethod + credits, no puede existir ningún índice ÚNICO
-    // sobre esa combinación. La unicidad de planes estándar la manejamos desde
-    // /pricing/upsert con findOneAndUpdate, y las tarjetas libres/variantes se
-    // identifican por customTitle.
     for (const idx of indexes) {
       if (!idx?.unique) continue;
       if (!sameIndexKey(idx.key, legacyUniqueKey)) continue;
@@ -104,6 +90,47 @@ async function ensurePricingIndexesForCustomCards() {
   }
 }
 
+async function getCatalogServiceOrThrow(serviceKey) {
+  const normalized = normalizeServiceKey(serviceKey);
+
+  if (!normalized) {
+    const error = new Error("Servicio inválido.");
+    error.status = 400;
+    throw error;
+  }
+
+  const service = await ServiceDefinition.findOne({ serviceKey: normalized }).lean();
+
+  if (!service) {
+    const error = new Error(
+      `El servicio ${normalized} no existe en el catálogo. Crealo primero desde Gestionar servicios.`
+    );
+    error.status = 400;
+    error.code = "SERVICE_NOT_IN_CATALOG";
+    throw error;
+  }
+
+  if (service.legacy === true) {
+    const error = new Error(
+      `${service.name || normalized} es un servicio histórico y no admite nuevos planes.`
+    );
+    error.status = 409;
+    error.code = "LEGACY_SERVICE";
+    throw error;
+  }
+
+  if (service.purchasable === false) {
+    const error = new Error(
+      `${service.name || normalized} está configurado como no comprable.`
+    );
+    error.status = 409;
+    error.code = "SERVICE_NOT_PURCHASABLE";
+    throw error;
+  }
+
+  return service;
+}
+
 router.use(protect);
 
 // GET /pricing?active=1
@@ -114,24 +141,25 @@ router.get("/", async (req, res) => {
     const active = String(req.query.active ?? "1") === "1";
 
     const query = active
-      ? { active: true, serviceKey: { $in: [...OPERATIONAL_SERVICE_KEYS] } }
+      ? { active: true, serviceKey: { $in: [...RUNTIME_PRICING_KEYS] } }
       : {};
+
     const list = await PricingPlan.find(query)
       .sort({ isCustom: 1, serviceKey: 1, payMethod: 1, credits: 1, createdAt: 1 })
       .lean();
 
-    res.json(list);
+    return res.json(list);
   } catch (err) {
     console.error("Error en GET /pricing:", err);
-    res.status(500).json({ error: "Error al obtener precios." });
+    return res.status(500).json({ error: "Error al obtener precios." });
   }
 });
 
 /**
  * ADMIN
  * POST /pricing/upsert
- * body estándar: { serviceKey, payMethod, credits, price, label, active }
- * body tarjeta libre: { id?, isCustom: true, customTitle, serviceKey, payMethod, credits, price, active }
+ * body estándar: { serviceKey, payMethod, credits, price, coveragePrice?, label, active }
+ * body tarjeta libre: { id?, isCustom: true, customTitle, serviceKey, payMethod, credits, price, coveragePrice?, active }
  */
 router.post("/upsert", adminOnly, async (req, res) => {
   try {
@@ -143,16 +171,19 @@ router.post("/upsert", adminOnly, async (req, res) => {
       payMethod,
       credits,
       price,
+      coveragePrice,
       label,
       active,
       isCustom,
       customTitle,
     } = req.body || {};
 
-    const normalizedServiceKey = normalizeOperationalServiceKey(serviceKey);
+    const service = await getCatalogServiceOrThrow(serviceKey);
+    const normalizedServiceKey = String(service.serviceKey || "").toUpperCase().trim();
     const normalizedPayMethod = normalizePayMethod(payMethod);
     const normalizedCredits = normalizeCredits(credits);
     const normalizedPrice = normalizePrice(price);
+    const normalizedCoveragePrice = normalizeNullablePrice(coveragePrice);
     const custom = Boolean(isCustom);
     const title = cleanString(customTitle || label);
     const cleanLabel = cleanString(label || customTitle);
@@ -169,15 +200,28 @@ router.post("/upsert", adminOnly, async (req, res) => {
     }
 
     if (normalizedCredits <= 0) {
-      return res.status(400).json({ error: "La cantidad de créditos debe ser mayor a 0." });
+      return res
+        .status(400)
+        .json({ error: "La cantidad de créditos debe ser mayor a 0." });
     }
 
     if (normalizedPrice < 0) {
       return res.status(400).json({ error: "El precio no puede ser negativo." });
     }
 
+    if (
+      normalizedCoveragePrice !== null &&
+      (!Number.isFinite(normalizedCoveragePrice) || normalizedCoveragePrice < 0)
+    ) {
+      return res.status(400).json({
+        error: "El precio con obra social debe ser mayor o igual a 0 o quedar vacío.",
+      });
+    }
+
     if (custom && !title) {
-      return res.status(400).json({ error: "La tarjeta libre necesita un título." });
+      return res
+        .status(400)
+        .json({ error: "La tarjeta libre necesita un título." });
     }
 
     let existing = null;
@@ -185,9 +229,14 @@ router.post("/upsert", adminOnly, async (req, res) => {
 
     if (custom) {
       if (id) {
-        if (!validObjectId(id)) return res.status(400).json({ error: "ID inválido." });
+        if (!validObjectId(id)) {
+          return res.status(400).json({ error: "ID inválido." });
+        }
+
         existing = await PricingPlan.findById(id).lean();
-        if (!existing) return res.status(404).json({ error: "Tarjeta no encontrada." });
+        if (!existing) {
+          return res.status(404).json({ error: "Tarjeta no encontrada." });
+        }
 
         doc = await PricingPlan.findByIdAndUpdate(
           id,
@@ -197,6 +246,7 @@ router.post("/upsert", adminOnly, async (req, res) => {
               payMethod: normalizedPayMethod,
               credits: normalizedCredits,
               price: normalizedPrice,
+              coveragePrice: normalizedCoveragePrice,
               label: cleanLabel || title,
               customTitle: title,
               isCustom: true,
@@ -211,6 +261,7 @@ router.post("/upsert", adminOnly, async (req, res) => {
           payMethod: normalizedPayMethod,
           credits: normalizedCredits,
           price: normalizedPrice,
+          coveragePrice: normalizedCoveragePrice,
           label: cleanLabel || title,
           customTitle: title,
           isCustom: true,
@@ -235,6 +286,7 @@ router.post("/upsert", adminOnly, async (req, res) => {
             payMethod: normalizedPayMethod,
             credits: normalizedCredits,
             price: normalizedPrice,
+            coveragePrice: normalizedCoveragePrice,
             label: cleanLabel,
             isCustom: false,
             customTitle: "",
@@ -251,37 +303,56 @@ router.post("/upsert", adminOnly, async (req, res) => {
       action: existing ? "pricing_updated" : "pricing_created",
       entity: "pricing_plan",
       entityId: doc._id,
-      title: existing ? "Plan actualizado" : custom ? "Tarjeta libre creada" : "Plan creado",
-      description: custom ? "Se guardó una tarjeta libre de precios." : "Se guardó un plan de precios.",
+      title: existing
+        ? "Plan actualizado"
+        : custom
+          ? "Tarjeta libre creada"
+          : "Plan creado",
+      description: custom
+        ? "Se guardó una tarjeta libre de precios."
+        : "Se guardó un plan de precios.",
       meta: {
         serviceKey: doc.serviceKey,
         payMethod: doc.payMethod,
         credits: doc.credits,
         price: doc.price,
+        coveragePrice: doc.coveragePrice ?? null,
         active: doc.active,
         isCustom: doc.isCustom,
         customTitle: doc.customTitle,
       },
-      diff: existing ? { before: existing, after: doc.toObject ? doc.toObject() : doc } : {},
+      diff: existing
+        ? { before: existing, after: doc.toObject ? doc.toObject() : doc }
+        : {},
     });
 
-    res.json({ ok: true, plan: doc });
+    return res.json({ ok: true, plan: doc });
   } catch (err) {
     console.error("Error en POST /pricing/upsert:", err);
+
     if (err?.code === 11000) {
-      return res.status(409).json({ error: "Plan duplicado. Revisá los índices de MongoDB." });
+      return res.status(409).json({
+        error: "Plan duplicado. Revisá los índices de MongoDB.",
+      });
     }
-    res.status(500).json({ error: err?.message || "Error al guardar el plan." });
+
+    return res
+      .status(Number(err?.status || 500))
+      .json({ error: err?.message || "Error al guardar el plan.", code: err?.code });
   }
 });
 
 router.delete("/:id", adminOnly, async (req, res) => {
   try {
     const { id } = req.params;
-    if (!validObjectId(id)) return res.status(400).json({ error: "ID inválido." });
+    if (!validObjectId(id)) {
+      return res.status(400).json({ error: "ID inválido." });
+    }
 
     const existing = await PricingPlan.findById(id).lean();
-    if (!existing) return res.status(404).json({ error: "Plan no encontrado." });
+    if (!existing) {
+      return res.status(404).json({ error: "Plan no encontrado." });
+    }
 
     await PricingPlan.deleteOne({ _id: id });
 
@@ -298,6 +369,7 @@ router.delete("/:id", adminOnly, async (req, res) => {
         payMethod: existing.payMethod,
         credits: existing.credits,
         price: existing.price,
+        coveragePrice: existing.coveragePrice ?? null,
         active: existing.active,
         isCustom: existing.isCustom,
         customTitle: existing.customTitle,
@@ -305,10 +377,10 @@ router.delete("/:id", adminOnly, async (req, res) => {
       diff: { before: existing, after: null },
     });
 
-    res.json({ ok: true });
+    return res.json({ ok: true });
   } catch (err) {
     console.error("Error en DELETE /pricing/:id:", err);
-    res.status(500).json({ error: "Error al eliminar el plan." });
+    return res.status(500).json({ error: "Error al eliminar el plan." });
   }
 });
 

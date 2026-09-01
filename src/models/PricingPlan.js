@@ -1,7 +1,6 @@
 import mongoose from "mongoose";
 
-const ALLOWED_SERVICE_KEYS = ["PE", "EP", "RA", "RF", "KD", "SYN", "NUT"];
-const ALLOWED_SERVICE_KEY_SET = new Set(ALLOWED_SERVICE_KEYS);
+const SERVICE_KEY_RE = /^[A-Z][A-Z0-9_]{1,23}$/;
 
 function stripAccents(value) {
   return String(value || "")
@@ -13,41 +12,16 @@ function normalizeServiceKey(value) {
   const raw = String(value || "").trim();
   if (!raw) return "";
 
-  const upper = stripAccents(raw).toUpperCase().trim();
+  const upper = stripAccents(raw)
+    .toUpperCase()
+    .trim()
+    .replace(/[^A-Z0-9_]+/g, "_")
+    .replace(/^_+|_+$/g, "")
+    .slice(0, 24);
 
   if (upper === "AR") return "RA";
-  if (upper === "KINEDEPO" || upper === "KINE-DEPO") return "KD";
-  if (ALLOWED_SERVICE_KEY_SET.has(upper)) return upper;
-
-  const normalizedText = stripAccents(raw).toLowerCase().trim();
-
-  if (normalizedText.includes("primera") && normalizedText.includes("evaluacion")) {
-    return "PE";
-  }
-  if (normalizedText.includes("entrenamiento") && normalizedText.includes("personal")) {
-    return "EP";
-  }
-  if (normalizedText.includes("rehabilitacion") && normalizedText.includes("activa")) {
-    return "RA";
-  }
-  if (normalizedText.includes("reeducacion") && normalizedText.includes("funcional")) {
-    return "RF";
-  }
-  if (
-    normalizedText.includes("kinefilax") ||
-    normalizedText.includes("kine depo") ||
-    normalizedText.includes("kinefilaxia deportiva")
-  ) {
-    return "KD";
-  }
-  if (normalizedText.includes("synergy") || normalizedText.includes("sinergia")) {
-    return "SYN";
-  }
-  if (normalizedText.includes("nutric")) {
-    return "NUT";
-  }
-
-  return "";
+  if (upper === "KINEDEPO" || upper === "KINE_DEPO") return "KD";
+  return upper;
 }
 
 const pricingPlanSchema = new mongoose.Schema(
@@ -57,8 +31,9 @@ const pricingPlanSchema = new mongoose.Schema(
       required: true,
       uppercase: true,
       trim: true,
-      enum: ALLOWED_SERVICE_KEYS,
+      match: SERVICE_KEY_RE,
       set: normalizeServiceKey,
+      index: true,
     },
 
     payMethod: {
@@ -93,6 +68,20 @@ const pricingPlanSchema = new mongoose.Schema(
       },
     },
 
+    // Precio opcional para usuarios con cobertura/obra social.
+    // null = no hay precio especial configurado.
+    coveragePrice: {
+      type: Number,
+      default: null,
+      min: 0,
+      validate: {
+        validator(value) {
+          return value === null || value === undefined || Number.isFinite(Number(value));
+        },
+        message: "coveragePrice inválido.",
+      },
+    },
+
     // label se usa como texto visible para las tarjetas estándar.
     label: { type: String, default: "", trim: true },
 
@@ -100,7 +89,7 @@ const pricingPlanSchema = new mongoose.Schema(
     isCustom: { type: Boolean, default: false, index: true },
     customTitle: { type: String, default: "", trim: true },
 
-    active: { type: Boolean, default: true },
+    active: { type: Boolean, default: true, index: true },
   },
   { timestamps: true }
 );
@@ -110,24 +99,27 @@ pricingPlanSchema.pre("validate", function normalizeBeforeValidate() {
   this.payMethod = String(this.payMethod || "").toUpperCase().trim();
   this.credits = Number(this.credits || 0);
   this.price = Number(this.price || 0);
+  this.coveragePrice =
+    this.coveragePrice === null || this.coveragePrice === undefined || this.coveragePrice === ""
+      ? null
+      : Number(this.coveragePrice);
   this.label = String(this.label || "").trim();
   this.customTitle = String(this.customTitle || "").trim();
   this.isCustom = Boolean(this.isCustom);
 
   if (this.isCustom && !this.customTitle) {
-    this.customTitle = this.label || `${this.credits} ${this.credits === 1 ? "sesión" : "sesiones"}`;
+    this.customTitle =
+      this.label || `${this.credits} ${this.credits === 1 ? "sesión" : "sesiones"}`;
   }
 
   if (this.isCustom && !this.label) {
     this.label = this.customTitle;
   }
-
 });
 
-// IMPORTANTE:
-// No usamos índice único en serviceKey + payMethod + credits porque ahora PE
-// puede tener dos variantes comerciales con el mismo crédito PE.
-// La unicidad de planes estándar se resuelve en la ruta /pricing/upsert.
+// No usamos índice único en serviceKey + payMethod + credits porque pueden
+// existir tarjetas personalizadas con una combinación comercial equivalente.
+// La unicidad de planes estándar se resuelve en /pricing/upsert.
 pricingPlanSchema.index(
   { serviceKey: 1, payMethod: 1, credits: 1, isCustom: 1, active: 1 },
   { name: "pricing_lookup" }
@@ -142,4 +134,5 @@ const PricingPlan =
   mongoose.models.PricingPlan ||
   mongoose.model("PricingPlan", pricingPlanSchema);
 
+export { normalizeServiceKey };
 export default PricingPlan;
