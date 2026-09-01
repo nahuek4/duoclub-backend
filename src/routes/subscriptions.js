@@ -1,8 +1,10 @@
+// backend/src/routes/subscriptions.js
 import express from "express";
 
 import PricingPlan from "../models/PricingPlan.js";
 import Order from "../models/Order.js";
 import User from "../models/User.js";
+import FixedSchedule from "../models/FixedSchedule.js";
 import ServiceSubscription from "../models/ServiceSubscription.js";
 import SubscriptionBillingCycle from "../models/SubscriptionBillingCycle.js";
 import SubscriptionLifecycleNotice from "../models/SubscriptionLifecycleNotice.js";
@@ -15,6 +17,10 @@ import {
   buildSubscriptionRenewalItem,
   applySubscriptionRenewalFromOrder,
 } from "../services/subscriptions/subscriptionCyclePayments.js";
+import {
+  listExtraSessionNoticesForUser,
+  syncExtraSessionNoticeForUserService,
+} from "../services/subscriptions/subscriptionExtraSessions.js";
 
 const router = express.Router();
 router.use(protect);
@@ -23,7 +29,362 @@ function userId(req) {
   return String(req.user?._id || req.user?.id || "");
 }
 
+/* ============================================
+   ADMIN: PLAN MENSUAL DESDE ADMINUSUARIOS
+============================================ */
+const ADMIN_MONTHLY_PLAN_SERVICE_KEYS = new Set(["EP", "RF", "RA", "SYN"]);
 
+const ADMIN_MONTHLY_PLAN_SERVICE_NAMES = {
+  EP: "Entrenamiento Personal",
+  RF: "Reeducación Funcional",
+  RA: "Rehabilitación Activa",
+  SYN: "Synergy",
+};
+
+function ensureMonthlyPlanStaff(req, res, next) {
+  const role = String(req.user?.role || "").toLowerCase().trim();
+
+  if (!["admin", "staff", "profesor"].includes(role)) {
+    return res.status(403).json({
+      error: "No tenés permisos para administrar planes mensuales.",
+    });
+  }
+
+  next();
+}
+
+function normalizeMonthlyPlanServiceKey(value) {
+  const key = String(value || "").toUpperCase().trim();
+  return ADMIN_MONTHLY_PLAN_SERVICE_KEYS.has(key) ? key : "";
+}
+
+function argentinaPeriodBounds(periodKey) {
+  const [year, month] = String(periodKey || "").split("-").map(Number);
+
+  if (!year || !month) {
+    return { start: null, end: null };
+  }
+
+  // Argentina = UTC-3. 00:00 AR = 03:00 UTC.
+  const start = new Date(Date.UTC(year, month - 1, 1, 3, 0, 0, 0));
+  const next = new Date(Date.UTC(year, month, 1, 3, 0, 0, 0));
+  const end = new Date(next.getTime() - 1);
+
+  return { start, end };
+}
+
+function serializeAdminMonthlyPlan(subscription) {
+  if (!subscription) return null;
+
+  return {
+    id: String(subscription._id || subscription.id || ""),
+    serviceKey: subscription.serviceKey,
+    serviceName: subscription.serviceName,
+    status: subscription.status,
+    autoRenew: subscription.autoRenew !== false,
+    monthlySessions: Number(subscription.monthlySessions || 0),
+    price: Number(subscription.price || 0),
+    regularPrice: Number(subscription.regularPrice || subscription.price || 0),
+    payMethod: subscription.payMethod || "CASH",
+    pricingPlan: subscription.pricingPlan || null,
+    currentPeriodKey: subscription.currentPeriodKey || "",
+    currentPeriodStart: subscription.currentPeriodStart || null,
+    currentPeriodEnd: subscription.currentPeriodEnd || null,
+    fixedSlotsProtectedUntil: subscription.fixedSlotsProtectedUntil || null,
+    fixedScheduleIds: Array.isArray(subscription.fixedScheduleIds)
+      ? subscription.fixedScheduleIds.map((id) => String(id))
+      : [],
+    pendingChange: subscription.pendingChange || null,
+  };
+}
+
+async function findPublishedPlanForAdminMonthlySessions({
+  serviceKey,
+  monthlySessions,
+  preferredPayMethod = "",
+}) {
+  const candidates = await PricingPlan.find({
+    active: true,
+    isCustom: { $ne: true },
+    serviceKey,
+    credits: monthlySessions,
+  })
+    .sort({ price: 1, createdAt: 1 })
+    .lean();
+
+  if (!candidates.length) return null;
+
+  const preferred = String(preferredPayMethod || "").toUpperCase().trim();
+  if (preferred) {
+    const sameMethod = candidates.find(
+      (plan) => String(plan?.payMethod || "").toUpperCase().trim() === preferred
+    );
+    if (sameMethod) return sameMethod;
+  }
+
+  const cash = candidates.find(
+    (plan) => String(plan?.payMethod || "").toUpperCase().trim() === "CASH"
+  );
+
+  return cash || candidates[0];
+}
+
+router.get(
+  "/admin/user/:targetUserId",
+  ensureMonthlyPlanStaff,
+  async (req, res) => {
+    try {
+      const targetUserId = String(req.params?.targetUserId || "").trim();
+      const targetUser = await User.findById(targetUserId)
+        .select("_id name lastName email")
+        .lean();
+
+      if (!targetUser) {
+        return res.status(404).json({ error: "Usuario no encontrado." });
+      }
+
+      const subscriptions = await ServiceSubscription.find({
+        user: targetUserId,
+        serviceKey: { $in: [...ADMIN_MONTHLY_PLAN_SERVICE_KEYS] },
+      })
+        .populate(
+          "pricingPlan",
+          "serviceKey credits price regularPrice payMethod active label title"
+        )
+        .sort({ serviceKey: 1 })
+        .lean();
+
+      return res.json({
+        ok: true,
+        user: {
+          id: String(targetUser._id),
+          name: targetUser.name || "",
+          lastName: targetUser.lastName || "",
+          email: targetUser.email || "",
+        },
+        subscriptions: subscriptions.map(serializeAdminMonthlyPlan),
+      });
+    } catch (error) {
+      console.error("GET /subscriptions/admin/user/:targetUserId", error);
+      return res.status(500).json({
+        error: "No se pudieron cargar los planes mensuales del usuario.",
+      });
+    }
+  }
+);
+
+router.put(
+  "/admin/user/:targetUserId/service/:serviceKey",
+  ensureMonthlyPlanStaff,
+  async (req, res) => {
+    try {
+      const targetUserId = String(req.params?.targetUserId || "").trim();
+      const serviceKey = normalizeMonthlyPlanServiceKey(req.params?.serviceKey);
+      const monthlySessions = Number(req.body?.monthlySessions);
+
+      if (!serviceKey) {
+        return res.status(400).json({ error: "Servicio inválido." });
+      }
+
+      if (
+        !Number.isInteger(monthlySessions) ||
+        monthlySessions <= 0 ||
+        monthlySessions > 100
+      ) {
+        return res.status(400).json({
+          error: "La cantidad mensual debe ser un número entero mayor a 0.",
+        });
+      }
+
+      const targetUser = await User.findById(targetUserId)
+        .select("_id name lastName email")
+        .lean();
+
+      if (!targetUser) {
+        return res.status(404).json({ error: "Usuario no encontrado." });
+      }
+
+      const existing = await ServiceSubscription.findOne({
+        user: targetUserId,
+        serviceKey,
+      }).lean();
+
+      const publishedPlan = await findPublishedPlanForAdminMonthlySessions({
+        serviceKey,
+        monthlySessions,
+        preferredPayMethod: existing?.payMethod || "",
+      });
+
+      if (!publishedPlan) {
+        const availablePlans = await PricingPlan.find({
+          active: true,
+          isCustom: { $ne: true },
+          serviceKey,
+        })
+          .select("credits")
+          .lean();
+
+        const availableSessions = [
+          ...new Set(
+            availablePlans
+              .map((plan) => Number(plan?.credits || 0))
+              .filter((credits) => Number.isInteger(credits) && credits > 0)
+          ),
+        ].sort((a, b) => a - b);
+
+        return res.status(400).json({
+          error: `No existe un plan publicado de ${monthlySessions} sesiones para ${serviceKey}.`,
+          availableSessions,
+        });
+      }
+
+      const now = new Date();
+      const currentPeriodKey = monthKeyFromDateArgentina(now);
+      const { start: currentPeriodStart, end: currentPeriodEnd } =
+        argentinaPeriodBounds(currentPeriodKey);
+
+      const fixedSchedules = await FixedSchedule.find({
+        user: targetUserId,
+        serviceKey,
+        active: true,
+      })
+        .select("_id")
+        .lean();
+
+      const fixedScheduleIds = fixedSchedules.map((item) => item._id);
+
+      /*
+       * IMPORTANTE:
+       * Este endpoint NO acredita creditLots ni modifica el saldo actual.
+       * Solo establece/modifica la suscripción que será la base de las
+       * renovaciones mensuales y del cálculo de sesiones adicionales.
+       */
+      const update = {
+        serviceName: ADMIN_MONTHLY_PLAN_SERVICE_NAMES[serviceKey] || serviceKey,
+        monthlySessions,
+        pricingPlan: publishedPlan._id,
+        price: Number(publishedPlan.price || 0),
+        regularPrice: Number(
+          publishedPlan.regularPrice ?? publishedPlan.price ?? 0
+        ),
+        payMethod: String(publishedPlan.payMethod || "CASH")
+          .toUpperCase()
+          .trim(),
+        autoRenew: true,
+        status: "active",
+        pendingChange: null,
+        currentPeriodKey,
+        currentPeriodStart,
+        currentPeriodEnd,
+        fixedScheduleIds,
+      };
+
+      const subscription = await ServiceSubscription.findOneAndUpdate(
+        {
+          user: targetUserId,
+          serviceKey,
+        },
+        {
+          $set: update,
+          $setOnInsert: {
+            user: targetUserId,
+            serviceKey,
+          },
+        },
+        {
+          new: true,
+          upsert: true,
+          setDefaultsOnInsert: true,
+          runValidators: false,
+        }
+      ).populate(
+        "pricingPlan",
+        "serviceKey credits price regularPrice payMethod active label title"
+      );
+
+      let syncResult = null;
+      let syncError = "";
+
+      try {
+        syncResult = await syncExtraSessionNoticeForUserService({
+          userId: targetUserId,
+          serviceKey,
+          actorId: req.user?._id || req.user?.id || null,
+          source: existing
+            ? "admin_monthly_plan_updated"
+            : "admin_monthly_plan_created",
+          now,
+        });
+      } catch (error) {
+        syncError =
+          error?.message ||
+          "No se pudo recalcular la diferencia de sesiones adicionales.";
+
+        console.warn("[ADMIN MONTHLY PLAN] extra-session sync failed", {
+          targetUserId,
+          serviceKey,
+          monthlySessions,
+          error: syncError,
+        });
+      }
+
+      let extraSessionNotice = null;
+
+      try {
+        const notices = await listExtraSessionNoticesForUser(targetUserId);
+
+        extraSessionNotice =
+          notices.find(
+            (notice) =>
+              String(notice?.serviceKey || "").toUpperCase() === serviceKey &&
+              String(notice?.periodKey || "") === currentPeriodKey
+          ) ||
+          notices.find(
+            (notice) =>
+              String(notice?.serviceKey || "").toUpperCase() === serviceKey
+          ) ||
+          null;
+      } catch (error) {
+        console.warn("[ADMIN MONTHLY PLAN] list extras failed", {
+          targetUserId,
+          serviceKey,
+          error: error?.message || error,
+        });
+      }
+
+      return res.json({
+        ok: true,
+        created: !existing,
+        monthlySessions,
+        currentCreditsChanged: false,
+        subscription: serializeAdminMonthlyPlan(
+          subscription?.toObject?.() || subscription
+        ),
+        extraSessionNotice,
+        extraSync: {
+          ok: !syncError,
+          error: syncError || null,
+          result: syncResult || null,
+        },
+      });
+    } catch (error) {
+      console.error(
+        "PUT /subscriptions/admin/user/:targetUserId/service/:serviceKey",
+        error
+      );
+
+      return res.status(500).json({
+        error:
+          error?.message ||
+          "No se pudo establecer el plan mensual del usuario.",
+      });
+    }
+  }
+);
+
+/* ============================================
+   HELPERS DE PAGO
+============================================ */
 function getFrontBaseUrl() {
   return String(
     process.env.FRONTEND_URL ||
@@ -38,7 +399,9 @@ async function createMpPreferenceForRenewal({ order, user, cycle }) {
   if (!accessToken) throw new Error("MP_ACCESS_TOKEN no configurado.");
 
   const amount = Math.max(0, Number(order.totalFinal ?? order.total ?? 0));
-  if (!(amount > 0)) throw new Error("El ciclo no tiene un importe válido para Mercado Pago.");
+  if (!(amount > 0)) {
+    throw new Error("El ciclo no tiene un importe válido para Mercado Pago.");
+  }
 
   const frontBase = getFrontBaseUrl();
   const body = {
@@ -128,6 +491,9 @@ function serializeSubscription(subscription, cycles = []) {
   };
 }
 
+/* ============================================
+   MI PLAN
+============================================ */
 router.get("/me", async (req, res) => {
   try {
     const uid = userId(req);
@@ -147,7 +513,9 @@ router.get("/me", async (req, res) => {
     for (const cycle of cycles) {
       const key = String(cycle.subscription);
       if (!bySubscription.has(key)) bySubscription.set(key, []);
-      if (bySubscription.get(key).length < 3) bySubscription.get(key).push(cycle);
+      if (bySubscription.get(key).length < 3) {
+        bySubscription.get(key).push(cycle);
+      }
     }
 
     return res.json({
@@ -192,7 +560,9 @@ router.get("/notices", async (req, res) => {
     });
   } catch (error) {
     console.error("GET /subscriptions/notices", error);
-    return res.status(500).json({ error: "No se pudieron cargar las notificaciones." });
+    return res.status(500).json({
+      error: "No se pudieron cargar las notificaciones.",
+    });
   }
 });
 
@@ -203,14 +573,22 @@ router.patch("/notices/:id/read", async (req, res) => {
       { $set: { status: "read", readAt: new Date() } },
       { new: true }
     );
-    if (!notice) return res.status(404).json({ error: "Notificación no encontrada." });
+
+    if (!notice) {
+      return res.status(404).json({ error: "Notificación no encontrada." });
+    }
+
     return res.json({ ok: true });
   } catch (error) {
-    return res.status(500).json({ error: "No se pudo actualizar la notificación." });
+    return res.status(500).json({
+      error: "No se pudo actualizar la notificación.",
+    });
   }
 });
 
-
+/* ============================================
+   PAGO DEL CICLO MENSUAL
+============================================ */
 router.post("/cycles/:cycleId/pay", async (req, res) => {
   try {
     const uid = userId(req);
@@ -219,7 +597,9 @@ router.post("/cycles/:cycleId/pay", async (req, res) => {
       user: uid,
     });
 
-    if (!cycle) return res.status(404).json({ error: "Ciclo mensual no encontrado." });
+    if (!cycle) {
+      return res.status(404).json({ error: "Ciclo mensual no encontrado." });
+    }
 
     if (cycle.billing?.status === "paid") {
       return res.json({
@@ -231,28 +611,41 @@ router.post("/cycles/:cycleId/pay", async (req, res) => {
     }
 
     if (!["pending", "overdue"].includes(String(cycle.billing?.status || ""))) {
-      return res.status(400).json({ error: "Este ciclo no admite pagos en su estado actual." });
+      return res.status(400).json({
+        error: "Este ciclo no admite pagos en su estado actual.",
+      });
     }
 
     const subscription = await ServiceSubscription.findOne({
       _id: cycle.subscription,
       user: uid,
     });
-    if (!subscription) return res.status(404).json({ error: "Suscripción no encontrada." });
 
-    const expectedMethod = String(cycle.planSnapshot?.payMethod || subscription.payMethod || "CASH")
+    if (!subscription) {
+      return res.status(404).json({ error: "Suscripción no encontrada." });
+    }
+
+    const expectedMethod = String(
+      cycle.planSnapshot?.payMethod || subscription.payMethod || "CASH"
+    )
       .toUpperCase()
       .trim();
-    const requestedMethod = String(req.body?.payMethod || expectedMethod).toUpperCase().trim();
+
+    const requestedMethod = String(req.body?.payMethod || expectedMethod)
+      .toUpperCase()
+      .trim();
 
     if (requestedMethod !== expectedMethod) {
       return res.status(400).json({
-        error: `Este plan se renueva mediante ${expectedMethod === "MP" ? "Mercado Pago" : "efectivo/transferencia"}. Para cambiar el medio de pago, modificá el plan del próximo período.`,
+        error: `Este plan se renueva mediante ${
+          expectedMethod === "MP" ? "Mercado Pago" : "efectivo/transferencia"
+        }. Para cambiar el medio de pago, modificá el plan del próximo período.`,
       });
     }
 
     if (cycle.billing?.order) {
       const existingOrder = await Order.findById(cycle.billing.order);
+
       if (existingOrder) {
         const status = String(existingOrder.status || "").toLowerCase();
 
@@ -264,31 +657,49 @@ router.post("/cycles/:cycleId/pay", async (req, res) => {
               paymentId: existingOrder.mpPaymentId || "",
               paidAt: existingOrder.paidAt || new Date(),
             });
+
             existingOrder.subscriptionCycleApplied = true;
             existingOrder.applied = true;
             await existingOrder.save();
           }
-          return res.json({ ok: true, alreadyPaid: true, ...renewalOrderResponse(existingOrder) });
+
+          return res.json({
+            ok: true,
+            alreadyPaid: true,
+            ...renewalOrderResponse(existingOrder),
+          });
         }
 
         if (status === "pending") {
           if (expectedMethod === "MP" && !existingOrder.mpInitPoint) {
             const user = await User.findById(uid).lean();
-            const mp = await createMpPreferenceForRenewal({ order: existingOrder, user, cycle });
+            const mp = await createMpPreferenceForRenewal({
+              order: existingOrder,
+              user,
+              cycle,
+            });
+
             existingOrder.mpPreferenceId = mp.preferenceId;
             existingOrder.mpInitPoint = mp.initPoint;
             await existingOrder.save();
           }
 
-          return res.json({ ok: true, reused: true, ...renewalOrderResponse(existingOrder) });
+          return res.json({
+            ok: true,
+            reused: true,
+            ...renewalOrderResponse(existingOrder),
+          });
         }
       }
     }
 
     const item = buildSubscriptionRenewalItem({ cycle, subscription });
     const amount = Math.max(0, Math.round(Number(cycle.billing?.total || 0)));
+
     if (!(amount > 0)) {
-      return res.status(400).json({ error: "El ciclo mensual no tiene saldo pendiente." });
+      return res.status(400).json({
+        error: "El ciclo mensual no tiene saldo pendiente.",
+      });
     }
 
     const order = await Order.create({
@@ -319,7 +730,9 @@ router.post("/cycles/:cycleId/pay", async (req, res) => {
         await order.save();
       } catch (error) {
         order.status = "cancelled";
-        order.notes = `${order.notes}\nNo se pudo generar Mercado Pago: ${error?.message || error}`;
+        order.notes = `${order.notes}\nNo se pudo generar Mercado Pago: ${
+          error?.message || error
+        }`;
         await order.save();
         cycle.billing.order = null;
         await cycle.save();
@@ -327,20 +740,31 @@ router.post("/cycles/:cycleId/pay", async (req, res) => {
       }
     }
 
-    return res.status(201).json({ ok: true, ...renewalOrderResponse(order) });
+    return res.status(201).json({
+      ok: true,
+      ...renewalOrderResponse(order),
+    });
   } catch (error) {
     console.error("POST /subscriptions/cycles/:cycleId/pay", error);
-    return res.status(500).json({ error: error?.message || "No se pudo generar el pago mensual." });
+    return res.status(500).json({
+      error: error?.message || "No se pudo generar el pago mensual.",
+    });
   }
 });
 
+/* ============================================
+   CAMBIOS PEDIDOS POR EL USUARIO
+============================================ */
 router.post("/:id/change-next", async (req, res) => {
   try {
     const subscription = await ServiceSubscription.findOne({
       _id: req.params.id,
       user: userId(req),
     });
-    if (!subscription) return res.status(404).json({ error: "Plan no encontrado." });
+
+    if (!subscription) {
+      return res.status(404).json({ error: "Plan no encontrado." });
+    }
 
     const pricingPlanId = String(req.body?.pricingPlanId || "");
     const plan = await PricingPlan.findOne({
@@ -349,11 +773,18 @@ router.post("/:id/change-next", async (req, res) => {
       isCustom: { $ne: true },
       serviceKey: subscription.serviceKey,
     }).lean();
+
     if (!plan) {
-      return res.status(400).json({ error: "El plan elegido no está publicado para este servicio." });
+      return res.status(400).json({
+        error: "El plan elegido no está publicado para este servicio.",
+      });
     }
 
-    const effectivePeriodKey = addMonthsToMonthKey(monthKeyFromDateArgentina(), 1);
+    const effectivePeriodKey = addMonthsToMonthKey(
+      monthKeyFromDateArgentina(),
+      1
+    );
+
     subscription.pendingChange = {
       type: "change",
       effectivePeriodKey,
@@ -368,6 +799,7 @@ router.post("/:id/change-next", async (req, res) => {
       autoRenew: true,
       reason: "Cambio solicitado por el usuario desde Mi Plan.",
     };
+
     subscription.status = "pending_change";
     await subscription.save();
 
@@ -378,7 +810,9 @@ router.post("/:id/change-next", async (req, res) => {
     });
   } catch (error) {
     console.error("POST /subscriptions/:id/change-next", error);
-    return res.status(500).json({ error: "No se pudo programar el cambio de plan." });
+    return res.status(500).json({
+      error: "No se pudo programar el cambio de plan.",
+    });
   }
 });
 
@@ -388,9 +822,16 @@ router.post("/:id/cancel-next", async (req, res) => {
       _id: req.params.id,
       user: userId(req),
     });
-    if (!subscription) return res.status(404).json({ error: "Plan no encontrado." });
 
-    const effectivePeriodKey = addMonthsToMonthKey(monthKeyFromDateArgentina(), 1);
+    if (!subscription) {
+      return res.status(404).json({ error: "Plan no encontrado." });
+    }
+
+    const effectivePeriodKey = addMonthsToMonthKey(
+      monthKeyFromDateArgentina(),
+      1
+    );
+
     subscription.pendingChange = {
       type: "cancel",
       effectivePeriodKey,
@@ -399,11 +840,15 @@ router.post("/:id/cancel-next", async (req, res) => {
       autoRenew: false,
       reason: "Cancelación solicitada por el usuario para el próximo período.",
     };
+
     subscription.status = "pending_change";
     await subscription.save();
+
     return res.json({ ok: true, effectivePeriodKey });
   } catch (error) {
-    return res.status(500).json({ error: "No se pudo programar la cancelación." });
+    return res.status(500).json({
+      error: "No se pudo programar la cancelación.",
+    });
   }
 });
 
@@ -413,9 +858,16 @@ router.post("/:id/suspend-next", async (req, res) => {
       _id: req.params.id,
       user: userId(req),
     });
-    if (!subscription) return res.status(404).json({ error: "Plan no encontrado." });
 
-    const effectivePeriodKey = addMonthsToMonthKey(monthKeyFromDateArgentina(), 1);
+    if (!subscription) {
+      return res.status(404).json({ error: "Plan no encontrado." });
+    }
+
+    const effectivePeriodKey = addMonthsToMonthKey(
+      monthKeyFromDateArgentina(),
+      1
+    );
+
     subscription.pendingChange = {
       type: "suspend",
       effectivePeriodKey,
@@ -424,11 +876,15 @@ router.post("/:id/suspend-next", async (req, res) => {
       autoRenew: false,
       reason: "Suspensión solicitada por el usuario para el próximo período.",
     };
+
     subscription.status = "pending_change";
     await subscription.save();
+
     return res.json({ ok: true, effectivePeriodKey });
   } catch (error) {
-    return res.status(500).json({ error: "No se pudo programar la suspensión." });
+    return res.status(500).json({
+      error: "No se pudo programar la suspensión.",
+    });
   }
 });
 
@@ -443,9 +899,14 @@ router.post("/:id/clear-change", async (req, res) => {
       return res.status(404).json({ error: "Plan no encontrado." });
     }
 
-    if (["cancelled", "terminated_for_non_payment"].includes(String(subscription.status || ""))) {
+    if (
+      ["cancelled", "terminated_for_non_payment"].includes(
+        String(subscription.status || "")
+      )
+    ) {
       return res.status(400).json({
-        error: "Este plan ya está finalizado y no tiene un cambio programado que pueda deshacerse.",
+        error:
+          "Este plan ya está finalizado y no tiene un cambio programado que pueda deshacerse.",
       });
     }
 
@@ -460,12 +921,8 @@ router.post("/:id/clear-change", async (req, res) => {
 
     const clearedType = String(subscription.pendingChange?.type || "change");
     subscription.pendingChange = null;
-
-    // Deshacer una suspensión/cancelación futura significa conservar la renovación.
     subscription.autoRenew = true;
 
-    // Solo revertimos el estado de cambio programado. Una suspensión real por falta
-    // de pago no se puede saltear desde Mi Plan.
     if (subscription.status === "pending_change") {
       subscription.status = "active";
     }
