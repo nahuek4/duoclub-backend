@@ -244,8 +244,12 @@ export async function resolvePlanSnapshot(
       ),
       rep(
         "credit lot serviceName dinámico",
-        `    serviceName: SERVICE_NAME[subscription.serviceKey] || subscription.serviceKey,`,
-        `    serviceName: serviceNameForKey(subscription.serviceKey),`
+        `  user.creditLots.push({
+    serviceKey: subscription.serviceKey,
+    serviceName: SERVICE_NAME[subscription.serviceKey] || subscription.serviceKey,`,
+        `  user.creditLots.push({
+    serviceKey: subscription.serviceKey,
+    serviceName: serviceNameForKey(subscription.serviceKey),`
       ),
       rep(
         "history serviceName dinámico",
