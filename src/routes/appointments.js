@@ -2367,6 +2367,7 @@ async function createAppointmentForTargetUser({
   bypassCredits = false,
   allowDebtIfNoCredits = false,
   fixedScheduleId = null,
+  ignoreCapacityForFixedSchedule = false,
   monthlyRolloverMonthKey = "",
   skipActivityLog = false,
   session = null,
@@ -2463,7 +2464,15 @@ async function createAppointmentForTargetUser({
     capacityRules
   );
 
-  if (isSlotCapacityReached(stats, requestedSk)) {
+  // Los límites configurables regulan vacantes nuevas, pero no deben romper
+  // compromisos de turnos fijos que el admin decidió conservar por fuera.
+  // Si un turno fijo se está materializando, permitimos superar temporalmente
+  // el límite configurado. La disponibilidad pública/admin igualmente queda
+  // clampada en 0 (nunca negativa), por lo que no entran reservas nuevas.
+  const shouldIgnoreCapacity =
+    !!fixedScheduleId && ignoreCapacityForFixedSchedule === true;
+
+  if (!shouldIgnoreCapacity && isSlotCapacityReached(stats, requestedSk)) {
     const e = new Error("SERVICE_CAP_REACHED");
     e.http = 409;
     throw e;
@@ -3963,6 +3972,7 @@ router.post("/admin/fixed-schedules", async (req, res) => {
           bypassWindow: true,
           bypassCredits: true,
           fixedScheduleId: fixed._id,
+          ignoreCapacityForFixedSchedule: true,
           skipActivityLog: true,
         });
         created.push(ap);
