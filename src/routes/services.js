@@ -9,9 +9,20 @@ import { logActivity } from "../lib/activityLogger.js";
 
 const router = express.Router();
 
-// Hasta completar el PASO 3, un servicio nuevo puede existir, tener horarios y
-// planes, pero no se publica en el runtime de usuarios.
-const RUNTIME_SERVICE_KEYS = new Set(["EP", "RA", "RF", "SYN"]);
+// STEP3B3B_PUBLIC_DYNAMIC_SERVICE_CATALOG
+// El runtime ya soporta servicios dinámicos. La visibilidad pública depende del
+// propio ServiceDefinition: activo, visible en catálogo y no legacy.
+function isRuntimeIntegratedService(service = {}) {
+  return service?.legacy !== true;
+}
+
+function isPublicCatalogService(service = {}) {
+  return (
+    isRuntimeIntegratedService(service) &&
+    service?.active !== false &&
+    service?.catalogVisible !== false
+  );
+}
 
 function clean(value) {
   return String(value ?? "").trim();
@@ -111,19 +122,13 @@ function serializeService(service = {}) {
         }))
       : [],
     legacy: service?.legacy === true,
-    runtimeIntegrated: RUNTIME_SERVICE_KEYS.has(serviceKey),
+    runtimeIntegrated: isRuntimeIntegratedService(service),
   };
 }
 
 function fallbackOperationalServices() {
   return CORE_SERVICE_DEFINITIONS
-    .filter((service) => RUNTIME_SERVICE_KEYS.has(service.serviceKey))
-    .filter(
-      (service) =>
-        service.active !== false &&
-        service.catalogVisible !== false &&
-        service.reservable !== false
-    )
+    .filter(isPublicCatalogService)
     .sort((a, b) => Number(a.sortOrder || 100) - Number(b.sortOrder || 100))
     .map(serializeService);
 }
@@ -165,12 +170,29 @@ function buildEditablePayload(body = {}, { creating = false } = {}) {
 }
 
 // GET /services
-//
-// PASO 2: esta ruta pública mantiene EXACTAMENTE el runtime actual.
-// El catálogo se administra en paralelo y recién gobierna Comprar/Reservar
-// cuando completemos la migración operativa del Paso 3.
+// Catálogo público dinámico. Comprar/Reservar aplican luego sus flags específicos
+// (purchasable, reservable, recurringPlanEnabled, etc.).
 router.get("/", async (req, res) => {
-  return res.json(fallbackOperationalServices());
+  try {
+    const services = await ServiceDefinition.find({
+      active: true,
+      catalogVisible: { $ne: false },
+      legacy: { $ne: true },
+    })
+      .sort({ sortOrder: 1, name: 1, serviceKey: 1 })
+      .lean();
+
+    if (services.length) {
+      return res.json(services.filter(isPublicCatalogService).map(serializeService));
+    }
+
+    const catalogInitialized = Boolean(await ServiceDefinition.exists({}));
+    return res.json(catalogInitialized ? [] : fallbackOperationalServices());
+  } catch (error) {
+    console.error("[SERVICES] GET /:", error);
+    // Mantener disponibilidad del runtime actual ante una falla puntual del catálogo.
+    return res.json(fallbackOperationalServices());
+  }
 });
 
 router.get("/admin/catalog", protect, adminOnly, async (req, res) => {
@@ -187,7 +209,10 @@ router.get("/admin/catalog", protect, adminOnly, async (req, res) => {
         ? services.map(serializeService)
         : CORE_SERVICE_DEFINITIONS.map(serializeService),
       source: services.length ? "database" : "fallback",
-      runtimeKeys: [...RUNTIME_SERVICE_KEYS],
+      runtimeKeys: (services.length ? services : CORE_SERVICE_DEFINITIONS)
+        .filter(isRuntimeIntegratedService)
+        .map((service) => String(service?.serviceKey || "").toUpperCase().trim())
+        .filter(Boolean),
     });
   } catch (error) {
     console.error("[SERVICES] GET /admin/catalog:", error);
@@ -198,7 +223,7 @@ router.get("/admin/catalog", protect, adminOnly, async (req, res) => {
 });
 
 // POST /services/admin/catalog
-// Crea un servicio de catálogo. NO lo expone todavía en el runtime de usuarios.
+// Crea un servicio de catálogo. Su exposición pública depende de active/catalogVisible.
 router.post("/admin/catalog", protect, adminOnly, async (req, res) => {
   try {
     const serviceKey = normalizeServiceKey(req.body?.serviceKey);
@@ -242,7 +267,7 @@ router.post("/admin/catalog", protect, adminOnly, async (req, res) => {
         serviceKey: doc.serviceKey,
         name: doc.name,
         capacityGroup: doc.capacityGroup,
-        runtimeIntegrated: RUNTIME_SERVICE_KEYS.has(doc.serviceKey),
+        runtimeIntegrated: isRuntimeIntegratedService(doc),
       },
       diff: { before: null, after: doc.toObject() },
     });
@@ -295,7 +320,7 @@ router.put("/admin/catalog/:serviceKey", protect, adminOnly, async (req, res) =>
         serviceKey: existing.serviceKey,
         name: existing.name,
         capacityGroup: existing.capacityGroup,
-        runtimeIntegrated: RUNTIME_SERVICE_KEYS.has(existing.serviceKey),
+        runtimeIntegrated: isRuntimeIntegratedService(existing),
       },
       diff: { before, after: existing.toObject() },
     });

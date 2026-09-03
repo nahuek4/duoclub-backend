@@ -3,16 +3,17 @@ import express from "express";
 import mongoose from "mongoose";
 
 import PricingPlan, { normalizeServiceKey } from "../models/PricingPlan.js";
-import ServiceDefinition from "../models/ServiceDefinition.js";
+import ServiceDefinition, {
+  CORE_SERVICE_DEFINITIONS,
+} from "../models/ServiceDefinition.js";
 import { protect, adminOnly } from "../middleware/auth.js";
 import { logActivity } from "../lib/activityLogger.js";
 
 const router = express.Router();
 
-// PASO 2: comprar/reservar todavía no está migrado a servicios dinámicos.
-// Por seguridad, /pricing?active=1 sigue exponiendo únicamente los cuatro
-// servicios que ya funcionan de punta a punta en producción.
-const RUNTIME_PRICING_KEYS = new Set(["EP", "RA", "RF", "SYN"]);
+// STEP3B3B_PUBLIC_DYNAMIC_PRICING
+// /pricing?active=1 se filtra por el catálogo dinámico: servicio activo,
+// visible, comprable y no legacy.
 
 function normalizePayMethod(value) {
   return String(value || "").toUpperCase().trim();
@@ -90,6 +91,41 @@ async function ensurePricingIndexesForCustomCards() {
   }
 }
 
+async function publicPurchasableServiceKeys() {
+  try {
+    const services = await ServiceDefinition.find({
+      active: true,
+      catalogVisible: { $ne: false },
+      purchasable: { $ne: false },
+      legacy: { $ne: true },
+    })
+      .select("serviceKey")
+      .lean();
+
+    const keys = services
+      .map((service) => normalizeServiceKey(service?.serviceKey))
+      .filter(Boolean);
+
+    if (keys.length) return [...new Set(keys)];
+
+    const catalogInitialized = Boolean(await ServiceDefinition.exists({}));
+    if (catalogInitialized) return [];
+  } catch (error) {
+    console.error("[PRICING] publicPurchasableServiceKeys:", error);
+  }
+
+  return CORE_SERVICE_DEFINITIONS
+    .filter(
+      (service) =>
+        service?.legacy !== true &&
+        service?.active !== false &&
+        service?.catalogVisible !== false &&
+        service?.purchasable !== false
+    )
+    .map((service) => normalizeServiceKey(service?.serviceKey))
+    .filter(Boolean);
+}
+
 async function getCatalogServiceOrThrow(serviceKey) {
   const normalized = normalizeServiceKey(serviceKey);
 
@@ -141,7 +177,10 @@ router.get("/", async (req, res) => {
     const active = String(req.query.active ?? "1") === "1";
 
     const query = active
-      ? { active: true, serviceKey: { $in: [...RUNTIME_PRICING_KEYS] } }
+      ? {
+          active: true,
+          serviceKey: { $in: await publicPurchasableServiceKeys() },
+        }
       : {};
 
     const list = await PricingPlan.find(query)
