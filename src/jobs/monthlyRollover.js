@@ -5,10 +5,13 @@
 // - Asegura los turnos fijos del mes sin generar deuda.
 // - Los turnos sin cobertura quedan pendientes y la app informa las sesiones adicionales necesarias.
 
+import mongoose from "mongoose";
+
 import User from "../models/User.js";
 import FixedSchedule from "../models/FixedSchedule.js";
 import Appointment from "../models/Appointment.js";
 import ServiceSubscription from "../models/ServiceSubscription.js";
+import SubscriptionBillingCycle from "../models/SubscriptionBillingCycle.js";
 import { syncExtraSessionNoticeForUserService } from "../services/subscriptions/subscriptionExtraSessions.js";
 import { runSubscriptionLifecycleTick } from "../services/subscriptions/subscriptionLifecycle.js";
 
@@ -193,6 +196,173 @@ function recalcUserCredits(user) {
   user.credits = sum;
 }
 
+// RENEWAL_FIXED_CREDIT_RESERVATION_V1
+// Los créditos del ciclo mensual primero cubren los turnos fijos del mismo mes.
+// El Appointment queda vinculado al lote para que una cancelación posterior pueda
+// devolver exactamente ese crédito. No genera deuda.
+export async function reserveMonthlyCycleCreditsForFixedAppointments({
+  userId,
+  serviceKey,
+  periodKey,
+  now = new Date(),
+} = {}) {
+  const sk = normalizeServiceKey(serviceKey);
+  if (!userId || !sk || !/^\d{4}-\d{2}$/.test(String(periodKey || ""))) {
+    return {
+      ok: false,
+      skipped: true,
+      reason: "INVALID_RESERVATION_INPUT",
+      reserved: 0,
+    };
+  }
+
+  const { startYmd, endYmd } = monthStartEnd(periodKey);
+  const session = await mongoose.startSession();
+  let result = null;
+
+  try {
+    await session.withTransaction(async () => {
+      const cycle = await SubscriptionBillingCycle.findOne({
+        user: userId,
+        serviceKey: sk,
+        periodKey,
+        "creditGrant.granted": true,
+      })
+        .sort({ createdAt: -1 })
+        .session(session);
+
+      if (!cycle) {
+        result = {
+          ok: true,
+          skipped: true,
+          reason: "CYCLE_NOT_FOUND_OR_NOT_GRANTED",
+          reserved: 0,
+          userId: String(userId),
+          serviceKey: sk,
+          periodKey,
+        };
+        return;
+      }
+
+      const user = await User.findById(userId).session(session);
+      if (!user) {
+        result = {
+          ok: false,
+          skipped: true,
+          reason: "USER_NOT_FOUND",
+          reserved: 0,
+          userId: String(userId),
+          serviceKey: sk,
+          periodKey,
+        };
+        return;
+      }
+
+      user.creditLots = Array.isArray(user.creditLots) ? user.creditLots : [];
+
+      const expectedSource = `subscription_cycle:${String(cycle._id)}:${periodKey}`;
+      const cycleLotId = cycle.creditGrant?.lotId
+        ? String(cycle.creditGrant.lotId)
+        : "";
+
+      const lot =
+        user.creditLots.find(
+          (item) => cycleLotId && String(item?._id || "") === cycleLotId
+        ) ||
+        user.creditLots.find(
+          (item) => String(item?.source || "").trim() === expectedSource
+        ) ||
+        null;
+
+      if (!lot) {
+        result = {
+          ok: false,
+          skipped: true,
+          reason: "CYCLE_LOT_NOT_FOUND",
+          reserved: 0,
+          userId: String(userId),
+          serviceKey: sk,
+          periodKey,
+          cycleId: String(cycle._id),
+        };
+        return;
+      }
+
+      const pending = await Appointment.find({
+        user: userId,
+        serviceKey: sk,
+        fixedScheduleId: { $ne: null },
+        date: { $gte: startYmd, $lte: endYmd },
+        status: "reserved",
+        creditDebitStatus: { $nin: ["monthly_reserved", "debited"] },
+        $or: [
+          { creditLotId: null },
+          { creditLotId: { $exists: false } },
+        ],
+      })
+        .sort({ date: 1, time: 1, createdAt: 1 })
+        .session(session);
+
+      const remainingBefore = Math.max(0, Number(lot.remaining || 0));
+      const reserveCount = Math.min(remainingBefore, pending.length);
+      const selected = pending.slice(0, reserveCount);
+
+      for (const ap of selected) {
+        ap.creditLotId = lot._id || null;
+        ap.creditExpiresAt = lot.expiresAt || null;
+        ap.creditDebitStatus = "monthly_reserved";
+        ap.creditDebitedAt = now;
+        ap.fixedDebtAmount = 0;
+        await ap.save({ session });
+      }
+
+      if (reserveCount > 0) {
+        lot.remaining = remainingBefore - reserveCount;
+        user.history = Array.isArray(user.history) ? user.history : [];
+        user.history.push({
+          action: "subscription_fixed_credits_reserved",
+          title: `Créditos reservados para turnos fijos ${sk}`,
+          message: `Se reservaron ${reserveCount} crédito${reserveCount === 1 ? "" : "s"} del plan mensual para turnos fijos de ${serviceName(sk)} en ${periodKey}.`,
+          serviceKey: sk,
+          serviceName: serviceName(sk),
+          service: serviceName(sk),
+          qty: -reserveCount,
+          createdAt: now,
+        });
+      }
+
+      recalcUserCredits(user);
+      await user.save({ session });
+
+      result = {
+        ok: true,
+        skipped: false,
+        userId: String(userId),
+        serviceKey: sk,
+        periodKey,
+        cycleId: String(cycle._id),
+        lotId: String(lot._id || ""),
+        remainingBefore,
+        pendingBefore: pending.length,
+        reserved: reserveCount,
+        remainingAfter: Math.max(0, remainingBefore - reserveCount),
+        pendingAfter: Math.max(0, pending.length - reserveCount),
+      };
+    });
+
+    return (
+      result || {
+        ok: true,
+        skipped: true,
+        reason: "NO_RESULT",
+        reserved: 0,
+      }
+    );
+  } finally {
+    await session.endSession();
+  }
+}
+
 async function expirePastCreditsForUser(user) {
   if (!user) return false;
 
@@ -237,7 +407,7 @@ async function slotHasCapacity({ date, time, serviceKey }) {
 
 async function ensureFixedAppointmentsForMonth(monthKey, { now = new Date() } = {}) {
   const { startYmd, endYmd } = monthStartEnd(monthKey);
-  const affectedUserServices = new Map();
+  const reservationTargets = new Map();
 
   // En el modelo nuevo, active:true representa un patrón fijo vigente.
   // endDate pertenece al esquema legacy mensual y NO debe cortar la proyección.
@@ -257,6 +427,15 @@ async function ensureFixedAppointmentsForMonth(monthKey, { now = new Date() } = 
   const renewableKeys = new Set(
     subscriptions.map((sub) => `${String(sub.user)}__${String(sub.serviceKey)}`)
   );
+
+  for (const sub of subscriptions) {
+    const sk = normalizeServiceKey(sub.serviceKey);
+    if (!sub.user || !sk) continue;
+    reservationTargets.set(`${String(sub.user)}__${sk}`, {
+      userId: sub.user,
+      serviceKey: sk,
+    });
+  }
 
   let created = 0;
   let skipped = 0;
@@ -338,7 +517,7 @@ async function ensureFixedAppointmentsForMonth(monthKey, { now = new Date() } = 
         });
         created += 1;
         const affectedKey = `${String(userId)}__${sk}`;
-        affectedUserServices.set(affectedKey, { userId, serviceKey: sk });
+        reservationTargets.set(affectedKey, { userId, serviceKey: sk });
       } catch (err) {
         // Conflictos por índice único u otro proceso paralelo: no tumbar el job.
         skipped += 1;
@@ -354,10 +533,39 @@ async function ensureFixedAppointmentsForMonth(monthKey, { now = new Date() } = 
     }
   }
 
+  let reservationTargetsChecked = 0;
+  let creditsReserved = 0;
+  let reservationErrors = 0;
+  let pendingAfterReservation = 0;
+
+  for (const item of reservationTargets.values()) {
+    reservationTargetsChecked += 1;
+    try {
+      const reservation = await reserveMonthlyCycleCreditsForFixedAppointments({
+        userId: item.userId,
+        serviceKey: item.serviceKey,
+        periodKey: monthKey,
+        now,
+      });
+      creditsReserved += Math.max(0, Number(reservation?.reserved || 0));
+      pendingAfterReservation += Math.max(
+        0,
+        Number(reservation?.pendingAfter || 0)
+      );
+    } catch (error) {
+      reservationErrors += 1;
+      console.log("[MONTHLY] fixed credit reservation skipped", {
+        userId: String(item.userId || ""),
+        serviceKey: item.serviceKey,
+        error: error?.message || error,
+      });
+    }
+  }
+
   let noticesSynced = 0;
   let noticeErrors = 0;
 
-  for (const item of affectedUserServices.values()) {
+  for (const item of reservationTargets.values()) {
     try {
       await syncExtraSessionNoticeForUserService({
         userId: item.userId,
@@ -376,7 +584,18 @@ async function ensureFixedAppointmentsForMonth(monthKey, { now = new Date() } = 
     }
   }
 
-  return { schedules: schedules.length, created, skipped, monthlyDebtAdded: 0, noticesSynced, noticeErrors };
+  return {
+    schedules: schedules.length,
+    created,
+    skipped,
+    monthlyDebtAdded: 0,
+    reservationTargetsChecked,
+    creditsReserved,
+    pendingAfterReservation,
+    reservationErrors,
+    noticesSynced,
+    noticeErrors,
+  };
 }
 
 export async function runMonthlyRollover({ force = false } = {}) {
