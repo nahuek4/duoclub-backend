@@ -1,5 +1,6 @@
 // backend/src/routes/services.js
 import express from "express";
+import mongoose from "mongoose";
 
 import ServiceDefinition, {
   CORE_SERVICE_DEFINITIONS,
@@ -135,6 +136,96 @@ function fallbackOperationalServices() {
 
 function actorId(req) {
   return req.user?._id || req.user?.id || null;
+}
+
+const SERVICE_USAGE_CHECKS = [
+  ["pricingPlans", "pricingplans", (serviceKey) => ({ serviceKey })],
+  ["appointments", "appointments", (serviceKey) => ({ serviceKey })],
+  ["fixedSchedules", "fixedschedules", (serviceKey) => ({ serviceKey })],
+  ["subscriptions", "servicesubscriptions", (serviceKey) => ({ serviceKey })],
+  ["billingCycles", "subscriptionbillingcycles", (serviceKey) => ({ serviceKey })],
+  ["waitlist", "waitlistentries", (serviceKey) => ({ serviceKey })],
+  [
+    "orders",
+    "orders",
+    (serviceKey) => ({
+      $or: [
+        { serviceKey },
+        { "items.serviceKey": serviceKey },
+        { "lines.serviceKey": serviceKey },
+        { "services.serviceKey": serviceKey },
+      ],
+    }),
+  ],
+  [
+    "userCredits",
+    "users",
+    (serviceKey) => ({
+      $or: [
+        { "creditLots.serviceKey": serviceKey },
+        { "serviceDebts.serviceKey": serviceKey },
+        { "subscriptions.serviceKey": serviceKey },
+        { "serviceSubscriptions.serviceKey": serviceKey },
+      ],
+    }),
+  ],
+  [
+    "scheduleBlocks",
+    "scheduleblocks",
+    (serviceKey) => ({
+      $or: [
+        { serviceKey },
+        { serviceKeys: serviceKey },
+        { services: serviceKey },
+      ],
+    }),
+  ],
+  [
+    "capacityRules",
+    "capacityrules",
+    (serviceKey) => ({
+      $or: [
+        { serviceKey },
+        { serviceKeys: serviceKey },
+        { services: serviceKey },
+      ],
+    }),
+  ],
+];
+
+async function serviceUsageSummary(serviceKey) {
+  const db = ServiceDefinition?.db?.db || mongoose.connection.db;
+  if (!db) {
+    throw new Error("No hay conexión activa a MongoDB.");
+  }
+
+  const existingCollections = new Set(
+    (await db.listCollections({}, { nameOnly: true }).toArray()).map(
+      (item) => item?.name
+    )
+  );
+
+  const usage = {};
+
+  for (const [label, collectionName, filterBuilder] of SERVICE_USAGE_CHECKS) {
+    if (!existingCollections.has(collectionName)) {
+      usage[label] = 0;
+      continue;
+    }
+
+    usage[label] = await db
+      .collection(collectionName)
+      .countDocuments(filterBuilder(serviceKey));
+  }
+
+  return usage;
+}
+
+function usageTotal(usage = {}) {
+  return Object.values(usage).reduce(
+    (sum, value) => sum + Math.max(0, Number(value || 0)),
+    0
+  );
 }
 
 function buildEditablePayload(body = {}, { creating = false } = {}) {
@@ -333,5 +424,135 @@ router.put("/admin/catalog/:serviceKey", protect, adminOnly, async (req, res) =>
     });
   }
 });
+
+// PATCH /services/admin/catalog/:serviceKey/status
+// Cambio rápido de estado sin reescribir la configuración completa del servicio.
+router.patch(
+  "/admin/catalog/:serviceKey/status",
+  protect,
+  adminOnly,
+  async (req, res) => {
+    try {
+      const serviceKey = normalizeServiceKey(req.params?.serviceKey);
+      const existing = await ServiceDefinition.findOne({ serviceKey });
+
+      if (!existing) {
+        return res.status(404).json({ error: "Servicio no encontrado." });
+      }
+
+      if (existing.legacy === true) {
+        return res.status(409).json({
+          error: "Los servicios históricos no se pueden activar ni desactivar desde esta acción.",
+        });
+      }
+
+      if (typeof req.body?.active !== "boolean") {
+        return res.status(400).json({
+          error: "Indicá active=true o active=false.",
+        });
+      }
+
+      const before = existing.toObject();
+      existing.active = req.body.active;
+      existing.updatedBy = actorId(req);
+      await existing.save();
+
+      await logActivity({
+        req,
+        category: "services",
+        action: existing.active ? "service_activated" : "service_deactivated",
+        entity: "service_definition",
+        entityId: existing._id,
+        title: existing.active ? "Servicio activado" : "Servicio desactivado",
+        description: `${existing.name} (${existing.serviceKey}) quedó ${
+          existing.active ? "activo" : "inactivo"
+        }.`,
+        meta: {
+          serviceKey: existing.serviceKey,
+          name: existing.name,
+          active: existing.active,
+        },
+        diff: { before, after: existing.toObject() },
+      });
+
+      return res.json({ ok: true, item: serializeService(existing) });
+    } catch (error) {
+      console.error("[SERVICES] PATCH /admin/catalog/:serviceKey/status:", error);
+      return res.status(500).json({
+        error: error?.message || "No se pudo cambiar el estado del servicio.",
+      });
+    }
+  }
+);
+
+// DELETE /services/admin/catalog/:serviceKey
+// Solo permite eliminación física cuando el servicio no tiene referencias.
+// Si ya fue utilizado, debe desactivarse para conservar trazabilidad e historial.
+router.delete(
+  "/admin/catalog/:serviceKey",
+  protect,
+  adminOnly,
+  async (req, res) => {
+    try {
+      const serviceKey = normalizeServiceKey(req.params?.serviceKey);
+      const existing = await ServiceDefinition.findOne({ serviceKey });
+
+      if (!existing) {
+        return res.status(404).json({ error: "Servicio no encontrado." });
+      }
+
+      if (existing.legacy === true) {
+        return res.status(409).json({
+          code: "LEGACY_SERVICE_PROTECTED",
+          error:
+            "Los servicios históricos están protegidos y no se pueden eliminar.",
+        });
+      }
+
+      const usage = await serviceUsageSummary(serviceKey);
+      const totalUsage = usageTotal(usage);
+
+      if (totalUsage > 0) {
+        return res.status(409).json({
+          code: "SERVICE_IN_USE",
+          error:
+            "Este servicio ya tiene información asociada y no se puede eliminar físicamente. Desactivalo para sacarlo de la operatoria sin perder historial.",
+          usage,
+          totalUsage,
+        });
+      }
+
+      const before = existing.toObject();
+      await existing.deleteOne();
+
+      await logActivity({
+        req,
+        category: "services",
+        action: "service_deleted",
+        entity: "service_definition",
+        entityId: before?._id,
+        title: "Servicio eliminado",
+        description: `Se eliminó ${before?.name || serviceKey} (${serviceKey}) del catálogo.`,
+        meta: {
+          serviceKey,
+          name: before?.name || "",
+          usage,
+        },
+        diff: { before, after: null },
+      });
+
+      return res.json({
+        ok: true,
+        deleted: true,
+        serviceKey,
+      });
+    } catch (error) {
+      console.error("[SERVICES] DELETE /admin/catalog/:serviceKey:", error);
+      return res.status(500).json({
+        error: error?.message || "No se pudo eliminar el servicio.",
+      });
+    }
+  }
+);
 
 export default router;
