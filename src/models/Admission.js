@@ -45,8 +45,15 @@ const admissionSchema = new mongoose.Schema(
       city: { type: String, default: "", trim: true },
       cityOther: { type: String, default: "", trim: true },
       phone: { type: String, default: "", trim: true },
+      emergencyPhone: { type: String, default: "", trim: true },
       email: { type: String, default: "", trim: true, lowercase: true },
       healthInsuranceProvider: { type: String, default: "", trim: true },
+      healthInsurancePlan: { type: String, default: "", trim: true },
+
+      // Variante nueva del formulario de admisión de DUO PERFORMANCE.
+      // Se mantiene dentro de step1 para no romper admisiones históricas.
+      formType: { type: String, default: "", trim: true },
+      performanceGoal: { type: String, default: "", trim: true },
 
       fitnessLevel: { type: String, default: "", trim: true },
       hasContraindication: { type: String, default: "", trim: true },
@@ -114,10 +121,14 @@ admissionSchema.pre("validate", function normalizeAdmission() {
     this.step1.city = cleanString(this.step1.city);
     this.step1.cityOther = cleanString(this.step1.cityOther);
     this.step1.phone = cleanString(this.step1.phone);
+    this.step1.emergencyPhone = cleanString(this.step1.emergencyPhone);
     this.step1.email = cleanEmail(this.step1.email);
     this.step1.healthInsuranceProvider = cleanString(
       this.step1.healthInsuranceProvider
     );
+    this.step1.healthInsurancePlan = cleanString(this.step1.healthInsurancePlan);
+    this.step1.formType = cleanString(this.step1.formType).toUpperCase();
+    this.step1.performanceGoal = cleanString(this.step1.performanceGoal).toUpperCase();
 
     this.step1.fitnessLevel = cleanString(this.step1.fitnessLevel);
     this.step1.hasContraindication = cleanString(

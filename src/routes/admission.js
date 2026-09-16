@@ -73,6 +73,64 @@ function computeAgeFromBirth(step1) {
 function buildNotesFromAdmission(step1 = {}, step2 = {}) {
   const lines = [];
 
+  const formType = String(step1?.formType || step2?.formType || "").toUpperCase().trim();
+  const performanceGoal = String(step1?.performanceGoal || step2?.performanceGoal || "").toUpperCase().trim();
+
+  if (formType === "PERFORMANCE") {
+    lines.push(
+      `DUO Performance: ${
+        performanceGoal === "RECOVERY"
+          ? "Necesito recuperarme"
+          : performanceGoal === "TRAINING"
+            ? "Necesito entrenar"
+            : performanceGoal || "-"
+      }`
+    );
+
+    if (step1.emergencyPhone) lines.push(`Tel. emergencia: ${step1.emergencyPhone}`);
+    if (step1.healthInsuranceProvider) lines.push(`Obra social: ${step1.healthInsuranceProvider}`);
+    if (step1.healthInsurancePlan) lines.push(`Plan obra social: ${step1.healthInsurancePlan}`);
+
+    if (performanceGoal === "RECOVERY") {
+      if (step2.consultationReason) lines.push(`Motivo consulta: ${step2.consultationReason}`);
+      if (step2.injuryDateUnknown) lines.push("Fecha lesión: No recuerda");
+      else if (step2.injuryDate) lines.push(`Fecha lesión: ${step2.injuryDate}`);
+      if (step2.symptomStartUnknown) lines.push("Inicio síntomas: No recuerda");
+      else if (step2.symptomStartDate) lines.push(`Inicio síntomas: ${step2.symptomStartDate}`);
+      if (step2.medicalReferral) lines.push(`Derivación médica: ${step2.medicalReferral}`);
+      if (step2.doctorName) lines.push(`Médico: ${step2.doctorName}`);
+      if (step2.noMedicalOrder) lines.push("Orden médica: No tiene");
+      else if (step2.medicalOrderDate) lines.push(`Fecha orden médica: ${step2.medicalOrderDate}`);
+      if (Array.isArray(step2.diagnosticStudies) && step2.diagnosticStudies.length) {
+        lines.push(`Estudios: ${step2.diagnosticStudies.join(", ")}${step2.diagnosticStudyOther ? ` (${step2.diagnosticStudyOther})` : ""}`);
+      }
+      if (step2.discomfortScale) lines.push(`Malestar actual: ${step2.discomfortScale}/10`);
+      if (step2.mobilityLimitation) lines.push(`Desplazamiento: ${step2.mobilityLimitation}`);
+      if (step2.lastNormalTraining) lines.push(`Último entrenamiento normal: ${step2.lastNormalTraining}`);
+    }
+
+    if (performanceGoal === "TRAINING") {
+      if (step2.lastMedicalExam) lines.push(`Último examen médico: ${step2.lastMedicalExam}`);
+      if (step2.performanceCondition) {
+        lines.push(
+          step2.performanceCondition === "SI"
+            ? `Condición que afecta rendimiento: SI (${step2.performanceConditionDetail || "-"})`
+            : `Condición que afecta rendimiento: ${step2.performanceCondition}`
+        );
+      }
+      if (step2.fitnessLevel) lines.push(`Condición física: ${step2.fitnessLevel}`);
+      if (step2.lastRegularTraining) lines.push(`Último entrenamiento regular: ${step2.lastRegularTraining}`);
+      if (step2.competitiveSport) {
+        lines.push(
+          step2.competitiveSport === "SI"
+            ? `Deporte competitivo: SI (${step2.competitiveSportName || "-"})`
+            : `Deporte competitivo: ${step2.competitiveSport}`
+        );
+      }
+      if (step2.weeklySportHours) lines.push(`Horas entrenamiento deportivo/sem: ${step2.weeklySportHours}`);
+    }
+  }
+
   if (step1.fitnessLevel) {
     lines.push(`Fitness: ${step1.fitnessLevel}`);
   }
@@ -479,7 +537,11 @@ router.get("/admin", protect, adminOrProfessor, async (req, res) => {
           "step1.fullName",
           "step1.email",
           "step1.phone",
+          "step1.emergencyPhone",
           "step1.healthInsuranceProvider",
+          "step1.healthInsurancePlan",
+          "step1.formType",
+          "step1.performanceGoal",
           "step1.city",
           "step1.cityOther",
           "step1Completed",
