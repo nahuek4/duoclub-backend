@@ -9,14 +9,12 @@ import {
   renderAdminMetaPanel,
   renderAdminDetailPanel,
   renderRowCard,
-  renderUnifiedMailFooter
 } from "./ui.js";
 
-const IMG_BASE = "https://api.duoclub.ar/images";
-
-
-const MAIL_LOGO_URL = `${IMG_BASE}/logo.png`;
-const MAIL_CHECK_URL = `${IMG_BASE}/iconocheck.png`;
+const MAIL_ASSET_BASE = `${BRAND_URL.replace(/\/$/, "")}/images`;
+const MAIL_LOGO_URL = `${MAIL_ASSET_BASE}/logo.png`;
+const MAIL_CHECK_URL = `${MAIL_ASSET_BASE}/iconocheck.png`;
+const MAIL_WORDMARK_URL = `${MAIL_ASSET_BASE}/duohealthclub.png`;
 
 function renderMailHeaderLogo(width = 34) {
   return `<img src="${escapeHtml(MAIL_LOGO_URL)}" alt="${escapeHtml(BRAND_NAME)}" width="${Number(width) || 34}" style="display:block; margin:0 auto; width:${Number(width) || 34}px; max-width:${Number(width) || 34}px; height:auto;" />`;
@@ -25,6 +23,29 @@ function renderMailHeaderLogo(width = 34) {
 function renderMailCheckIcon(size = 18) {
   return `<img src="${escapeHtml(MAIL_CHECK_URL)}" alt="Check" width="${Number(size) || 18}" height="${Number(size) || 18}" style="display:block; width:${Number(size) || 18}px; height:${Number(size) || 18}px;" />`;
 }
+
+function renderMailFooterBrand(width = 92) {
+  return `<img src="${escapeHtml(MAIL_WORDMARK_URL)}" alt="${escapeHtml(BRAND_NAME)}" width="${Number(width) || 92}" style="display:block; width:${Number(width) || 92}px; max-width:100%; height:auto;" />`;
+}
+
+function renderMailFooterIcons() {
+  return `
+    <table role="presentation" cellpadding="0" cellspacing="0" style="border-collapse:collapse; margin-top:8px;">
+      <tr>
+        <td style="padding-right:6px;">
+          <div style="width:20px; height:20px; border-radius:999px; border:1px solid #ffffff; color:#ffffff; font-family:Arial, Helvetica, sans-serif; font-size:8px; line-height:20px; text-align:center; font-weight:700;">ig</div>
+        </td>
+        <td style="padding-right:6px;">
+          <div style="width:20px; height:20px; border-radius:999px; border:1px solid #ffffff; color:#ffffff; font-family:Arial, Helvetica, sans-serif; font-size:10px; line-height:20px; text-align:center; font-weight:700;">f</div>
+        </td>
+        <td>
+          <div style="width:20px; height:20px; border-radius:999px; border:1px solid #ffffff; color:#ffffff; font-family:Arial, Helvetica, sans-serif; font-size:8px; line-height:20px; text-align:center; font-weight:700;">in</div>
+        </td>
+      </tr>
+    </table>
+  `;
+}
+
 
 /* =========================================================
    Helpers
@@ -292,7 +313,7 @@ function renderSectionPanel(title, rows = []) {
     ${renderExactBodyText(escapeHtml(title), {
       fontSize: 13,
       lineHeight: 18,
-      weight: 700,
+      weight: 900,
       maxWidth: 340,
       marginTop: 2,
       marginBottom: 10,
@@ -301,7 +322,7 @@ function renderSectionPanel(title, rows = []) {
     <div
       class="panel"
       style="
-        background:#0A0A0A;
+        background:#0a0a0a;
         border-radius:6px;
         padding:14px;
         margin:0 auto 18px;
@@ -345,26 +366,6 @@ function buildAdminAdmissionVisualEmail({
     footerNote: "",
     bodyHtml: `
       <style>
-      a[x-apple-data-detectors],
-      .duo-footer-info a,
-      .duo-footer-info a:link,
-      .duo-footer-info a:visited,
-      .duo-exact-footer a,
-      .duo-exact-footer a:link,
-      .duo-exact-footer a:visited,
-      .ap-footer a,
-      .ap-footer a:link,
-      .ap-footer a:visited,
-      .duo-admin-footer a,
-      .duo-admin-footer a:link,
-      .duo-admin-footer a:visited,
-      .duo-pay-footer a,
-      .duo-pay-footer a:link,
-      .duo-pay-footer a:visited {
-        color:#ffffff !important;
-        text-decoration:none !important;
-      }
-    
         @media only screen and (max-width: 560px) {
           .duo-admin-wrap { max-width: 100% !important; }
           .duo-admin-card { border-radius: 0 0 22px 22px !important; }
@@ -379,20 +380,20 @@ function buildAdminAdmissionVisualEmail({
       <table role="presentation" cellpadding="0" cellspacing="0" width="100%" style="border-collapse:collapse;">
         <tr><td align="center" style="padding:0;">
           <table role="presentation" cellpadding="0" cellspacing="0" width="100%" class="duo-admin-wrap" style="max-width:430px; border-collapse:separate; border-spacing:0;">
-            <tr><td class="duo-admin-card" style="background:#FBFBFB; border-radius:0 0 28px 28px; overflow:hidden; font-family:Arial, Helvetica, sans-serif; color:#111111;">
+            <tr><td class="duo-admin-card" style="background:#ffffff; border-radius:0 0 28px 28px; overflow:hidden; font-family:Arial, Helvetica, sans-serif; color:#111111;">
               <table role="presentation" cellpadding="0" cellspacing="0" width="100%" style="border-collapse:collapse; width:100%;">
                 <tr>
-                  <td class="duo-admin-content" style="padding:34px 28px 34px; background:#FBFBFB; color:#111111;">
+                  <td class="duo-admin-content" style="padding:34px 28px 34px; background:#ffffff; color:#111111;">
                     <table role="presentation" cellpadding="0" cellspacing="0" width="100%" style="border-collapse:collapse; width:100%;">
                       <tr><td align="center" style="padding:0 0 36px;">${renderMailHeaderLogo()}</td></tr>
-                      <tr><td style="padding:0 0 14px;"><table role="presentation" cellpadding="0" cellspacing="0" width="100%" style="border-collapse:collapse;"><tr><td valign="middle" style="width:24px; padding:0 10px 0 0;"><div style="width:19px; height:19px; border:2px solid #111111; border-radius:999px; font-size:11px; line-height:17px; text-align:center; font-weight:700; color:#111111;">✓</div></td><td class="duo-admin-heading" valign="middle" style="font-size:24px; line-height:28px; font-weight:750; color:#111111; letter-spacing:-0.6px;">${escapeHtml(heading)}</td></tr></table></td></tr>
+                      <tr><td style="padding:0 0 14px;"><table role="presentation" cellpadding="0" cellspacing="0" width="100%" style="border-collapse:collapse;"><tr><td valign="middle" style="width:24px; padding:0 10px 0 0;"><div style="width:19px; height:19px; border:2px solid #111111; border-radius:999px; font-size:11px; line-height:17px; text-align:center; font-weight:900; color:#111111;">✓</div></td><td class="duo-admin-heading" valign="middle" style="font-size:24px; line-height:28px; font-weight:900; color:#111111; letter-spacing:-0.6px;">${escapeHtml(heading)}</td></tr></table></td></tr>
                       <tr><td style="padding:0 0 16px;"><div style="height:1px; background:#c9c9c9; width:100%;"></div></td></tr>
                       <tr><td class="duo-admin-copy" style="font-size:14px; line-height:20px; font-weight:400; color:#111111; text-align:left; padding:0 0 18px;">${introHtml}</td></tr>
                       <tr><td>${bodyHtml}</td></tr>
                     </table>
                   </td>
                 </tr>
-                ${renderUnifiedMailFooter({ className: "duo-admin-footer" })}
+                <tr><td class="duo-admin-footer" style="background:#0A0A0A; padding:40px 48px 42px; border-radius:0 0 28px 28px; font-family:Arial, Helvetica, sans-serif;"><table role="presentation" cellpadding="0" cellspacing="0" width="100%" style="border-collapse:collapse; width:100%;"><tr><td valign="middle" style="width:42%; color:#ffffff;">${renderMailFooterBrand()}</td><td valign="middle" align="right" class="duo-footer-info" style="width:58%; color:#ffffff; font-size:9px; line-height:13px; font-weight:500; letter-spacing:0.2px;"><div style="font-weight:900; letter-spacing:2.8px;">DUOCLUB.AR</div><div>+54 249 420 7343</div><div>Av. Santamaría 54, Tandil.</div>${renderMailFooterIcons()}</td></tr></table></td></tr>
               </table>
             </td></tr>
           </table>
@@ -408,9 +409,10 @@ function buildAdminAdmissionVisualEmail({
 
 export async function sendAdminAdmissionCompletedEmail(
   admissionDoc = {},
-  pseudoUser = null
+  pseudoUser = null,
+  options = {}
 ) {
-  const to = ADMIN_EMAIL;
+  const to = String(options?.to || ADMIN_EMAIL || "").trim();
   if (!to) return;
 
   const s = admissionSummary(admissionDoc, pseudoUser);
@@ -636,7 +638,7 @@ export async function sendUserAdmissionReceivedEmail(
       ${renderExactBodyText("¿Qué sigue ahora?", {
         fontSize: 14,
         lineHeight: 18,
-        weight: 700,
+        weight: 900,
         maxWidth: 320,
         marginTop: 4,
         marginBottom: 10,
@@ -731,7 +733,7 @@ export async function sendUserApprovedEmail({
   const html = buildAdmissionEmail({
     title: "Alta aprobada",
     preheader: "Tu alta fue aprobada",
-    icon: "account-approved",
+    icon: "✓",
     innerHtml: `
       ${renderExactBodyText(
         `Hola <b>${escapeHtml(fullName)}</b>,<br/>Tu alta fue <b>aprobada</b>. Ya podés ingresar a la plataforma.`,

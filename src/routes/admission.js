@@ -15,6 +15,23 @@ import { logActivity, buildUserSubject } from "../lib/activityLogger.js";
 
 const router = express.Router();
 
+const PERFORMANCE_ADMISSION_EMAIL =
+  String(process.env.PERFORMANCE_ADMIN_EMAIL || "performance.by.duo@gmail.com").trim();
+
+function admissionAdminRecipient(admissionDoc = {}) {
+  const formType = String(
+    admissionDoc?.step1?.formType ||
+      admissionDoc?.step2?.formType ||
+      ""
+  )
+    .toUpperCase()
+    .trim();
+
+  return formType === "PERFORMANCE"
+    ? PERFORMANCE_ADMISSION_EMAIL
+    : String(process.env.ADMIN_EMAIL || "").trim();
+}
+
 /* =========================================================
    HELPERS (mapping admission -> user)
 ========================================================= */
@@ -448,15 +465,18 @@ router.patch("/:id/step2", async (req, res) => {
         phone: String(s1.phone || "").trim(),
       };
 
+      const adminTo = admissionAdminRecipient(doc);
+
       console.log("[MAIL][ADM] step2 attempt ->", {
         admissionId: String(doc._id),
         publicId: doc.publicId,
-        adminTo: process.env.ADMIN_EMAIL,
+        formType: String(doc?.step1?.formType || doc?.step2?.formType || ""),
+        adminTo,
         userTo: pseudoUser.email,
       });
 
       try {
-        await sendAdminAdmissionCompletedEmail(doc, pseudoUser);
+        await sendAdminAdmissionCompletedEmail(doc, pseudoUser, { to: adminTo });
         await sendUserAdmissionReceivedEmail(doc, pseudoUser);
 
         await Admission.updateOne(
