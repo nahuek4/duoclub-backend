@@ -4,7 +4,6 @@ import { buildEmailLayout } from "./layout.js";
 import {
   buildExactMail,
   renderExactBodyText,
-  renderExactReminderBellIcon,
   renderPrimaryButton,
   renderAdminMetaPanel,
   renderAdminDetailPanel,
@@ -56,6 +55,23 @@ function safeTime(value) {
   const raw = String(value || "-").trim();
   if (!raw || raw === "-") return "-";
   return /hs$/i.test(raw) ? raw : `${raw} hs`;
+}
+
+function padSessionNumber(value) {
+  const n = Number(value);
+  if (!Number.isFinite(n) || n <= 0) return "";
+  return String(Math.trunc(n)).padStart(2, "0");
+}
+
+function getSessionLabel(item = {}) {
+  const direct = String(item?.sessionLabel || "").trim();
+  if (direct) return direct;
+
+  const current = padSessionNumber(item?.sessionNumber);
+  const total = padSessionNumber(item?.sessionTotal);
+  if (!current || !total) return "";
+
+  return `${current}/${total}`;
 }
 
 function duoFontStack() {
@@ -276,13 +292,47 @@ function buildAppointmentCard(item = {}) {
                 style="
                   padding:14px 16px 15px;
                   font-family:${duoFontStack()};
-                  font-size:13px;
-                  line-height:17px;
-                  font-weight:500;
                   color:#111111;
                 "
               >
-                ${escapeHtml(service)}
+                <table role="presentation" cellpadding="0" cellspacing="0" width="100%" style="border-collapse:collapse;width:100%;">
+                  <tr>
+                    <td
+                      valign="middle"
+                      style="
+                        font-family:${duoFontStack()};
+                        font-size:13px;
+                        line-height:17px;
+                        font-weight:500;
+                        color:#111111;
+                        padding-right:10px;
+                      "
+                    >
+                      ${escapeHtml(service)}
+                    </td>
+                    ${
+                      getSessionLabel(item)
+                        ? `
+                    <td valign="middle" align="right" style="white-space:nowrap;">
+                      <span
+                        style="
+                          display:inline-block;
+                          background:#EEFF00;
+                          color:#111111;
+                          border-radius:999px;
+                          padding:5px 9px;
+                          font-family:${duoFontStack()};
+                          font-size:11px;
+                          line-height:13px;
+                          font-weight:800;
+                        "
+                      >Sesión ${escapeHtml(getSessionLabel(item))}</span>
+                    </td>
+                    `
+                        : ""
+                    }
+                  </tr>
+                </table>
               </td>
             </tr>
           </table>
@@ -688,92 +738,29 @@ function buildAppointmentVisualEmail({
   });
 }
 
-function buildReminderEmail({ items = [] }) {
-  const bodyHtml = `
-    ${renderExactReminderBellIcon()}
-    <div
-      class="mail-title"
-      style="
-        font-size:19px;
-        line-height:20px;
-        font-weight:750;
-        margin:0 auto 18px;
-        max-width:285px;
-        color:#111111;
-        white-space:pre-line;
-        letter-spacing:-0.2px;
-      "
-    >
-      Recordatorio de turno
-    </div>
+function buildReminderEmail({ user, items = [] }) {
+  const list = normalizeItems(items);
+  const first = list[0] || {};
+  const sessionLabel = getSessionLabel(first);
+  const service = getServiceName(first, first?.serviceName);
 
-    ${normalizeItems(items)
-      .map((it) => {
-        const date = prettyDateAR(it?.date || "");
-        const time = `${it?.time || "-"} hs`;
-        const service = getServiceName(it, it?.serviceName);
+  const progressHtml = sessionLabel
+    ? `<br /><b>Estás cursando la sesión ${escapeHtml(sessionLabel)} de tu plan de ${escapeHtml(service)}.</b>`
+    : "";
 
-        return renderRowCard({
-          titleLeft: date,
-          titleRight: time,
-          subtitle: `<span style="color:#ffffff;">${escapeHtml(service)}</span>`,
-        });
-      })
-      .join("")}
-
-    ${renderExactBodyText(
+  return buildAppointmentVisualEmail({
+    title: "Recordatorio<br />de turno.",
+    preheader: sessionLabel
+      ? `Recordatorio de tu sesión ${sessionLabel}`
+      : "Recordatorio: tenés un turno agendado",
+    kind: "confirmed",
+    user,
+    items: list,
+    introHtml: `Te recordamos que tenés un turno agendado.${progressHtml}`,
+    noteHtml:
       "Si no podés asistir, recordá cancelarlo con anticipación desde tu perfil.",
-      {
-        fontSize: 14,
-        lineHeight: 19,
-        weight: 700,
-        maxWidth: 305,
-        marginBottom: 0,
-      }
-    )}
-  `;
-
-  return buildEmailLayout({
-    title: `${BRAND_NAME} · Recordatorio de turno`,
-    preheader: "Recordatorio: tenés un turno agendado",
-    bodyHtml: `
-      <table role="presentation" cellpadding="0" cellspacing="0" width="100%" style="border-collapse:collapse;">
-        <tr>
-          <td align="center" style="padding:0;">
-            <table role="presentation" cellpadding="0" cellspacing="0" width="100%" style="max-width:430px; border-collapse:separate;">
-              <tr>
-                <td
-                  class="mail-shell"
-                  bgcolor="#ffffff"
-                  style="
-                    background:#FBFBFB;
-                    border-radius:14px;
-                    padding:18px 10px 26px;
-                    text-align:center;
-                    color:#111111;
-                  "
-                >
-                  <style>
-                    @media only screen and (max-width: 560px) {
-                      .mail-shell { padding:16px 8px 22px !important; }
-                      .mail-title { font-size:18px !important; line-height:19px !important; margin:0 auto 16px !important; }
-                      .panel { padding:12px !important; }
-                      .row-card { padding:9px 10px !important; }
-                      .row-k { font-size:14px !important; line-height:16px !important; }
-                      .row-v { font-size:13px !important; line-height:15px !important; }
-                      .reminder-bell { width:64px !important; height:64px !important; }
-                    }
-                  </style>
-                  ${bodyHtml}
-                </td>
-              </tr>
-              ${renderUnifiedMailFooter({ className: "ap-footer" })}
-            </table>
-          </td>
-        </tr>
-      </table>
-    `,
-    footerNote: "",
+    buttonLabel: `Ingresar a ${BRAND_NAME}`,
+    buttonHref: BRAND_URL,
   });
 }
 
@@ -1005,27 +992,35 @@ export async function sendAppointmentReminderEmail(user, ap, serviceName) {
     date: ap?.date,
     time: ap?.time,
     serviceName: serviceName || ap?.service,
+    sessionLabel: getSessionLabel(ap),
   });
 
   if (!user?.email) return;
 
   const svc = getServiceName(ap, serviceName);
+  const sessionLabel = getSessionLabel(ap);
 
-  const subject = `🔔 Recordatorio de turno - ${BRAND_NAME}`;
+  const subject = sessionLabel
+    ? `🔔 Sesión ${sessionLabel} · Recordatorio de turno - ${BRAND_NAME}`
+    : `🔔 Recordatorio de turno - ${BRAND_NAME}`;
 
   const text = [
     `Hola ${user?.name || ""}`.trim() + ",",
     "",
     "Te recordamos que tenés un turno agendado.",
+    sessionLabel ? `Sesión: ${sessionLabel}` : "",
     "",
     `Día: ${ap?.date || "-"}`,
     `Horario: ${ap?.time || "-"} hs`,
     `Servicio: ${svc}`,
     "",
-    "Si no podés asistir, recordá anularlo con anticipación desde tu perfil.",
-  ].join("\n");
+    "Si no podés asistir, recordá cancelarlo con anticipación desde tu perfil.",
+  ]
+    .filter(Boolean)
+    .join("\n");
 
   const html = buildReminderEmail({
+    user,
     items: [{ ...ap, serviceName: svc }],
   });
 

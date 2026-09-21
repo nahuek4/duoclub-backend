@@ -163,7 +163,6 @@ function humanProfileFieldLabel(field) {
   if (f === "age") return "la Edad";
   if (f === "weight") return "el Peso";
   if (f === "birthdate") return "la Fecha de nacimiento";
-  if (f === "notes") return "las Notas";
   return "su información personal";
 }
 
@@ -1732,7 +1731,6 @@ router.patch("/:id/profile", adminOnly, validateObjectIdParam, async (req, res) 
           : undefined,
       phone: typeof body.phone === "string" ? body.phone.trim().slice(0, 50) : undefined,
       dni: typeof body.dni === "string" ? body.dni.trim().slice(0, 20) : undefined,
-      notes: typeof body.notes === "string" ? body.notes.trim().slice(0, 2000) : undefined,
     };
 
     if (next.name !== undefined && !next.name) {
@@ -1823,7 +1821,6 @@ router.patch("/:id/profile", adminOnly, validateObjectIdParam, async (req, res) 
       age: user.age,
       weight: user.weight,
       birthDate: user.birthDate?.toObject?.() || user.birthDate || null,
-      notes: user.notes,
     };
 
     const changedFields = [];
@@ -1845,7 +1842,6 @@ router.patch("/:id/profile", adminOnly, validateObjectIdParam, async (req, res) 
     setIfChanged("dni", next.dni);
     setIfChanged("age", nextAge);
     setIfChanged("weight", nextWeight);
-    setIfChanged("notes", next.notes);
 
     if (nextBirthDate !== undefined) {
       const prevBirth = {
@@ -1887,7 +1883,6 @@ router.patch("/:id/profile", adminOnly, validateObjectIdParam, async (req, res) 
       age: user.age,
       weight: user.weight,
       birthDate: user.birthDate?.toObject?.() || user.birthDate || null,
-      notes: user.notes,
     };
 
     await logActivity({
