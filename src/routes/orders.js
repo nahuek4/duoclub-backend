@@ -32,8 +32,21 @@ import {
   getSubscriptionRenewalItems,
   releaseSubscriptionRenewalOrder,
 } from "../services/subscriptions/subscriptionCyclePayments.js";
+import {
+  ensureServiceCatalogLoaded,
+  isServiceEnabledFor,
+  normalizeCatalogServiceKey,
+  serviceNameForKey,
+} from "../services/serviceCatalogRuntime.js";
 
 const router = express.Router();
+
+router.use(async (req, res, next) => {
+  await ensureServiceCatalogLoaded();
+  next();
+});
+
+// STEP3B3A_ORDERS_DYNAMIC_SERVICE_CATALOG
 
 const PLUS_PRICE = Number(process.env.PLUS_PRICE || 20000);
 const PLUS_DISCOUNT_PCT = 15;
@@ -42,31 +55,19 @@ const PERFORMANCE_COPAY_PRICE = Number(process.env.PERFORMANCE_COPAY_PRICE || 12
 const PERFORMANCE_COPAY_KEYS = new Set(["RA", "RF", "SYN"]);
 const PUBLIC_EVALUATION_PRICE = Number(process.env.PUBLIC_EVALUATION_PRICE || 30000);
 
-// Compatibilidad histórica: estos keys se siguen pudiendo leer en órdenes/historiales ya existentes.
-const LEGACY_SERVICE_KEYS = new Set(["PE", "EP", "RA", "RF", "KD", "SYN", "NUT"]);
-
-// Únicos servicios habilitados para NUEVA operatoria/compra.
-const OPERATIONAL_SERVICE_KEYS = new Set(["EP", "RA", "RF", "SYN"]);
-const SERVICE_KEY_TO_NAME = {
-  PE: "Primera evaluación presencial",
-  EP: "Entrenamiento Personal",
-  RA: "Rehabilitación Activa",
-  RF: "Reeducación Funcional",
-  KD: "Kinefilaxia Deportiva",
-  SYN: "Synergy",
-  NUT: "Nutrición",
-};
-
+// Historial y documentos antiguos aceptan cualquier serviceKey sintácticamente
+// válido. Las NUEVAS compras, en cambio, deben existir en ServiceDefinition y
+// estar activas + purchasable.
 function normalizeServiceKey(value, { allowEmpty = false } = {}) {
-  const sk = String(value || "").toUpperCase().trim();
+  const sk = normalizeCatalogServiceKey(value);
   if (!sk) return allowEmpty ? "" : null;
-  return LEGACY_SERVICE_KEYS.has(sk) ? sk : null;
+  return sk;
 }
 
 function normalizeOperationalServiceKey(value, { allowEmpty = false } = {}) {
-  const sk = String(value || "").toUpperCase().trim();
+  const sk = normalizeCatalogServiceKey(value);
   if (!sk) return allowEmpty ? "" : null;
-  return OPERATIONAL_SERVICE_KEYS.has(sk) ? sk : null;
+  return isServiceEnabledFor(sk, "purchasable") ? sk : null;
 }
 
 function assertServiceKey(value, label = "serviceKey") {
@@ -80,7 +81,7 @@ function assertOperationalServiceKey(value, label = "serviceKey") {
   if (!sk) {
     const err = new Error(`${label} no está habilitado para nuevas compras.`);
     err.status = 410;
-    err.code = "SERVICE_RETIRED";
+    err.code = "SERVICE_NOT_PURCHASABLE";
     throw err;
   }
   return sk;
@@ -194,8 +195,8 @@ function addCreditLot(user, { amount, source, orderId, serviceKey }) {
     title: `Créditos acreditados ${sk}`,
     message: `Se acreditaron ${qty} crédito(s), con vencimiento el día 1 del mes siguiente.`,
     serviceKey: sk,
-    serviceName: SERVICE_KEY_TO_NAME[sk] || sk,
-    service: SERVICE_KEY_TO_NAME[sk] || sk,
+    serviceName: serviceNameForKey(sk) || sk,
+    service: serviceNameForKey(sk) || sk,
     qty,
     createdAt: now,
   });
@@ -246,7 +247,7 @@ function safeServiceFromOrder(order) {
 
 function prettyServiceNameFromKey(sk) {
   const normalized = normalizeServiceKey(sk, { allowEmpty: true });
-  if (normalized) return SERVICE_KEY_TO_NAME[normalized] || normalized;
+  if (normalized) return serviceNameForKey(normalized) || normalized;
   const raw = String(sk || "").trim();
   return raw || "Sesiones";
 }

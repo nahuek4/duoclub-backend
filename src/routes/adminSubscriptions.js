@@ -28,11 +28,20 @@ import {
   summarizePaidOrderForService,
 } from "../services/subscriptions/subscriptionBootstrap.js";
 import { projectActiveFixedSchedulesForMonth } from "../services/subscriptions/subscriptionScheduleProjection.js";
+import {
+  ensureServiceCatalogLoaded,
+  isServiceEnabledFor,
+  normalizeCatalogServiceKey,
+} from "../services/serviceCatalogRuntime.js";
+
+// STEP3B2_DYNAMIC_ADMIN_SUBSCRIPTIONS
 
 const router = express.Router();
 router.use(protect, adminOnly);
-
-const RECURRING_SERVICE_KEYS = new Set(["EP", "RA", "RF", "KD", "SYN", "NUT"]);
+router.use(async (req, res, next) => {
+  await ensureServiceCatalogLoaded();
+  next();
+});
 const CREATE_CONFIRMATION = "CREATE_INITIAL_SUBSCRIPTION";
 const ROLLBACK_CONFIRMATION = "ROLLBACK_INITIAL_SUBSCRIPTION";
 
@@ -96,14 +105,21 @@ function assertObjectId(value, fieldName) {
 }
 
 function assertServiceKey(value) {
-  const serviceKey = normalizeServiceKey(value);
-  if (!serviceKey || !RECURRING_SERVICE_KEYS.has(serviceKey)) {
+  const serviceKey =
+    normalizeCatalogServiceKey(value) ||
+    normalizeServiceKey(value);
+
+  if (
+    !serviceKey ||
+    !isServiceEnabledFor(serviceKey, "recurringPlanEnabled")
+  ) {
     const error = new Error(
-      "serviceKey inválido. Valores permitidos: EP, RA, RF, KD, SYN, NUT."
+      "serviceKey inválido o servicio sin plan mensual habilitado."
     );
     error.status = 400;
     throw error;
   }
+
   return serviceKey;
 }
 

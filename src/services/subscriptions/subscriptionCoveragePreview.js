@@ -9,15 +9,9 @@ import {
   monthRangeFromKey,
   normalizeServiceKey,
 } from "./fixedScheduleCoverage.js";
+import { serviceNameForKey } from "../serviceCatalogRuntime.js";
 
-const SERVICE_KEY_TO_NAME = {
-  EP: "Entrenamiento Personal",
-  RA: "Rehabilitación Activa",
-  RF: "Reeducación Funcional",
-  KD: "Kinefilaxia Deportiva",
-  SYN: "Synergy",
-  NUT: "Nutrición",
-};
+// STEP3B3A_DYNAMIC_COVERAGE_SERVICE_NAMES
 
 function objectIdString(value) {
   return String(value?._id || value?.id || value || "").trim();
@@ -361,7 +355,7 @@ export function buildSubscriptionCoveragePreview({
     user: summarizeUser(user),
     service: {
       key: normalizedServiceKey,
-      name: SERVICE_KEY_TO_NAME[normalizedServiceKey] || normalizedServiceKey,
+      name: serviceNameForKey(normalizedServiceKey) || normalizedServiceKey,
     },
     period: {
       monthKey,

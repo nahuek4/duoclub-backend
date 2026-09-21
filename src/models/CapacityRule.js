@@ -1,5 +1,7 @@
 import mongoose from "mongoose";
 
+const SERVICE_KEY_RE = /^$|^[A-Z][A-Z0-9_]{1,23}$/;
+
 const capacityRuleSchema = new mongoose.Schema(
   {
     targetType: {
@@ -11,14 +13,14 @@ const capacityRuleSchema = new mongoose.Schema(
 
     zone: {
       type: String,
-      enum: ["TRAINING", "PERFORMANCE"],
+      enum: ["TRAINING", "PERFORMANCE", "NONE"],
       required: true,
       index: true,
     },
 
     serviceKey: {
       type: String,
-      enum: ["", "EP", "RA", "RF", "SYN"],
+      match: SERVICE_KEY_RE,
       default: "",
       trim: true,
       uppercase: true,

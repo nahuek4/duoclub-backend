@@ -11,6 +11,7 @@ const SERVICE_KEY_TO_NAME = {
 };
 
 const ALLOWED_SERVICE_KEYS = new Set(Object.keys(SERVICE_KEY_TO_NAME));
+const SERVICE_KEY_RE = /^[A-Z][A-Z0-9_]{1,23}$/;
 
 function stripAccents(value) {
   return String(value || "")
@@ -25,6 +26,7 @@ function normalizeServiceKey(value) {
   const up = raw.toUpperCase().trim();
   if (up === "AR") return "RA";
   if (ALLOWED_SERVICE_KEYS.has(up)) return up;
+  if (SERVICE_KEY_RE.test(up)) return up;
 
   const s = stripAccents(raw).toLowerCase().trim();
 
@@ -40,7 +42,8 @@ function normalizeServiceKey(value) {
 }
 
 function serviceKeyToName(serviceKey) {
-  return SERVICE_KEY_TO_NAME[normalizeServiceKey(serviceKey)] || "";
+  const key = normalizeServiceKey(serviceKey);
+  return SERVICE_KEY_TO_NAME[key] || key || "";
 }
 
 function applyNormalizedServiceFields(target) {
@@ -107,7 +110,7 @@ const appointmentSchema = new mongoose.Schema(
       required: true,
       uppercase: true,
       trim: true,
-      enum: [...ALLOWED_SERVICE_KEYS],
+      match: SERVICE_KEY_RE,
       index: true,
     },
 
@@ -250,7 +253,7 @@ appointmentSchema.pre("validate", function appointmentPreValidate() {
   if (!normalizedKey) {
     this.invalidate(
       "serviceKey",
-      "serviceKey inválido. Debe ser uno de: PE, EP, RA, RF, KD, NUT."
+      "serviceKey inválido. Usá una clave válida del catálogo de servicios."
     );
     return;
   }

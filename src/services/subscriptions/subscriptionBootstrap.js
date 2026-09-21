@@ -13,18 +13,13 @@ import {
   resolvePublishedPlanFromPaidOrder,
   summarizePaidOrderForService,
 } from "./paidPlanResolver.js";
+import { serviceNameForKey } from "../serviceCatalogRuntime.js";
 
 export { resolvePublishedPlanFromPaidOrder, summarizePaidOrderForService };
 
-const RECURRING_SERVICE_KEYS = new Set(["EP", "RA", "RF", "SYN"]);
-const SERVICE_NAMES = {
-  EP: "Entrenamiento Personal",
-  RA: "Rehabilitación Activa",
-  RF: "Reeducación Funcional",
-  KD: "Kinefilaxia Deportiva",
-  SYN: "Synergy",
-  NUT: "Nutrición",
-};
+// STEP3B3A_DYNAMIC_SUBSCRIPTION_BOOTSTRAP
+// La ruta admin valida recurringPlanEnabled contra ServiceDefinition antes de
+// llegar a este constructor puro. Aquí solo validamos la sintaxis del key.
 
 function cleanString(value) {
   return String(value || "").trim();
@@ -158,7 +153,7 @@ export function buildInitialSubscriptionCandidate({
   now = new Date(),
 } = {}) {
   const normalizedServiceKey = normalizeServiceKey(serviceKey);
-  if (!normalizedServiceKey || !RECURRING_SERVICE_KEYS.has(normalizedServiceKey)) {
+  if (!normalizedServiceKey) {
     throw new Error(`INVALID_SERVICE_KEY:${cleanString(serviceKey)}`);
   }
   if (!isValidMonthKey(monthKey)) {
@@ -279,7 +274,7 @@ export function buildInitialSubscriptionCandidate({
     user: preview.user,
     service: {
       key: normalizedServiceKey,
-      name: SERVICE_NAMES[normalizedServiceKey] || normalizedServiceKey,
+      name: serviceNameForKey(normalizedServiceKey) || normalizedServiceKey,
     },
     period: {
       monthKey,

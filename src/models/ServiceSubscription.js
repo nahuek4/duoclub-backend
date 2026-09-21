@@ -3,6 +3,7 @@ import mongoose from "mongoose";
 
 const RECURRING_SERVICE_KEYS = ["EP", "RA", "RF", "KD", "SYN", "NUT"];
 const RECURRING_SERVICE_KEY_SET = new Set(RECURRING_SERVICE_KEYS);
+const SERVICE_KEY_RE = /^[A-Z][A-Z0-9_]{1,23}$/;
 
 const SERVICE_KEY_TO_NAME = {
   EP: "Entrenamiento Personal",
@@ -38,6 +39,7 @@ function normalizeServiceKey(value) {
   if (upper === "KINEDEPO" || upper === "KINE-DEPO") return "KD";
   if (upper === "SYNERGY" || upper === "SINERGIA") return "SYN";
   if (RECURRING_SERVICE_KEY_SET.has(upper)) return upper;
+  if (SERVICE_KEY_RE.test(upper)) return upper;
 
   const text = stripAccents(raw).toLowerCase().trim();
   if (text.includes("entrenamiento") && text.includes("personal")) return "EP";
@@ -236,7 +238,7 @@ const serviceSubscriptionSchema = new mongoose.Schema(
       required: true,
       uppercase: true,
       trim: true,
-      enum: RECURRING_SERVICE_KEYS,
+      match: SERVICE_KEY_RE,
       index: true,
       set: normalizeServiceKey,
     },
@@ -339,7 +341,7 @@ serviceSubscriptionSchema.pre("validate", function normalizeSubscription() {
   if (!this.serviceKey) {
     this.invalidate(
       "serviceKey",
-      "Servicio recurrente inválido. Valores permitidos: EP, RA, RF, KD, SYN, NUT."
+      "Servicio recurrente inválido. Usá una clave válida del catálogo."
     );
     return;
   }

@@ -3,6 +3,7 @@ import mongoose from "mongoose";
 const { Schema } = mongoose;
 
 const ALLOWED_SERVICE_KEYS = new Set(["PE", "EP", "RA", "RF", "KD", "SYN", "NUT"]);
+const SERVICE_KEY_RE = /^[A-Z][A-Z0-9_]{1,23}$/;
 
 const SERVICE_KEY_TO_NAME = {
   PE: "Primera evaluación presencial",
@@ -27,6 +28,7 @@ function normalizeServiceKey(value) {
   const upper = raw.toUpperCase();
   if (upper === "AR") return "RA";
   if (ALLOWED_SERVICE_KEYS.has(upper)) return upper;
+  if (SERVICE_KEY_RE.test(upper)) return upper;
 
   const normalized = stripAccents(raw).toLowerCase().trim();
 
@@ -56,7 +58,8 @@ function normalizeServiceKey(value) {
 }
 
 function getServiceNameFromKey(serviceKey) {
-  return SERVICE_KEY_TO_NAME[String(serviceKey || "").toUpperCase().trim()] || "";
+  const key = String(serviceKey || "").toUpperCase().trim();
+  return SERVICE_KEY_TO_NAME[key] || (SERVICE_KEY_RE.test(key) ? key : "");
 }
 
 const WaitlistEntrySchema = new Schema(
@@ -87,7 +90,7 @@ const WaitlistEntrySchema = new Schema(
       required: true,
       uppercase: true,
       trim: true,
-      enum: [...ALLOWED_SERVICE_KEYS],
+      match: SERVICE_KEY_RE,
       index: true,
     },
 

@@ -3,6 +3,7 @@ import mongoose from "mongoose";
 
 const ALLOWED_SERVICE_KEYS = ["PE", "EP", "RA", "RF", "KD", "SYN", "NUT"];
 const ALLOWED_SERVICE_KEY_SET = new Set(ALLOWED_SERVICE_KEYS);
+const SERVICE_KEY_RE = /^[A-Z][A-Z0-9_]{1,23}$/;
 
 const SERVICE_KEY_TO_NAME = {
   PE: "Primera evaluación presencial",
@@ -27,6 +28,7 @@ function normalizeServiceKey(value) {
   const upper = stripAccents(raw).toUpperCase().trim();
   if (upper === "AR") return "RA";
   if (ALLOWED_SERVICE_KEY_SET.has(upper)) return upper;
+  if (SERVICE_KEY_RE.test(upper)) return upper;
 
   const text = stripAccents(raw).toLowerCase().trim();
   if (text.includes("primera") && text.includes("evaluacion")) return "PE";
@@ -42,17 +44,17 @@ function normalizeServiceKey(value) {
 
 function getServiceNameFromKey(serviceKey) {
   const key = normalizeServiceKey(serviceKey);
-  return SERVICE_KEY_TO_NAME[key] || "";
+  return SERVICE_KEY_TO_NAME[key] || key || "";
 }
 
 const fixedScheduleItemSchema = new mongoose.Schema(
   {
-    // 1 = lunes, 2 = martes ... 5 = viernes, 6 = sábado
+    // 1 = lunes, 2 = martes ... 7 = domingo
     weekday: {
       type: Number,
       required: true,
       min: 1,
-      max: 6,
+      max: 7,
     },
 
     // HH:mm
@@ -86,7 +88,7 @@ const fixedScheduleSchema = new mongoose.Schema(
       required: true,
       uppercase: true,
       trim: true,
-      enum: ALLOWED_SERVICE_KEYS,
+      match: SERVICE_KEY_RE,
       index: true,
     },
 
@@ -169,7 +171,7 @@ fixedScheduleSchema.pre("validate", function normalizeFixedScheduleService() {
   if (!normalizedKey) {
     this.invalidate(
       "serviceKey",
-      "serviceKey inválido. Valores permitidos: PE, EP, RA, RF, KD, SYN, NUT."
+      "serviceKey inválido. Usá una clave válida del catálogo de servicios."
     );
     return;
   }

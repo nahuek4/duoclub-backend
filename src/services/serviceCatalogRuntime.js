@@ -3,6 +3,7 @@ import ServiceDefinition, {
   CORE_SERVICE_DEFINITIONS,
 } from "../models/ServiceDefinition.js";
 
+// STEP3B3A_RUNTIME_DURATION_FIT
 const SERVICE_KEY_RE = /^[A-Z][A-Z0-9_]{1,23}$/;
 const CACHE_TTL_MS = Math.max(
   1000,
@@ -218,10 +219,20 @@ export function isWeekdayTimeAllowedForService(value, weekday, time) {
 
   if (!day || !wantedTime) return false;
 
+  const wantedStart = hhmmToMinutes(wantedTime);
+  const duration = Math.max(5, Number(item.duration || item.slotMinutes || 60));
+
+  if (!Number.isFinite(wantedStart)) return false;
+
   return (day.ranges || []).some((range) => {
-    const from = String(range?.from || "").slice(0, 5);
-    const to = String(range?.to || "").slice(0, 5);
-    return from && to && wantedTime >= from && wantedTime < to;
+    const from = hhmmToMinutes(range?.from);
+    const to = hhmmToMinutes(range?.to);
+    return (
+      Number.isFinite(from) &&
+      Number.isFinite(to) &&
+      wantedStart >= from &&
+      wantedStart + duration <= to
+    );
   });
 }
 
@@ -241,6 +252,7 @@ export function allowedTimesForService(value, dateStr) {
   if (!day) return [];
 
   const step = Math.max(5, Number(item.slotMinutes || 60));
+  const duration = Math.max(5, Number(item.duration || step));
   const result = [];
 
   for (const range of day.ranges || []) {
@@ -248,7 +260,7 @@ export function allowedTimesForService(value, dateStr) {
     const to = hhmmToMinutes(range?.to);
     if (!Number.isFinite(from) || !Number.isFinite(to) || to <= from) continue;
 
-    for (let cursor = from; cursor < to; cursor += step) {
+    for (let cursor = from; cursor + duration <= to; cursor += step) {
       result.push(minutesToHhmm(cursor));
       if (result.length > 200) break;
     }

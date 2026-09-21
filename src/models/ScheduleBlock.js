@@ -2,6 +2,7 @@ import mongoose from "mongoose";
 
 const SERVICE_KEYS = ["PE", "EP", "RA", "RF", "KD", "SYN", "NUT"];
 const SERVICE_KEY_SET = new Set(SERVICE_KEYS);
+const SERVICE_KEY_RE = /^[A-Z][A-Z0-9_]{1,23}$/;
 
 function cleanString(value) {
   return String(value || "").trim();
@@ -22,7 +23,8 @@ function normalizeServiceKey(value) {
   if (up === "AR") return "RA";
   if (up === "KINEDEPO" || up === "KINE-DEPO") return "KD";
   if (up === "SINERGIA") return "SYN";
-  return SERVICE_KEY_SET.has(up) ? up : "";
+  if (SERVICE_KEY_SET.has(up)) return up;
+  return SERVICE_KEY_RE.test(up) ? up : "";
 }
 
 function normalizeWeekday(value) {
@@ -55,7 +57,7 @@ const scheduleBlockSchema = new mongoose.Schema(
           return (
             Array.isArray(value) &&
             value.length > 0 &&
-            value.every((x) => SERVICE_KEY_SET.has(String(x || "").toUpperCase()))
+            value.every((x) => SERVICE_KEY_RE.test(String(x || "").toUpperCase().trim()))
           );
         },
         message: "Debe seleccionar al menos un servicio válido.",

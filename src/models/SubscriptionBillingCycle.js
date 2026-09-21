@@ -2,6 +2,7 @@
 import mongoose from "mongoose";
 
 const SERVICE_KEYS = ["EP", "RA", "RF", "KD", "SYN", "NUT"];
+const SERVICE_KEY_RE = /^[A-Z][A-Z0-9_]{1,23}$/;
 
 const COVERAGE_STATUSES = [
   "covered",
@@ -237,7 +238,7 @@ const subscriptionBillingCycleSchema = new mongoose.Schema(
     serviceKey: {
       type: String,
       required: true,
-      enum: SERVICE_KEYS,
+      match: SERVICE_KEY_RE,
       uppercase: true,
       trim: true,
       index: true,

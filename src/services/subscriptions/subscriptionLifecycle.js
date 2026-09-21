@@ -25,18 +25,17 @@ import {
   monthRangeFromKey,
 } from "./fixedScheduleCoverage.js";
 import { projectActiveFixedSchedulesForMonth } from "./subscriptionScheduleProjection.js";
+import {
+  ensureServiceCatalogLoaded,
+  isServiceEnabledFor,
+  normalizeCatalogServiceKey,
+  serviceNameForKey,
+} from "../serviceCatalogRuntime.js";
+
+// STEP3B2_DYNAMIC_SUBSCRIPTION_LIFECYCLE
 
 const TZ = "America/Argentina/Buenos_Aires";
 const RENEWABLE_STATUSES = ["active", "pending_change"];
-const OPERATIONAL_SUBSCRIPTION_SERVICE_KEYS = new Set(["EP", "RA", "RF", "SYN"]);
-const SERVICE_NAME = {
-  EP: "Entrenamiento Personal",
-  RA: "Rehabilitación Activa",
-  RF: "Reeducación Funcional",
-  KD: "Kinefilaxia Deportiva",
-  SYN: "Synergy",
-  NUT: "Nutrición",
-};
 
 function pad2(n) {
   return String(n).padStart(2, "0");
@@ -47,7 +46,8 @@ function clean(value) {
 }
 
 function isOperationalSubscriptionServiceKey(value) {
-  return OPERATIONAL_SUBSCRIPTION_SERVICE_KEYS.has(clean(value).toUpperCase());
+  const key = normalizeCatalogServiceKey(value);
+  return isServiceEnabledFor(key, "recurringPlanEnabled");
 }
 
 function asInt(value) {
@@ -166,35 +166,107 @@ async function upsertLifecycleNotice({
   );
 }
 
-async function resolvePlanSnapshot(subscription, { session = null } = {}) {
-  let plan = null;
-  if (subscription.pricingPlan) {
-    const query = PricingPlan.findById(subscription.pricingPlan).lean();
-    if (session) query.session(session);
-    plan = await query;
+async function findCurrentPublishedPlan(subscription, { session = null } = {}) {
+  const serviceKey = normalizeCatalogServiceKey(subscription?.serviceKey);
+  const monthlySessions = Math.max(1, asInt(subscription?.monthlySessions));
+  const rawPayMethod = clean(subscription?.payMethod || "CASH").toUpperCase();
+  const payMethod = rawPayMethod === "MP" ? "MP" : "CASH";
+
+  if (!serviceKey || !monthlySessions) return null;
+
+  const match = {
+    active: true,
+    isCustom: { $ne: true },
+    serviceKey,
+    credits: monthlySessions,
+    payMethod,
+  };
+
+  if (
+    subscription?.pricingPlan &&
+    mongoose.Types.ObjectId.isValid(String(subscription.pricingPlan))
+  ) {
+    const linkedQuery = PricingPlan.findOne({
+      _id: subscription.pricingPlan,
+      ...match,
+    }).lean();
+    if (session) linkedQuery.session(session);
+    const linked = await linkedQuery;
+    if (linked) return linked;
   }
 
-  const monthlySessions = Math.max(1, asInt(plan?.credits || subscription.monthlySessions));
-  const basePrice = asMoney(subscription.price ?? plan?.price);
-  const payMethod = clean(subscription.payMethod || plan?.payMethod || "CASH").toUpperCase();
+  const query = PricingPlan.findOne(match)
+    .sort({ updatedAt: -1, createdAt: -1 })
+    .lean();
+  if (session) query.session(session);
+  return query;
+}
+
+export async function resolvePlanSnapshot(
+  subscription,
+  { session = null } = {}
+) {
+  await ensureServiceCatalogLoaded();
+
+  const serviceKey = normalizeCatalogServiceKey(subscription?.serviceKey);
+  if (!isOperationalSubscriptionServiceKey(serviceKey)) {
+    const error = new Error("SUBSCRIPTION_SERVICE_NOT_RECURRING");
+    error.code = "SUBSCRIPTION_SERVICE_NOT_RECURRING";
+    error.serviceKey = serviceKey;
+    throw error;
+  }
+
+  const plan = await findCurrentPublishedPlan(subscription, { session });
+  if (!plan) {
+    const error = new Error(
+      `CURRENT_PUBLISHED_PLAN_NOT_FOUND:${serviceKey}:${Math.max(
+        1,
+        asInt(subscription?.monthlySessions)
+      )}:${clean(subscription?.payMethod || "CASH").toUpperCase()}`
+    );
+    error.code = "CURRENT_PUBLISHED_PLAN_NOT_FOUND";
+    error.serviceKey = serviceKey;
+    throw error;
+  }
+
+  const monthlySessions = Math.max(1, asInt(plan.credits));
+  const payMethod =
+    clean(plan.payMethod || subscription.payMethod || "CASH").toUpperCase() ===
+    "MP"
+      ? "MP"
+      : "CASH";
+
+  const regularPrice = asMoney(plan.price);
+  const currentCoveragePrice =
+    plan.coveragePrice === null || plan.coveragePrice === undefined
+      ? null
+      : asMoney(plan.coveragePrice);
+
+  // Si la suscripción usa cobertura, se toma también el valor ACTUAL de
+  // cobertura publicado. Nunca se conserva un importe viejo.
+  const basePrice =
+    subscription.coverageApplied && currentCoveragePrice !== null
+      ? currentCoveragePrice
+      : regularPrice;
 
   return {
-    pricingPlan: plan?._id || subscription.pricingPlan || null,
-    label: clean(plan?.label || plan?.title || `${monthlySessions} sesiones`),
+    pricingPlan: plan._id,
+    label: clean(
+      plan.label || plan.title || `${monthlySessions} sesiones`
+    ),
     monthlySessions,
     basePrice,
-    regularPrice: asMoney(subscription.regularPrice || basePrice),
-    coveragePrice:
-      subscription.coveragePrice === null || subscription.coveragePrice === undefined
-        ? null
-        : asMoney(subscription.coveragePrice),
+    regularPrice,
+    coveragePrice: currentCoveragePrice,
     coverageApplied: !!subscription.coverageApplied,
     coverageReason: clean(subscription.coverageReason),
-    payMethod: payMethod === "MP" ? "MP" : "CASH",
+    payMethod,
     fixedScheduleIds: Array.isArray(subscription.fixedScheduleIds)
       ? subscription.fixedScheduleIds
       : [],
-    addOns: Array.isArray(subscription.addOns) ? subscription.addOns : [],
+    addOns: Array.isArray(subscription.addOns)
+      ? subscription.addOns
+      : [],
   };
 }
 
@@ -310,7 +382,7 @@ async function grantCycleCredits({ user, cycle, subscription, periodKey, session
   user.creditLots = Array.isArray(user.creditLots) ? user.creditLots : [];
   user.creditLots.push({
     serviceKey: subscription.serviceKey,
-    serviceName: SERVICE_NAME[subscription.serviceKey] || subscription.serviceKey,
+    serviceName: serviceNameForKey(subscription.serviceKey),
     amount: cycle.planSnapshot.monthlySessions,
     remaining: cycle.planSnapshot.monthlySessions,
     expiresAt,
@@ -327,8 +399,8 @@ async function grantCycleCredits({ user, cycle, subscription, periodKey, session
     title: `Plan mensual ${subscription.serviceKey}`,
     message: `Se acreditaron ${cycle.planSnapshot.monthlySessions} sesiones del plan para ${periodKey}.`,
     serviceKey: subscription.serviceKey,
-    serviceName: SERVICE_NAME[subscription.serviceKey] || subscription.serviceKey,
-    service: SERVICE_NAME[subscription.serviceKey] || subscription.serviceKey,
+    serviceName: serviceNameForKey(subscription.serviceKey),
+    service: serviceNameForKey(subscription.serviceKey),
     qty: cycle.planSnapshot.monthlySessions,
     createdAt: now,
   });
@@ -402,7 +474,7 @@ async function sendRenewalConfirmationEmailOnce({
     const mailResult = await sendSubscriptionRenewalEmail({
       user,
       serviceKey: claimedCycle.serviceKey,
-      serviceName: SERVICE_NAME[claimedCycle.serviceKey] || claimedCycle.serviceKey,
+      serviceName: serviceNameForKey(claimedCycle.serviceKey),
       periodKey: claimedCycle.periodKey,
       monthlySessions: claimedCycle.planSnapshot?.monthlySessions || 0,
       amount: claimedCycle.billing?.total || claimedCycle.planSnapshot?.basePrice || 0,
@@ -462,6 +534,7 @@ async function sendRenewalConfirmationEmailOnce({
 }
 
 export async function ensureMonthlyCycleForSubscription({ subscriptionId, periodKey, now = new Date() } = {}) {
+  await ensureServiceCatalogLoaded();
   const session = await mongoose.startSession();
   let result = null;
 
@@ -560,6 +633,16 @@ export async function ensureMonthlyCycleForSubscription({ subscriptionId, period
       }
 
       await cycle.save({ session });
+
+      // La suscripción refleja el catálogo vigente para que Admin también
+      // vea el precio actual. El ciclo conserva su snapshot histórico.
+      subscription.pricingPlan = snapshot.pricingPlan;
+      subscription.monthlySessions = snapshot.monthlySessions;
+      subscription.price = snapshot.basePrice;
+      subscription.regularPrice = snapshot.regularPrice;
+      subscription.coveragePrice = snapshot.coveragePrice;
+      subscription.payMethod = snapshot.payMethod;
+      subscription.serviceName = serviceNameForKey(subscription.serviceKey);
 
       subscription.status = "active";
       subscription.currentPeriodKey = periodKey;
@@ -661,6 +744,8 @@ export async function ensureMonthlyCycleForSubscription({ subscriptionId, period
 }
 
 export async function createRenewalPreviewNotices({ targetPeriodKey, now = new Date(), force = false } = {}) {
+  await ensureServiceCatalogLoaded();
+
   const previewDate = renewalPreviewDate(targetPeriodKey);
   if (!force && !isSameArgentinaYmd(now, previewDate)) {
     return { ok: true, skipped: true, reason: "NOT_PREVIEW_DATE", targetPeriodKey };
@@ -669,19 +754,52 @@ export async function createRenewalPreviewNotices({ targetPeriodKey, now = new D
   const subscriptions = await ServiceSubscription.find({
     autoRenew: true,
     status: { $in: RENEWABLE_STATUSES },
-    serviceKey: { $in: [...OPERATIONAL_SUBSCRIPTION_SERVICE_KEYS] },
   }).lean();
 
   let createdOrUpdated = 0;
+  let skippedServices = 0;
+  let pricingErrors = 0;
+
   for (const subscription of subscriptions) {
+    if (!isOperationalSubscriptionServiceKey(subscription.serviceKey)) {
+      skippedServices += 1;
+      continue;
+    }
+
     const pending = subscription.pendingChange;
-    const pendingForTarget = pending && clean(pending.effectivePeriodKey) === targetPeriodKey;
-    const sessions = pendingForTarget && pending.monthlySessions
-      ? pending.monthlySessions
-      : subscription.monthlySessions;
-    const price = pendingForTarget && pending.price !== null && pending.price !== undefined
-      ? pending.price
-      : subscription.price;
+    const pendingForTarget =
+      pending &&
+      clean(pending.effectivePeriodKey) === targetPeriodKey &&
+      clean(pending.type || "change") === "change";
+
+    const candidate = {
+      ...subscription,
+      pricingPlan:
+        pendingForTarget && pending.pricingPlan
+          ? pending.pricingPlan
+          : subscription.pricingPlan,
+      monthlySessions:
+        pendingForTarget && pending.monthlySessions
+          ? pending.monthlySessions
+          : subscription.monthlySessions,
+      payMethod:
+        pendingForTarget && pending.payMethod
+          ? pending.payMethod
+          : subscription.payMethod,
+    };
+
+    let snapshot = null;
+    try {
+      snapshot = await resolvePlanSnapshot(candidate);
+    } catch (error) {
+      pricingErrors += 1;
+      console.error(
+        "[SUBSCRIPTION PREVIEW][PRICING]",
+        String(subscription._id),
+        error?.message || error
+      );
+      continue;
+    }
 
     await upsertLifecycleNotice({
       userId: subscription.user,
@@ -690,22 +808,32 @@ export async function createRenewalPreviewNotices({ targetPeriodKey, now = new D
       periodKey: targetPeriodKey,
       type: "renewal_preview",
       title: `Próxima renovación ${subscription.serviceKey}`,
-      message: `Tu próximo plan incluye ${sessions} sesiones. Podés modificarlo antes de la renovación.`,
+      message: `Tu próximo plan incluye ${snapshot.monthlySessions} sesiones. Podés modificarlo antes de la renovación.`,
       action: "change_plan",
       actionRequired: false,
       metadata: {
-        monthlySessions: sessions,
-        amount: price,
-        payMethod: pendingForTarget && pending.payMethod
-          ? pending.payMethod
-          : subscription.payMethod,
+        monthlySessions: snapshot.monthlySessions,
+        amount: snapshot.basePrice,
+        regularPrice: snapshot.regularPrice,
+        coveragePrice: snapshot.coveragePrice,
+        coverageApplied: snapshot.coverageApplied,
+        payMethod: snapshot.payMethod,
+        pricingPlanId: String(snapshot.pricingPlan || ""),
         pendingChangeType: pendingForTarget ? pending.type : "",
+        pricingSource: "current_admin_precios",
       },
     });
     createdOrUpdated += 1;
   }
 
-  return { ok: true, targetPeriodKey, subscriptions: subscriptions.length, createdOrUpdated };
+  return {
+    ok: pricingErrors === 0,
+    targetPeriodKey,
+    subscriptions: subscriptions.length,
+    createdOrUpdated,
+    skippedServices,
+    pricingErrors,
+  };
 }
 
 export async function renewPeriodSubscriptions({ periodKey, now = new Date(), force = false } = {}) {

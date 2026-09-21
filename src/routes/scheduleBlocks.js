@@ -2,6 +2,12 @@ import express from "express";
 import mongoose from "mongoose";
 import ScheduleBlock, { SERVICE_KEYS } from "../models/ScheduleBlock.js";
 import { protect } from "../middleware/auth.js";
+import {
+  activeServiceKeysCached,
+  ensureServiceCatalogLoaded,
+  normalizeCatalogServiceKey,
+  serviceNameForKey,
+} from "../services/serviceCatalogRuntime.js";
 
 const router = express.Router();
 
@@ -42,9 +48,7 @@ function cleanTime(value) {
 function normalizeServiceKey(value) {
   const up = cleanString(value).toUpperCase();
   if (up === "ALL" || up === "TODOS") return "ALL";
-  if (up === "AR") return "RA";
-  if (up === "KINEDEPO" || up === "KINE-DEPO") return "KD";
-  return SERVICE_KEYS.includes(up) ? up : "";
+  return normalizeCatalogServiceKey(value);
 }
 
 function normalizeServiceKeys(payload = {}) {
@@ -55,7 +59,9 @@ function normalizeServiceKeys(payload = {}) {
   if (Array.isArray(payload.serviceKeys)) raw.push(...payload.serviceKeys);
 
   const normalized = raw.map(normalizeServiceKey).filter(Boolean);
-  if (normalized.includes("ALL")) return SERVICE_KEYS;
+  if (normalized.includes("ALL")) {
+    return activeServiceKeysCached({ flag: "active" });
+  }
 
   return Array.from(new Set(normalized.filter((x) => x !== "ALL")));
 }
@@ -213,7 +219,13 @@ function buildPayload(req) {
     title: cleanString(body.title) || cleanString(body.reason) || "Bloqueo de agenda",
     reason: cleanString(body.reason),
     serviceKeys,
-    allServices: serviceKeys.length === SERVICE_KEYS.length,
+    allServices:
+      body.allServices === true ||
+      normalizeServiceKey(body.serviceKey) === "ALL" ||
+      (Array.isArray(body.serviceKeys) &&
+        body.serviceKeys.some(
+          (key) => normalizeServiceKey(key) === "ALL"
+        )),
     dateFrom,
     dateTo: indefinite ? "" : (dateTo || dateFrom),
     indefinite,
@@ -233,8 +245,8 @@ function buildPayload(req) {
 
 function serviceNamesFor(keys = [], allServices = false) {
   const list = Array.isArray(keys) ? keys : [];
-  if (allServices || list.length === SERVICE_KEYS.length) return "Todos los servicios";
-  return list.map((k) => SERVICE_KEY_TO_NAME[k] || k).join(", ");
+  if (allServices) return "Todos los servicios";
+  return list.map((key) => serviceNameForKey(key)).join(", ");
 }
 
 function serializeBlock(block) {
@@ -248,6 +260,10 @@ function serializeBlock(block) {
 }
 
 router.use(protect);
+router.use(async (req, res, next) => {
+  await ensureServiceCatalogLoaded();
+  next();
+});
 router.use(ensureStaff);
 
 router.get("/", async (req, res) => {
