@@ -156,9 +156,14 @@ function formatHistoryHumanDate(dateStr) {
 function humanProfileFieldLabel(field) {
   const f = String(field || "").trim().toLowerCase();
   if (f === "name") return "el Nombre";
-  if (f === "lastname" || f === "lastName".toLowerCase()) return "el Apellido";
+  if (f === "lastname") return "el Apellido";
+  if (f === "email") return "el Email";
   if (f === "phone") return "el Teléfono";
   if (f === "dni") return "el DNI";
+  if (f === "age") return "la Edad";
+  if (f === "weight") return "el Peso";
+  if (f === "birthdate") return "la Fecha de nacimiento";
+  if (f === "notes") return "las Notas";
   return "su información personal";
 }
 
@@ -1702,6 +1707,215 @@ router.get("/:id", validateObjectIdParam, async (req, res) => {
   } catch (err) {
     console.error("Error en GET /users/:id:", err);
     return res.status(500).json({ error: "Error interno." });
+  }
+});
+
+/* ============================================
+   ADMIN - EDITAR DATOS PERSONALES
+============================================ */
+router.patch("/:id/profile", adminOnly, validateObjectIdParam, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const user = await User.findById(id);
+    if (!user) return res.status(404).json({ error: "Usuario no encontrado." });
+
+    const body = req.body || {};
+    const isGuest = String(user.role || "").toLowerCase() === "guest";
+
+    const next = {
+      name: typeof body.name === "string" ? body.name.trim().slice(0, 100) : undefined,
+      lastName:
+        typeof body.lastName === "string" ? body.lastName.trim().slice(0, 100) : undefined,
+      email:
+        typeof body.email === "string"
+          ? body.email.trim().toLowerCase().slice(0, 254)
+          : undefined,
+      phone: typeof body.phone === "string" ? body.phone.trim().slice(0, 50) : undefined,
+      dni: typeof body.dni === "string" ? body.dni.trim().slice(0, 20) : undefined,
+      notes: typeof body.notes === "string" ? body.notes.trim().slice(0, 2000) : undefined,
+    };
+
+    if (next.name !== undefined && !next.name) {
+      return res.status(400).json({ error: "El nombre es obligatorio." });
+    }
+    if (next.lastName !== undefined && !next.lastName) {
+      return res.status(400).json({ error: "El apellido es obligatorio." });
+    }
+    if (!isGuest && next.email !== undefined && !next.email) {
+      return res.status(400).json({ error: "El email es obligatorio." });
+    }
+    if (!isGuest && next.phone !== undefined && !next.phone) {
+      return res.status(400).json({ error: "El teléfono es obligatorio." });
+    }
+    if (
+      next.email !== undefined &&
+      next.email !== "" &&
+      !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(next.email)
+    ) {
+      return res.status(400).json({ error: "Email inválido." });
+    }
+    if (next.dni !== undefined && next.dni !== "" && !/^\d{6,10}$/.test(next.dni)) {
+      return res.status(400).json({ error: "DNI inválido. Usá solo números (6 a 10 dígitos)." });
+    }
+
+    const parseNullableNumber = (value, label, min, max) => {
+      if (value === undefined) return undefined;
+      if (value === null || value === "") return null;
+      const n = Number(value);
+      if (!Number.isFinite(n) || n < min || n > max) {
+        const err = new Error(`${label} inválido.`);
+        err.status = 400;
+        throw err;
+      }
+      return n;
+    };
+
+    const nextAge = parseNullableNumber(body.age, "Edad", 0, 130);
+    const nextWeight = parseNullableNumber(body.weight, "Peso", 0, 500);
+
+    let nextBirthDate;
+    if (body.birthDate !== undefined) {
+      const raw = body.birthDate;
+      if (raw === null || raw === "") {
+        nextBirthDate = { day: null, month: null, year: null };
+      } else if (typeof raw === "string") {
+        const m = raw.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+        if (!m) return res.status(400).json({ error: "Fecha de nacimiento inválida." });
+        nextBirthDate = { year: Number(m[1]), month: Number(m[2]), day: Number(m[3]) };
+      } else if (raw && typeof raw === "object") {
+        const toNullable = (v) => (v === null || v === undefined || v === "" ? null : Number(v));
+        nextBirthDate = {
+          day: toNullable(raw.day),
+          month: toNullable(raw.month),
+          year: toNullable(raw.year),
+        };
+      } else {
+        return res.status(400).json({ error: "Fecha de nacimiento inválida." });
+      }
+
+      const { day, month, year } = nextBirthDate;
+      const allEmpty = day == null && month == null && year == null;
+      if (!allEmpty) {
+        if (
+          !Number.isInteger(day) || day < 1 || day > 31 ||
+          !Number.isInteger(month) || month < 1 || month > 12 ||
+          !Number.isInteger(year) || year < 1900 || year > 2200
+        ) {
+          return res.status(400).json({ error: "Fecha de nacimiento inválida." });
+        }
+        const dt = new Date(year, month - 1, day);
+        if (
+          dt.getFullYear() !== year ||
+          dt.getMonth() !== month - 1 ||
+          dt.getDate() !== day
+        ) {
+          return res.status(400).json({ error: "Fecha de nacimiento inválida." });
+        }
+      }
+    }
+
+    const before = {
+      name: user.name,
+      lastName: user.lastName,
+      email: user.email,
+      phone: user.phone,
+      dni: user.dni,
+      age: user.age,
+      weight: user.weight,
+      birthDate: user.birthDate?.toObject?.() || user.birthDate || null,
+      notes: user.notes,
+    };
+
+    const changedFields = [];
+    const setIfChanged = (field, value) => {
+      if (value === undefined) return;
+      const prev = user[field];
+      const prevCmp = prev == null ? null : prev;
+      const nextCmp = value == null ? null : value;
+      if (String(prevCmp ?? "") !== String(nextCmp ?? "")) {
+        user[field] = value;
+        changedFields.push(field);
+      }
+    };
+
+    setIfChanged("name", next.name);
+    setIfChanged("lastName", next.lastName);
+    setIfChanged("email", next.email);
+    setIfChanged("phone", next.phone);
+    setIfChanged("dni", next.dni);
+    setIfChanged("age", nextAge);
+    setIfChanged("weight", nextWeight);
+    setIfChanged("notes", next.notes);
+
+    if (nextBirthDate !== undefined) {
+      const prevBirth = {
+        day: user.birthDate?.day ?? null,
+        month: user.birthDate?.month ?? null,
+        year: user.birthDate?.year ?? null,
+      };
+      const changed = ["day", "month", "year"].some(
+        (key) => Number(prevBirth[key] ?? 0) !== Number(nextBirthDate[key] ?? 0)
+      );
+      if (changed) {
+        user.birthDate = nextBirthDate;
+        changedFields.push("birthDate");
+      }
+    }
+
+    if (!changedFields.length) {
+      return res.status(400).json({ error: "No hay cambios para guardar." });
+    }
+
+    for (const field of changedFields) {
+      pushUserHistory(user, {
+        action: "admin_profile_field_updated",
+        field,
+        title: `Un administrador modificó ${humanProfileFieldLabel(field)}.`,
+        createdAt: new Date(),
+      });
+    }
+
+    await user.save();
+
+    const saved = user.toObject();
+    const after = {
+      name: user.name,
+      lastName: user.lastName,
+      email: user.email,
+      phone: user.phone,
+      dni: user.dni,
+      age: user.age,
+      weight: user.weight,
+      birthDate: user.birthDate?.toObject?.() || user.birthDate || null,
+      notes: user.notes,
+    };
+
+    await logActivity({
+      req,
+      category: "users",
+      action: "admin_user_profile_updated",
+      entity: "user",
+      entityId: user._id,
+      title: "Datos personales actualizados",
+      description: `Se actualizaron datos personales de ${user.name || "un usuario"}.`,
+      subject: buildUserSubject(user),
+      diff: buildDiff(before, after),
+      meta: { changedFields },
+    });
+
+    return res.json({
+      ok: true,
+      user: decorateUserForResponse(saved),
+      changedFields,
+    });
+  } catch (err) {
+    console.error("Error en PATCH /users/:id/profile:", err);
+    if (err?.code === 11000 && (err?.keyPattern?.email || err?.keyValue?.email)) {
+      return res.status(400).json({ error: "Ya existe un usuario con ese email." });
+    }
+    return res.status(err?.status || 500).json({
+      error: err?.message || "No se pudieron actualizar los datos personales.",
+    });
   }
 });
 
