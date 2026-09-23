@@ -73,6 +73,11 @@ function withSession(query, session) {
 }
 
 function orderCreditItems(order = {}) {
+  // Las órdenes creadas manualmente por administración NO definen ni cambian
+  // el plan mensual. Pueden representar una carga puntual de sesiones.
+  // Los pagos del plan mensual se registran como SUBSCRIPTION_RENEWAL.
+  if (order?.createdByAdmin) return [];
+
   const items = Array.isArray(order?.items) ? order.items : [];
 
   if (items.length) {

@@ -108,9 +108,12 @@ async function reactivateSuspendedAfterAnyPayment({
   if (!subscription) throw new Error("SUBSCRIPTION_NOT_FOUND");
 
   // Si ya fue dada de baja al día 21, no restauramos automáticamente horarios
-  // desde acá porque el lugar podría haber sido ocupado. Esa situación requiere
-  // la reparación/control de capacidad correspondiente.
-  if (subscription.status === "terminated_for_non_payment") {
+  // porque el lugar podría haber sido ocupado. Esa situación requiere una
+  // recuperación controlada con validación de capacidad.
+  if (
+    subscription.status === "terminated_for_non_payment" ||
+    cycle.lifecycle?.planStatus === "terminated"
+  ) {
     return {
       reactivated: false,
       requiresManualReactivation: true,
@@ -118,18 +121,26 @@ async function reactivateSuspendedAfterAnyPayment({
     };
   }
 
-  let reactivated = false;
+  const wasSuspended =
+    subscription.status === "suspended" ||
+    cycle.lifecycle?.planStatus === "suspended";
+
+  // Cualquier pago > 0 protege el acceso del ciclo.
+  cycle.lifecycle.planStatus = "active";
+  cycle.lifecycle.suspendedAt = null;
+  cycle.lifecycle.fixedSlotsProtectedUntil = null;
 
   if (subscription.status === "suspended") {
     subscription.status = "active";
     subscription.suspendedAt = null;
     subscription.suspensionReason = "";
+  }
 
-    cycle.lifecycle.planStatus = "active";
-    cycle.lifecycle.suspendedAt = null;
+  subscription.fixedSlotsProtectedUntil = null;
 
-    await subscription.save({ session: session || undefined });
+  await subscription.save({ session: session || undefined });
 
+  if (wasSuspended) {
     const options = session ? { session } : undefined;
     await SubscriptionLifecycleNotice.updateMany(
       {
@@ -146,12 +157,10 @@ async function reactivateSuspendedAfterAnyPayment({
       },
       options
     );
-
-    reactivated = true;
   }
 
   return {
-    reactivated,
+    reactivated: wasSuspended,
     requiresManualReactivation: false,
     subscriptionStatus: subscription.status,
   };

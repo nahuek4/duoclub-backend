@@ -39,6 +39,73 @@ function userId(req) {
   return String(req.user?._id || req.user?.id || "");
 }
 
+function clean(value) {
+  return String(value ?? "").trim();
+}
+
+function money(value) {
+  const n = Number(value || 0);
+  return Number.isFinite(n) ? Math.max(0, Math.round(n)) : 0;
+}
+
+function cycleBillingSummary(cycle = null) {
+  if (!cycle) {
+    return {
+      total: 0,
+      amountReceived: 0,
+      amountPaid: 0,
+      balanceDue: 0,
+      overpaidAmount: 0,
+      paymentState: "none",
+    };
+  }
+
+  const total = money(cycle?.billing?.total);
+  const payments = Array.isArray(cycle?.billing?.payments)
+    ? cycle.billing.payments
+    : [];
+
+  const fromReceivedEntries = payments.reduce(
+    (sum, payment) => sum + money(payment?.amount),
+    0
+  );
+
+  const fromAppliedEntries = payments.reduce(
+    (sum, payment) => sum + money(payment?.appliedAmount),
+    0
+  );
+
+  const amountReceived = Math.max(
+    money(cycle?.billing?.amountReceived),
+    fromReceivedEntries
+  );
+
+  const amountPaid = Math.min(
+    total,
+    Math.max(money(cycle?.billing?.amountPaid), fromAppliedEntries)
+  );
+
+  const balanceDue = Math.max(0, total - amountPaid);
+  const overpaidAmount = Math.max(
+    money(cycle?.billing?.overpaidAmount),
+    Math.max(0, amountReceived - amountPaid)
+  );
+
+  return {
+    total,
+    amountReceived,
+    amountPaid,
+    balanceDue,
+    overpaidAmount,
+    paymentState:
+      balanceDue <= 0
+        ? "paid"
+        : amountReceived > 0
+          ? "partial"
+          : clean(cycle?.billing?.status || "pending").toLowerCase(),
+  };
+}
+
 /* ============================================
    ADMIN: PLAN MENSUAL DESDE ADMINUSUARIOS
 ============================================ */
@@ -76,8 +143,10 @@ function argentinaPeriodBounds(periodKey) {
   return { start, end };
 }
 
-function serializeAdminMonthlyPlan(subscription) {
+function serializeAdminMonthlyPlan(subscription, cycle = null) {
   if (!subscription) return null;
+
+  const billing = cycleBillingSummary(cycle);
 
   return {
     id: String(subscription._id || subscription.id || ""),
@@ -98,6 +167,17 @@ function serializeAdminMonthlyPlan(subscription) {
       ? subscription.fixedScheduleIds.map((id) => String(id))
       : [],
     pendingChange: subscription.pendingChange || null,
+    currentCycle: cycle
+      ? {
+          id: String(cycle._id),
+          periodKey: cycle.periodKey,
+          billingStatus: cycle.billing?.status || "pending",
+          planStatus: cycle.lifecycle?.planStatus || "active",
+          dueAt: cycle.billing?.dueAt || null,
+          paidAt: cycle.billing?.paidAt || null,
+          ...billing,
+        }
+      : null,
   };
 }
 
@@ -156,6 +236,19 @@ router.get(
         .sort({ serviceKey: 1 })
         .lean();
 
+      const currentPeriodKey = monthKeyFromDateArgentina();
+      const subscriptionIds = subscriptions.map((item) => item._id);
+      const currentCycles = subscriptionIds.length
+        ? await SubscriptionBillingCycle.find({
+            subscription: { $in: subscriptionIds },
+            periodKey: currentPeriodKey,
+          }).lean()
+        : [];
+
+      const cycleBySubscription = new Map(
+        currentCycles.map((cycle) => [String(cycle.subscription), cycle])
+      );
+
       return res.json({
         ok: true,
         user: {
@@ -164,7 +257,13 @@ router.get(
           lastName: targetUser.lastName || "",
           email: targetUser.email || "",
         },
-        subscriptions: subscriptions.map(serializeAdminMonthlyPlan),
+        periodKey: currentPeriodKey,
+        subscriptions: subscriptions.map((subscription) =>
+          serializeAdminMonthlyPlan(
+            subscription,
+            cycleBySubscription.get(String(subscription._id)) || null
+          )
+        ),
       });
     } catch (error) {
       console.error("GET /subscriptions/admin/user/:targetUserId", error);
@@ -384,6 +483,287 @@ router.put(
   }
 );
 
+
+/* ============================================
+   ADMIN: REGISTRAR PAGO DEL PLAN MENSUAL
+   - genera SUBSCRIPTION_RENEWAL
+   - NO acredita creditLots
+   - acepta pagos parciales
+============================================ */
+router.post(
+  "/admin/user/:targetUserId/service/:serviceKey/payment",
+  ensureMonthlyPlanStaff,
+  async (req, res) => {
+    try {
+      const targetUserId = clean(req.params?.targetUserId);
+      const serviceKey = normalizeMonthlyPlanServiceKey(req.params?.serviceKey);
+      const amount = money(req.body?.amount);
+      const payMethodRaw = clean(req.body?.payMethod || "CASH").toUpperCase();
+      const payMethod =
+        payMethodRaw === "MERCADOPAGO" || payMethodRaw === "MP"
+          ? "MP"
+          : "CASH";
+      const notes = clean(req.body?.notes);
+      const currentPeriodKey = monthKeyFromDateArgentina();
+      const requestedPeriodKey = clean(req.body?.periodKey || currentPeriodKey);
+
+      if (!/^[a-f\d]{24}$/i.test(targetUserId)) {
+        return res.status(400).json({ error: "Usuario inválido." });
+      }
+
+      if (!serviceKey) {
+        return res.status(400).json({ error: "Servicio inválido." });
+      }
+
+      if (!(amount > 0)) {
+        return res.status(400).json({
+          error: "El importe del pago debe ser mayor a $0.",
+        });
+      }
+
+      // Los pagos históricos se reparan con scripts auditados; este endpoint es
+      // únicamente para la cuenta corriente del ciclo vigente.
+      if (requestedPeriodKey !== currentPeriodKey) {
+        return res.status(400).json({
+          error: "Desde administración solo se registran pagos del ciclo mensual vigente.",
+          currentPeriodKey,
+        });
+      }
+
+      const [targetUser, subscription] = await Promise.all([
+        User.findById(targetUserId),
+        ServiceSubscription.findOne({
+          user: targetUserId,
+          serviceKey,
+        }),
+      ]);
+
+      if (!targetUser) {
+        return res.status(404).json({ error: "Usuario no encontrado." });
+      }
+
+      if (!subscription) {
+        return res.status(404).json({
+          error: `El usuario no tiene un plan mensual ${serviceKey}.`,
+        });
+      }
+
+      if (
+        subscription.status === "terminated_for_non_payment"
+      ) {
+        return res.status(409).json({
+          error:
+            "Este plan ya fue dado de baja y sus turnos fijos pudieron liberarse. Primero requiere una reactivación controlada con validación de cupo.",
+          code: "SUBSCRIPTION_REACTIVATION_REQUIRES_CAPACITY_CHECK",
+        });
+      }
+
+      const cycle = await SubscriptionBillingCycle.findOne({
+        subscription: subscription._id,
+        user: targetUserId,
+        serviceKey,
+        periodKey: currentPeriodKey,
+      });
+
+      if (!cycle) {
+        return res.status(404).json({
+          error:
+            "No existe el ciclo mensual vigente para este plan. No se registró ningún pago.",
+          code: "SUBSCRIPTION_CURRENT_CYCLE_NOT_FOUND",
+        });
+      }
+
+      const before = cycleBillingSummary(cycle);
+
+      if (
+        cycle.billing?.status === "paid" ||
+        before.balanceDue <= 0
+      ) {
+        return res.status(409).json({
+          error: "El ciclo mensual ya está totalmente abonado.",
+          code: "SUBSCRIPTION_CYCLE_ALREADY_PAID",
+          billing: before,
+        });
+      }
+
+      // Si ya existe una orden pendiente de renovación por el MISMO importe,
+      // la reutilizamos. Si es una preferencia MP por otro importe, no la
+      // pisamos: debe anularse primero para evitar dos cobros posibles.
+      let order = null;
+
+      if (cycle.billing?.order) {
+        const existingOrder = await Order.findById(cycle.billing.order);
+
+        if (existingOrder) {
+          const existingStatus = clean(existingOrder.status).toLowerCase();
+          const existingAmount = money(
+            existingOrder.totalFinal ??
+              existingOrder.total ??
+              existingOrder.price
+          );
+
+          if (
+            existingStatus === "pending" &&
+            existingOrder.payMethod === "MP" &&
+            existingOrder.mpPreferenceId &&
+            existingAmount !== amount
+          ) {
+            return res.status(409).json({
+              error:
+                "Existe un pago de Mercado Pago pendiente por otro importe. Eliminá/cancelá esa orden antes de cargar un importe distinto.",
+              code: "SUBSCRIPTION_PENDING_MP_ORDER_EXISTS",
+              pendingOrderId: String(existingOrder._id),
+              pendingAmount: existingAmount,
+              balanceDue: before.balanceDue,
+            });
+          }
+
+          if (
+            existingStatus === "pending" &&
+            existingAmount === amount &&
+            clean(existingOrder.payMethod).toUpperCase() === payMethod
+          ) {
+            order = existingOrder;
+          } else if (
+            existingStatus === "pending" &&
+            !existingOrder.mpPreferenceId
+          ) {
+            existingOrder.status = "cancelled";
+            existingOrder.notes = [
+              clean(existingOrder.notes),
+              "Orden reemplazada por un pago mensual registrado desde administración.",
+            ]
+              .filter(Boolean)
+              .join("\n");
+            await existingOrder.save();
+
+            cycle.billing.order = null;
+            await cycle.save();
+          }
+        }
+      }
+
+      if (!order) {
+        const item = buildSubscriptionRenewalItem({
+          cycle,
+          subscription,
+          amount,
+        });
+
+        order = await Order.create({
+          user: targetUserId,
+          payMethod,
+          items: [item],
+          totalBase: amount,
+          total: amount,
+          totalFinal: amount,
+          status: "paid",
+          paidAt: new Date(),
+          applied: false,
+          creditsApplied: false,
+          subscriptionExtraApplied: true,
+          subscriptionCycleApplied: false,
+          suppressUserEmails: true,
+          createdByAdmin: true,
+          createdByAdminId: req.user?._id || null,
+          customerName:
+            `${targetUser.name || ""} ${targetUser.lastName || ""}`.trim() ||
+            targetUser.fullName ||
+            "",
+          customerEmail: targetUser.email || "",
+          customerPhone: targetUser.phone || "",
+          notes: [
+            `Pago del plan mensual ${serviceKey} ${currentPeriodKey}.`,
+            "Las sesiones del plan ya fueron acreditadas por el ciclo; esta orden solo registra dinero.",
+            notes,
+          ]
+            .filter(Boolean)
+            .join("\n"),
+          serviceKey,
+          credits: 0,
+          price: amount,
+          label: `Pago plan ${serviceKey} · ${currentPeriodKey}`,
+        });
+      } else {
+        order.status = "paid";
+        order.paidAt = order.paidAt || new Date();
+        order.subscriptionExtraApplied = true;
+        order.createdByAdmin = true;
+        order.createdByAdminId = req.user?._id || order.createdByAdminId || null;
+        order.notes = [
+          clean(order.notes),
+          notes,
+        ]
+          .filter(Boolean)
+          .join("\n");
+        await order.save();
+      }
+
+      const applied = await applySubscriptionRenewalFromOrder({
+        order,
+        paymentProvider: payMethod,
+        paymentId: order.mpPaymentId || "",
+        paidAt: order.paidAt || new Date(),
+      });
+
+      order.applied = true;
+      order.subscriptionCycleApplied = true;
+      order.subscriptionExtraApplied = true;
+      await order.save();
+
+      const freshCycle = await SubscriptionBillingCycle.findById(cycle._id).lean();
+      const freshSubscription = await ServiceSubscription.findById(
+        subscription._id
+      ).lean();
+      const after = cycleBillingSummary(freshCycle);
+
+      targetUser.history = Array.isArray(targetUser.history)
+        ? targetUser.history
+        : [];
+      targetUser.history.push({
+        action: "subscription_payment_recorded_by_admin",
+        title: `Pago del plan ${serviceKey}`,
+        message: `Se registró un pago de $${amount} para ${currentPeriodKey}. Saldo pendiente: $${after.balanceDue}.`,
+        serviceKey,
+        serviceName: serviceNameForKey(serviceKey) || serviceKey,
+        qty: 0,
+        createdAt: new Date(),
+      });
+      await targetUser.save();
+
+      return res.status(201).json({
+        ok: true,
+        periodKey: currentPeriodKey,
+        orderId: String(order._id),
+        amount,
+        paymentApplied: applied,
+        billing: after,
+        subscription: serializeAdminMonthlyPlan(
+          freshSubscription,
+          freshCycle
+        ),
+        message:
+          after.balanceDue > 0
+            ? `Pago registrado. Quedan $${after.balanceDue} pendientes y la cuenta continúa activa.`
+            : after.overpaidAmount > 0
+              ? `Pago registrado. El ciclo quedó abonado y se registró un excedente de $${after.overpaidAmount}.`
+              : "Pago registrado. El ciclo quedó totalmente abonado.",
+      });
+    } catch (error) {
+      console.error(
+        "POST /subscriptions/admin/user/:targetUserId/service/:serviceKey/payment",
+        error
+      );
+
+      return res.status(500).json({
+        error:
+          error?.message ||
+          "No se pudo registrar el pago mensual.",
+      });
+    }
+  }
+);
+
 /* ============================================
    HELPERS DE PAGO
 ============================================ */
@@ -479,17 +859,26 @@ function serializeSubscription(subscription, cycles = []) {
     currentPeriodEnd: subscription.currentPeriodEnd,
     fixedSlotsProtectedUntil: subscription.fixedSlotsProtectedUntil,
     pendingChange: subscription.pendingChange,
-    cycles: cycles.map((cycle) => ({
-      id: String(cycle._id),
-      periodKey: cycle.periodKey,
-      billingStatus: cycle.billing?.status,
-      amount: cycle.billing?.total || 0,
-      dueAt: cycle.billing?.dueAt || null,
-      paidAt: cycle.billing?.paidAt || null,
-      planStatus: cycle.lifecycle?.planStatus,
-      sessions: cycle.planSnapshot?.monthlySessions || 0,
-      creditsGranted: !!cycle.creditGrant?.granted,
-    })),
+    cycles: cycles.map((cycle) => {
+      const billing = cycleBillingSummary(cycle);
+
+      return {
+        id: String(cycle._id),
+        periodKey: cycle.periodKey,
+        billingStatus: cycle.billing?.status,
+        amount: billing.total,
+        amountReceived: billing.amountReceived,
+        amountPaid: billing.amountPaid,
+        balanceDue: billing.balanceDue,
+        overpaidAmount: billing.overpaidAmount,
+        paymentState: billing.paymentState,
+        dueAt: cycle.billing?.dueAt || null,
+        paidAt: cycle.billing?.paidAt || null,
+        planStatus: cycle.lifecycle?.planStatus,
+        sessions: cycle.planSnapshot?.monthlySessions || 0,
+        creditsGranted: !!cycle.creditGrant?.granted,
+      };
+    }),
   };
 }
 
@@ -603,12 +992,18 @@ router.post("/cycles/:cycleId/pay", async (req, res) => {
       return res.status(404).json({ error: "Ciclo mensual no encontrado." });
     }
 
-    if (cycle.billing?.status === "paid") {
+    const before = cycleBillingSummary(cycle);
+
+    if (
+      cycle.billing?.status === "paid" ||
+      before.balanceDue <= 0
+    ) {
       return res.json({
         ok: true,
         alreadyPaid: true,
         cycleId: String(cycle._id),
         billingStatus: "paid",
+        billing: before,
       });
     }
 
@@ -625,6 +1020,14 @@ router.post("/cycles/:cycleId/pay", async (req, res) => {
 
     if (!subscription) {
       return res.status(404).json({ error: "Suscripción no encontrada." });
+    }
+
+    if (subscription.status === "terminated_for_non_payment") {
+      return res.status(409).json({
+        error:
+          "Este plan ya fue dado de baja y sus turnos pudieron liberarse. Contactá al staff para reactivarlo de forma segura.",
+        code: "SUBSCRIPTION_REACTIVATION_REQUIRES_CAPACITY_CHECK",
+      });
     }
 
     const expectedMethod = String(
@@ -645,11 +1048,38 @@ router.post("/cycles/:cycleId/pay", async (req, res) => {
       });
     }
 
+    const requestedAmountRaw = req.body?.amount;
+    const requestedAmount =
+      requestedAmountRaw === null ||
+      requestedAmountRaw === undefined ||
+      requestedAmountRaw === ""
+        ? before.balanceDue
+        : money(requestedAmountRaw);
+
+    if (!(requestedAmount > 0)) {
+      return res.status(400).json({
+        error: "El importe del pago debe ser mayor a $0.",
+      });
+    }
+
+    if (requestedAmount > before.balanceDue) {
+      return res.status(400).json({
+        error: `El saldo pendiente es $${before.balanceDue}.`,
+        code: "SUBSCRIPTION_PAYMENT_EXCEEDS_BALANCE",
+        billing: before,
+      });
+    }
+
     if (cycle.billing?.order) {
       const existingOrder = await Order.findById(cycle.billing.order);
 
       if (existingOrder) {
         const status = String(existingOrder.status || "").toLowerCase();
+        const existingAmount = money(
+          existingOrder.totalFinal ??
+            existingOrder.total ??
+            existingOrder.price
+        );
 
         if (status === "paid" || status === "approved") {
           if (!existingOrder.subscriptionCycleApplied) {
@@ -661,60 +1091,93 @@ router.post("/cycles/:cycleId/pay", async (req, res) => {
             });
 
             existingOrder.subscriptionCycleApplied = true;
+            existingOrder.subscriptionExtraApplied = true;
             existingOrder.applied = true;
             await existingOrder.save();
           }
 
+          const freshCycle = await SubscriptionBillingCycle.findById(
+            cycle._id
+          ).lean();
+
           return res.json({
             ok: true,
-            alreadyPaid: true,
+            paymentApplied: true,
             ...renewalOrderResponse(existingOrder),
+            billing: cycleBillingSummary(freshCycle),
           });
         }
 
         if (status === "pending") {
-          if (expectedMethod === "MP" && !existingOrder.mpInitPoint) {
-            const user = await User.findById(uid).lean();
-            const mp = await createMpPreferenceForRenewal({
-              order: existingOrder,
-              user,
-              cycle,
-            });
+          if (existingAmount !== requestedAmount) {
+            if (
+              expectedMethod === "MP" &&
+              existingOrder.mpPreferenceId
+            ) {
+              return res.status(409).json({
+                error:
+                  `Ya existe un pago de Mercado Pago pendiente por $${existingAmount}. No vamos a generar otro por un monto distinto para evitar un doble cobro.`,
+                code: "SUBSCRIPTION_PENDING_MP_ORDER_EXISTS",
+                pendingOrderId: String(existingOrder._id),
+                pendingAmount: existingAmount,
+                billing: before,
+              });
+            }
 
-            existingOrder.mpPreferenceId = mp.preferenceId;
-            existingOrder.mpInitPoint = mp.initPoint;
+            existingOrder.status = "cancelled";
+            existingOrder.notes = [
+              clean(existingOrder.notes),
+              `Orden reemplazada: el saldo vigente es $${before.balanceDue}.`,
+            ]
+              .filter(Boolean)
+              .join("
+");
             await existingOrder.save();
-          }
 
-          return res.json({
-            ok: true,
-            reused: true,
-            ...renewalOrderResponse(existingOrder),
-          });
+            cycle.billing.order = null;
+            await cycle.save();
+          } else {
+            if (expectedMethod === "MP" && !existingOrder.mpInitPoint) {
+              const user = await User.findById(uid).lean();
+              const mp = await createMpPreferenceForRenewal({
+                order: existingOrder,
+                user,
+                cycle,
+              });
+
+              existingOrder.mpPreferenceId = mp.preferenceId;
+              existingOrder.mpInitPoint = mp.initPoint;
+              await existingOrder.save();
+            }
+
+            return res.json({
+              ok: true,
+              reused: true,
+              ...renewalOrderResponse(existingOrder),
+              billing: before,
+            });
+          }
         }
       }
     }
 
-    const item = buildSubscriptionRenewalItem({ cycle, subscription });
-    const amount = Math.max(0, Math.round(Number(cycle.billing?.total || 0)));
-
-    if (!(amount > 0)) {
-      return res.status(400).json({
-        error: "El ciclo mensual no tiene saldo pendiente.",
-      });
-    }
+    const item = buildSubscriptionRenewalItem({
+      cycle,
+      subscription,
+      amount: requestedAmount,
+    });
 
     const order = await Order.create({
       user: uid,
       payMethod: expectedMethod,
       items: [item],
-      totalBase: amount,
-      total: amount,
-      totalFinal: amount,
+      totalBase: requestedAmount,
+      total: requestedAmount,
+      totalFinal: requestedAmount,
       status: "pending",
       applied: false,
       creditsApplied: false,
-      subscriptionExtraApplied: false,
+      subscriptionExtraApplied: true,
       subscriptionCycleApplied: false,
       suppressUserEmails: true,
       notes: `Renovación mensual ${cycle.serviceKey} ${cycle.periodKey}. Las sesiones ya fueron acreditadas por el ciclo; esta orden solo registra el cobro.`,
@@ -732,7 +1195,8 @@ router.post("/cycles/:cycleId/pay", async (req, res) => {
         await order.save();
       } catch (error) {
         order.status = "cancelled";
-        order.notes = `${order.notes}\nNo se pudo generar Mercado Pago: ${
+        order.notes = `${order.notes}
+No se pudo generar Mercado Pago: ${
           error?.message || error
         }`;
         await order.save();
@@ -745,6 +1209,7 @@ router.post("/cycles/:cycleId/pay", async (req, res) => {
     return res.status(201).json({
       ok: true,
       ...renewalOrderResponse(order),
+      billing: before,
     });
   } catch (error) {
     console.error("POST /subscriptions/cycles/:cycleId/pay", error);
