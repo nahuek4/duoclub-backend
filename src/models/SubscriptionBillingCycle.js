@@ -2,7 +2,6 @@
 import mongoose from "mongoose";
 
 const SERVICE_KEYS = ["EP", "RA", "RF", "KD", "SYN", "NUT"];
-const SERVICE_KEY_RE = /^[A-Z][A-Z0-9_]{1,23}$/;
 
 const COVERAGE_STATUSES = [
   "covered",
@@ -147,6 +146,25 @@ const coverageSchema = new mongoose.Schema(
   { _id: false }
 );
 
+const paymentEntrySchema = new mongoose.Schema(
+  {
+    order: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "Order",
+      default: null,
+      index: true,
+    },
+    amount: { type: Number, required: true, min: 0 },
+    appliedAmount: { type: Number, default: 0, min: 0 },
+    excessAmount: { type: Number, default: 0, min: 0 },
+    paidAt: { type: Date, default: Date.now },
+    paymentProvider: { type: String, default: "", trim: true },
+    paymentId: { type: String, default: "", trim: true },
+    note: { type: String, default: "", trim: true },
+  },
+  { timestamps: true }
+);
+
 const billingSchema = new mongoose.Schema(
   {
     status: {
@@ -159,6 +177,17 @@ const billingSchema = new mongoose.Schema(
     amountExtras: { type: Number, default: 0, min: 0 },
     amountAddOns: { type: Number, default: 0, min: 0 },
     total: { type: Number, default: 0, min: 0 },
+
+    // Cuenta corriente del ciclo.
+    // amountReceived = dinero efectivamente registrado.
+    // amountPaid = parte aplicada al saldo del plan.
+    // balanceDue = saldo pendiente del ciclo.
+    // overpaidAmount = excedente recibido por encima del total del ciclo.
+    amountReceived: { type: Number, default: 0, min: 0 },
+    amountPaid: { type: Number, default: 0, min: 0 },
+    balanceDue: { type: Number, default: 0, min: 0 },
+    overpaidAmount: { type: Number, default: 0, min: 0 },
+    payments: { type: [paymentEntrySchema], default: [] },
     issuedAt: { type: Date, default: null },
     dueAt: { type: Date, default: null, index: true },
     paidAt: { type: Date, default: null },
@@ -238,7 +267,7 @@ const subscriptionBillingCycleSchema = new mongoose.Schema(
     serviceKey: {
       type: String,
       required: true,
-      match: SERVICE_KEY_RE,
+      enum: SERVICE_KEYS,
       uppercase: true,
       trim: true,
       index: true,
@@ -311,6 +340,46 @@ subscriptionBillingCycleSchema.pre("validate", function normalizeCycle() {
   billing.total = cleanMoney(
     billing.total || billing.amountBase + billing.amountExtras + billing.amountAddOns
   );
+
+  billing.payments = Array.isArray(billing.payments) ? billing.payments : [];
+
+  const paymentsReceived = billing.payments.reduce(
+    (sum, payment) => sum + cleanMoney(payment?.amount),
+    0
+  );
+  const paymentsApplied = billing.payments.reduce(
+    (sum, payment) => sum + cleanMoney(payment?.appliedAmount),
+    0
+  );
+  const paymentsExcess = billing.payments.reduce(
+    (sum, payment) => sum + cleanMoney(payment?.excessAmount),
+    0
+  );
+
+  billing.amountReceived = Math.max(
+    cleanMoney(billing.amountReceived),
+    paymentsReceived
+  );
+
+  billing.amountPaid = Math.max(
+    cleanMoney(billing.amountPaid),
+    paymentsApplied
+  );
+
+  // Compatibilidad con ciclos históricos que ya estaban paid antes de
+  // incorporar el detalle de pagos.
+  if (billing.status === "paid") {
+    billing.amountPaid = Math.max(billing.amountPaid, billing.total);
+  }
+
+  billing.amountPaid = Math.min(billing.total, billing.amountPaid);
+  billing.balanceDue = Math.max(0, billing.total - billing.amountPaid);
+  billing.overpaidAmount = Math.max(
+    cleanMoney(billing.overpaidAmount),
+    paymentsExcess,
+    Math.max(0, billing.amountReceived - billing.amountPaid)
+  );
+
   this.billing = billing;
 });
 
