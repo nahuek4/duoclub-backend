@@ -1130,8 +1130,7 @@ router.post("/cycles/:cycleId/pay", async (req, res) => {
               `Orden reemplazada: el saldo vigente es $${before.balanceDue}.`,
             ]
               .filter(Boolean)
-              .join("
-");
+              .join(" | ");
             await existingOrder.save();
 
             cycle.billing.order = null;
