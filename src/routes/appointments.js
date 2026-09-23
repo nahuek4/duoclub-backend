@@ -22,33 +22,39 @@ import { logActivity, buildUserSubject } from "../lib/activityLogger.js";
 import { syncExtraSessionNoticeForUserService } from "../services/subscriptions/subscriptionExtraSessions.js";
 import { assertSubscriptionServiceAccess } from "../services/subscriptions/subscriptionAccess.js";
 import { creditExpiryForDate } from "../utils/creditExpiry.js";
+import {
+  activeServiceKeysCached,
+  allowedTimesForService as catalogAllowedTimesForService,
+  capacityGroupForService as catalogCapacityGroupForService,
+  capacityZonesForAdmin,
+  ensureServiceCatalogLoaded,
+  isServiceEnabledFor,
+  isWeekdayTimeAllowedForService,
+  normalizeCatalogServiceKey,
+  serviceCancellationCutoffHours,
+  serviceKeysForCapacityGroup,
+  serviceMaxAdvanceDays,
+  serviceMinBookingMinutes,
+  serviceNameForKey,
+} from "../services/serviceCatalogRuntime.js";
 
 const router = express.Router();
+
+router.use(async (req, res, next) => {
+  await ensureServiceCatalogLoaded();
+  next();
+});
 
 /* =========================
    CONFIG: ventana de reserva
 ========================= */
-const MAX_ADVANCE_DAYS = 30;
-
-/**
- * Anticipación mínima por servicio
- * EP = 30 min fijo
- * RA/RF/KD = 24 h fijas
- * resto = variable por env o fallback 60
- */
+// STEP3B3A_APPOINTMENTS_DYNAMIC_RUNTIME_HARDENING
+// Los valores reales salen de ServiceDefinition. Estos defaults solo protegen
+// el runtime si el catálogo no estuviera disponible temporalmente.
+const DEFAULT_MAX_ADVANCE_DAYS = 30;
 const DEFAULT_MIN_BOOKING_MINUTES = Number(
   process.env.MIN_BOOKING_MINUTES || 60
 );
-
-const MIN_BOOKING_MINUTES_BY_SERVICE = {
-  EP: 30,
-  RA: 24 * 60,
-  RF: 24 * 60,
-  KD: 24 * 60,
-  SYN: 24 * 60,
-  NUT: DEFAULT_MIN_BOOKING_MINUTES,
-  OTHER: DEFAULT_MIN_BOOKING_MINUTES,
-};
 
 /* =========================
    WAITLIST
@@ -58,7 +64,14 @@ const ACTIVE_WAITLIST_STATUSES = ["waiting", "notified"];
 function waitlistQueueServiceKeys(serviceKeyOrName) {
   const sk = serviceToKey(serviceKeyOrName);
   if (!sk) return [];
-  if (isTherapyService(sk)) return ["RA", "RF", "SYN"];
+
+  if (capacityZoneForService(sk) === "PERFORMANCE") {
+    const groupKeys = serviceKeysForCapacityGroup("PERFORMANCE", {
+      flag: "waitlistEnabled",
+    });
+    return groupKeys.length ? groupKeys : [sk];
+  }
+
   return [sk];
 }
 
@@ -69,8 +82,7 @@ function buildWaitlistQueueMatch(serviceKeyOrName) {
 }
 
 function isWaitlistableService(serviceKeyOrName) {
-  const sk = serviceToKey(serviceKeyOrName);
-  return sk === "EP" || isTherapyService(sk);
+  return isServiceEnabledFor(serviceToKey(serviceKeyOrName), "waitlistEnabled");
 }
 
 /* =========================
@@ -173,9 +185,13 @@ function buildSlotDate(dateStr, timeStr) {
   return new Date(year, month - 1, day, hour || 0, minute || 0, 0, 0);
 }
 
-function validateBookingWindow(slotDate) {
+function validateBookingWindow(slotDate, serviceName = "") {
   const now = new Date();
-  const max = addDays(now, MAX_ADVANCE_DAYS);
+  const maxDays = serviceMaxAdvanceDays(
+    serviceToKey(serviceName),
+    DEFAULT_MAX_ADVANCE_DAYS
+  );
+  const max = addDays(now, maxDays);
 
   if (slotDate.getTime() < now.getTime()) {
     return { ok: false, error: "No se puede reservar un turno pasado." };
@@ -183,7 +199,7 @@ function validateBookingWindow(slotDate) {
   if (slotDate.getTime() > max.getTime()) {
     return {
       ok: false,
-      error: `Solo se puede reservar hasta ${MAX_ADVANCE_DAYS} días de anticipación.`,
+      error: `Solo se puede reservar hasta ${maxDays} días de anticipación.`,
     };
   }
   return { ok: true };
@@ -191,10 +207,7 @@ function validateBookingWindow(slotDate) {
 
 function getMinBookingMinutesForService(serviceName) {
   const sk = serviceToKey(serviceName);
-  return (
-    MIN_BOOKING_MINUTES_BY_SERVICE[sk] ??
-    MIN_BOOKING_MINUTES_BY_SERVICE.OTHER
-  );
+  return serviceMinBookingMinutes(sk, DEFAULT_MIN_BOOKING_MINUTES);
 }
 
 function validateMinAdvance(slotDate, serviceName) {
@@ -213,9 +226,10 @@ function validateMinAdvance(slotDate, serviceName) {
 
 function getWaitlistCloseMinutesForService(serviceName) {
   const sk = serviceToKey(serviceName);
+  const zone = capacityZoneForService(sk);
 
-  if (sk === "EP") return 30;
-  if (["RA", "RF", "SYN"].includes(sk)) return 12 * 60;
+  if (zone === "TRAINING") return 30;
+  if (zone === "PERFORMANCE") return 12 * 60;
 
   return null;
 }
@@ -258,40 +272,35 @@ function isSunday(dateStr) {
 
 function getTurnoFromTime(time) {
   if (!time) return "";
-  const [hStr, mStr] = String(time).split(":");
+  const [hStr, mStr] = String(time).slice(0, 5).split(":");
   const h = Number(hStr);
   const m = Number(mStr);
 
-  if (h >= 7 && h <= 12) return "maniana";
-  if (h >= 13 && h <= 17) return "tarde";
-  if (h >= 18 && h <= 20) return "noche";
+  if (
+    !Number.isInteger(h) ||
+    !Number.isInteger(m) ||
+    h < 0 ||
+    h > 23 ||
+    m < 0 ||
+    m > 59
+  ) {
+    return "";
+  }
 
-  return "";
+  // Campo legacy: ya no limita el horario. Solo conserva una etiqueta
+  // compatible para turnos válidos definidos por weeklyHours.
+  if (h < 12) return "maniana";
+  if (h < 18) return "tarde";
+  return "noche";
 }
 
 /* =========================
    HELPERS: normalización servicios
 ========================= */
-const ALLOWED_SERVICE_KEYS = new Set(["PE", "EP", "RA", "RF", "KD", "SYN", "NUT"]);
-
-// Servicios habilitados para NUEVA operatoria.
-// PE / KD / NUT se siguen reconociendo únicamente por compatibilidad histórica.
-const OPERATIONAL_SERVICE_KEYS = new Set(["EP", "RA", "RF", "SYN"]);
-
 function isOperationalServiceKey(value) {
   const sk = normalizeServiceKey(value) || serviceToKey(value);
-  return OPERATIONAL_SERVICE_KEYS.has(sk);
+  return isServiceEnabledFor(sk, "reservable");
 }
-
-const SERVICE_KEY_TO_NAME = {
-  PE: "Primera evaluación presencial",
-  EP: "Entrenamiento Personal",
-  RA: "Rehabilitación activa",
-  RF: "Reeducación funcional",
-  KD: "Kinefilaxia Deportiva",
-  SYN: "Synergy",
-  NUT: "Nutrición",
-};
 
 function normSvcName(s) {
   return String(s || "")
@@ -308,29 +317,15 @@ function stripAccents(s) {
 }
 
 function normalizeServiceKey(value) {
-  const up = String(value || "").toUpperCase().trim();
-  return ALLOWED_SERVICE_KEYS.has(up) ? up : "";
+  return normalizeCatalogServiceKey(value);
 }
 
 function serviceToKey(serviceNameOrKey) {
-  const explicit = normalizeServiceKey(serviceNameOrKey);
-  if (explicit) return explicit;
-
-  const s = stripAccents(serviceNameOrKey).toLowerCase().trim();
-
-  if (s.includes("primera") && s.includes("evaluacion")) return "PE";
-  if (s.includes("entrenamiento") && s.includes("personal")) return "EP";
-  if (s.includes("rehabilitacion") && s.includes("activa")) return "RA";
-  if (s.includes("reeducacion") && s.includes("funcional")) return "RF";
-  if (s.includes("kinefilaxia") || (s.includes("kine") && s.includes("deport"))) return "KD";
-  if (s.includes("synergy") || s.includes("sinergia")) return "SYN";
-  if (s.includes("nutricion")) return "NUT";
-
-  return "";
+  return normalizeCatalogServiceKey(serviceNameOrKey);
 }
 
 function serviceKeyToName(serviceKey) {
-  return SERVICE_KEY_TO_NAME[normalizeServiceKey(serviceKey)] || "";
+  return serviceNameForKey(serviceKey);
 }
 
 function normalizeServiceIdentity({ service = "", serviceKey = "" } = {}) {
@@ -997,6 +992,7 @@ const PE_CAP_PER_SLOT = 1; // legacy
 const DEFAULT_ZONE_CAPS = Object.freeze({
   TRAINING: 11,
   PERFORMANCE: 6,
+  NONE: 1,
 });
 const NUT_CAP_PER_SLOT = 1; // legacy
 
@@ -1036,15 +1032,11 @@ const TIMES_DEFAULT = [
 ];
 
 function isTherapyService(serviceNameOrKey) {
-  const sk = serviceToKey(serviceNameOrKey);
-  return ["RA", "RF", "SYN"].includes(sk);
+  return capacityZoneForService(serviceNameOrKey) === "PERFORMANCE";
 }
 
 function capacityZoneForService(serviceNameOrKey) {
-  const sk = serviceToKey(serviceNameOrKey);
-  if (sk === "EP") return "TRAINING";
-  if (["RA", "RF", "SYN"].includes(sk)) return "PERFORMANCE";
-  return "";
+  return catalogCapacityGroupForService(serviceToKey(serviceNameOrKey));
 }
 
 function getRehabTimesForDate(dateStr) {
@@ -1066,16 +1058,10 @@ function getTherapySharedTimesForDate(dateStr) {
 }
 
 function getAllowedTimesForService(serviceNameOrKey, dateStr = "") {
-  if (!dateStr || isSunday(dateStr)) return [];
-
-  const sk = serviceToKey(serviceNameOrKey);
-
-  if (isSaturday(dateStr)) return [];
-
-  if (sk === "EP") return TIMES_EP_WEEKDAY;
-  if (["RA", "RF", "SYN"].includes(sk)) return getPerformanceTimesForDate(dateStr);
-
-  return [];
+  return catalogAllowedTimesForService(
+    serviceToKey(serviceNameOrKey),
+    dateStr
+  );
 }
 
 function isAllowedTimeForService(serviceNameOrKey, dateStr, time) {
@@ -1085,7 +1071,11 @@ function isAllowedTimeForService(serviceNameOrKey, dateStr, time) {
 
 function isTherapyAreaActiveAt(dateStr, time) {
   const t = String(time || "").slice(0, 5);
-  return getTherapySharedTimesForDate(dateStr).includes(t);
+  return serviceKeysForCapacityGroup("PERFORMANCE", {
+    flag: "reservable",
+  }).some((key) =>
+    catalogAllowedTimesForService(key, dateStr).includes(t)
+  );
 }
 
 function capacityRuleMatchesSlot(rule, dateStr, time) {
@@ -1175,9 +1165,13 @@ function resolveServiceCapacityFromRules(rules, serviceKey, dateStr, time) {
     : null;
 
   const effectiveLimit =
-    serviceLimit == null
-      ? zoneResolved.limit
-      : Math.min(zoneResolved.limit, serviceLimit);
+    zone === "NONE"
+      ? serviceLimit == null
+        ? zoneResolved.limit
+        : serviceLimit
+      : serviceLimit == null
+        ? zoneResolved.limit
+        : Math.min(zoneResolved.limit, serviceLimit);
 
   return {
     serviceKey: sk,
@@ -1229,11 +1223,25 @@ function reservedForServiceKey(counts, serviceKey) {
   if (sk === "KD") return counts.kdReserved;
   if (sk === "PE") return counts.peReserved;
   if (sk === "NUT") return counts.nutReserved;
-  return 0;
+  return Number(counts?.byService?.[sk] || 0);
 }
 
 function getSlotReservationStats(existing, dateStr, time, requestedServiceKey = "", capacityRules = []) {
   const list = Array.isArray(existing) ? existing : [];
+  const byService = {};
+  const byZone = {};
+
+  for (const appointment of list) {
+    const key = appointmentServiceKey(appointment);
+    if (!key) continue;
+
+    byService[key] = Number(byService[key] || 0) + 1;
+
+    const zone = capacityZoneForService(key);
+    if (zone && zone !== "NONE") {
+      byZone[zone] = Number(byZone[zone] || 0) + 1;
+    }
+  }
 
   const peReserved = list.filter((a) => appointmentServiceKey(a) === "PE").length;
   const epReserved = list.filter((a) => appointmentServiceKey(a) === "EP").length;
@@ -1253,6 +1261,8 @@ function getSlotReservationStats(existing, dateStr, time, requestedServiceKey = 
     nutReserved,
     synReserved,
     therapyReserved,
+    byService,
+    byZone,
   };
 
   const requestedSk = serviceToKey(requestedServiceKey);
@@ -1263,14 +1273,11 @@ function getSlotReservationStats(existing, dateStr, time, requestedServiceKey = 
     time
   );
 
-  const zoneReserved =
-    capacity.zone === "TRAINING"
-      ? epReserved
-      : capacity.zone === "PERFORMANCE"
-        ? therapyReserved
-        : 0;
-
   const serviceReserved = reservedForServiceKey(counts, requestedSk);
+  const zoneReserved =
+    capacity.zone === "NONE"
+      ? serviceReserved
+      : Number(byZone[capacity.zone] || 0);
   const zoneAvailable = Math.max(0, Number(capacity.zoneLimit || 0) - zoneReserved);
   const serviceAvailable =
     capacity.serviceLimit == null
@@ -1316,11 +1323,19 @@ function getSlotReservationStats(existing, dateStr, time, requestedServiceKey = 
 
 function isSlotCapacityReached(stats, serviceKey) {
   const sk = serviceToKey(serviceKey);
-  if (sk === "PE") return Number(stats?.peReserved || 0) >= Number(stats?.peCap || 0);
-  if (sk === "NUT") return Number(stats?.nutReserved || 0) >= Number(stats?.nutCap || 0);
-  if (sk === "EP" || isTherapyService(sk)) {
+
+  if (sk === "PE") {
+    return Number(stats?.peReserved || 0) >= Number(stats?.peCap || 0);
+  }
+
+  if (sk === "NUT") {
+    return Number(stats?.nutReserved || 0) >= Number(stats?.nutCap || 0);
+  }
+
+  if (isOperationalServiceKey(sk)) {
     return Number(stats?.effectiveAvailable || 0) <= 0;
   }
+
   return true;
 }
 
@@ -1328,7 +1343,10 @@ function capacityResponseFields(stats, serviceKey) {
   const sk = serviceToKey(serviceKey);
 
   if (sk === "PE") {
-    const available = Math.max(0, Number(stats?.peCap || 0) - Number(stats?.peReserved || 0));
+    const available = Math.max(
+      0,
+      Number(stats?.peCap || 0) - Number(stats?.peReserved || 0)
+    );
     return {
       capacity: Number(stats?.peCap || 0),
       reserved: Number(stats?.peReserved || 0),
@@ -1339,7 +1357,10 @@ function capacityResponseFields(stats, serviceKey) {
   }
 
   if (sk === "NUT") {
-    const available = Math.max(0, Number(stats?.nutCap || 0) - Number(stats?.nutReserved || 0));
+    const available = Math.max(
+      0,
+      Number(stats?.nutCap || 0) - Number(stats?.nutReserved || 0)
+    );
     return {
       capacity: Number(stats?.nutCap || 0),
       reserved: Number(stats?.nutReserved || 0),
@@ -1349,14 +1370,28 @@ function capacityResponseFields(stats, serviceKey) {
     };
   }
 
-  if (sk === "EP" || isTherapyService(sk)) {
+  if (isOperationalServiceKey(sk)) {
     const usingServiceLimit = stats?.serviceCap != null;
+    const zone = capacityZoneForService(sk);
+
     return {
       capacity: Number(stats?.effectiveCap || 0),
-      reserved: Number(usingServiceLimit ? stats?.serviceReserved || 0 : stats?.zoneReserved || 0),
+      reserved: Number(
+        usingServiceLimit || zone === "NONE"
+          ? stats?.serviceReserved || 0
+          : stats?.zoneReserved || 0
+      ),
       available: Math.max(0, Number(stats?.effectiveAvailable || 0)),
-      availableVacancies: Math.max(0, Number(stats?.effectiveAvailable || 0)),
-      slotGroup: sk === "EP" ? "EP" : "THERAPY_SHARED",
+      availableVacancies: Math.max(
+        0,
+        Number(stats?.effectiveAvailable || 0)
+      ),
+      slotGroup:
+        zone === "NONE"
+          ? sk
+          : zone === "PERFORMANCE"
+            ? "THERAPY_SHARED"
+            : zone,
     };
   }
 
@@ -1495,7 +1530,17 @@ const CANCELLATION_POLICY_BY_SERVICE = {
 
 function getCancellationPolicyForService(serviceName) {
   const sk = serviceToKey(serviceName);
-  return CANCELLATION_POLICY_BY_SERVICE[sk] || CANCELLATION_POLICY_BY_SERVICE.OTHER;
+  const base =
+    CANCELLATION_POLICY_BY_SERVICE[sk] ||
+    CANCELLATION_POLICY_BY_SERVICE.OTHER;
+
+  return {
+    ...base,
+    refundCutoffHours: serviceCancellationCutoffHours(
+      sk,
+      Number(base?.refundCutoffHours || 1)
+    ),
+  };
 }
 
 function getMonthKey(dateValue = new Date()) {
@@ -2167,14 +2212,6 @@ function validateBasicSlotRules({ date, time, service, serviceKey }) {
     return { ok: false, error: "Este servicio ya no está habilitado para nuevas reservas." };
   }
 
-  if (isSaturday(date)) {
-    return { ok: false, error: "Los sábados no hay turnos disponibles para este servicio." };
-  }
-
-  if (isSunday(date)) {
-    return { ok: false, error: "Los domingos no hay turnos disponibles." };
-  }
-
   const timeNorm = String(time).slice(0, 5);
 
   if (!isAllowedTimeForService(normalizedServiceKey, date, timeNorm)) {
@@ -2192,7 +2229,7 @@ function validateBasicSlotRules({ date, time, service, serviceKey }) {
   const slotDate = buildSlotDate(date, timeNorm);
   if (!slotDate) return { ok: false, error: "Fecha/hora inválida." };
 
-  const w = validateBookingWindow(slotDate);
+  const w = validateBookingWindow(slotDate, normalizedServiceKey);
   if (!w.ok) return w;
 
   const adv = validateMinAdvance(slotDate, normalizedServiceKey);
@@ -2227,14 +2264,6 @@ function validateBasicSlotRulesAdmin({ date, time, service, serviceKey, bypassWi
     return { ok: false, error: "Este servicio ya no está habilitado para nuevas reservas." };
   }
 
-  if (isSaturday(date)) {
-    return { ok: false, error: "Los sábados no hay turnos disponibles para este servicio." };
-  }
-
-  if (isSunday(date)) {
-    return { ok: false, error: "Los domingos no hay turnos disponibles." };
-  }
-
   const timeNorm = String(time).slice(0, 5);
 
   if (!isAllowedTimeForService(normalizedServiceKey, date, timeNorm)) {
@@ -2253,7 +2282,7 @@ function validateBasicSlotRulesAdmin({ date, time, service, serviceKey, bypassWi
   if (!slotDate) return { ok: false, error: "Fecha/hora inválida." };
 
   if (!bypassWindow) {
-    const w = validateBookingWindow(slotDate);
+    const w = validateBookingWindow(slotDate, normalizedServiceKey);
     if (!w.ok) return w;
 
     const adv = validateMinAdvance(slotDate, normalizedServiceKey);
@@ -3151,12 +3180,18 @@ function normalizeCapacityRulePayload(body = {}) {
     return { ok: false, error: "targetType inválido." };
   }
 
-  if (!["TRAINING", "PERFORMANCE"].includes(zone)) {
+  if (!["TRAINING", "PERFORMANCE", "NONE"].includes(zone)) {
     return { ok: false, error: "Zona inválida." };
   }
 
-  if (targetType === "service" && !["EP", "RA", "RF", "SYN"].includes(serviceKey)) {
-    return { ok: false, error: "Servicio inválido para configurar vacantes." };
+  if (
+    targetType === "service" &&
+    !isServiceEnabledFor(serviceKey, "active")
+  ) {
+    return {
+      ok: false,
+      error: "Servicio inválido para configurar vacantes.",
+    };
   }
 
   if (targetType === "service" && capacityZoneForService(serviceKey) !== zone) {
@@ -3213,22 +3248,7 @@ router.get("/admin/capacity-rules", ensureStaff, async (req, res) => {
     return res.json({
       ok: true,
       defaults: { ...DEFAULT_ZONE_CAPS },
-      zones: [
-        {
-          key: "TRAINING",
-          label: "TRAINING",
-          services: [{ key: "EP", label: EP_NAME }],
-        },
-        {
-          key: "PERFORMANCE",
-          label: "PERFORMANCE",
-          services: [
-            { key: "RA", label: "Rehabilitación Activa" },
-            { key: "RF", label: "Reeducación Funcional" },
-            { key: "SYN", label: SYN_NAME },
-          ],
-        },
-      ],
+      zones: capacityZonesForAdmin(),
       rules: rules.map(serializeCapacityRule),
     });
   } catch (err) {
@@ -3400,21 +3420,6 @@ router.get("/availability", async (req, res) => {
 
       // La primera evaluación ya no es obligatoria para reservar otros servicios.
       // El admin puede marcarla como completada, pero no bloquea disponibilidad.
-    }
-
-    if (isSunday(date) || isSaturday(date)) {
-      return res.json({
-        date,
-        service: normalizedServiceName,
-        serviceKey: normalizedServiceKey,
-        slots: times.map((t) => ({
-          time: t,
-          state: "closed",
-          reason: isSunday(date)
-            ? "Domingos no disponibles"
-            : "Sábados no disponibles para este servicio",
-        })),
-      });
     }
 
     const out = [];
@@ -3805,9 +3810,15 @@ router.post("/admin/fixed-schedules", async (req, res) => {
 
     const serviceIdentity = normalizeServiceIdentity({ service, serviceKey });
     if (!serviceIdentity?.serviceKey) return res.status(400).json({ error: "Falta service." });
-    if (!isOperationalServiceKey(serviceIdentity.serviceKey)) {
+    if (
+      !isServiceEnabledFor(
+        serviceIdentity.serviceKey,
+        "fixedScheduleEnabled"
+      )
+    ) {
       return res.status(400).json({
-        error: "Este servicio ya no está habilitado para nuevos turnos fijos.",
+        error:
+          "Este servicio no está habilitado para nuevos turnos fijos.",
       });
     }
     if (!items.length) return res.status(400).json({ error: "Faltan días fijos." });
@@ -3817,11 +3828,27 @@ router.post("/admin/fixed-schedules", async (req, res) => {
         weekday: Number(it?.weekday || 0),
         time: String(it?.time || "").slice(0, 5),
       }))
-      .filter((it) => it.weekday >= 1 && it.weekday <= 6 && !!it.time)
+      .filter((it) => it.weekday >= 1 && it.weekday <= 7 && !!it.time)
       .sort((a, b) => a.weekday - b.weekday);
 
     if (!cleanItems.length) {
       return res.status(400).json({ error: "No hay items válidos para guardar." });
+    }
+
+    const invalidScheduleItem = cleanItems.find(
+      (item) =>
+        !isWeekdayTimeAllowedForService(
+          serviceIdentity.serviceKey,
+          item.weekday,
+          item.time
+        )
+    );
+
+    if (invalidScheduleItem) {
+      return res.status(400).json({
+        error:
+          "Uno de los días/horarios no está habilitado en la configuración del servicio.",
+      });
     }
 
     const seenWeekdays = new Set();
@@ -5648,7 +5675,7 @@ router.get("/admin/fixed-schedules", ensureStaff, async (req, res) => {
           weekday: Number(x?.weekday || 0),
           time: String(x?.time || "").slice(0, 5),
         }))
-        .filter((x) => x.weekday >= 1 && x.weekday <= 6 && !!x.time);
+        .filter((x) => x.weekday >= 1 && x.weekday <= 7 && !!x.time);
 
       if (cleanRawItems.length) return cleanRawItems;
 
@@ -5673,7 +5700,7 @@ router.get("/admin/fixed-schedules", ensureStaff, async (req, res) => {
         const time = String(ap?.time || "").slice(0, 5);
         if (!day || !time) continue;
         const weekday = getWeekdayMondayFirst(day);
-        if (weekday < 1 || weekday > 6) continue;
+        if (weekday < 1 || weekday > 7) continue;
         if (!byWeekday.has(weekday)) byWeekday.set(weekday, time);
       }
 

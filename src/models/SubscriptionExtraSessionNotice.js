@@ -2,6 +2,7 @@
 import mongoose from "mongoose";
 
 const SERVICE_KEYS = ["EP", "RA", "RF", "KD", "SYN", "NUT"];
+const SERVICE_KEY_RE = /^[A-Z][A-Z0-9_]{1,23}$/;
 const STATUSES = ["pending", "order_pending", "covered", "cancelled"];
 
 function cleanNonNegativeInteger(value) {
@@ -25,7 +26,7 @@ const subscriptionExtraSessionNoticeSchema = new mongoose.Schema(
     },
     serviceKey: {
       type: String,
-      enum: SERVICE_KEYS,
+      match: SERVICE_KEY_RE,
       required: true,
       uppercase: true,
       trim: true,

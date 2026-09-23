@@ -30,8 +30,21 @@ import {
   buildDiff,
 } from "../lib/activityLogger.js";
 import { creditExpiryForDate } from "../utils/creditExpiry.js";
+import {
+  activeServiceKeysCached,
+  ensureServiceCatalogLoaded,
+  isServiceEnabledFor,
+  normalizeCatalogServiceKey,
+  serviceNameForKey,
+} from "../services/serviceCatalogRuntime.js";
 
 const router = express.Router();
+
+router.use(async (req, res, next) => {
+  await ensureServiceCatalogLoaded();
+  next();
+});
+
 const APTO_DEBUG_VERSION = "APTO_UPLOAD_FIX_V17_DIRECT_2026-07-02";
 
 /* ============================================
@@ -112,25 +125,12 @@ function stripAccents(value) {
 }
 
 function canonicalServiceKeyFromValue(value) {
-  const up = String(value || "").toUpperCase().trim();
-  if (ALLOWED_SERVICE_KEYS.has(up)) return up;
-
-  const s = stripAccents(value).toLowerCase().trim();
-
-  if (s.includes("primera") && s.includes("evaluacion")) return "PE";
-  if (s.includes("entrenamiento") && s.includes("personal")) return "EP";
-  if (s.includes("rehabilitacion") && s.includes("activa")) return "RA";
-  if (s.includes("reeducacion") && s.includes("funcional")) return "RF";
-  if (s.includes("kinefilaxia") || (s.includes("kine") && s.includes("deport"))) return "KD";
-  if (s.includes("synergy")) return "SYN";
-  if (s.includes("nutric")) return "NUT";
-
-  return "";
+  return normalizeCatalogServiceKey(value);
 }
 
 function prettyServiceName(value) {
   const key = canonicalServiceKeyFromValue(value);
-  if (key) return SERVICE_KEY_TO_NAME[key];
+  if (key) return serviceNameForKey(key);
   return String(value || "Sesión").trim() || "Sesión";
 }
 
@@ -407,7 +407,7 @@ function fixedScheduleDebtByServiceKey(u) {
 function computeServiceAccessFromLots(u) {
   const now = new Date();
   const lots = Array.isArray(u?.creditLots) ? u.creditLots : [];
-  const byKey = { PE: 0, EP: 0, RF: 0, RA: 0, KD: 0, SYN: 0, NUT: 0 };
+  const byKey = {};
 
   for (const lot of lots) {
     const remaining = Number(lot?.remaining || 0);
@@ -417,14 +417,15 @@ function computeServiceAccessFromLots(u) {
     if (exp && exp <= now) continue;
 
     const sk = normalizeLotServiceKey(lot);
-    if (byKey[sk] !== undefined) byKey[sk] += remaining;
+    if (!sk) continue;
+    byKey[sk] = Number(byKey[sk] || 0) + remaining;
   }
 
   const debtByServiceKey = fixedScheduleDebtByServiceKey(u); // histórico, no operativo
-  const creditsByServiceKey = { PE: 0, EP: 0, RF: 0, RA: 0, KD: 0, SYN: 0, NUT: 0 };
-  const availableCreditsByServiceKey = { PE: 0, EP: 0, RF: 0, RA: 0, KD: 0, SYN: 0, NUT: 0 };
+  const creditsByServiceKey = {};
+  const availableCreditsByServiceKey = {};
 
-  for (const k of Object.keys(availableCreditsByServiceKey)) {
+  for (const k of Object.keys(byKey)) {
     availableCreditsByServiceKey[k] = Number(byKey[k] || 0);
     creditsByServiceKey[k] = Number(byKey[k] || 0);
   }
@@ -432,11 +433,11 @@ function computeServiceAccessFromLots(u) {
   const allowedServices = [];
   const serviceCredits = {};
 
-  for (const k of ["EP", "RF", "RA", "SYN"]) {
+  for (const k of activeServiceKeysCached({ flag: "reservable" })) {
     const available = Number(availableCreditsByServiceKey[k] || 0);
 
     if (available > 0) {
-      const label = SERVICE_KEY_TO_NAME[k] || k;
+      const label = serviceNameForKey(k);
       allowedServices.push(label);
       serviceCredits[label] = available;
     }
@@ -558,8 +559,8 @@ async function addCreditLot(
     title: `Créditos acreditados ${sk}`,
     message: `Se acreditaron ${qty} crédito(s), con vencimiento el día 1 del mes siguiente.`,
     serviceKey: sk,
-    serviceName: SERVICE_KEY_TO_NAME[sk] || sk,
-    service: SERVICE_KEY_TO_NAME[sk] || sk,
+    serviceName: serviceNameForKey(sk),
+    service: serviceNameForKey(sk),
     qty,
     createdAt: now,
   });
@@ -569,18 +570,20 @@ async function addCreditLot(
 
 function buildCreditsByService(user) {
   const firstEvaluationCompleted = !!user?.firstEvaluationCompleted;
+  const result = {};
 
-  const result = {
-    EP: sumCreditsForService(user, "EP"),
-    RF: sumCreditsForService(user, "RF"),
-    RA: sumCreditsForService(user, "RA"),
-    KD: sumCreditsForService(user, "KD"),
-    SYN: sumCreditsForService(user, "SYN"),
-    NUT: sumCreditsForService(user, "NUT"),
-  };
+  const keys = new Set([
+    ...activeServiceKeysCached({ flag: "active", includeLegacy: true }),
+    ...(Array.isArray(user?.creditLots)
+      ? user.creditLots
+          .map((lot) => normalizeLotServiceKey(lot))
+          .filter(Boolean)
+      : []),
+  ]);
 
-  if (!firstEvaluationCompleted) {
-    result.PE = sumCreditsForService(user, "PE");
+  for (const key of keys) {
+    if (key === "PE" && firstEvaluationCompleted) continue;
+    result[key] = sumCreditsForService(user, key);
   }
 
   return result;
@@ -2125,14 +2128,8 @@ async function updateCredits(req, res) {
       } = rawItem || {};
 
       const sk = canonicalServiceKeyFromValue(skRaw);
-      if (!sk || !ALLOWED_SERVICE_KEYS.has(sk)) {
-        const err = new Error("serviceKey inválido.");
-        err.status = 400;
-        throw err;
-      }
-
-      if (!OPERATIONAL_SERVICE_KEYS.has(sk)) {
-        const err = new Error("Este servicio ya no admite nuevas cargas de sesiones.");
+      if (!sk || !isServiceEnabledFor(sk, "active")) {
+        const err = new Error("serviceKey inválido o servicio inactivo.");
         err.status = 400;
         throw err;
       }

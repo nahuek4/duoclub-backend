@@ -21,9 +21,19 @@ import {
   listExtraSessionNoticesForUser,
   syncExtraSessionNoticeForUserService,
 } from "../services/subscriptions/subscriptionExtraSessions.js";
+import {
+  ensureServiceCatalogLoaded,
+  isServiceEnabledFor,
+  normalizeCatalogServiceKey,
+  serviceNameForKey,
+} from "../services/serviceCatalogRuntime.js";
 
 const router = express.Router();
 router.use(protect);
+router.use(async (req, res, next) => {
+  await ensureServiceCatalogLoaded();
+  next();
+});
 
 function userId(req) {
   return String(req.user?._id || req.user?.id || "");
@@ -32,14 +42,7 @@ function userId(req) {
 /* ============================================
    ADMIN: PLAN MENSUAL DESDE ADMINUSUARIOS
 ============================================ */
-const ADMIN_MONTHLY_PLAN_SERVICE_KEYS = new Set(["EP", "RF", "RA", "SYN"]);
 
-const ADMIN_MONTHLY_PLAN_SERVICE_NAMES = {
-  EP: "Entrenamiento Personal",
-  RF: "Reeducación Funcional",
-  RA: "Rehabilitación Activa",
-  SYN: "Synergy",
-};
 
 function ensureMonthlyPlanStaff(req, res, next) {
   const role = String(req.user?.role || "").toLowerCase().trim();
@@ -54,8 +57,8 @@ function ensureMonthlyPlanStaff(req, res, next) {
 }
 
 function normalizeMonthlyPlanServiceKey(value) {
-  const key = String(value || "").toUpperCase().trim();
-  return ADMIN_MONTHLY_PLAN_SERVICE_KEYS.has(key) ? key : "";
+  const key = normalizeCatalogServiceKey(value);
+  return isServiceEnabledFor(key, "recurringPlanEnabled") ? key : "";
 }
 
 function argentinaPeriodBounds(periodKey) {
@@ -145,7 +148,6 @@ router.get(
 
       const subscriptions = await ServiceSubscription.find({
         user: targetUserId,
-        serviceKey: { $in: [...ADMIN_MONTHLY_PLAN_SERVICE_KEYS] },
       })
         .populate(
           "pricingPlan",
@@ -260,7 +262,7 @@ router.put(
        * renovaciones mensuales y del cálculo de sesiones adicionales.
        */
       const update = {
-        serviceName: ADMIN_MONTHLY_PLAN_SERVICE_NAMES[serviceKey] || serviceKey,
+        serviceName: serviceNameForKey(serviceKey),
         monthlySessions,
         pricingPlan: publishedPlan._id,
         price: Number(publishedPlan.price || 0),

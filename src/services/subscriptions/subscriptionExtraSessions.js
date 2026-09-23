@@ -19,18 +19,25 @@ import {
   normalizeServiceKey,
 } from "./fixedScheduleCoverage.js";
 import { projectActiveFixedSchedulesForMonth } from "./subscriptionScheduleProjection.js";
+import {
+  ensureServiceCatalogLoaded,
+  isServiceEnabledFor,
+  normalizeCatalogServiceKey,
+} from "../serviceCatalogRuntime.js";
+
+// STEP3B2_DYNAMIC_EXTRA_SESSIONS
 
 const ACTIVE_SUBSCRIPTION_STATUSES = ["active", "pending_change", "suspended"];
 const PAID_ORDER_STATUSES = new Set(["paid", "approved"]);
 const CLOSED_ORDER_STATUSES = new Set(["cancelled", "canceled", "expired"]);
-const OPERATIONAL_SERVICE_KEYS = new Set(["EP", "RA", "RF", "SYN"]);
 
 function clean(value) {
   return String(value || "").trim();
 }
 
 function isOperationalServiceKey(value) {
-  return OPERATIONAL_SERVICE_KEYS.has(clean(value).toUpperCase());
+  const key = normalizeCatalogServiceKey(value);
+  return isServiceEnabledFor(key, "recurringPlanEnabled");
 }
 
 function idOf(value) {
@@ -162,6 +169,7 @@ async function calculateExtraSessionStateForUserService({
   serviceKey,
   now = new Date(),
 } = {}) {
+  await ensureServiceCatalogLoaded();
   const normalizedServiceKey = normalizeServiceKey(serviceKey);
   if (!mongoose.Types.ObjectId.isValid(clean(userId)) || !normalizedServiceKey) {
     throw createHttpError(
@@ -422,6 +430,7 @@ export async function syncExtraSessionNoticeForUserService({
 }
 
 export async function serializeExtraSessionNoticeForUser(noticeInput) {
+  await ensureServiceCatalogLoaded();
   const notice =
     typeof noticeInput?.save === "function"
       ? noticeInput
@@ -504,6 +513,8 @@ export async function resolveExtraSessionCheckoutItem({
   userId,
   payMethod,
 } = {}) {
+  await ensureServiceCatalogLoaded();
+
   if (!mongoose.Types.ObjectId.isValid(clean(noticeId))) {
     throw createHttpError("Aviso de sesiones adicionales inválido.", 400, "INVALID_NOTICE_ID");
   }

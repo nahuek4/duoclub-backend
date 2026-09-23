@@ -8,9 +8,15 @@ import {
   currentMonthKeyArgentina,
   syncExtraSessionNoticeForUserService,
 } from "./subscriptionExtraSessions.js";
+import {
+  ensureServiceCatalogLoaded,
+  isServiceEnabledFor,
+  normalizeCatalogServiceKey,
+  serviceNameForKey,
+} from "../serviceCatalogRuntime.js";
 
-const RECURRING_SERVICE_KEYS = new Set(["EP", "RA", "RF", "KD", "SYN", "NUT"]);
-const OPERATIONAL_RECURRING_SERVICE_KEYS = new Set(["EP", "RA", "RF", "SYN"]);
+// STEP3B2_DYNAMIC_PLAN_PURCHASE
+
 const ACTIVE_SUBSCRIPTION_STATUSES = new Set(["active", "pending_change"]);
 const PAID_STATUSES = new Set(["paid", "approved"]);
 
@@ -19,15 +25,14 @@ function clean(value) {
 }
 
 function normalizeServiceKey(value) {
-  const raw = clean(value).toUpperCase();
-  if (raw === "AR") return "RA";
-  if (raw === "KINEDEPO" || raw === "KINE-DEPO") return "KD";
-  return RECURRING_SERVICE_KEYS.has(raw) ? raw : "";
+  return normalizeCatalogServiceKey(value);
 }
 
 function isOperationalRecurringServiceKey(value) {
   const key = normalizeServiceKey(value);
-  return Boolean(key && OPERATIONAL_RECURRING_SERVICE_KEYS.has(key));
+  return Boolean(
+    key && isServiceEnabledFor(key, "recurringPlanEnabled")
+  );
 }
 
 function toPositiveInt(value) {
@@ -146,6 +151,8 @@ async function resolvePublishedPlan({ item, payMethod, session = null }) {
 }
 
 export async function activateSubscriptionsFromPaidOrder({ order, session = null, now = new Date() } = {}) {
+  await ensureServiceCatalogLoaded();
+
   if (!order?._id || !order?.user) return { ok: true, activated: [], skipped: "ORDER_WITHOUT_USER" };
 
   const status = clean(order?.status).toLowerCase();
@@ -177,7 +184,7 @@ export async function activateSubscriptionsFromPaidOrder({ order, session = null
       subscription = new ServiceSubscription({
         user: order.user,
         serviceKey: item.serviceKey,
-        serviceName: item.serviceKey,
+        serviceName: serviceNameForKey(item.serviceKey),
         monthlySessions: plan.credits,
         price: item.price || plan.price,
         regularPrice: plan.price,
@@ -186,6 +193,7 @@ export async function activateSubscriptionsFromPaidOrder({ order, session = null
     }
 
     subscription.pricingPlan = plan._id;
+    subscription.serviceName = serviceNameForKey(item.serviceKey);
     subscription.status = "active";
     subscription.autoRenew = true;
     subscription.monthlySessions = plan.credits;
@@ -253,6 +261,7 @@ export async function reconcilePendingFixedAppointmentsForUserService({
   serviceKey,
   now = new Date(),
 } = {}) {
+  await ensureServiceCatalogLoaded();
   const sk = normalizeServiceKey(serviceKey);
   if (!mongoose.Types.ObjectId.isValid(clean(userId)) || !sk) {
     return { ok: false, error: "INVALID_USER_OR_SERVICE" };

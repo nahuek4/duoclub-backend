@@ -1,8 +1,8 @@
 // backend/src/services/subscriptions/fixedScheduleCoverage.js
 // Calculador puro: no escribe en MongoDB y no modifica turnos.
 
-const SERVICE_KEYS = ["PE", "EP", "RA", "RF", "KD", "SYN", "NUT"];
-const SERVICE_KEY_SET = new Set(SERVICE_KEYS);
+// STEP3B2_DYNAMIC_FIXED_COVERAGE
+const SERVICE_KEY_RE = /^[A-Z][A-Z0-9_]{1,23}$/;
 
 function pad2(value) {
   return String(value).padStart(2, "0");
@@ -22,7 +22,7 @@ export function normalizeServiceKey(value) {
   if (upper === "AR") return "RA";
   if (upper === "KINEDEPO" || upper === "KINE-DEPO") return "KD";
   if (upper === "SYNERGY" || upper === "SINERGIA") return "SYN";
-  if (SERVICE_KEY_SET.has(upper)) return upper;
+  if (SERVICE_KEY_RE.test(upper)) return upper;
 
   const text = stripAccents(raw).toLowerCase().trim();
   if (text.includes("primera") && text.includes("evaluacion")) return "PE";

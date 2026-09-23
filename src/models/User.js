@@ -2,6 +2,7 @@ import mongoose from "mongoose";
 
 const ALLOWED_SERVICE_KEYS = ["PE", "EP", "RA", "RF", "KD", "SYN", "NUT"];
 const ALLOWED_SERVICE_KEYS_SET = new Set(ALLOWED_SERVICE_KEYS);
+const SERVICE_KEY_RE = /^[A-Z][A-Z0-9_]{1,23}$/;
 
 const SERVICE_KEY_TO_NAME = {
   PE: "Primera evaluación presencial",
@@ -27,6 +28,7 @@ function normalizeServiceKeyInput(value) {
   if (up === "AR") return "RA";
   if (up === "KINEDEPO" || up === "KINE-DEPO") return "KD";
   if (ALLOWED_SERVICE_KEYS_SET.has(up)) return up;
+  if (SERVICE_KEY_RE.test(up)) return up;
 
   const s = stripAccents(raw).toLowerCase().trim();
   if (s.includes("primera") && s.includes("evaluacion")) return "PE";
@@ -63,7 +65,7 @@ const historySchema = new mongoose.Schema(
       trim: true,
       validate: {
         validator(v) {
-          return !v || ALLOWED_SERVICE_KEYS_SET.has(String(v || "").toUpperCase().trim());
+          return !v || SERVICE_KEY_RE.test(String(v || "").toUpperCase().trim());
         },
         message: "serviceKey inválido en history.",
       },
@@ -79,7 +81,7 @@ historySchema.pre("validate", function () {
 
   if (normalized) {
     this.serviceKey = normalized;
-    const displayName = SERVICE_KEY_TO_NAME[normalized] || "";
+    const displayName = SERVICE_KEY_TO_NAME[normalized] || normalized;
 
     if (!String(this.serviceName || "").trim()) this.serviceName = displayName;
     if (!String(this.service || "").trim()) this.service = displayName;
@@ -93,7 +95,7 @@ const creditLotSchema = new mongoose.Schema(
       required: true,
       uppercase: true,
       trim: true,
-      enum: ALLOWED_SERVICE_KEYS,
+      match: SERVICE_KEY_RE,
     },
     serviceName: { type: String, default: "", trim: true },
     amount: { type: Number, default: 0, min: 0 },
@@ -516,7 +518,7 @@ userSchema.pre("validate", function () {
       const normalized = normalizeServiceKeyInput(item.serviceKey || item.serviceName || item.service);
       if (!normalized) return item;
 
-      const displayName = SERVICE_KEY_TO_NAME[normalized] || "";
+      const displayName = SERVICE_KEY_TO_NAME[normalized] || normalized;
       if (!item.serviceKey) item.serviceKey = normalized;
       if (!item.serviceName) item.serviceName = displayName;
       if (!item.service) item.service = displayName;

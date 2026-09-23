@@ -1,5 +1,7 @@
 import mongoose from "mongoose";
 
+const SERVICE_KEY_RE = /^[A-Z][A-Z0-9_]{1,23}$/;
+
 const TYPES = [
   "renewal_preview",
   "payment_pending",
@@ -35,7 +37,7 @@ const subscriptionLifecycleNoticeSchema = new mongoose.Schema(
       required: true,
       uppercase: true,
       trim: true,
-      enum: ["EP", "RA", "RF", "KD", "SYN", "NUT"],
+      match: SERVICE_KEY_RE,
       index: true,
     },
     periodKey: {

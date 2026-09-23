@@ -12,11 +12,20 @@ import {
   addMonthsToMonthKey,
   monthKeyFromDateArgentina,
 } from "../services/subscriptions/subscriptionLifecycle.js";
+import {
+  ensureServiceCatalogLoaded,
+  isServiceEnabledFor,
+  normalizeCatalogServiceKey,
+} from "../services/serviceCatalogRuntime.js";
+
+// STEP3B2_DYNAMIC_ADMIN_PLANS
 
 const router = express.Router();
 router.use(protect, adminOnly);
-
-const SERVICE_KEYS = new Set(["EP", "RA", "RF", "KD", "SYN", "NUT"]);
+router.use(async (req, res, next) => {
+  await ensureServiceCatalogLoaded();
+  next();
+});
 const SUBSCRIPTION_STATUSES = new Set([
   "active",
   "pending_change",
@@ -55,13 +64,21 @@ function assertObjectId(value, label = "id") {
 }
 
 function assertServiceKey(value, optional = true) {
-  const key = upper(value);
-  if (!key && optional) return "";
-  if (!SERVICE_KEYS.has(key)) {
-    const error = new Error("Servicio inválido.");
+  const raw = clean(value);
+  if (!raw && optional) return "";
+
+  const key = normalizeCatalogServiceKey(raw);
+  if (
+    !key ||
+    !isServiceEnabledFor(key, "recurringPlanEnabled")
+  ) {
+    const error = new Error(
+      "Servicio inválido o sin plan mensual habilitado."
+    );
     error.status = 400;
     throw error;
   }
+
   return key;
 }
 
