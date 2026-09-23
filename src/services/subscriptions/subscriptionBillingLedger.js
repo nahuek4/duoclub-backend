@@ -2,6 +2,7 @@ import mongoose from "mongoose";
 
 import ServiceSubscription from "../../models/ServiceSubscription.js";
 import SubscriptionBillingCycle from "../../models/SubscriptionBillingCycle.js";
+import SubscriptionLifecycleNotice from "../../models/SubscriptionLifecycleNotice.js";
 import { markSubscriptionCyclePaid } from "./subscriptionLifecycle.js";
 
 function clean(value) {
@@ -95,6 +96,67 @@ function existingPayment(cycle, { orderId = null, paymentId = "" } = {}) {
   });
 }
 
+async function reactivateSuspendedAfterAnyPayment({
+  cycle,
+  paidAt = new Date(),
+  session = null,
+} = {}) {
+  const subscriptionQuery = ServiceSubscription.findById(cycle.subscription);
+  if (session) subscriptionQuery.session(session);
+
+  const subscription = await subscriptionQuery;
+  if (!subscription) throw new Error("SUBSCRIPTION_NOT_FOUND");
+
+  // Si ya fue dada de baja al día 21, no restauramos automáticamente horarios
+  // desde acá porque el lugar podría haber sido ocupado. Esa situación requiere
+  // la reparación/control de capacidad correspondiente.
+  if (subscription.status === "terminated_for_non_payment") {
+    return {
+      reactivated: false,
+      requiresManualReactivation: true,
+      subscriptionStatus: subscription.status,
+    };
+  }
+
+  let reactivated = false;
+
+  if (subscription.status === "suspended") {
+    subscription.status = "active";
+    subscription.suspendedAt = null;
+    subscription.suspensionReason = "";
+
+    cycle.lifecycle.planStatus = "active";
+    cycle.lifecycle.suspendedAt = null;
+
+    await subscription.save({ session: session || undefined });
+
+    const options = session ? { session } : undefined;
+    await SubscriptionLifecycleNotice.updateMany(
+      {
+        user: subscription.user,
+        subscription: subscription._id,
+        periodKey: cycle.periodKey,
+        type: "suspended",
+      },
+      {
+        $set: {
+          status: "resolved",
+          resolvedAt: paidAt,
+        },
+      },
+      options
+    );
+
+    reactivated = true;
+  }
+
+  return {
+    reactivated,
+    requiresManualReactivation: false,
+    subscriptionStatus: subscription.status,
+  };
+}
+
 async function applySubscriptionCyclePaymentCore({
   cycleId,
   amount,
@@ -163,10 +225,13 @@ async function applySubscriptionCyclePaymentCore({
   cycle.billing.paymentProvider = clean(paymentProvider);
   cycle.billing.paymentId = clean(paymentId);
 
-  // Mientras falte saldo, el ciclo conserva pending/overdue para que las
-  // reglas de día 11 y día 21 sigan funcionando sin cambios.
-  // El puntero "order" representa solamente una orden pendiente/última final;
-  // después de un pago parcial lo liberamos para permitir otro pago.
+  // NUEVA REGLA DUO:
+  // Cualquier pago > 0 mantiene habilitado el servicio aunque todavía quede
+  // saldo pendiente. El ciclo sigue pending/overdue para mostrar lo adeudado,
+  // pero NO debe suspenderse ni darse de baja por falta de pago total.
+  //
+  // Si estaba suspendido por haber llegado al día 11 sin pagar y luego ingresa
+  // un pago parcial, lo reactivamos inmediatamente.
   if (cycle.billing.balanceDue > 0) {
     if (
       orderId &&
@@ -175,13 +240,22 @@ async function applySubscriptionCyclePaymentCore({
       cycle.billing.order = null;
     }
 
+    const accessResult = await reactivateSuspendedAfterAnyPayment({
+      cycle,
+      paidAt,
+      session,
+    });
+
     await cycle.save({ session: session || undefined });
 
     return {
       ok: true,
       alreadyApplied: false,
       paidInFull: false,
-      reactivated: false,
+      reactivated: Boolean(accessResult?.reactivated),
+      requiresManualReactivation: Boolean(
+        accessResult?.requiresManualReactivation
+      ),
       cycleId: String(cycle._id),
       subscriptionId: String(cycle.subscription),
       periodKey: cycle.periodKey,
