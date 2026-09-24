@@ -73,9 +73,10 @@ function withSession(query, session) {
 }
 
 function orderCreditItems(order = {}) {
-  // Las órdenes creadas manualmente por administración NO definen ni cambian
-  // el plan mensual. Pueden representar una carga puntual de sesiones.
-  // Los pagos del plan mensual se registran como SUBSCRIPTION_RENEWAL.
+  // Las órdenes manuales creadas desde AdminOrdenes con kind=CREDITS son
+  // cargas puntuales de sesiones. Nunca deben mutar/activar el plan mensual.
+  // Los pagos mensuales de admin usan SUBSCRIPTION_RENEWAL por el endpoint
+  // específico de subscriptions.
   if (order?.createdByAdmin) return [];
 
   const items = Array.isArray(order?.items) ? order.items : [];
