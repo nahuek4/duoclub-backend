@@ -2,11 +2,10 @@
 // Reglas:
 // - 7 días antes: aviso interno de renovación.
 // - Día 1: ciclo mensual + sesiones del plan, aunque el pago siga pendiente.
-// - Día 11 con $0 recibido: suspende SOLO el servicio. Conserva horarios fijos hasta día 20.
-// - Día 21 con $0 recibido: libera turnos fijos, invalida saldo del ciclo y termina la suscripción.
-// - Cualquier pago > $0 mantiene la cuenta habilitada aunque quede saldo pendiente.
-// - Un pago parcial reactiva automáticamente si estaba suspendida.
-// No genera deuda legacy. La renovación del día 1 envía un mail idempotente al usuario.
+// - Día 11 impago: suspende SOLO el servicio. Conserva horarios fijos hasta día 20.
+// - Día 21 impago: libera turnos fijos, invalida saldo del ciclo y termina la suscripción.
+// - Pago antes del día 21: reactiva automáticamente si estaba suspendida.
+// No genera deuda. La renovación del día 1 envía un mail idempotente al usuario.
 
 import mongoose from "mongoose";
 
@@ -59,90 +58,6 @@ function asInt(value) {
 function asMoney(value) {
   const n = Number(value || 0);
   return Number.isFinite(n) ? Math.max(0, Math.round(n)) : 0;
-}
-
-function cycleReceivedAmount(cycle) {
-  const billing = cycle?.billing || {};
-  const storedReceived = asMoney(billing.amountReceived);
-  const storedPaid = asMoney(billing.amountPaid);
-  const paymentEntries = Array.isArray(billing.payments) ? billing.payments : [];
-  const fromEntries = paymentEntries.reduce(
-    (sum, payment) => sum + asMoney(payment?.amount),
-    0
-  );
-
-  return Math.max(storedReceived, storedPaid, fromEntries);
-}
-
-function cycleHasAnyPayment(cycle) {
-  return cycleReceivedAmount(cycle) > 0;
-}
-
-async function keepSubscriptionActiveBecausePaymentExists({
-  cycle,
-  subscription,
-  now,
-  session,
-} = {}) {
-  if (!cycle || !subscription) {
-    return { protected: false, reactivated: false };
-  }
-
-  // Una suscripción ya terminada requiere recuperación controlada de cupo.
-  // Nunca la reactivamos automáticamente desde el lifecycle.
-  if (
-    subscription.status === "terminated_for_non_payment" ||
-    cycle.lifecycle?.planStatus === "terminated"
-  ) {
-    return {
-      protected: false,
-      reactivated: false,
-      requiresManualReactivation: true,
-    };
-  }
-
-  const wasSuspended =
-    subscription.status === "suspended" ||
-    cycle.lifecycle?.planStatus === "suspended";
-
-  cycle.billing.status = "overdue";
-  cycle.billing.overdueAt = cycle.billing.overdueAt || now;
-  cycle.lifecycle.planStatus = "active";
-  cycle.lifecycle.suspendedAt = null;
-  cycle.lifecycle.fixedSlotsProtectedUntil = null;
-
-  if (subscription.status === "suspended") {
-    subscription.status = "active";
-    subscription.suspendedAt = null;
-    subscription.suspensionReason = "";
-  }
-
-  subscription.fixedSlotsProtectedUntil = null;
-
-  await cycle.save({ session });
-  await subscription.save({ session });
-
-  await SubscriptionLifecycleNotice.updateMany(
-    {
-      user: subscription.user,
-      subscription: subscription._id,
-      periodKey: cycle.periodKey,
-      type: "suspended",
-    },
-    {
-      $set: {
-        status: "resolved",
-        resolvedAt: now,
-      },
-    },
-    { session }
-  );
-
-  return {
-    protected: true,
-    reactivated: wasSuspended,
-    requiresManualReactivation: false,
-  };
 }
 
 function arParts(date = new Date()) {
@@ -954,6 +869,96 @@ export async function renewPeriodSubscriptions({ periodKey, now = new Date(), fo
   return out;
 }
 
+
+// DUO_ANY_PAYMENT_KEEPS_ACTIVE_V2
+// Regla de negocio:
+// - si el ciclo recibió CUALQUIER importe (> 0), no se suspende ni se termina;
+// - el saldo monetario puede seguir pendiente/overdue;
+// - una suscripción ya terminated_for_non_payment NO se restaura desde acá,
+//   porque sus turnos fijos pudieron haber sido liberados y requieren control de cupo.
+function cycleHasAnyPayment(cycle) {
+  const billing = cycle?.billing || {};
+  if (clean(billing.status).toLowerCase() === "paid") return true;
+
+  if (asMoney(billing.amountReceived) > 0) return true;
+  if (asMoney(billing.amountPaid) > 0) return true;
+
+  return (Array.isArray(billing.payments) ? billing.payments : []).some(
+    (payment) =>
+      asMoney(payment?.amount) > 0 ||
+      asMoney(payment?.appliedAmount) > 0
+  );
+}
+
+async function keepSubscriptionActiveAfterAnyPayment({
+  cycle,
+  subscription,
+  now = new Date(),
+  session = null,
+} = {}) {
+  if (!cycle || !subscription || !cycleHasAnyPayment(cycle)) {
+    return { protected: false, reactivated: false };
+  }
+
+  // Una baja día 21 ya ejecutada no se revierte automáticamente.
+  if (subscription.status === "terminated_for_non_payment") {
+    return {
+      protected: true,
+      reactivated: false,
+      requiresManualReactivation: true,
+    };
+  }
+
+  let reactivated = false;
+
+  if (clean(cycle.billing?.status).toLowerCase() !== "paid") {
+    cycle.billing.status = "overdue";
+    cycle.billing.overdueAt = cycle.billing.overdueAt || now;
+  }
+
+  if (cycle.lifecycle?.planStatus === "suspended") {
+    cycle.lifecycle.planStatus = "active";
+    cycle.lifecycle.suspendedAt = null;
+    reactivated = true;
+  }
+
+  if (subscription.status === "suspended") {
+    subscription.status = "active";
+    subscription.suspendedAt = null;
+    subscription.suspensionReason = "";
+    reactivated = true;
+  }
+
+  await cycle.save({ session: session || undefined });
+  await subscription.save({ session: session || undefined });
+
+  if (reactivated) {
+    const options = session ? { session } : undefined;
+
+    await SubscriptionLifecycleNotice.updateMany(
+      {
+        user: subscription.user,
+        subscription: subscription._id,
+        periodKey: cycle.periodKey,
+        type: "suspended",
+      },
+      {
+        $set: {
+          status: "resolved",
+          resolvedAt: now,
+        },
+      },
+      options
+    );
+  }
+
+  return {
+    protected: true,
+    reactivated,
+    requiresManualReactivation: false,
+  };
+}
+
 export async function suspendOverdueSubscriptions({ periodKey, now = new Date(), force = false } = {}) {
   const dates = periodDates(periodKey);
   if (!force && now < dates.suspendAt) {
@@ -963,13 +968,12 @@ export async function suspendOverdueSubscriptions({ periodKey, now = new Date(),
   const cycles = await SubscriptionBillingCycle.find({
     periodKey,
     "billing.status": { $in: ["pending", "overdue"] },
-    "lifecycle.planStatus": "active",
+    "lifecycle.planStatus": { $in: ["active", "suspended"] },
   });
 
   let suspended = 0;
   let protectedByPayment = 0;
   let reactivatedByPayment = 0;
-
   for (const cycle of cycles) {
     const session = await mongoose.startSession();
     try {
@@ -980,18 +984,25 @@ export async function suspendOverdueSubscriptions({ periodKey, now = new Date(),
         const subscription = await ServiceSubscription.findById(freshCycle.subscription).session(session);
         if (!subscription) return;
 
-        // REGLA DUO: mientras exista al menos un peso registrado en el ciclo,
-        // el saldo puede seguir pendiente pero el servicio NO se suspende.
-        if (cycleHasAnyPayment(freshCycle)) {
-          const access = await keepSubscriptionActiveBecausePaymentExists({
-            cycle: freshCycle,
-            subscription,
-            now,
-            session,
-          });
+        const paymentProtection = await keepSubscriptionActiveAfterAnyPayment({
+          cycle: freshCycle,
+          subscription,
+          now,
+          session,
+        });
 
-          if (access?.protected) protectedByPayment += 1;
-          if (access?.reactivated) reactivatedByPayment += 1;
+        if (paymentProtection.protected) {
+          protectedByPayment += 1;
+          if (paymentProtection.reactivated) reactivatedByPayment += 1;
+          return;
+        }
+
+        // Si ya estaba suspendida y sigue sin registrar ningún pago,
+        // no repetimos escrituras/avisos en cada tick.
+        if (
+          freshCycle.lifecycle?.planStatus === "suspended" ||
+          subscription.status === "suspended"
+        ) {
           return;
         }
 
@@ -1004,7 +1015,7 @@ export async function suspendOverdueSubscriptions({ periodKey, now = new Date(),
 
         subscription.status = "suspended";
         subscription.suspendedAt = subscription.suspendedAt || now;
-        subscription.suspensionReason = "No se registró ningún pago del plan después del día 10.";
+        subscription.suspensionReason = "Pago mensual pendiente después del día 10.";
         subscription.fixedSlotsProtectedUntil = dates.fixedSlotsProtectedUntil;
         await subscription.save({ session });
 
@@ -1016,7 +1027,7 @@ export async function suspendOverdueSubscriptions({ periodKey, now = new Date(),
           periodKey,
           type: "suspended",
           title: `Servicio ${subscription.serviceKey} suspendido`,
-          message: "No registramos ningún pago del plan. Tus horarios fijos se conservan hasta el día 20.",
+          message: "El pago del plan está pendiente. Tus horarios fijos se conservan hasta el día 20.",
           action: "pay",
           actionRequired: true,
           metadata: { fixedSlotsProtectedUntil: dates.fixedSlotsProtectedUntil },
@@ -1086,29 +1097,20 @@ export async function terminateUnpaidSubscriptions({ periodKey, now = new Date()
           : null;
         if (!subscription || !user) return;
 
-        // REGLA DUO: al día 21 solo se libera/termina si NO ingresó dinero.
-        // Un pago parcial protege cuenta, créditos y horarios fijos aunque
-        // balanceDue siga siendo mayor a cero.
-        if (cycleHasAnyPayment(freshCycle)) {
-          const access = await keepSubscriptionActiveBecausePaymentExists({
-            cycle: freshCycle,
-            subscription,
-            now,
-            session,
-          });
-
-          if (access?.protected) protectedByPayment += 1;
-          if (access?.reactivated) reactivatedByPayment += 1;
-          return;
-        }
-
-        invalidatedSessions += await invalidateCycleCredits({
-          freshCycle,
+        const paymentProtection = await keepSubscriptionActiveAfterAnyPayment({
           cycle: freshCycle,
-          user,
+          subscription,
           now,
           session,
         });
+
+        if (paymentProtection.protected) {
+          protectedByPayment += 1;
+          if (paymentProtection.reactivated) reactivatedByPayment += 1;
+          return;
+        }
+
+        invalidatedSessions += await invalidateCycleCredits({ freshCycle, cycle: freshCycle, user, now, session });
 
         const scheduleResult = await FixedSchedule.updateMany(
           {
@@ -1153,13 +1155,13 @@ export async function terminateUnpaidSubscriptions({ periodKey, now = new Date()
         freshCycle.billing.status = "overdue";
         freshCycle.lifecycle.planStatus = "terminated";
         freshCycle.lifecycle.terminatedAt = now;
-        freshCycle.lifecycle.terminationReason = "No se registró ningún pago al día 21.";
+        freshCycle.lifecycle.terminationReason = "Falta de pago al día 21.";
         await freshCycle.save({ session });
 
         subscription.status = "terminated_for_non_payment";
         subscription.autoRenew = false;
         subscription.terminatedAt = now;
-        subscription.terminationReason = "No se registró ningún pago al día 21.";
+        subscription.terminationReason = "Falta de pago al día 21.";
         subscription.fixedScheduleIds = [];
         await subscription.save({ session });
 
@@ -1171,7 +1173,7 @@ export async function terminateUnpaidSubscriptions({ periodKey, now = new Date()
           periodKey,
           type: "terminated",
           title: `Plan ${subscription.serviceKey} dado de baja`,
-          message: "No registramos ningún pago dentro del plazo y se liberaron tus horarios fijos.",
+          message: "El plan no fue abonado dentro del plazo y se liberaron tus horarios fijos.",
           action: "none",
           actionRequired: false,
           session,
@@ -1231,20 +1233,12 @@ async function markSubscriptionCyclePaidCore({
   if (orderId) cycle.billing.order = orderId;
 
   let reactivated = false;
-  if (
-    subscription.status === "suspended" ||
-    cycle.lifecycle?.planStatus === "suspended"
-  ) {
-    if (subscription.status === "suspended") {
-      subscription.status = "active";
-      subscription.suspendedAt = null;
-      subscription.suspensionReason = "";
-    }
-
+  if (subscription.status === "suspended") {
+    subscription.status = "active";
+    subscription.suspendedAt = null;
+    subscription.suspensionReason = "";
     cycle.lifecycle.planStatus = "active";
     cycle.lifecycle.suspendedAt = null;
-    cycle.lifecycle.fixedSlotsProtectedUntil = null;
-    subscription.fixedSlotsProtectedUntil = null;
     reactivated = true;
   }
 

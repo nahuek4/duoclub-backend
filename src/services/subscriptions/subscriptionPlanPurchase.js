@@ -73,11 +73,11 @@ function withSession(query, session) {
 }
 
 function orderCreditItems(order = {}) {
-  // Las órdenes manuales creadas desde AdminOrdenes con kind=CREDITS son
-  // cargas puntuales de sesiones. Nunca deben mutar/activar el plan mensual.
-  // Los pagos mensuales de admin usan SUBSCRIPTION_RENEWAL por el endpoint
-  // específico de subscriptions.
-  if (order?.createdByAdmin) return [];
+  // DUO_ADMIN_CREDITS_DO_NOT_MUTATE_SUBSCRIPTION_V1
+  // Las órdenes creadas por administración son créditos puntuales.
+  // Nunca deben cambiar pricingPlan/monthlySessions/precio de una suscripción.
+  // Los pagos mensuales del plan usan SUBSCRIPTION_RENEWAL por su flujo explícito.
+  if (order?.createdByAdmin || order?.publicPaymentLink) return [];
 
   const items = Array.isArray(order?.items) ? order.items : [];
 
@@ -160,6 +160,12 @@ export async function activateSubscriptionsFromPaidOrder({ order, session = null
   await ensureServiceCatalogLoaded();
 
   if (!order?._id || !order?.user) return { ok: true, activated: [], skipped: "ORDER_WITHOUT_USER" };
+
+  // Defensa en profundidad: aunque en el futuro cambie orderCreditItems(),
+  // una Order administrativa nunca puede mutar el plan recurrente.
+  if (order?.createdByAdmin || order?.publicPaymentLink) {
+    return { ok: true, activated: [], skipped: "ADMIN_OR_PUBLIC_ORDER_DOES_NOT_MUTATE_SUBSCRIPTION" };
+  }
 
   const status = clean(order?.status).toLowerCase();
   if (!PAID_STATUSES.has(status)) {
