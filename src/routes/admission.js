@@ -15,8 +15,15 @@ import { logActivity, buildUserSubject } from "../lib/activityLogger.js";
 
 const router = express.Router();
 
-const PERFORMANCE_ADMISSION_EMAIL =
-  String(process.env.PERFORMANCE_ADMIN_EMAIL || "performance.by.duo@gmail.com").trim();
+const TRAINING_ADMISSION_EMAIL = String(
+  process.env.TRAINING_ZONE_EMAIL || "training.by.duo@gmail.com"
+).trim();
+
+const PERFORMANCE_ADMISSION_EMAIL = String(
+  process.env.PERFORMANCE_ZONE_EMAIL ||
+    process.env.PERFORMANCE_ADMIN_EMAIL ||
+    "performance.by.duo@gmail.com"
+).trim();
 
 function admissionAdminRecipient(admissionDoc = {}) {
   const formType = String(
@@ -29,7 +36,7 @@ function admissionAdminRecipient(admissionDoc = {}) {
 
   return formType === "PERFORMANCE"
     ? PERFORMANCE_ADMISSION_EMAIL
-    : String(process.env.ADMIN_EMAIL || "").trim();
+    : TRAINING_ADMISSION_EMAIL;
 }
 
 /* =========================================================
