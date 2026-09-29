@@ -8,6 +8,8 @@ const files = {
   lifecycle: "src/services/subscriptions/subscriptionLifecycle.js",
   ledger: "src/services/subscriptions/subscriptionBillingLedger.js",
   orders: "src/routes/orders.js",
+  subscriptions: "src/routes/subscriptions.js",
+  renewalHelpers: "src/services/subscriptions/subscriptionCyclePaymentHelpers.js",
 };
 
 function read(file) {
@@ -18,6 +20,8 @@ const plan = read(files.planPurchase);
 const lifecycle = read(files.lifecycle);
 const ledger = read(files.ledger);
 const orders = read(files.orders);
+const subscriptions = read(files.subscriptions);
+const renewalHelpers = read(files.renewalHelpers);
 
 const checks = [
   {
@@ -40,7 +44,10 @@ const checks = [
   {
     name: "Renovaciones usan tipo explícito SUBSCRIPTION_RENEWAL",
     ok:
-      orders.includes("SUBSCRIPTION_RENEWAL") &&
+      renewalHelpers.includes('kind: "SUBSCRIPTION_RENEWAL"') &&
+      subscriptions.includes("buildSubscriptionRenewalItem") &&
+      subscriptions.includes("Order.create") &&
+      orders.includes("getSubscriptionRenewalItems") &&
       orders.includes("subscriptionCycleApplied"),
   },
 ];
