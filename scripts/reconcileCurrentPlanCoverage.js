@@ -5,6 +5,8 @@
 
 import "dotenv/config";
 import mongoose from "mongoose";
+import fs from "node:fs";
+import path from "node:path";
 
 import User from "../src/models/User.js";
 import Appointment from "../src/models/Appointment.js";
@@ -66,6 +68,8 @@ function userName(user, fallback = "") {
 }
 
 const apply = process.argv.includes("--apply");
+const confirmArg = process.argv.find((arg) => arg.startsWith("--confirm="));
+const confirmPeriod = confirmArg ? clean(confirmArg.split("=").slice(1).join("=")) : "";
 const uri =
   process.env.MONGO_URI ||
   process.env.MONGODB_URI ||
@@ -77,6 +81,12 @@ if (!uri) throw new Error("No encontré URI de Mongo en .env");
 
 const periodKey = currentMonthKeyArgentina();
 const range = monthRange(periodKey);
+
+if (apply && confirmPeriod !== periodKey) {
+  throw new Error(
+    `Para aplicar cambios tenés que confirmar explícitamente el período: --apply --confirm=${periodKey}`
+  );
+}
 await mongoose.connect(uri);
 
 try {
@@ -155,13 +165,66 @@ try {
   const preview = [];
   const writes = [];
 
+  if (apply) {
+    const stamp = new Date().toISOString().replace(/[:.]/g, "-");
+    const backupDir = path.resolve("plan-coverage-reconcile-backups");
+    fs.mkdirSync(backupDir, { recursive: true });
+    const backupPath = path.join(
+      backupDir,
+      `subscription-extra-notices-${periodKey}-${stamp}.json`
+    );
+    fs.writeFileSync(
+      backupPath,
+      JSON.stringify(
+        {
+          periodKey,
+          createdAt: new Date().toISOString(),
+          note: "Backup previo a reconcileCurrentPlanCoverage --apply",
+          notices: notices.map((item) => item.toObject({ virtuals: false })),
+        },
+        null,
+        2
+      )
+    );
+    console.log(`BACKUP PRE-APPLY: ${backupPath}`);
+  }
+
   for (const key of allPairs) {
     const pairSubscriptions = subscriptionsByPair.get(key) || [];
-    const subscription = pairSubscriptions[0] || null;
     const notice = noticeByPair.get(key) || null;
     const countState = countByPair.get(key) || { count: 0, fixedScheduleIds: [] };
 
     const [userId, serviceKey] = key.split(":");
+
+    // Si el notice ya está vinculado a una suscripción, respetar ESE vínculo.
+    // Nunca re-asociar silenciosamente el historial a otra suscripción del mismo usuario/servicio.
+    const linkedSubscriptionId = oid(notice?.subscription);
+    const linkedSubscription = linkedSubscriptionId
+      ? pairSubscriptions.find((item) => String(item._id) === linkedSubscriptionId) || null
+      : null;
+
+    if (notice && linkedSubscriptionId && !linkedSubscription) {
+      preview.push({
+        action: "REVIEW_NOTICE_SUBSCRIPTION_LINK",
+        user: userId,
+        email: "",
+        service: serviceKey,
+        plan: asInt(notice.basePlanSessions),
+        actualFixed: countState.count,
+        beforeRequired: asInt(notice.extraSessionsRequired),
+        afterRequired: null,
+        purchased: asInt(notice.extraSessionsPurchased),
+        historicalBefore: asInt(notice.historicalExtraSessionsRequired),
+        historicalAfter: Math.max(
+          asInt(notice.historicalExtraSessionsRequired),
+          asInt(notice.extraSessionsRequired)
+        ),
+        noticeSubscriptionId: linkedSubscriptionId,
+      });
+      continue;
+    }
+
+    const subscription = linkedSubscription || pairSubscriptions[0] || null;
     if (!subscription) {
       if (notice) {
         preview.push({
@@ -211,6 +274,8 @@ try {
       action,
       user: userName(subscription.user, userId),
       email: clean(subscription?.user?.email),
+      subscriptionId: String(subscription._id),
+      noticeId: notice?._id ? String(notice._id) : "",
       subscriptionStatus: clean(subscription.status),
       service: serviceKey,
       plan,
@@ -267,6 +332,9 @@ try {
     if (oldPeak > 0 && !notice.historicalFirstDetectedAt) {
       notice.historicalFirstDetectedAt = notice.createdAt || new Date();
     }
+    if (oldPeak > 0 && !notice.historicalLastChangedAt) {
+      notice.historicalLastChangedAt = notice.updatedAt || notice.createdAt || new Date();
+    }
 
     if (expectedRequired > oldPeak) {
       notice.historicalBasePlanSessions = plan;
@@ -275,17 +343,15 @@ try {
     }
 
     notice.historicalExtraSessionsRequired = historicalAfter;
-    notice.subscription = subscription._id;
+    // IMPORTANTE: no re-vincular subscription, no borrar source/calculatedBy
+    // y no tocar extraSessionsPurchased ni order links.
     notice.fixedScheduleIds = countState.fixedScheduleIds;
     notice.basePlanSessions = plan;
     notice.projectedFixedOccurrences = actualFixed;
     notice.blockedOccurrencesCount = 0;
     notice.extraSessionsRequired = expectedRequired;
-    // IMPORTANTE: no tocar extraSessionsPurchased ni order links.
     notice.occurrenceSource = "actual_current_month_appointments";
     notice.calculatedAt = new Date();
-    notice.calculatedBy = null;
-    notice.source = "manual_refresh";
 
     await notice.save();
     writes.push({ action, noticeId: String(notice._id), userId, serviceKey });
