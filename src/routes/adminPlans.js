@@ -4,6 +4,7 @@ import mongoose from "mongoose";
 import { protect, adminOnly } from "../middleware/auth.js";
 import User from "../models/User.js";
 import PricingPlan from "../models/PricingPlan.js";
+import Order from "../models/Order.js";
 import FixedSchedule from "../models/FixedSchedule.js";
 import ServiceSubscription from "../models/ServiceSubscription.js";
 import SubscriptionBillingCycle from "../models/SubscriptionBillingCycle.js";
@@ -155,35 +156,274 @@ function serializeCycle(cycle) {
   };
 }
 
-function serializeExtra(extra) {
-  if (!extra) return null;
-  const required = asInt(extra.extraSessionsRequired);
-  const purchased = asInt(extra.extraSessionsPurchased);
+function isPaidOrderStatus(value) {
+  return ["paid", "approved"].includes(clean(value).toLowerCase());
+}
+
+function orderId(value) {
+  const id = clean(value?._id || value?.id || value);
+  return mongoose.Types.ObjectId.isValid(id) ? id : "";
+}
+
+function orderAmount(order) {
+  return asMoney(order?.totalFinal ?? order?.total ?? order?.price);
+}
+
+function bootstrapExtraForSubscription(subscription) {
+  const bootstrap = subscription?.bootstrap || {};
+  const historicalRequired = asInt(bootstrap?.extraSessionsRequired);
+  const periodKey = clean(bootstrap?.monthKey);
+  if (!historicalRequired || !/^\d{4}-\d{2}$/.test(periodKey)) return null;
+
+  const basePlanSessions = Math.max(
+    1,
+    asInt(bootstrap?.basePlanSessions || subscription?.monthlySessions)
+  );
+  const paidCredits = asInt(
+    bootstrap?.paidCredits || bootstrap?.latestPaidOrder?.sessions
+  );
+  const inferredPurchased = Math.min(
+    historicalRequired,
+    Math.max(0, paidCredits - basePlanSessions)
+  );
+
   return {
-    id: String(extra._id),
-    periodKey: extra.periodKey,
-    status: extra.status,
-    basePlanSessions: asInt(extra.basePlanSessions),
-    fixedOccurrences: asInt(extra.projectedFixedOccurrences),
-    required,
-    purchased,
-    remaining: Math.max(0, required - purchased),
-    pendingOrderId: extra.pendingOrder ? String(extra.pendingOrder) : null,
+    subscriptionId: String(subscription?._id || ""),
+    periodKey,
+    basePlanSessions,
+    fixedOccurrences: Math.max(
+      asInt(bootstrap?.projectedFixedOccurrences),
+      basePlanSessions + historicalRequired
+    ),
+    historicalRequired,
+    inferredPurchased,
+    paidOrderId:
+      inferredPurchased > 0 && bootstrap?.latestPaidOrder?.orderId
+        ? String(bootstrap.latestPaidOrder.orderId)
+        : null,
+    initializedAt: bootstrap?.initializedAt || subscription?.createdAt || null,
+    source: clean(bootstrap?.source) || "legacy_migration",
   };
 }
 
-function serializeSubscription(subscription, { latestCycle = null, extra = null, fixed = null } = {}) {
-  const pricingPlan = subscription.pricingPlan && typeof subscription.pricingPlan === "object"
-    ? subscription.pricingPlan
+function sessionsFromOrderForNotice(order, noticeId) {
+  const target = clean(noticeId);
+  return (Array.isArray(order?.items) ? order.items : [])
+    .filter((item) => {
+      const kind = upper(item?.kind);
+      const itemNotice = clean(item?.extraSessionNotice);
+      return kind === "SUBSCRIPTION_EXTRA" && target && itemNotice === target;
+    })
+    .reduce(
+      (sum, item) => sum + asInt(item?.credits) * Math.max(1, asInt(item?.qty) || 1),
+      0
+    );
+}
+
+function serializeOrderLink(order, { noticeId = "", fallbackSessions = 0 } = {}) {
+  if (!order) return null;
+  const id = orderId(order);
+  if (!id) return null;
+
+  const sessions =
+    sessionsFromOrderForNotice(order, noticeId) || asInt(fallbackSessions);
+
+  return {
+    id,
+    status: clean(order.status).toLowerCase(),
+    paid: isPaidOrderStatus(order.status),
+    payMethod: upper(order.payMethod),
+    amount: orderAmount(order),
+    paidAt: order.paidAt || null,
+    createdAt: order.createdAt || null,
+    sessions,
+  };
+}
+
+function serializeExtra(extra, orderById = new Map(), bootstrap = null) {
+  if (!extra && !bootstrap) return null;
+
+  const rawId = extra?._id ? String(extra._id) : "";
+  const periodKey = clean(extra?.periodKey || bootstrap?.periodKey);
+  const bootstrapRequired = asInt(bootstrap?.historicalRequired);
+  const historicalOnly =
+    !extra &&
+    Boolean(bootstrap) &&
+    periodKey < monthKeyFromDateArgentina();
+  const currentRequired = extra
+    ? asInt(extra?.extraSessionsRequired)
+    : historicalOnly
+      ? 0
+      : bootstrapRequired;
+  const historicalRequired = Math.max(
+    currentRequired,
+    asInt(extra?.historicalExtraSessionsRequired),
+    bootstrapRequired
+  );
+
+  const historicalBasePlanSessions = Math.max(
+    asInt(extra?.historicalBasePlanSessions),
+    asInt(bootstrap?.basePlanSessions),
+    asInt(extra?.basePlanSessions)
+  );
+  const historicalFixedOccurrences = Math.max(
+    asInt(extra?.historicalFixedOccurrences),
+    asInt(bootstrap?.fixedOccurrences),
+    asInt(extra?.projectedFixedOccurrences)
+  );
+
+  const rawPurchased = asInt(extra?.extraSessionsPurchased);
+  const purchasedIds = new Set(
+    (Array.isArray(extra?.purchasedOrderIds) ? extra.purchasedOrderIds : [])
+      .map((value) => orderId(value))
+      .filter(Boolean)
+  );
+  const lastPaidOrderId = orderId(extra?.lastPaidOrder);
+  if (lastPaidOrderId) purchasedIds.add(lastPaidOrderId);
+
+  const bootstrapOrderId = orderId(bootstrap?.paidOrderId);
+  let purchased = rawPurchased;
+  let bootstrapPurchasedApplied = 0;
+
+  if (bootstrap && asInt(bootstrap.inferredPurchased) > 0) {
+    if (!bootstrapOrderId || !purchasedIds.has(bootstrapOrderId)) {
+      bootstrapPurchasedApplied = asInt(bootstrap.inferredPurchased);
+      purchased += bootstrapPurchasedApplied;
+    }
+    if (bootstrapOrderId) purchasedIds.add(bootstrapOrderId);
+  }
+
+  // La diferencia histórica puede haberse reducido porque se canceló/eliminó
+  // un turno. "released" conserva esa historia sin seguir cobrando algo que ya
+  // no corresponde al estado actual.
+  const remaining = Math.max(0, currentRequired - purchased);
+  const released = Math.max(
+    0,
+    historicalRequired - Math.max(currentRequired, purchased)
+  );
+  const paidAgainstDifference = Math.min(historicalRequired, purchased);
+
+  let paymentState = "none";
+  if (historicalRequired > 0) {
+    if (historicalOnly && purchased <= 0) paymentState = "historical";
+    else if (remaining > 0 && purchased > 0) paymentState = "partial";
+    else if (remaining > 0) paymentState = "pending";
+    else if (purchased >= historicalRequired) paymentState = "paid";
+    else if (currentRequired <= 0 && purchased <= 0) paymentState = "released";
+    else if (released > 0 && purchased > 0) paymentState = "covered_mixed";
+    else paymentState = "covered";
+  }
+
+  const linkedOrders = [...purchasedIds]
+    .map((id) => {
+      const fallbackSessions =
+        id === bootstrapOrderId ? asInt(bootstrap?.inferredPurchased) : 0;
+      return serializeOrderLink(orderById.get(id), {
+        noticeId: rawId,
+        fallbackSessions,
+      });
+    })
+    .filter(Boolean)
+    .sort((a, b) => {
+      const ad = new Date(a.paidAt || a.createdAt || 0).getTime();
+      const bd = new Date(b.paidAt || b.createdAt || 0).getTime();
+      return bd - ad;
+    });
+
+  const pendingOrderId = orderId(extra?.pendingOrder);
+  const pendingOrder = pendingOrderId
+    ? serializeOrderLink(orderById.get(pendingOrderId), { noticeId: rawId })
     : null;
-  const user = subscription.user && typeof subscription.user === "object"
-    ? subscription.user
-    : null;
+
+  return {
+    id:
+      rawId ||
+      `bootstrap:${clean(bootstrap?.subscriptionId || extra?.subscription || "")}:${periodKey}`,
+    periodKey,
+    status: clean(extra?.status) || (remaining > 0 ? "pending" : "covered"),
+    paymentState,
+    hadDifference: historicalRequired > 0,
+    source: clean(extra?.source || bootstrap?.source || "bootstrap"),
+    occurrenceSource: clean(extra?.occurrenceSource),
+
+    basePlanSessions: asInt(extra?.basePlanSessions || bootstrap?.basePlanSessions),
+    fixedOccurrences: asInt(
+      extra?.projectedFixedOccurrences || bootstrap?.fixedOccurrences
+    ),
+    required: currentRequired,
+    purchased,
+    remaining,
+
+    historicalBasePlanSessions,
+    historicalFixedOccurrences,
+    historicalRequired,
+    historicalFirstDetectedAt:
+      extra?.historicalFirstDetectedAt || bootstrap?.initializedAt || null,
+    historicalLastChangedAt: extra?.historicalLastChangedAt || null,
+    released,
+    paidAgainstDifference,
+
+    pendingOrderId,
+    pendingOrder,
+    lastPaidOrderId: lastPaidOrderId || bootstrapOrderId || null,
+    paidOrders: linkedOrders.filter((order) => order.paid),
+    linkedOrders,
+    bootstrapPurchasedApplied,
+    inferredFromBootstrap: Boolean(bootstrapPurchasedApplied > 0),
+    historicalOnly,
+  };
+}
+
+function buildExtraHistory(subscription, rawExtras = [], orderById = new Map()) {
+  const bootstrap = bootstrapExtraForSubscription(subscription);
+  const rows = [];
+  let bootstrapMerged = false;
+
+  for (const extra of rawExtras) {
+    const sameBootstrap =
+      bootstrap && clean(extra?.periodKey) === clean(bootstrap.periodKey)
+        ? bootstrap
+        : null;
+    if (sameBootstrap) bootstrapMerged = true;
+    const serialized = serializeExtra(extra, orderById, sameBootstrap);
+    if (serialized?.hadDifference) rows.push(serialized);
+  }
+
+  if (bootstrap && !bootstrapMerged) {
+    const serialized = serializeExtra(null, orderById, bootstrap);
+    if (serialized?.hadDifference) rows.push(serialized);
+  }
+
+  return rows.sort((a, b) => clean(b.periodKey).localeCompare(clean(a.periodKey)));
+}
+
+function serializeSubscription(
+  subscription,
+  { latestCycle = null, extra = null, fixed = null, coverageHistory = [] } = {}
+) {
+  const pricingPlan =
+    subscription.pricingPlan && typeof subscription.pricingPlan === "object"
+      ? subscription.pricingPlan
+      : null;
+  const user =
+    subscription.user && typeof subscription.user === "object"
+      ? subscription.user
+      : null;
+
+  const history = Array.isArray(coverageHistory) ? coverageHistory : [];
+  const pendingSessions = history.reduce(
+    (sum, row) => sum + asInt(row?.remaining),
+    0
+  );
 
   return {
     id: String(subscription._id),
     user: {
-      id: user?._id ? String(user._id) : subscription.user ? String(subscription.user) : "",
+      id: user?._id
+        ? String(user._id)
+        : subscription.user
+          ? String(subscription.user)
+          : "",
       name: userName(user),
       email: clean(user?.email),
       phone: clean(user?.phone),
@@ -201,7 +441,9 @@ function serializeSubscription(subscription, { latestCycle = null, extra = null,
     pricingPlanActive: pricingPlan ? pricingPlan.active !== false : null,
     monthlySessions: asInt(subscription.monthlySessions || pricingPlan?.credits),
     price: asMoney(subscription.price ?? pricingPlan?.price),
-    regularPrice: asMoney(subscription.regularPrice || subscription.price || pricingPlan?.price),
+    regularPrice: asMoney(
+      subscription.regularPrice || subscription.price || pricingPlan?.price
+    ),
     payMethod: subscription.payMethod || pricingPlan?.payMethod || "CASH",
     currentPeriodKey: subscription.currentPeriodKey || "",
     currentPeriodStart: subscription.currentPeriodStart || null,
@@ -217,10 +459,71 @@ function serializeSubscription(subscription, { latestCycle = null, extra = null,
     pendingChange: serializePendingChange(subscription.pendingChange),
     fixedSchedules: fixed || { schedules: 0, weeklySlots: 0 },
     latestCycle: serializeCycle(latestCycle),
-    extra: serializeExtra(extra),
+    extra,
+    differenceSummary: {
+      periods: history.length,
+      pendingPeriods: history.filter((row) => row.remaining > 0).length,
+      paidPeriods: history.filter((row) => row.paymentState === "paid").length,
+      partialPeriods: history.filter((row) => row.paymentState === "partial").length,
+      releasedPeriods: history.filter((row) => row.paymentState === "released").length,
+      historicalSessions: history.reduce(
+        (sum, row) => sum + asInt(row.historicalRequired),
+        0
+      ),
+      purchasedSessions: history.reduce(
+        (sum, row) => sum + asInt(row.paidAgainstDifference),
+        0
+      ),
+      pendingSessions,
+    },
     createdAt: subscription.createdAt || null,
     updatedAt: subscription.updatedAt || null,
   };
+}
+
+async function loadOrdersForExtras({ extras = [], subscriptions = [] } = {}) {
+  const ids = new Set();
+  const noticeIds = [];
+
+  for (const extra of extras) {
+    const eid = orderId(extra?._id);
+    if (eid) noticeIds.push(eid);
+    for (const value of [
+      extra?.pendingOrder,
+      extra?.lastPaidOrder,
+      ...(Array.isArray(extra?.purchasedOrderIds) ? extra.purchasedOrderIds : []),
+    ]) {
+      const id = orderId(value);
+      if (id) ids.add(id);
+    }
+  }
+
+  for (const subscription of subscriptions) {
+    const id = orderId(subscription?.bootstrap?.latestPaidOrder?.orderId);
+    if (id) ids.add(id);
+  }
+
+  const or = [];
+  if (ids.size) {
+    or.push({ _id: { $in: [...ids].map((id) => new mongoose.Types.ObjectId(id)) } });
+  }
+  if (noticeIds.length) {
+    or.push({
+      "items.extraSessionNotice": {
+        $in: noticeIds.map((id) => new mongoose.Types.ObjectId(id)),
+      },
+    });
+  }
+  if (!or.length) return new Map();
+
+  const orders = await Order.find({ $or: or })
+    .select(
+      "_id status payMethod total totalFinal price paidAt createdAt items subscriptionExtraApplied"
+    )
+    .sort({ paidAt: -1, createdAt: -1 })
+    .lean();
+
+  return new Map(orders.map((order) => [String(order._id), order]));
 }
 
 async function loadOverviewData(subscriptions) {
@@ -230,7 +533,9 @@ async function loadOverviewData(subscriptions) {
       user: s.user?._id || s.user,
       serviceKey: s.serviceKey,
     }))
-    .filter((pair) => pair.user && mongoose.Types.ObjectId.isValid(String(pair.user)));
+    .filter(
+      (pair) => pair.user && mongoose.Types.ObjectId.isValid(String(pair.user))
+    );
 
   const [cycles, extras, fixedSchedules] = await Promise.all([
     SubscriptionBillingCycle.find({ subscription: { $in: subscriptionIds } })
@@ -238,7 +543,6 @@ async function loadOverviewData(subscriptions) {
       .lean(),
     SubscriptionExtraSessionNotice.find({
       subscription: { $in: subscriptionIds },
-      status: { $in: ["pending", "order_pending", "covered"] },
     })
       .sort({ periodKey: -1, createdAt: -1 })
       .lean(),
@@ -252,16 +556,20 @@ async function loadOverviewData(subscriptions) {
       : [],
   ]);
 
+  const orderById = await loadOrdersForExtras({ extras, subscriptions });
+
   const cycleBySubscription = new Map();
   for (const cycle of cycles) {
     const key = String(cycle.subscription);
     if (!cycleBySubscription.has(key)) cycleBySubscription.set(key, cycle);
   }
 
-  const extraBySubscription = new Map();
+  const extrasBySubscription = new Map();
   for (const extra of extras) {
     const key = String(extra.subscription);
-    if (!extraBySubscription.has(key)) extraBySubscription.set(key, extra);
+    const list = extrasBySubscription.get(key) || [];
+    list.push(extra);
+    extrasBySubscription.set(key, list);
   }
 
   const fixedByPair = new Map();
@@ -273,7 +581,7 @@ async function loadOverviewData(subscriptions) {
     fixedByPair.set(key, current);
   }
 
-  return { cycleBySubscription, extraBySubscription, fixedByPair };
+  return { cycleBySubscription, extrasBySubscription, fixedByPair, orderById };
 }
 
 function buildSummary(items) {
@@ -288,6 +596,12 @@ function buildSummary(items) {
     paidCycles: 0,
     extrasPending: 0,
     extrasSessions: 0,
+    differencePeriods: 0,
+    differencePaidPeriods: 0,
+    differencePartialPeriods: 0,
+    differenceReleasedPeriods: 0,
+    differenceHistoricalSessions: 0,
+    differencePurchasedSessions: 0,
   };
 
   for (const item of items) {
@@ -302,11 +616,17 @@ function buildSummary(items) {
     }
     if (item.latestCycle?.billingStatus === "paid") summary.paidCycles += 1;
 
-    if (item.extra?.remaining > 0) {
-      summary.extrasPending += 1;
-      summary.extrasSessions += item.extra.remaining;
-    }
+    const ds = item.differenceSummary || {};
+    summary.differencePeriods += asInt(ds.periods);
+    summary.differencePaidPeriods += asInt(ds.paidPeriods);
+    summary.differencePartialPeriods += asInt(ds.partialPeriods);
+    summary.differenceReleasedPeriods += asInt(ds.releasedPeriods);
+    summary.differenceHistoricalSessions += asInt(ds.historicalSessions);
+    summary.differencePurchasedSessions += asInt(ds.purchasedSessions);
+    summary.extrasSessions += asInt(ds.pendingSessions);
+    if (asInt(ds.pendingSessions) > 0) summary.extrasPending += 1;
   }
+
   return summary;
 }
 
@@ -356,14 +676,25 @@ router.get("/", async (req, res) => {
       .limit(750)
       .lean();
 
-    const { cycleBySubscription, extraBySubscription, fixedByPair } =
+    const { cycleBySubscription, extrasBySubscription, fixedByPair, orderById } =
       await loadOverviewData(subscriptions);
 
     let items = subscriptions.map((subscription) => {
       const userId = subscription.user?._id || subscription.user;
+      const coverageHistory = buildExtraHistory(
+        subscription,
+        extrasBySubscription.get(String(subscription._id)) || [],
+        orderById
+      );
+      const extra =
+        coverageHistory.find((row) => row.remaining > 0) ||
+        coverageHistory[0] ||
+        null;
+
       return serializeSubscription(subscription, {
         latestCycle: cycleBySubscription.get(String(subscription._id)) || null,
-        extra: extraBySubscription.get(String(subscription._id)) || null,
+        extra,
+        coverageHistory,
         fixed: fixedByPair.get(`${String(userId)}:${subscription.serviceKey}`) || {
           schedules: 0,
           weeklySlots: 0,
@@ -416,11 +747,11 @@ router.get("/:id", async (req, res) => {
     const [cycles, extras, fixedSchedules] = await Promise.all([
       SubscriptionBillingCycle.find({ subscription: id })
         .sort({ periodKey: -1 })
-        .limit(12)
+        .limit(24)
         .lean(),
       SubscriptionExtraSessionNotice.find({ subscription: id })
         .sort({ periodKey: -1 })
-        .limit(12)
+        .limit(24)
         .lean(),
       FixedSchedule.find({
         user: subscription.user?._id || subscription.user,
@@ -431,23 +762,33 @@ router.get("/:id", async (req, res) => {
         .lean(),
     ]);
 
+    const orderById = await loadOrdersForExtras({
+      extras,
+      subscriptions: [subscription],
+    });
+    const coverageHistory = buildExtraHistory(subscription, extras, orderById);
     const latestCycle = cycles[0] || null;
-    const extra = extras.find((item) => ["pending", "order_pending"].includes(item.status)) || extras[0] || null;
+    const extra =
+      coverageHistory.find((item) => item.remaining > 0) ||
+      coverageHistory[0] ||
+      null;
 
     return res.json({
       item: serializeSubscription(subscription, {
         latestCycle,
         extra,
+        coverageHistory,
         fixed: {
           schedules: fixedSchedules.length,
           weeklySlots: fixedSchedules.reduce(
-            (sum, schedule) => sum + (Array.isArray(schedule.items) ? schedule.items.length : 0),
+            (sum, schedule) =>
+              sum + (Array.isArray(schedule.items) ? schedule.items.length : 0),
             0
           ),
         },
       }),
       cycles: cycles.map(serializeCycle),
-      extras: extras.map(serializeExtra),
+      extras: coverageHistory,
       fixedSchedules: fixedSchedules.map((schedule) => ({
         id: String(schedule._id),
         startDate: schedule.startDate || "",

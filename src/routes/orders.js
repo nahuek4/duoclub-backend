@@ -6,6 +6,7 @@ import { protect, adminOnly } from "../middleware/auth.js";
 import PricingPlan from "../models/PricingPlan.js";
 import Order from "../models/Order.js";
 import User from "../models/User.js";
+import ServiceSubscription from "../models/ServiceSubscription.js";
 
 import {
   fireAndForget,
@@ -1909,6 +1910,37 @@ router.delete("/:id", protect, adminOnly, async (req, res) => {
     if (!order) return res.status(404).json({ error: "Orden no encontrada" });
 
     const impacted = !!(order.applied || order.creditsApplied);
+
+    // Las órdenes que forman parte del historial financiero de Planes no se borran.
+    // Si desaparecieran, AdminPlanes perdería el vínculo exacto entre la diferencia
+    // del período y el pago que la cubrió. Las órdenes pendientes siguen pudiendo
+    // borrarse y liberarse normalmente.
+    const itemKinds = new Set(
+      (Array.isArray(order.items) ? order.items : [])
+        .map((item) => String(item?.kind || "").toUpperCase().trim())
+        .filter(Boolean)
+    );
+    const isSubscriptionAuditOrder =
+      itemKinds.has("SUBSCRIPTION_EXTRA") ||
+      itemKinds.has("SUBSCRIPTION_RENEWAL");
+    const isPaidSubscriptionAuditOrder =
+      isSubscriptionAuditOrder &&
+      (["paid", "approved"].includes(String(order.status || "").toLowerCase()) ||
+        impacted ||
+        Boolean(order.subscriptionExtraApplied) ||
+        Boolean(order.subscriptionCycleApplied));
+
+    const referencedByBootstrap = await ServiceSubscription.exists({
+      "bootstrap.latestPaidOrder.orderId": order._id,
+    });
+
+    if (isPaidSubscriptionAuditOrder || referencedByBootstrap) {
+      return res.status(409).json({
+        error:
+          "Esta orden forma parte del historial de un plan y no puede eliminarse. Conservála para mantener la trazabilidad del pago.",
+        code: "ORDER_PROTECTED_BY_SUBSCRIPTION_HISTORY",
+      });
+    }
 
     try {
       const user = await User.findById(order.user);

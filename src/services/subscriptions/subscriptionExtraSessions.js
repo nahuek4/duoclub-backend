@@ -227,7 +227,7 @@ async function calculateExtraSessionStateForUserService({
       user: userId,
       serviceKey: normalizedServiceKey,
       fixedScheduleId: { $ne: null },
-      status: "reserved",
+      status: { $in: ["reserved", "completed"] },
       date: { $gte: range.startYmd, $lte: range.endYmd },
     })
       .select("_id fixedScheduleId date time status")
@@ -399,11 +399,42 @@ export async function syncExtraSessionNoticeForUserService({
 
   notice.subscription = subscription._id;
   notice.fixedScheduleIds = fixedScheduleIds;
+
+  const previousHistoricalRequired = Math.max(
+    nonNegativeInt(notice.historicalExtraSessionsRequired),
+    nonNegativeInt(notice.extraSessionsRequired)
+  );
+  const historicalRequired = Math.max(
+    previousHistoricalRequired,
+    nonNegativeInt(extraSessionsRequired)
+  );
+
+  // Si aparece un pico nuevo de diferencia, guardamos también el contexto
+  // (plan base + cantidad de turnos fijos) que originó ese máximo.
+  if (historicalRequired > previousHistoricalRequired) {
+    notice.historicalBasePlanSessions = basePlanSessions;
+    notice.historicalFixedOccurrences = projectedFixedOccurrences;
+    notice.historicalLastChangedAt = new Date();
+  } else {
+    if (!nonNegativeInt(notice.historicalBasePlanSessions) && historicalRequired > 0) {
+      notice.historicalBasePlanSessions = basePlanSessions;
+    }
+    if (!nonNegativeInt(notice.historicalFixedOccurrences) && historicalRequired > 0) {
+      notice.historicalFixedOccurrences = projectedFixedOccurrences;
+    }
+  }
+
+  if (historicalRequired > 0 && !notice.historicalFirstDetectedAt) {
+    notice.historicalFirstDetectedAt = new Date();
+  }
+
+  notice.historicalExtraSessionsRequired = historicalRequired;
   notice.basePlanSessions = basePlanSessions;
   notice.projectedFixedOccurrences = projectedFixedOccurrences;
   notice.blockedOccurrencesCount = blockedOccurrencesCount;
   notice.extraSessionsRequired = extraSessionsRequired;
   notice.extraSessionsPurchased = extraSessionsPurchased;
+  notice.occurrenceSource = state.occurrenceSource || "";
   notice.calculatedAt = new Date();
   notice.calculatedBy = actorId || null;
   notice.source = source;
@@ -424,6 +455,10 @@ export async function syncExtraSessionNoticeForUserService({
     extraSessionsRequired,
     extraSessionsPurchased,
     remainingSessions,
+    historicalExtraSessionsRequired: nonNegativeInt(
+      notice.historicalExtraSessionsRequired
+    ),
+    historicalFixedOccurrences: nonNegativeInt(notice.historicalFixedOccurrences),
     status: notice.status,
     occurrenceSource: state.occurrenceSource || "",
   };
@@ -479,6 +514,21 @@ export async function serializeExtraSessionNoticeForUser(noticeInput) {
     extraSessionsRequired: nonNegativeInt(notice.extraSessionsRequired),
     extraSessionsPurchased: nonNegativeInt(notice.extraSessionsPurchased),
     remainingSessions: remaining,
+    historicalBasePlanSessions: Math.max(
+      nonNegativeInt(notice.historicalBasePlanSessions),
+      nonNegativeInt(notice.basePlanSessions)
+    ),
+    historicalFixedOccurrences: Math.max(
+      nonNegativeInt(notice.historicalFixedOccurrences),
+      nonNegativeInt(notice.projectedFixedOccurrences)
+    ),
+    historicalExtraSessionsRequired: Math.max(
+      nonNegativeInt(notice.historicalExtraSessionsRequired),
+      nonNegativeInt(notice.extraSessionsRequired)
+    ),
+    historicalFirstDetectedAt: notice.historicalFirstDetectedAt || null,
+    historicalLastChangedAt: notice.historicalLastChangedAt || null,
+    occurrenceSource: notice.occurrenceSource || "",
     status: notice.status,
     pendingOrder: pendingOrder
       ? {
