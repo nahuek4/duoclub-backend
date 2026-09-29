@@ -246,31 +246,29 @@ function serializeExtra(extra, orderById = new Map(), bootstrap = null) {
   const rawId = extra?._id ? String(extra._id) : "";
   const periodKey = clean(extra?.periodKey || bootstrap?.periodKey);
   const bootstrapRequired = asInt(bootstrap?.historicalRequired);
-  const historicalOnly =
-    !extra &&
-    Boolean(bootstrap) &&
-    periodKey < monthKeyFromDateArgentina();
-  const currentRequired = extra
-    ? asInt(extra?.extraSessionsRequired)
-    : historicalOnly
-      ? 0
-      : bootstrapRequired;
+  // Un bootstrap sin notice moderno es evidencia histórica, no deuda actual.
+  // Aunque el bootstrap sea del mes corriente, no inventamos un pendiente
+  // vigente: el pendiente actual solo nace de SubscriptionExtraSessionNotice.
+  const historicalOnly = !extra && Boolean(bootstrap);
+  const currentRequired = extra ? asInt(extra?.extraSessionsRequired) : 0;
   const historicalRequired = Math.max(
     currentRequired,
     asInt(extra?.historicalExtraSessionsRequired),
     bootstrapRequired
   );
 
-  const historicalBasePlanSessions = Math.max(
-    asInt(extra?.historicalBasePlanSessions),
-    asInt(bootstrap?.basePlanSessions),
-    asInt(extra?.basePlanSessions)
-  );
-  const historicalFixedOccurrences = Math.max(
-    asInt(extra?.historicalFixedOccurrences),
-    asInt(bootstrap?.fixedOccurrences),
-    asInt(extra?.projectedFixedOccurrences)
-  );
+  // El contexto histórico debe corresponder al momento en que se generó el
+  // máximo de diferencia. No usamos Math.max contra el estado actual porque
+  // un cambio posterior de plan podría falsear el histórico (ej. debía con 8
+  // y hoy tiene 12).
+  const historicalBasePlanSessions =
+    asInt(extra?.historicalBasePlanSessions) ||
+    asInt(bootstrap?.basePlanSessions) ||
+    asInt(extra?.basePlanSessions);
+  const historicalFixedOccurrences =
+    asInt(extra?.historicalFixedOccurrences) ||
+    asInt(bootstrap?.fixedOccurrences) ||
+    asInt(extra?.projectedFixedOccurrences);
 
   const rawPurchased = asInt(extra?.extraSessionsPurchased);
   const purchasedIds = new Set(

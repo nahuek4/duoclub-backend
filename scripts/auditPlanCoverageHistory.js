@@ -1,14 +1,15 @@
 // scripts/auditPlanCoverageHistory.js
 // SOLO LECTURA.
-// Audita que Planes, diferencias de turnos fijos y órdenes queden trazables.
-// No crea, actualiza ni elimina documentos.
+// Audita Planes + diferencias + órdenes sin modificar documentos.
 
 import "dotenv/config";
 import mongoose from "mongoose";
 
+import User from "../src/models/User.js";
 import Appointment from "../src/models/Appointment.js";
 import Order from "../src/models/Order.js";
 import ServiceSubscription from "../src/models/ServiceSubscription.js";
+import SubscriptionBillingCycle from "../src/models/SubscriptionBillingCycle.js";
 import SubscriptionExtraSessionNotice from "../src/models/SubscriptionExtraSessionNotice.js";
 
 function clean(value) {
@@ -46,22 +47,23 @@ function monthRange(periodKey) {
   };
 }
 
-function orderKinds(order = {}) {
-  return new Set(
-    (Array.isArray(order?.items) ? order.items : [])
-      .map((item) => clean(item?.kind).toUpperCase())
-      .filter(Boolean)
-  );
-}
-
 function paidStatus(value) {
   return ["paid", "approved"].includes(clean(value).toLowerCase());
+}
+
+function orderKinds(order = {}) {
+  return Array.from(
+    new Set(
+      (Array.isArray(order?.items) ? order.items : [])
+        .map((item) => clean(item?.kind).toUpperCase())
+        .filter(Boolean)
+    )
+  );
 }
 
 function sessionsForNoticeFromOrder(order, noticeId) {
   const target = oid(noticeId);
   if (!target) return 0;
-
   return (Array.isArray(order?.items) ? order.items : [])
     .filter(
       (item) =>
@@ -75,6 +77,33 @@ function sessionsForNoticeFromOrder(order, noticeId) {
     );
 }
 
+function userLabel(user, fallback = "") {
+  return (
+    clean(user?.fullName) ||
+    [clean(user?.name), clean(user?.lastName)].filter(Boolean).join(" ") ||
+    clean(user?.email) ||
+    fallback
+  );
+}
+
+function pairKey(userId, serviceKey) {
+  return `${clean(userId)}:${clean(serviceKey).toUpperCase()}`;
+}
+
+function periodPairKey(userId, serviceKey, periodKey) {
+  return `${pairKey(userId, serviceKey)}:${clean(periodKey)}`;
+}
+
+function statusPriority(status) {
+  const s = clean(status).toLowerCase();
+  if (s === "active") return 5;
+  if (s === "pending_change") return 4;
+  if (s === "suspended") return 3;
+  if (s === "cancelled") return 2;
+  if (s === "terminated_for_non_payment") return 1;
+  return 0;
+}
+
 const uri =
   process.env.MONGO_URI ||
   process.env.MONGODB_URI ||
@@ -84,7 +113,9 @@ const uri =
   process.env.MONGO;
 
 if (!uri) {
-  throw new Error("No encontré MONGO_URI/MONGODB_URI/MONGO_URL/MONGODB_URL/DATABASE_URL/MONGO.");
+  throw new Error(
+    "No encontré MONGO_URI/MONGODB_URI/MONGO_URL/MONGODB_URL/DATABASE_URL/MONGO."
+  );
 }
 
 const details = process.argv.includes("--details");
@@ -94,18 +125,24 @@ const currentRange = monthRange(currentPeriodKey);
 await mongoose.connect(uri);
 
 try {
-  const [subscriptions, notices, extraOrders] = await Promise.all([
+  const [subscriptions, notices, cycles, explicitExtraOrders] = await Promise.all([
     ServiceSubscription.find({})
       .select(
         "user serviceKey monthlySessions status currentPeriodKey bootstrap createdAt updatedAt"
       )
       .populate("user", "name lastName fullName email")
+      .sort({ updatedAt: -1, createdAt: -1 })
       .lean(),
     SubscriptionExtraSessionNotice.find({})
       .sort({ periodKey: 1, serviceKey: 1 })
       .lean(),
+    SubscriptionBillingCycle.find({ periodKey: currentPeriodKey })
+      .select("subscription user serviceKey periodKey planSnapshot billing lifecycle")
+      .lean(),
     Order.find({ "items.kind": "SUBSCRIPTION_EXTRA" })
-      .select("_id user status payMethod total totalFinal paidAt createdAt items subscriptionExtraApplied")
+      .select(
+        "_id user status payMethod total totalFinal paidAt approvedAt createdAt items subscriptionExtraApplied"
+      )
       .sort({ createdAt: 1 })
       .lean(),
   ]);
@@ -113,23 +150,40 @@ try {
   const subscriptionById = new Map(
     subscriptions.map((subscription) => [String(subscription._id), subscription])
   );
-  const noticeById = new Map(notices.map((notice) => [String(notice._id), notice]));
-  const paidExtraOrdersByNotice = new Map();
-  const allOrderIds = new Set();
-
-  for (const order of extraOrders) {
-    const id = oid(order);
-    if (id) allOrderIds.add(id);
-    for (const item of Array.isArray(order?.items) ? order.items : []) {
-      if (clean(item?.kind).toUpperCase() !== "SUBSCRIPTION_EXTRA") continue;
-      const noticeId = oid(item?.extraSessionNotice);
-      if (!noticeId) continue;
-      const list = paidExtraOrdersByNotice.get(noticeId) || [];
-      list.push(order);
-      paidExtraOrdersByNotice.set(noticeId, list);
-    }
+  const subscriptionsByPair = new Map();
+  for (const subscription of subscriptions) {
+    const userId = oid(subscription?.user?._id || subscription?.user);
+    const serviceKey = clean(subscription?.serviceKey).toUpperCase();
+    if (!userId || !serviceKey) continue;
+    const key = pairKey(userId, serviceKey);
+    const list = subscriptionsByPair.get(key) || [];
+    list.push(subscription);
+    subscriptionsByPair.set(key, list);
+  }
+  for (const [key, list] of subscriptionsByPair) {
+    list.sort((a, b) => {
+      const currentA = clean(a?.currentPeriodKey) === currentPeriodKey ? 1 : 0;
+      const currentB = clean(b?.currentPeriodKey) === currentPeriodKey ? 1 : 0;
+      if (currentA !== currentB) return currentB - currentA;
+      const pri = statusPriority(b?.status) - statusPriority(a?.status);
+      if (pri) return pri;
+      return new Date(b?.updatedAt || b?.createdAt || 0) - new Date(a?.updatedAt || a?.createdAt || 0);
+    });
   }
 
+  const cycleBySubscription = new Map(
+    cycles.map((cycle) => [String(cycle.subscription), cycle])
+  );
+  const noticeById = new Map(notices.map((notice) => [String(notice._id), notice]));
+  const noticeByPairPeriod = new Map();
+  for (const notice of notices) {
+    noticeByPairPeriod.set(
+      periodPairKey(notice.user, notice.serviceKey, notice.periodKey),
+      notice
+    );
+  }
+
+  const allOrderIds = new Set();
   for (const notice of notices) {
     for (const value of [
       notice?.pendingOrder,
@@ -140,9 +194,12 @@ try {
       if (id) allOrderIds.add(id);
     }
   }
-
   for (const subscription of subscriptions) {
     const id = oid(subscription?.bootstrap?.latestPaidOrder?.orderId);
+    if (id) allOrderIds.add(id);
+  }
+  for (const order of explicitExtraOrders) {
+    const id = oid(order);
     if (id) allOrderIds.add(id);
   }
 
@@ -152,7 +209,9 @@ try {
           $in: [...allOrderIds].map((id) => new mongoose.Types.ObjectId(id)),
         },
       })
-        .select("_id status payMethod total totalFinal paidAt createdAt items subscriptionExtraApplied subscriptionCycleApplied")
+        .select(
+          "_id user status payMethod total totalFinal paidAt approvedAt createdAt items subscriptionExtraApplied subscriptionCycleApplied credits serviceKey service serviceName"
+        )
         .lean()
     : [];
   const linkedOrderById = new Map(
@@ -176,7 +235,7 @@ try {
   ]);
   const currentCountByPair = new Map(
     currentCounts.map((row) => [
-      `${String(row?._id?.user || "")}:${clean(row?._id?.serviceKey).toUpperCase()}`,
+      pairKey(row?._id?.user, row?._id?.serviceKey),
       asInt(row?.count),
     ])
   );
@@ -184,16 +243,25 @@ try {
   const rows = [];
   const issues = [];
 
+  function contextForNotice(notice, subscription) {
+    const user = subscription?.user || {};
+    return {
+      user: userLabel(user, oid(notice?.user)),
+      email: clean(user?.email),
+      userId: oid(notice?.user || user?._id),
+      serviceKey: clean(notice?.serviceKey || subscription?.serviceKey).toUpperCase(),
+      periodKey: clean(notice?.periodKey),
+    };
+  }
+
   function pushIssue(type, severity, context = {}) {
     issues.push({ type, severity, ...context });
   }
 
   for (const notice of notices) {
     const subscription = subscriptionById.get(String(notice.subscription));
-    const user = subscription?.user || {};
-    const userId = oid(notice.user || subscription?.user?._id || subscription?.user);
-    const serviceKey = clean(notice.serviceKey || subscription?.serviceKey).toUpperCase();
-    const periodKey = clean(notice.periodKey);
+    const ctx = contextForNotice(notice, subscription);
+    const { userId, serviceKey, periodKey } = ctx;
     const currentRequired = asInt(notice.extraSessionsRequired);
     const purchased = asInt(notice.extraSessionsPurchased);
     const historicalRequired = Math.max(
@@ -201,6 +269,7 @@ try {
       asInt(notice.historicalExtraSessionsRequired)
     );
     const remaining = Math.max(0, currentRequired - purchased);
+
     const purchasedIds = new Set(
       [
         ...(Array.isArray(notice.purchasedOrderIds) ? notice.purchasedOrderIds : []),
@@ -209,13 +278,14 @@ try {
         .map(oid)
         .filter(Boolean)
     );
-    const paidLinked = [...purchasedIds]
+    const linkedPurchasedOrders = [...purchasedIds]
       .map((id) => linkedOrderById.get(id))
-      .filter((order) => order && paidStatus(order.status));
+      .filter(Boolean);
+    const paidLinked = linkedPurchasedOrders.filter((order) => paidStatus(order.status));
 
     rows.push({
-      user: clean(user?.fullName) || [clean(user?.name), clean(user?.lastName)].filter(Boolean).join(" ") || clean(user?.email) || userId,
-      email: clean(user?.email),
+      user: ctx.user,
+      email: ctx.email,
       service: serviceKey,
       period: periodKey,
       plan: asInt(notice.basePlanSessions || subscription?.monthlySessions),
@@ -230,37 +300,60 @@ try {
 
     if (historicalRequired < currentRequired) {
       pushIssue("HISTORY_LT_CURRENT", "REVIEW", {
-        userId,
-        serviceKey,
-        periodKey,
+        ...ctx,
         currentRequired,
         historicalRequired,
       });
     }
 
-    if (purchased > 0 && paidLinked.length === 0) {
-      pushIssue("PURCHASED_WITHOUT_PAID_ORDER_LINK", "REVIEW", {
-        userId,
-        serviceKey,
-        periodKey,
-        purchased,
-        purchasedOrderIds: [...purchasedIds],
-      });
-    }
-
-    const linkedPurchasedSessions = paidLinked.reduce(
-      (sum, order) => sum + sessionsForNoticeFromOrder(order, notice._id),
-      0
-    );
-    if (purchased > 0 && linkedPurchasedSessions !== purchased) {
-      pushIssue("PURCHASED_SESSIONS_ORDER_MISMATCH", "REVIEW", {
-        userId,
-        serviceKey,
-        periodKey,
-        purchased,
-        linkedPurchasedSessions,
-        purchasedOrderIds: [...purchasedIds],
-      });
+    if (purchased > 0) {
+      if (linkedPurchasedOrders.length === 0) {
+        pushIssue("PURCHASED_ORDER_LINK_MISSING", "REVIEW", {
+          ...ctx,
+          purchased,
+          purchasedOrderIds: [...purchasedIds],
+        });
+      } else if (paidLinked.length === 0) {
+        pushIssue("PURCHASED_ORDER_LINK_NOT_PAID", "REVIEW", {
+          ...ctx,
+          purchased,
+          purchasedOrderIds: [...purchasedIds],
+          linkedStatuses: linkedPurchasedOrders.map((order) => ({
+            id: String(order._id),
+            status: clean(order.status),
+            kinds: orderKinds(order),
+          })),
+        });
+      } else {
+        const explicitSessions = paidLinked.reduce(
+          (sum, order) => sum + sessionsForNoticeFromOrder(order, notice._id),
+          0
+        );
+        if (explicitSessions !== purchased) {
+          const legacyPaid = paidLinked.filter(
+            (order) => sessionsForNoticeFromOrder(order, notice._id) === 0
+          );
+          if (legacyPaid.length > 0) {
+            pushIssue("LEGACY_PAID_ORDER_LINK", "INFO", {
+              ...ctx,
+              purchased,
+              explicitSessions,
+              orders: legacyPaid.map((order) => ({
+                id: String(order._id),
+                status: clean(order.status),
+                kinds: orderKinds(order),
+              })),
+            });
+          } else {
+            pushIssue("PURCHASED_SESSIONS_ORDER_MISMATCH", "REVIEW", {
+              ...ctx,
+              purchased,
+              linkedPurchasedSessions: explicitSessions,
+              purchasedOrderIds: [...purchasedIds],
+            });
+          }
+        }
+      }
     }
 
     const pendingOrderId = oid(notice?.pendingOrder);
@@ -269,31 +362,46 @@ try {
       const pendingStatus = clean(pendingOrder?.status).toLowerCase();
       if (!pendingOrder) {
         pushIssue("PENDING_ORDER_MISSING", "REVIEW", {
-          userId,
-          serviceKey,
-          periodKey,
+          ...ctx,
           orderId: pendingOrderId,
         });
-      } else if (!["pending"].includes(pendingStatus)) {
+      } else if (pendingStatus !== "pending") {
         pushIssue("PENDING_ORDER_STATUS_STALE", "REVIEW", {
-          userId,
-          serviceKey,
-          periodKey,
+          ...ctx,
           orderId: pendingOrderId,
           pendingStatus,
         });
       }
     }
 
-    if (periodKey === currentPeriodKey && subscription) {
-      const actualFixed = currentCountByPair.get(`${userId}:${serviceKey}`) || 0;
-      const plan = Math.max(1, asInt(subscription.monthlySessions));
+    if (periodKey === currentPeriodKey) {
+      const pairSubscriptions = subscriptionsByPair.get(pairKey(userId, serviceKey)) || [];
+      const currentSubscription = pairSubscriptions[0] || subscription;
+      const currentCycle = currentSubscription
+        ? cycleBySubscription.get(String(currentSubscription._id))
+        : null;
+      const plan = Math.max(
+        1,
+        asInt(currentCycle?.planSnapshot?.monthlySessions) ||
+          asInt(currentSubscription?.monthlySessions) ||
+          asInt(notice.basePlanSessions)
+      );
+      const actualFixed = currentCountByPair.get(pairKey(userId, serviceKey)) || 0;
       const expectedRequired = Math.max(0, actualFixed - plan);
-      if (expectedRequired !== currentRequired) {
-        pushIssue("CURRENT_NOTICE_NEEDS_REFRESH", "REVIEW", {
-          userId,
-          serviceKey,
-          periodKey,
+
+      if (expectedRequired < currentRequired) {
+        pushIssue("CURRENT_NOTICE_STALE_OVERSTATED", "INFO", {
+          ...ctx,
+          subscriptionStatus: clean(currentSubscription?.status),
+          actualFixed,
+          plan,
+          expectedRequired,
+          noticeRequired: currentRequired,
+        });
+      } else if (expectedRequired > currentRequired) {
+        pushIssue("CURRENT_NOTICE_UNDERSTATES_REQUIRED", "REVIEW", {
+          ...ctx,
+          subscriptionStatus: clean(currentSubscription?.status),
           actualFixed,
           plan,
           expectedRequired,
@@ -303,66 +411,111 @@ try {
     }
   }
 
+  // Detecta deuda actual que ni siquiera tiene notice todavía.
+  for (const [key, count] of currentCountByPair) {
+    const [userId, serviceKey] = key.split(":");
+    const pairSubscriptions = subscriptionsByPair.get(key) || [];
+    const subscription = pairSubscriptions[0];
+    if (!subscription) continue;
+    const currentCycle = cycleBySubscription.get(String(subscription._id));
+    const plan = Math.max(
+      1,
+      asInt(currentCycle?.planSnapshot?.monthlySessions) ||
+        asInt(subscription?.monthlySessions)
+    );
+    const expectedRequired = Math.max(0, asInt(count) - plan);
+    if (expectedRequired <= 0) continue;
+
+    const notice = noticeByPairPeriod.get(
+      periodPairKey(userId, serviceKey, currentPeriodKey)
+    );
+    if (notice) continue;
+
+    pushIssue("CURRENT_REQUIRED_WITHOUT_NOTICE", "REVIEW", {
+      user: userLabel(subscription?.user, userId),
+      email: clean(subscription?.user?.email),
+      userId,
+      serviceKey,
+      periodKey: currentPeriodKey,
+      subscriptionStatus: clean(subscription?.status),
+      actualFixed: asInt(count),
+      plan,
+      expectedRequired,
+    });
+  }
+
+  // Bootstrap sin notice es historia, no deuda actual automática.
   for (const subscription of subscriptions) {
     const bootstrap = subscription?.bootstrap || {};
     const required = asInt(bootstrap?.extraSessionsRequired);
     const periodKey = clean(bootstrap?.monthKey);
     if (!required || !periodKey) continue;
 
-    const matchingNotice = notices.find(
-      (notice) =>
-        String(notice.subscription) === String(subscription._id) &&
-        clean(notice.periodKey) === periodKey
+    const userId = oid(subscription?.user?._id || subscription?.user);
+    const serviceKey = clean(subscription?.serviceKey).toUpperCase();
+    const matchingNotice = noticeByPairPeriod.get(
+      periodPairKey(userId, serviceKey, periodKey)
     );
     if (matchingNotice) continue;
 
-    const basePlan = Math.max(1, asInt(bootstrap?.basePlanSessions || subscription?.monthlySessions));
+    const basePlan = Math.max(
+      1,
+      asInt(bootstrap?.basePlanSessions || subscription?.monthlySessions)
+    );
     const paidCredits = asInt(
       bootstrap?.paidCredits || bootstrap?.latestPaidOrder?.sessions
     );
-    const inferredPaid = Math.min(required, Math.max(0, paidCredits - basePlan));
+    const inferredPaid = Math.min(
+      required,
+      Math.max(0, paidCredits - basePlan)
+    );
     const bootstrapOrderId = oid(bootstrap?.latestPaidOrder?.orderId);
 
     pushIssue("BOOTSTRAP_HISTORY_WITHOUT_NOTICE", "INFO", {
-      subscriptionId: String(subscription._id),
-      userId: oid(subscription?.user?._id || subscription?.user),
+      user: userLabel(subscription?.user, userId),
       email: clean(subscription?.user?.email),
-      serviceKey: clean(subscription?.serviceKey),
+      subscriptionId: String(subscription._id),
+      userId,
+      serviceKey,
       periodKey,
       required,
       inferredPaid,
       orderId: inferredPaid > 0 ? bootstrapOrderId : "",
     });
 
-    if (inferredPaid > 0 && (!bootstrapOrderId || !linkedOrderById.get(bootstrapOrderId))) {
-      pushIssue("BOOTSTRAP_INFERRED_PAYMENT_ORDER_MISSING", "REVIEW", {
-        subscriptionId: String(subscription._id),
-        serviceKey: clean(subscription?.serviceKey),
-        periodKey,
-        required,
-        inferredPaid,
-        orderId: bootstrapOrderId,
-      });
-    } else if (inferredPaid > 0) {
-      const bootstrapOrder = linkedOrderById.get(bootstrapOrderId);
-      if (!paidStatus(bootstrapOrder?.status)) {
-        pushIssue("BOOTSTRAP_INFERRED_PAYMENT_ORDER_NOT_PAID", "REVIEW", {
+    if (inferredPaid > 0) {
+      const order = bootstrapOrderId ? linkedOrderById.get(bootstrapOrderId) : null;
+      if (!order) {
+        pushIssue("BOOTSTRAP_INFERRED_PAYMENT_ORDER_MISSING", "REVIEW", {
+          user: userLabel(subscription?.user, userId),
+          email: clean(subscription?.user?.email),
           subscriptionId: String(subscription._id),
-          serviceKey: clean(subscription?.serviceKey),
+          userId,
+          serviceKey,
           periodKey,
           required,
           inferredPaid,
           orderId: bootstrapOrderId,
-          status: clean(bootstrapOrder?.status),
+        });
+      } else if (!paidStatus(order.status)) {
+        pushIssue("BOOTSTRAP_INFERRED_PAYMENT_ORDER_NOT_PAID", "REVIEW", {
+          user: userLabel(subscription?.user, userId),
+          email: clean(subscription?.user?.email),
+          subscriptionId: String(subscription._id),
+          userId,
+          serviceKey,
+          periodKey,
+          required,
+          inferredPaid,
+          orderId: bootstrapOrderId,
+          status: clean(order.status),
         });
       }
     }
   }
 
-  for (const order of extraOrders) {
-    const kinds = orderKinds(order);
-    if (!kinds.has("SUBSCRIPTION_EXTRA") || !paidStatus(order.status)) continue;
-
+  for (const order of explicitExtraOrders) {
+    if (!paidStatus(order.status)) continue;
     for (const item of Array.isArray(order.items) ? order.items : []) {
       if (clean(item?.kind).toUpperCase() !== "SUBSCRIPTION_EXTRA") continue;
       const noticeId = oid(item.extraSessionNotice);
@@ -378,27 +531,21 @@ try {
     }
   }
 
-  const severityCounts = issues.reduce(
-    (acc, issue) => {
-      acc[issue.severity] = (acc[issue.severity] || 0) + 1;
-      return acc;
-    },
-    {}
-  );
-  const typeCounts = issues.reduce(
-    (acc, issue) => {
-      acc[issue.type] = (acc[issue.type] || 0) + 1;
-      return acc;
-    },
-    {}
-  );
+  const severityCounts = issues.reduce((acc, issue) => {
+    acc[issue.severity] = (acc[issue.severity] || 0) + 1;
+    return acc;
+  }, {});
+  const typeCounts = issues.reduce((acc, issue) => {
+    acc[issue.type] = (acc[issue.type] || 0) + 1;
+    return acc;
+  }, {});
 
-  console.log("\nAUDITORÍA PLANES + DIFERENCIAS + ÓRDENES (SOLO LECTURA)\n");
+  console.log("\nAUDITORÍA PLANES + DIFERENCIAS + ÓRDENES V2 (SOLO LECTURA)\n");
   console.log({
     currentPeriodKey,
     subscriptions: subscriptions.length,
     notices: notices.length,
-    extraOrders: extraOrders.length,
+    explicitExtraOrders: explicitExtraOrders.length,
     historyRows: rows.length,
     issues: issues.length,
     severityCounts,
@@ -416,6 +563,7 @@ try {
       issues.map((issue) => ({
         severity: issue.severity,
         type: issue.type,
+        user: issue.user || "",
         email: issue.email || "",
         userId: issue.userId || "",
         service: issue.serviceKey || "",
@@ -424,7 +572,17 @@ try {
         detail: JSON.stringify(
           Object.fromEntries(
             Object.entries(issue).filter(
-              ([key]) => !["severity", "type", "email", "userId", "serviceKey", "periodKey", "orderId"].includes(key)
+              ([key]) =>
+                ![
+                  "severity",
+                  "type",
+                  "user",
+                  "email",
+                  "userId",
+                  "serviceKey",
+                  "periodKey",
+                  "orderId",
+                ].includes(key)
             )
           )
         ),
@@ -438,7 +596,7 @@ try {
   console.log(
     reviewCount
       ? `\nRESULTADO: ${reviewCount} hallazgo(s) para revisar. NO SE MODIFICÓ NINGÚN DATO.`
-      : "\nRESULTADO: auditoría consistente. NO SE MODIFICÓ NINGÚN DATO."
+      : "\nRESULTADO: sin hallazgos REVIEW. NO SE MODIFICÓ NINGÚN DATO."
   );
 } finally {
   await mongoose.disconnect();
