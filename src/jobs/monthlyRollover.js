@@ -15,6 +15,9 @@ import SubscriptionBillingCycle from "../models/SubscriptionBillingCycle.js";
 import { syncExtraSessionNoticeForUserService } from "../services/subscriptions/subscriptionExtraSessions.js";
 import { runSubscriptionLifecycleTick } from "../services/subscriptions/subscriptionLifecycle.js";
 
+import { isStandaloneFixedService, renewStandaloneFixedSchedules } from "../services/subscriptions/fixedScheduleRenewal.js";
+import { ensureServiceCatalogLoaded } from "../services/serviceCatalogRuntime.js";
+
 const TZ = "America/Argentina/Buenos_Aires";
 
 const SERVICE_KEY_TO_NAME = {
@@ -207,6 +210,10 @@ export async function reserveMonthlyCycleCreditsForFixedAppointments({
   now = new Date(),
 } = {}) {
   const sk = normalizeServiceKey(serviceKey);
+  await ensureServiceCatalogLoaded();
+  if (isStandaloneFixedService(serviceKey)) {
+    return { ok: true, skipped: true, reason: "FIXED_SCHEDULE_WITHOUT_RECURRING_PLAN", reserved: 0 };
+  }
   if (!userId || !sk || !/^\d{4}-\d{2}$/.test(String(periodKey || ""))) {
     return {
       ok: false,
@@ -407,6 +414,7 @@ async function slotHasCapacity({ date, time, serviceKey }) {
 
 async function ensureFixedAppointmentsForMonth(monthKey, { now = new Date() } = {}) {
   const { startYmd, endYmd } = monthStartEnd(monthKey);
+  await ensureServiceCatalogLoaded();
   const reservationTargets = new Map();
 
   // En el modelo nuevo, active:true representa un patrón fijo vigente.
@@ -430,7 +438,7 @@ async function ensureFixedAppointmentsForMonth(monthKey, { now = new Date() } = 
 
   for (const sub of subscriptions) {
     const sk = normalizeServiceKey(sub.serviceKey);
-    if (!sub.user || !sk) continue;
+    if (!sub.user || !sk || isStandaloneFixedService(sk)) continue;
     reservationTargets.set(`${String(sub.user)}__${sk}`, {
       userId: sub.user,
       serviceKey: sk,
@@ -443,6 +451,7 @@ async function ensureFixedAppointmentsForMonth(monthKey, { now = new Date() } = 
   for (const schedule of schedules) {
     const userId = schedule.user;
     const sk = normalizeServiceKey(schedule.serviceKey || schedule.service);
+    if (isStandaloneFixedService(sk)) continue; // Se procesa sin suscripción abajo.
     if (!userId || !sk || !FIXED_SERVICE_KEYS.includes(sk)) {
       skipped += 1;
       continue;
@@ -584,7 +593,10 @@ async function ensureFixedAppointmentsForMonth(monthKey, { now = new Date() } = 
     }
   }
 
+  const standalone = await renewStandaloneFixedSchedules({ periodKey: monthKey, now });
+
   return {
+    standalone,
     schedules: schedules.length,
     created,
     skipped,
@@ -639,7 +651,7 @@ export async function runMonthlyRollover({ force = false } = {}) {
     user.history.push({
       action: "monthly_rollover",
       title: "Cierre mensual aplicado",
-      message: "Se cerraron créditos vencidos y se materializaron los turnos fijos de suscripciones activas sin generar deuda.",
+      message: "Se cerraron créditos vencidos y se inició la generación de turnos fijos del mes sin generar deuda.",
       createdAt: now,
     });
 
@@ -650,7 +662,7 @@ export async function runMonthlyRollover({ force = false } = {}) {
   const fixed = await ensureFixedAppointmentsForMonth(monthKey, { now });
 
   return {
-    ok: true,
+    ok: fixed.standalone.ok && fixed.reservationErrors === 0 && fixed.noticeErrors === 0,
     monthKey,
     lifecycle,
     usersTouched,

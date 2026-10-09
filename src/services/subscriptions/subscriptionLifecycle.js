@@ -34,6 +34,8 @@ import {
 
 // STEP3B2_DYNAMIC_SUBSCRIPTION_LIFECYCLE
 
+import { isStandaloneFixedService } from "./fixedScheduleRenewal.js";
+
 const TZ = "America/Argentina/Buenos_Aires";
 const RENEWABLE_STATUSES = ["active", "pending_change"];
 
@@ -960,6 +962,7 @@ async function keepSubscriptionActiveAfterAnyPayment({
 }
 
 export async function suspendOverdueSubscriptions({ periodKey, now = new Date(), force = false } = {}) {
+  await ensureServiceCatalogLoaded();
   const dates = periodDates(periodKey);
   if (!force && now < dates.suspendAt) {
     return { ok: true, skipped: true, reason: "BEFORE_SUSPENSION_DATE", periodKey };
@@ -982,7 +985,7 @@ export async function suspendOverdueSubscriptions({ periodKey, now = new Date(),
         if (!freshCycle || !["pending", "overdue"].includes(freshCycle.billing.status)) return;
 
         const subscription = await ServiceSubscription.findById(freshCycle.subscription).session(session);
-        if (!subscription) return;
+        if (!subscription || isStandaloneFixedService(subscription.serviceKey)) return;
 
         const paymentProtection = await keepSubscriptionActiveAfterAnyPayment({
           cycle: freshCycle,
@@ -1065,6 +1068,7 @@ async function invalidateCycleCredits({ cycle, user, now, session }) {
 }
 
 export async function terminateUnpaidSubscriptions({ periodKey, now = new Date(), force = false } = {}) {
+  await ensureServiceCatalogLoaded();
   const dates = periodDates(periodKey);
   if (!force && now < dates.terminateAt) {
     return { ok: true, skipped: true, reason: "BEFORE_TERMINATION_DATE", periodKey };
@@ -1095,7 +1099,7 @@ export async function terminateUnpaidSubscriptions({ periodKey, now = new Date()
         const user = subscription
           ? await User.findById(subscription.user).session(session)
           : null;
-        if (!subscription || !user) return;
+        if (!subscription || !user || isStandaloneFixedService(subscription.serviceKey)) return;
 
         const paymentProtection = await keepSubscriptionActiveAfterAnyPayment({
           cycle: freshCycle,
