@@ -9,6 +9,7 @@ import {
   renderAdminMetaPanel,
   renderAdminDetailPanel,
   renderRowCard,
+  renderUnifiedMailFooter,
 } from "./ui.js";
 
 const MAIL_ASSET_BASE = `${BRAND_URL.replace(/\/$/, "")}/images`;
@@ -227,8 +228,51 @@ function admissionSummary(adm = {}, user = null) {
       ? "NO"
       : cleanStr(s2.acceptedTerms);
 
+  // Los formularios nuevos guardan la salud y el deporte en step2.
+  // Se respetan los datos de las admisiones anteriores como respaldo.
+  const isPerformance = String(adm?.formType || s1.formType || "").toUpperCase() === "PERFORMANCE" ||
+    ["RECOVERY", "TRAINING"].includes(String(s1.performanceGoal || s2.performanceGoal || "").toUpperCase());
+  const performanceGoal = String(s1.performanceGoal || s2.performanceGoal || "").toUpperCase();
+  const yn = (v, detail = "") => v === "SI" && detail ? `SI (${cleanStr(detail)})` : cleanStr(v);
+  const newValues = isPerformance ? {
+    formLabel: performanceGoal === "RECOVERY" ? "Necesito recuperarme" : performanceGoal === "TRAINING" ? "Necesito entrenar" : "Performance",
+    healthInsurancePlan: cleanStr(s1.healthInsurancePlan),
+    consultationReason: cleanStr(s2.consultationReason),
+    injuryDate: s2.injuryDateUnknown ? "No recuerdo" : cleanStr(s2.injuryDate),
+    symptomStartDate: s2.symptomStartUnknown ? "No recuerdo" : cleanStr(s2.symptomStartDate),
+    medicalReferral: cleanStr(s2.medicalReferral),
+    doctorName: cleanStr(s2.doctorName),
+    medicalOrderDate: s2.noMedicalOrder ? "No tengo orden médica" : cleanStr(s2.medicalOrderDate),
+    diagnosticStudies: Array.isArray(s2.diagnosticStudies) ? s2.diagnosticStudies.map(x => x === "OTRO" ? `Otro (${cleanStr(s2.diagnosticStudyOther)})` : x).join(", ") : "-",
+    discomfortScale: cleanStr(s2.discomfortScale),
+    mobilityLimitation: cleanStr(s2.mobilityLimitation),
+    heartDifficulty: yn(s2.heartDifficulty, s2.heartDifficultyDetail),
+    diabetesNew: yn(s2.diabetes, s2.diabetesType),
+    bloodPressureNew: cleanStr(s2.bloodPressure),
+    pregnantNew: yn(s2.pregnant, s2.pregnantWeeks ? `${s2.pregnantWeeks} semanas` : ""),
+    contraindicationNew: yn(s2.hasContraindication, s2.contraindicationDetail),
+    oncologicProcess: cleanStr(s2.oncologicProcess),
+    medicationNew: yn(s2.takesMedication, s2.medicationDetail),
+    injuryNew: yn(s2.hadInjuryLastYear, s2.injuryDetail),
+    regularSport: cleanStr(s2.regularSport),
+    sportNameNew: cleanStr(s2.sportName || s2.competitiveSportName),
+    sportLevelNew: cleanStr(s2.sportLevel || s2.currentSportLevel),
+    positionNew: cleanStr(s2.position),
+    lastNormalTraining: cleanStr(s2.lastNormalTraining || s2.lastRegularTraining),
+    lastMedicalExamNew: cleanStr(s2.lastMedicalExam),
+    performanceCondition: yn(s2.performanceCondition, s2.performanceConditionDetail),
+    smokesNew: yn(s2.smokes, s2.cigarettesPerDay ? `${s2.cigarettesPerDay} cigarrillos diarios` : ""),
+    fitnessLevelNew: cleanStr(s2.fitnessLevel),
+    chronicPain: yn(s2.chronicPain, s2.chronicPainDetail),
+    competitiveSport: cleanStr(s2.competitiveSport),
+    weeklySportHours: cleanStr(s2.weeklySportHours),
+  } : { formLabel: "Admisión", healthInsurancePlan: cleanStr(s1.healthInsurancePlan) };
+
   return {
     admissionId,
+    ...newValues,
+    isPerformance,
+    performanceGoal,
     publicId,
     createdDate,
     createdTime,
@@ -336,19 +380,37 @@ function renderSectionPanel(title, rows = []) {
 }
 
 function buildAdmissionEmail({ title, preheader, icon = "✓", innerHtml }) {
-  const exact = buildExactMail({
-    brandName: BRAND_NAME,
-    title,
-    preheader,
-    icon,
-    innerHtml,
-  });
-
+  const safeTitle = escapeHtml(title).replace(/\n/g, "<br />");
   return buildEmailLayout({
-    title: exact.title,
-    preheader: exact.preheader,
-    bodyHtml: exact.bodyHtml,
+    title: `${BRAND_NAME} · ${title.replace(/\n/g, " ")}`,
+    preheader,
     footerNote: "",
+    bodyHtml: `
+      <style>
+        @media only screen and (max-width:560px) {
+          .adm-mail-card { border-radius:22px !important; }
+          .adm-mail-body { padding:24px 22px 30px !important; }
+          .adm-mail-title { font-size:25px !important; line-height:30px !important; }
+        }
+      </style>
+      <table role="presentation" cellpadding="0" cellspacing="0" width="100%" style="border-collapse:collapse;">
+        <tr><td align="center">
+          <table role="presentation" cellpadding="0" cellspacing="0" width="100%" class="adm-mail-card" style="max-width:410px;border-collapse:separate;border-spacing:0;background:#FBFBFB;border-radius:28px;overflow:hidden;">
+            <tr><td style="background:#0A0A0A;padding:22px 23px 26px;text-align:left;">
+              <table role="presentation" cellpadding="0" cellspacing="0" width="100%"><tr>
+                <td align="left" valign="top">${renderMailCheckIcon(34)}</td>
+                <td align="right" valign="top">${renderMailHeaderLogo(34)}</td>
+              </tr></table>
+              <div class="adm-mail-title" style="padding-top:20px;color:#FFFFFF;font-family:Arial,Helvetica,sans-serif;font-size:29px;line-height:34px;letter-spacing:-.7px;font-weight:750;text-align:left;">${safeTitle}</div>
+            </td></tr>
+            <tr><td class="adm-mail-body" style="padding:27px 26px 30px;font-family:Arial,Helvetica,sans-serif;color:#111111;text-align:center;">
+              ${innerHtml}
+            </td></tr>
+            ${renderUnifiedMailFooter({ className: "adm-mail-footer" })}
+          </table>
+        </td></tr>
+      </table>
+    `,
   });
 }
 
@@ -393,7 +455,7 @@ function buildAdminAdmissionVisualEmail({
                     </table>
                   </td>
                 </tr>
-                <tr><td class="duo-admin-footer" style="background:#0A0A0A; padding:40px 48px 42px; border-radius:0 0 28px 28px; font-family:Arial, Helvetica, sans-serif;"><table role="presentation" cellpadding="0" cellspacing="0" width="100%" style="border-collapse:collapse; width:100%;"><tr><td valign="middle" style="width:42%; color:#ffffff;">${renderMailFooterBrand()}</td><td valign="middle" align="right" class="duo-footer-info" style="width:58%; color:#ffffff; font-size:9px; line-height:13px; font-weight:500; letter-spacing:0.2px;"><div style="font-weight:900; letter-spacing:2.8px;">DUOCLUB.AR</div><div>+54 249 420 7343</div><div>Av. Santamaría 54, Tandil.</div>${renderMailFooterIcons()}</td></tr></table></td></tr>
+                                 ${renderUnifiedMailFooter({ className: "duo-admin-footer" })}
               </table>
             </td></tr>
           </table>
@@ -429,6 +491,7 @@ export async function sendAdminAdmissionCompletedEmail(
 
   const text = [
     "Formulario de admisión completado (Step1 + Step2)",
+    `Tipo de consulta: ${s.formLabel}`,
     "",
     `Código: #${s.publicId}`,
     `AdmissionId: ${s.admissionId}`,
@@ -497,7 +560,41 @@ export async function sendAdminAdmissionCompletedEmail(
     preheader: `Admisión completa #${s.publicId}`,
     heading: "Formulario completo",
     introHtml: `Se completó un formulario de admisión de <b>${escapeHtml(s.fullName)}</b>.<br />Revisá toda la información cargada a continuación.`,
-    bodyHtml: `
+    bodyHtml: s.isPerformance ? `
+      ${renderAdminMetaPanel([{ label: "Código", value: `#${s.publicId}` }, { label: "Tipo de consulta", value: s.formLabel }])}
+      ${renderSectionPanel("Datos personales", [
+        { label: "Nombre", value: s.fullName }, { label: "Email", value: s.email },
+        { label: "Teléfono", value: s.phone }, { label: "Fecha de nacimiento", value: s.birth },
+        { label: "Altura (cm)", value: s.height }, { label: "Peso (kg)", value: s.weight },
+        { label: "Obra social", value: s.healthInsuranceProvider }, { label: "Plan", value: s.healthInsurancePlan },
+      ])}
+      ${s.performanceGoal === "RECOVERY" ? renderSectionPanel("Acerca de tu consulta", [
+        { label: "Motivo", value: s.consultationReason }, { label: "Fecha lesión", value: s.injuryDate },
+        { label: "Comienzo síntomas", value: s.symptomStartDate }, { label: "Derivación médica", value: s.medicalReferral },
+        { label: "Médico", value: s.doctorName }, { label: "Orden médica", value: s.medicalOrderDate },
+        { label: "Estudios", value: s.diagnosticStudies }, { label: "Malestar (1–10)", value: s.discomfortScale },
+        { label: "Movilidad", value: s.mobilityLimitation },
+      ]) : ""}
+      ${renderSectionPanel("Salud general", [
+        ...(s.performanceGoal === "RECOVERY" ? [{label:"Dificultad cardíaca",value:s.heartDifficulty}] : [{label:"Último examen médico",value:s.lastMedicalExamNew}, {label:"Condición que afecte rendimiento",value:s.performanceCondition}, {label:"Fuma",value:s.smokesNew}]),
+        {label:"Diabetes",value:s.diabetesNew}, {label:"Presión arterial",value:s.bloodPressureNew},
+        {label:"Embarazo",value:s.pregnantNew}, {label:"Contraindicación",value:s.contraindicationNew},
+        {label:"Proceso oncológico",value:s.oncologicProcess},
+        ...(s.performanceGoal === "RECOVERY" ? [{label:"Medicación",value:s.medicationNew}] : []),
+        {label:"Lesiones último año",value:s.injuryNew},
+      ])}
+      ${renderSectionPanel("Condición física y deporte", [
+        ...(s.performanceGoal === "RECOVERY" ? [{label:"Práctica habitual",value:s.regularSport}] : [{label:"Condición física",value:s.fitnessLevelNew},{label:"Dolor crónico",value:s.chronicPain},{label:"Deporte competitivo",value:s.competitiveSport}]),
+        {label:"Deporte",value:s.sportNameNew}, {label:"Nivel",value:s.sportLevelNew},
+        {label:"Posición",value:s.positionNew}, {label:"Último entrenamiento normal",value:s.lastNormalTraining},
+        ...(s.performanceGoal === "TRAINING" ? [{label:"Horas semanales",value:s.weeklySportHours}] : []),
+      ])}
+      ${renderSectionPanel("Nuevo plan", [
+        {label:"Objetivos",value:s.immediateGoal},{label:"Días preferenciales",value:s.preferredDays},
+        {label:"Rango horario",value:s.idealSchedule},{label:"Sesiones semanales",value:s.weeklySessions},
+        {label:"Aceptó términos",value:s.acceptsConsent},
+      ])}
+    ` : `
       ${renderAdminMetaPanel([
         { label: "Código", value: `#${s.publicId}` },
         { label: "AdmissionId", value: s.admissionId },
