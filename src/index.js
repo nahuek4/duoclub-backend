@@ -137,10 +137,17 @@ const apiLimiter = rateLimit({
   legacyHeaders: false,
 });
 
-app.use(
-  ["/auth", "/appointments", "/waitlist", "/api/auth", "/api/appointments", "/api/waitlist"],
-  apiLimiter
-);
+// Contador independiente: consultar agenda no consume intentos de acceso.
+const authLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 200,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: "Demasiadas solicitudes de acceso. Esperá a que termine el bloqueo temporal antes de reintentar." },
+});
+
+app.use(["/auth", "/api/auth"], authLimiter);
+app.use(["/appointments", "/waitlist", "/api/appointments", "/api/waitlist"], apiLimiter);
 
 /* =========================
    STATIC (UPLOADS)
