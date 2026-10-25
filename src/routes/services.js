@@ -7,8 +7,56 @@ import ServiceDefinition, {
 } from "../models/ServiceDefinition.js";
 import { protect, adminOnly } from "../middleware/auth.js";
 import { logActivity } from "../lib/activityLogger.js";
+import { invalidateServiceCatalogCache } from "../services/serviceCatalogRuntime.js";
 
 const router = express.Router();
+
+export function validateReservationRules(body) {
+  const booking = body?.minBookingMinutes;
+  const cancellation = body?.cancellationCutoffHours;
+  if (typeof booking !== "number" || !Number.isInteger(booking) || booking < 0 || booking > 43200) {
+    throw new Error("La anticipación para reservar debe ser de 0 a 43200 minutos enteros.");
+  }
+  const cancellationMinutes = cancellation * 60;
+  if (typeof cancellation !== "number" || !Number.isFinite(cancellation) || cancellation < 0 || cancellation > 720 ||
+    Math.abs(cancellationMinutes - Math.round(cancellationMinutes)) > 0.000001) {
+    throw new Error("La anticipación de cancelación debe ser de 0 a 720 horas, expresada en minutos enteros.");
+  }
+  return { minBookingMinutes: booking, cancellationCutoffHours: cancellation };
+}
+
+router.patch("/admin/catalog/:serviceKey/reservation-rules", protect, adminOnly, async (req, res) => {
+  let payload;
+  try { payload = validateReservationRules(req.body); }
+  catch (error) { return res.status(400).json({ error: error.message }); }
+  try {
+    const serviceKey = String(req.params.serviceKey || "").trim().toUpperCase();
+    // Si el catálogo todavía usa el fallback, materializar todos sus servicios sin sobrescribir existentes.
+    if (!(await ServiceDefinition.exists({}))) {
+      await ServiceDefinition.bulkWrite(CORE_SERVICE_DEFINITIONS.map(item => ({ updateOne: {
+        filter: { serviceKey: item.serviceKey }, update: { $setOnInsert: item }, upsert: true,
+      } })));
+    }
+    let service = await ServiceDefinition.findOne({ serviceKey });
+    if (!service) {
+      const fallback = CORE_SERVICE_DEFINITIONS.find(item => item.serviceKey === serviceKey);
+      if (!fallback) return res.status(404).json({ error: "Servicio no encontrado." });
+      service = new ServiceDefinition(fallback);
+    }
+    if (service.legacy) return res.status(409).json({ error: "Los servicios históricos no se pueden editar." });
+    const before = { minBookingMinutes: service.minBookingMinutes, cancellationCutoffHours: service.cancellationCutoffHours };
+    Object.assign(service, payload, { updatedBy: req.user?._id || req.user?.id || null });
+    await service.save();
+    invalidateServiceCatalogCache();
+    await logActivity({ req, category: "services", action: "service_reservation_rules_updated", entity: "service_definition",
+      entityId: service._id, title: "Reglas de reserva actualizadas", description: `Se actualizaron las reglas de ${service.name}.`,
+      meta: { serviceKey }, diff: { before, after: payload } });
+    return res.json({ ok: true, item: { ...service.toObject(), serviceKey } });
+  } catch (error) {
+    if (error?.code === 11000) return res.status(409).json({ error: "El servicio cambió mientras guardabas. Actualizá e intentá nuevamente." });
+    return res.status(500).json({ error: "No se pudieron guardar las reglas del servicio." });
+  }
+});
 
 // STEP3B3B_PUBLIC_DYNAMIC_SERVICE_CATALOG
 // El runtime ya soporta servicios dinámicos. La visibilidad pública depende del

@@ -23,6 +23,8 @@ import { syncExtraSessionNoticeForUserService } from "../services/subscriptions/
 import { assertSubscriptionServiceAccess } from "../services/subscriptions/subscriptionAccess.js";
 import { creditExpiryForDate } from "../utils/creditExpiry.js";
 
+import { ensureServiceCatalogLoaded, serviceMinBookingMinutes, serviceCancellationCutoffHours } from "../services/serviceCatalogRuntime.js";
+
 const router = express.Router();
 
 /* =========================
@@ -192,8 +194,7 @@ function validateBookingWindow(slotDate) {
 function getMinBookingMinutesForService(serviceName) {
   const sk = serviceToKey(serviceName);
   return (
-    MIN_BOOKING_MINUTES_BY_SERVICE[sk] ??
-    MIN_BOOKING_MINUTES_BY_SERVICE.OTHER
+    serviceMinBookingMinutes(sk || serviceName, MIN_BOOKING_MINUTES_BY_SERVICE[sk] ?? MIN_BOOKING_MINUTES_BY_SERVICE.OTHER)
   );
 }
 
@@ -1525,7 +1526,8 @@ const CANCELLATION_POLICY_BY_SERVICE = {
 
 function getCancellationPolicyForService(serviceName) {
   const sk = serviceToKey(serviceName);
-  return CANCELLATION_POLICY_BY_SERVICE[sk] || CANCELLATION_POLICY_BY_SERVICE.OTHER;
+  const policy = CANCELLATION_POLICY_BY_SERVICE[sk] || CANCELLATION_POLICY_BY_SERVICE.OTHER;
+  return { ...policy, refundCutoffHours: serviceCancellationCutoffHours(sk || serviceName, policy.refundCutoffHours) };
 }
 
 function getMonthKey(dateValue = new Date()) {
@@ -2887,6 +2889,11 @@ router.post("/waitlist/claim", async (req, res, next) => {
    AUTH required
 ========================= */
 router.use(protect);
+// Una sola carga compartida del catálogo, con el caché existente, para aplicar reglas por servicio.
+router.use(async (_req, _res, next) => {
+  try { await ensureServiceCatalogLoaded(); next(); }
+  catch (error) { next(error); }
+});
 
 /* =========================
    POST /appointments/admin/:userId/complete-first-evaluation
