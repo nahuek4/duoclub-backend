@@ -23,7 +23,7 @@ import { syncExtraSessionNoticeForUserService } from "../services/subscriptions/
 import { assertSubscriptionServiceAccess } from "../services/subscriptions/subscriptionAccess.js";
 import { creditExpiryForDate } from "../utils/creditExpiry.js";
 
-import { ensureServiceCatalogLoaded, serviceMinBookingMinutes, serviceCancellationCutoffHours } from "../services/serviceCatalogRuntime.js";
+import { ensureServiceCatalogLoaded, serviceMinBookingMinutes, serviceCancellationCutoffHours, allowedTimesForService } from "../services/serviceCatalogRuntime.js";
 
 const router = express.Router();
 
@@ -263,9 +263,10 @@ function getTurnoFromTime(time) {
   const h = Number(hStr);
   const m = Number(mStr);
 
-  if (h >= 7 && h <= 12) return "maniana";
+  if (!Number.isInteger(h) || !Number.isInteger(m) || h < 0 || h > 23 || m < 0 || m > 59) return "";
+  if (h <= 12) return "maniana";
   if (h >= 13 && h <= 17) return "tarde";
-  if (h >= 18 && h <= 20) return "noche";
+  if (h >= 18) return "noche";
 
   return "";
 }
@@ -1045,27 +1046,6 @@ const RF_NAME = "Reeducación funcional";
 const KD_NAME = "Kinefilaxia Deportiva";
 const SYN_NAME = "Synergy";
 
-const TIMES_EP_WEEKDAY = [
-  "07:00", "08:00", "09:00", "10:00",
-  "11:00", "12:00", "13:00",
-  "14:00", "15:00", "16:00", "17:00",
-  "18:00", "19:00", "20:00",
-];
-
-// DUO PERFORMANCE: lunes a viernes de 07:00 a 19:00.
-// Los turnos duran 60 minutos, por eso el último inicio es 18:00.
-const TIMES_PERFORMANCE_WEEKDAY = [
-  "07:00", "08:00", "09:00", "10:00",
-  "11:00", "12:00", "13:00", "14:00",
-  "15:00", "16:00", "17:00", "18:00",
-];
-
-const TIMES_DEFAULT = [
-  "07:00", "08:00", "09:00", "10:00",
-  "11:00", "12:00", "13:00",
-  "18:00", "19:00", "20:00",
-];
-
 function isTherapyService(serviceNameOrKey) {
   const sk = serviceToKey(serviceNameOrKey);
   return ["RA", "RF", "SYN"].includes(sk);
@@ -1078,35 +1058,13 @@ function capacityZoneForService(serviceNameOrKey) {
   return "";
 }
 
-function getRehabTimesForDate(dateStr) {
-  return getPerformanceTimesForDate(dateStr);
-}
-
-function getPerformanceTimesForDate(dateStr) {
-  if (!dateStr || isSunday(dateStr)) return [];
-  if (isSaturday(dateStr)) return [];
-
-  const weekday = getWeekdayMondayFirst(dateStr);
-  if (weekday >= 1 && weekday <= 5) return TIMES_PERFORMANCE_WEEKDAY;
-
-  return [];
-}
-
+function getRehabTimesForDate(dateStr) { return allowedTimesForService("RA", dateStr); }
+function getPerformanceTimesForDate(dateStr) { return allowedTimesForService("RF", dateStr); }
 function getTherapySharedTimesForDate(dateStr) {
-  return [...new Set([...getRehabTimesForDate(dateStr), ...getPerformanceTimesForDate(dateStr)])];
+  return [...new Set(["RA", "RF", "SYN"].flatMap(key => allowedTimesForService(key, dateStr)))].sort();
 }
-
 function getAllowedTimesForService(serviceNameOrKey, dateStr = "") {
-  if (!dateStr || isSunday(dateStr)) return [];
-
-  const sk = serviceToKey(serviceNameOrKey);
-
-  if (isSaturday(dateStr)) return [];
-
-  if (sk === "EP") return TIMES_EP_WEEKDAY;
-  if (["RA", "RF", "SYN"].includes(sk)) return getPerformanceTimesForDate(dateStr);
-
-  return [];
+  return dateStr ? allowedTimesForService(serviceToKey(serviceNameOrKey), dateStr) : [];
 }
 
 function isAllowedTimeForService(serviceNameOrKey, dateStr, time) {
@@ -2199,15 +2157,7 @@ function validateBasicSlotRules({ date, time, service, serviceKey }) {
     return { ok: false, error: "Este servicio ya no está habilitado para nuevas reservas." };
   }
 
-  if (isSaturday(date)) {
-    return { ok: false, error: "Los sábados no hay turnos disponibles para este servicio." };
-  }
-
-  if (isSunday(date)) {
-    return { ok: false, error: "Los domingos no hay turnos disponibles." };
-  }
-
-  const timeNorm = String(time).slice(0, 5);
+const timeNorm = String(time).slice(0, 5);
 
   if (!isAllowedTimeForService(normalizedServiceKey, date, timeNorm)) {
     return {
@@ -2259,15 +2209,7 @@ function validateBasicSlotRulesAdmin({ date, time, service, serviceKey, bypassWi
     return { ok: false, error: "Este servicio ya no está habilitado para nuevas reservas." };
   }
 
-  if (isSaturday(date)) {
-    return { ok: false, error: "Los sábados no hay turnos disponibles para este servicio." };
-  }
-
-  if (isSunday(date)) {
-    return { ok: false, error: "Los domingos no hay turnos disponibles." };
-  }
-
-  const timeNorm = String(time).slice(0, 5);
+const timeNorm = String(time).slice(0, 5);
 
   if (!isAllowedTimeForService(normalizedServiceKey, date, timeNorm)) {
     return {
@@ -3437,21 +3379,6 @@ router.get("/availability", async (req, res) => {
 
       // La primera evaluación ya no es obligatoria para reservar otros servicios.
       // El admin puede marcarla como completada, pero no bloquea disponibilidad.
-    }
-
-    if (isSunday(date) || isSaturday(date)) {
-      return res.json({
-        date,
-        service: normalizedServiceName,
-        serviceKey: normalizedServiceKey,
-        slots: times.map((t) => ({
-          time: t,
-          state: "closed",
-          reason: isSunday(date)
-            ? "Domingos no disponibles"
-            : "Sábados no disponibles para este servicio",
-        })),
-      });
     }
 
     const out = [];

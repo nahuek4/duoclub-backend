@@ -107,13 +107,15 @@ function cleanTime(value) {
 }
 
 function normalizeWeeklyHours(value = []) {
+  if (!Array.isArray(value)) throw new Error("Los horarios deben ser una lista de días.");
   const result = [];
   const seen = new Set();
 
   for (const rawDay of Array.isArray(value) ? value : []) {
     const weekday = Number(rawDay?.weekday || 0);
-    if (!Number.isInteger(weekday) || weekday < 1 || weekday > 7) continue;
-    if (seen.has(weekday)) continue;
+    if (!Number.isInteger(weekday) || weekday < 1 || weekday > 7 || seen.has(weekday)) {
+      throw new Error("Revisá los días: deben ser del 1 al 7, sin repetir.");
+    }
     seen.add(weekday);
 
     const ranges = (Array.isArray(rawDay?.ranges) ? rawDay.ranges : [])
@@ -121,7 +123,16 @@ function normalizeWeeklyHours(value = []) {
         from: cleanTime(range?.from),
         to: cleanTime(range?.to),
       }))
-      .filter((range) => range.from && range.to);
+      .sort((a, b) => a.from.localeCompare(b.from));
+    for (let i = 0; i < ranges.length; i++) {
+      const { from, to } = ranges[i];
+      if (!/^([01]\d|2[0-3]):[0-5]\d$/.test(from) ||
+          !/^(([01]\d|2[0-3]):[0-5]\d|24:00)$/.test(to) || to <= from) {
+        throw new Error(`Revisá el día ${weekday}: el cierre debe ser posterior a la apertura y las horas deben ser válidas.`);
+      }
+      if (i && ranges[i - 1].to > from) throw new Error(`Los horarios del día ${weekday} se superponen.`);
+    }
+    if (rawDay?.enabled !== false && !ranges.length) throw new Error(`Agregá un horario al día ${weekday} o desactivalo.`);
 
     result.push({
       weekday,
@@ -366,7 +377,9 @@ router.get("/admin/catalog", protect, adminOnly, async (req, res) => {
 router.post("/admin/catalog", protect, adminOnly, async (req, res) => {
   try {
     const serviceKey = normalizeServiceKey(req.body?.serviceKey);
-    const payload = buildEditablePayload(req.body, { creating: true });
+    let payload;
+    try { payload = buildEditablePayload(req.body, { creating: true }); }
+    catch (error) { return res.status(400).json({ error: error.message }); }
 
     if (!serviceKey || !/^[A-Z][A-Z0-9_]{1,23}$/.test(serviceKey)) {
       return res.status(400).json({
@@ -421,6 +434,46 @@ router.post("/admin/catalog", protect, adminOnly, async (req, res) => {
 });
 
 // PUT /services/admin/catalog/:serviceKey
+// Actualiza únicamente horarios y todos los servicios seleccionados en una transacción.
+router.put("/admin/schedules", protect, adminOnly, async (req, res) => {
+  let session;
+  try {
+    const keys = req.body?.serviceKeys;
+    if (!Array.isArray(keys) || !keys.length || keys.length > 50 ||
+        keys.some(key => typeof key !== "string" || !/^[A-Z][A-Z0-9_]{1,23}$/.test(key)) || new Set(keys).size !== keys.length) {
+      return res.status(400).json({ error: "Elegí uno o más servicios sin repetir." });
+    }
+    if (!Array.isArray(req.body?.weeklyHours)) return res.status(400).json({ error: "Enviá la semana completa de horarios." });
+    let weeklyHours;
+    try { weeklyHours = normalizeWeeklyHours(req.body?.weeklyHours); }
+    catch (error) { return res.status(400).json({ error: error.message }); }
+    session = await mongoose.startSession();
+    let saved;
+    await session.withTransaction(async () => {
+      const services = await ServiceDefinition.find({ serviceKey: { $in: keys } }).session(session);
+      if (services.length !== keys.length || services.some(service => service.legacy)) {
+        throw new Error("SCHEDULE_SELECTION_INVALID");
+      }
+      for (const service of services) {
+        service.weeklyHours = weeklyHours;
+        service.updatedBy = actorId(req);
+        await service.save({ session });
+      }
+      saved = services.map(serializeService);
+    });
+    invalidateServiceCatalogCache();
+    await logActivity({ req, category: "services", action: "service_schedules_updated",
+      entity: "service_definition", title: "Horarios actualizados", description: `Servicios: ${keys.join(", ")}.`,
+      meta: { serviceKeys: keys, weeklyHours } }).catch(() => null);
+    return res.json({ ok: true, items: saved });
+  } catch (error) {
+    const selection = error.message === "SCHEDULE_SELECTION_INVALID";
+    return res.status(selection ? 409 : error.name === "ValidationError" ? 400 : 500).json({
+      error: selection ? "Algún servicio no existe o es histórico. No se modificó ninguno." : error.name === "ValidationError" ? error.message : "No se pudieron guardar los horarios. No se aplicó el cambio conjunto.",
+    });
+  } finally { if (session) await session.endSession(); }
+});
+
 router.put("/admin/catalog/:serviceKey", protect, adminOnly, async (req, res) => {
   try {
     const serviceKey = normalizeServiceKey(req.params?.serviceKey);
@@ -438,7 +491,9 @@ router.put("/admin/catalog/:serviceKey", protect, adminOnly, async (req, res) =>
     }
 
     const before = existing.toObject();
-    const payload = buildEditablePayload(req.body, { creating: false });
+    let payload;
+    try { payload = buildEditablePayload(req.body, { creating: false }); }
+    catch (error) { return res.status(400).json({ error: error.message }); }
 
     if (!payload.name) {
       return res.status(400).json({ error: "Ingresá el nombre del servicio." });
@@ -446,6 +501,7 @@ router.put("/admin/catalog/:serviceKey", protect, adminOnly, async (req, res) =>
 
     Object.assign(existing, payload, { updatedBy: actorId(req) });
     await existing.save();
+    invalidateServiceCatalogCache();
 
     await logActivity({
       req,

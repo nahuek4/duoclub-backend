@@ -241,6 +241,7 @@ serviceDefinitionSchema.pre("validate", function normalizeServiceDefinition() {
     : 100;
 
   const byWeekday = new Map();
+  const scheduleErrors = [];
 
   for (const rawDay of Array.isArray(this.weeklyHours) ? this.weeklyHours : []) {
     const weekday = Number(rawDay?.weekday || 0);
@@ -259,9 +260,9 @@ serviceDefinitionSchema.pre("validate", function normalizeServiceDefinition() {
       const fromMin = minutesOf(current.from);
       const toMin = minutesOf(current.to);
 
-      if (!Number.isFinite(fromMin) || !Number.isFinite(toMin) || toMin <= fromMin) {
-        this.invalidate(
-          "weeklyHours",
+      if (!Number.isFinite(fromMin) || !Number.isFinite(toMin) || toMin <= fromMin || fromMin < 0 || fromMin >= 1440 || toMin > 1440 ||
+          !/^([01]\d|2[0-3]):[0-5]\d$/.test(current.from) || !/^(([01]\d|2[0-3]):[0-5]\d|24:00)$/.test(current.to)) {
+        scheduleErrors.push(
           `Horario inválido para día ${weekday}: ${current.from}-${current.to}.`
         );
         continue;
@@ -269,8 +270,7 @@ serviceDefinitionSchema.pre("validate", function normalizeServiceDefinition() {
 
       const previous = ranges[i - 1];
       if (previous && minutesOf(previous.to) > fromMin) {
-        this.invalidate(
-          "weeklyHours",
+        scheduleErrors.push(
           `Los rangos horarios del día ${weekday} no pueden superponerse.`
         );
       }
@@ -286,6 +286,8 @@ serviceDefinitionSchema.pre("validate", function normalizeServiceDefinition() {
   this.weeklyHours = [...byWeekday.values()].sort(
     (a, b) => a.weekday - b.weekday
   );
+  // Asignar el array borra errores previos de ese path en Mongoose.
+  if (scheduleErrors.length) this.invalidate("weeklyHours", scheduleErrors.join(" "));
 });
 
 serviceDefinitionSchema.index({ active: 1, catalogVisible: 1, sortOrder: 1 });
