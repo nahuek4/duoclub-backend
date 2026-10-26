@@ -83,6 +83,14 @@ function normalizeUpdatePayload(update) {
   return next;
 }
 
+export function effectiveAttendanceStatus(appointment, now = new Date()) {
+  if (!appointment || !["reserved", "completed"].includes(appointment.status)) return "pending";
+  const start = new Date(`${appointment.date}T${appointment.time}:00-03:00`);
+  if (!Number.isFinite(+start) || +start > +now) return "pending";
+  // A past booking is present by default; only an explicit absence overrides it.
+  return appointment.attendanceStatus === "absent" ? "absent" : "present";
+}
+
 // Attendance is independent of billing/completion. Each manual change also serves
 // as a durable in-app notification, atomically stored with the appointment.
 const attendanceEventSchema = new mongoose.Schema({

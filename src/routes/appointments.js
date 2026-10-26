@@ -1,7 +1,7 @@
 import express from "express";
 import mongoose from "mongoose";
 
-import Appointment from "../models/Appointment.js";
+import Appointment, { effectiveAttendanceStatus } from "../models/Appointment.js";
 import User from "../models/User.js";
 import WaitlistEntry from "../models/WaitlistEntry.js";
 import FixedSchedule from "../models/FixedSchedule.js";
@@ -954,7 +954,7 @@ function serializeAppointment(ap) {
     fixedDebtAmount: Number(json?.fixedDebtAmount || 0),
     fixedScheduleId: json?.fixedScheduleId || null,
     completedAt: json?.completedAt || null,
-    attendanceStatus: json?.attendanceStatus || "pending",
+    attendanceStatus: effectiveAttendanceStatus(json),
     attendanceRevision: Number(json?.attendanceRevision || 0),
     attendanceRecordedAt: json?.attendanceRecordedAt || null,
   };
@@ -3093,6 +3093,7 @@ router.get("/me/attendance", async (req, res) => {
       $or: [{ date: { $lt: today } }, { date: today, time: { $lte: time } }] };
     const [result] = await Appointment.aggregate([
       { $match: match },
+      { $set: { attendanceStatus: { $cond: [{ $eq: ["$attendanceStatus", "absent"] }, "absent", "present"] } } },
       { $facet: {
         items: [{ $sort: { date: -1, time: -1, _id: -1 } }, { $skip: (page - 1) * 20 }, { $limit: 20 },
           { $project: { date: 1, time: 1, service: 1, serviceKey: 1, attendanceStatus: { $ifNull: ["$attendanceStatus", "pending"] }, attendanceRecordedAt: 1 } }],
@@ -3119,14 +3120,16 @@ router.patch("/:id/attendance", adminOnly, async (req, res) => {
     const start = new Date(`${ap.date}T${ap.time}:00-03:00`);
     if (!Number.isFinite(+start) || +start > Date.now()) return res.status(409).json({ error: "Podés registrar asistencia desde la hora de inicio del turno." });
     if (Number(ap.attendanceRevision || 0) !== expectedRevision) return res.status(409).json({ error: "La asistencia cambió en otra pantalla. Actualizá los datos antes de modificarla.", code: "ATTENDANCE_CONFLICT" });
-    if ((ap.attendanceStatus || "pending") === status) return res.json({ ok: true, changed: false, appointment: serializeAppointment(ap) });
+    const nextStatus = status === "pending" ? "present" : status;
+    const previousStatus = effectiveAttendanceStatus(ap);
+    if (previousStatus === nextStatus) return res.json({ ok: true, changed: false, appointment: serializeAppointment(ap) });
     const now = new Date();
     const revisionMatch = expectedRevision === 0 ? { $or: [{ attendanceRevision: 0 }, { attendanceRevision: { $exists: false } }] } : { attendanceRevision: expectedRevision };
     const updated = await Appointment.findOneAndUpdate(
       { _id: ap._id, status: { $in: ["reserved", "completed"] }, ...revisionMatch },
-      { $set: { attendanceStatus: status, attendanceRecordedAt: now, attendanceRecordedBy: req.user._id },
+      { $set: { attendanceStatus: nextStatus, attendanceRecordedAt: now, attendanceRecordedBy: req.user._id },
         $inc: { attendanceRevision: 1 },
-        $push: { attendanceEvents: { status, previousStatus: ap.attendanceStatus || "pending", actor: req.user._id, createdAt: now, readAt: null } } },
+        $push: { attendanceEvents: { status: nextStatus, previousStatus, actor: req.user._id, createdAt: now, readAt: null } } },
       { new: true, runValidators: true }
     );
     if (!updated) return res.status(409).json({ error: "El turno cambió. Actualizá los datos antes de modificar la asistencia.", code: "ATTENDANCE_CONFLICT" });
@@ -3702,7 +3705,7 @@ router.get("/", async (req, res) => {
         coach: a?.coach || "",
         creditExpiresAt: a?.creditExpiresAt || null,
         completedAt: a?.completedAt || null,
-        attendanceStatus: a?.attendanceStatus || "pending",
+        attendanceStatus: effectiveAttendanceStatus(a),
         attendanceRevision: Number(a?.attendanceRevision || 0),
         attendanceRecordedAt: a?.attendanceRecordedAt || null,
         userId: String(a?.user || ""),
