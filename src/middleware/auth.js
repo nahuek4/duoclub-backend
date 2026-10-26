@@ -1,3 +1,4 @@
+import { getAccountPaymentAccess, isAllowedDuringPaymentFreeze } from "../services/subscriptions/subscriptionAccess.js";
 import jwt from "jsonwebtoken";
 import User from "../models/User.js";
 
@@ -68,6 +69,16 @@ export async function protect(req, res, next) {
       });
     }
 
+    try {
+      req.paymentAccess = await getAccountPaymentAccess({ userId: user._id, role });
+    } catch (error) {
+      console.error("payment access check failed", error?.message);
+      return res.status(503).json({ error: "No se pudo verificar el estado del plan. Intentá nuevamente." });
+    }
+    if (req.paymentAccess.frozen && !isAllowedDuringPaymentFreeze(req)) {
+      return res.status(403).json({ code: "ACCOUNT_PAYMENT_FROZEN", paymentAccess: req.paymentAccess,
+        error: "Cuenta congelada por falta de pago. Podés ingresar y hacer un pedido de créditos." });
+    }
     return next();
   } catch (err) {
     console.error("protect() error:", err?.message || err);

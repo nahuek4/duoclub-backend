@@ -243,10 +243,10 @@ function buildRenewalEmailHtml({
                   }
 
                   <div style="margin-top:18px;padding:14px 15px;background:#FFF7D6;border-radius:15px;font-size:12px;line-height:18px;color:#332900;">
-                    Podés utilizar el plan desde el día 1. Si después del día 10 no registramos ningún pago,
-                    el servicio se suspende temporalmente. Si registramos un pago parcial, tu plan continúa activo,
+                    Podés utilizar el plan desde el día 1. Si desde el día 10 no registramos ningún pago,
+                    la cuenta queda congelada para reservas y modificaciones; podés ingresar y pedir créditos. Si registramos un pago parcial, tu plan continúa activo,
                     conservás tus turnos fijos y el importe abonado se descuenta del saldo pendiente.
-                    Si al día 21 no registramos ningún pago, el plan puede darse de baja y liberarse los horarios fijos.
+                    Si al día 20 no registramos ningún pago, el plan puede darse de baja y liberarse los horarios fijos.
                   </div>
 
                   <div style="text-align:center;margin-top:22px;">
@@ -305,9 +305,9 @@ export async function sendSubscriptionRenewalEmail({
     `Vencimiento de pago: ${dateAR(dueAt)}`,
     "",
     `Ya acreditamos ${monthlySessions} ${Number(monthlySessions) === 1 ? "sesión" : "sesiones"} para este período.`,
-    "Si después del día 10 no registramos ningún pago, el servicio se suspende temporalmente.",
+    "Si desde el día 10 no registramos ningún pago, la cuenta queda congelada para reservas y modificaciones; podés ingresar y pedir créditos.",
     "Si registramos un pago parcial, tu plan continúa activo, conservás tus turnos fijos y el importe abonado se descuenta del saldo pendiente.",
-    "Si al día 21 no registramos ningún pago, el plan puede darse de baja y liberarse los horarios fijos.",
+    "Si al día 20 no registramos ningún pago, el plan puede darse de baja y liberarse los horarios fijos.",
     Number(extraSessionsNeeded || 0) > 0
       ? `Este mes necesitás ${Number(extraSessionsNeeded)} ${Number(extraSessionsNeeded) === 1 ? "sesión adicional" : "sesiones adicionales"} para cubrir todos tus turnos fijos.`
       : "",

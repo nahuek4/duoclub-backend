@@ -1,3 +1,4 @@
+import { getAccountPaymentAccess } from "../services/subscriptions/subscriptionAccess.js";
 // backend/src/routes/auth.js
 import express from "express";
 import bcrypt from "bcryptjs";
@@ -498,10 +499,11 @@ router.post("/login", async (req, res) => {
         .json({ error: "Cuenta suspendida. Contactá al administrador." });
     }
 
-    user = await syncPastAppointmentsForUser(user);
+    const paymentAccess = await getAccountPaymentAccess({ userId: user._id, role: user.role });
+    if (!paymentAccess.frozen) user = await syncPastAppointmentsForUser(user);
 
     const token = signToken(user);
-    return res.json({ token, user: serializeUser(user) });
+    return res.json({ token, user: { ...serializeUser(user), paymentAccess } });
   } catch (err) {
     console.error("Error en POST /auth/login:", err);
     return res.status(500).json({ error: "Error al iniciar sesión." });
@@ -866,9 +868,10 @@ router.get("/me", protect, async (req, res) => {
     let user = await User.findById(req.user._id);
     if (!user) return res.status(401).json({ error: "Usuario no encontrado." });
 
-    user = await syncPastAppointmentsForUser(user);
+    const paymentAccess = req.paymentAccess;
+    if (!paymentAccess?.frozen) user = await syncPastAppointmentsForUser(user);
 
-    return res.json(serializeUser(user));
+    return res.json({ ...serializeUser(user), paymentAccess });
   } catch (err) {
     console.error("Error en GET /auth/me:", err);
     return res.status(500).json({ error: "Error al obtener el usuario." });

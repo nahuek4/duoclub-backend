@@ -1,3 +1,4 @@
+import { cycleHasAnyPayment } from "../services/subscriptions/subscriptionAccess.js";
 import express from "express";
 import mongoose from "mongoose";
 
@@ -143,6 +144,10 @@ function serializeCycle(cycle) {
     payMethod: cycle.planSnapshot?.payMethod || "",
     amount: asMoney(cycle.billing?.total),
     billingStatus: cycle.billing?.status || "",
+    hasAnyPayment: cycleHasAnyPayment(cycle),
+    amountReceived: asMoney(cycle.billing?.amountReceived),
+    amountPaid: asMoney(cycle.billing?.amountPaid),
+    balanceDue: asMoney(cycle.billing?.balanceDue),
     issuedAt: cycle.billing?.issuedAt || null,
     dueAt: cycle.billing?.dueAt || null,
     paidAt: cycle.billing?.paidAt || null,

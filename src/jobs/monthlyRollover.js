@@ -619,6 +619,7 @@ export async function runMonthlyRollover({ force = false } = {}) {
   // preview, día 1, suspensión y baja. `force` solo fuerza la renovación/cierre
   // mensual; nunca fuerza una baja anticipada por falta de pago.
   const lifecycle = await runSubscriptionLifecycleTick({ now, force });
+  if (!lifecycle.ok) return { ok: false, monthKey, lifecycle, fixed: { skipped: true, reason: "LIFECYCLE_FAILED" } };
 
   if (!force && !isMonthlyRunWindow(now)) {
     return {
@@ -671,7 +672,10 @@ export async function runMonthlyRollover({ force = false } = {}) {
   };
 }
 
+let lifecycleTickRunning = false;
 export async function monthlyRolloverTick(options = {}) {
+  if (lifecycleTickRunning) return { skipped: true, reason: "TICK_RUNNING" };
+  lifecycleTickRunning = true;
   try {
     const result = await runMonthlyRollover(options);
     console.log("[MONTHLY] tick", result);
@@ -679,6 +683,8 @@ export async function monthlyRolloverTick(options = {}) {
   } catch (err) {
     console.log("[MONTHLY] tick error", err?.message || err);
     return { ok: false, error: err?.message || String(err) };
+  } finally {
+    lifecycleTickRunning = false;
   }
 }
 
@@ -690,7 +696,7 @@ export function startMonthlyRolloverScheduler({ everyMinutes } = {}) {
   const enabled = String(process.env.MONTHLY_ROLLOVER_ENABLED || "true") !== "false";
   const minutes = Math.max(
     5,
-    Number(everyMinutes || process.env.MONTHLY_ROLLOVER_EVERY_MINUTES || 60)
+    Number(everyMinutes || process.env.MONTHLY_ROLLOVER_EVERY_MINUTES || 5)
   );
 
   console.log("[MONTHLY] scheduler starting", { enabled, everyMinutes: minutes });

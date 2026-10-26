@@ -1,10 +1,11 @@
+import { cycleHasAnyPayment } from "./subscriptionAccess.js";
 // Motor mensual de suscripciones DUO.
 // Reglas:
 // - 7 días antes: aviso interno de renovación.
 // - Día 1: ciclo mensual + sesiones del plan, aunque el pago siga pendiente.
-// - Día 11 impago: suspende SOLO el servicio. Conserva horarios fijos hasta día 20.
-// - Día 21 impago: libera turnos fijos, invalida saldo del ciclo y termina la suscripción.
-// - Pago antes del día 21: reactiva automáticamente si estaba suspendida.
+// - Día 10 sin ningún pago: suspende el plan; el control de acceso congela la cuenta.
+// - Día 20 impago: libera turnos fijos, invalida saldo del ciclo y termina la suscripción.
+// - Pago antes del día 20: reactiva automáticamente si estaba suspendida.
 // No genera deuda. La renovación del día 1 envía un mail idempotente al usuario.
 
 import mongoose from "mongoose";
@@ -107,10 +108,10 @@ export function periodDates(periodKey) {
   return {
     start: localDate(periodKey, 1, false),
     end: localDate(periodKey, lastDay, true),
-    dueAt: localDate(periodKey, 10, true),
-    suspendAt: localDate(periodKey, 11, false),
-    fixedSlotsProtectedUntil: localDate(periodKey, 20, true),
-    terminateAt: localDate(periodKey, 21, false),
+    dueAt: localDate(periodKey, 9, true),
+    suspendAt: localDate(periodKey, 10, false),
+    fixedSlotsProtectedUntil: localDate(periodKey, 19, true),
+    terminateAt: localDate(periodKey, 20, false),
   };
 }
 
@@ -878,19 +879,6 @@ export async function renewPeriodSubscriptions({ periodKey, now = new Date(), fo
 // - el saldo monetario puede seguir pendiente/overdue;
 // - una suscripción ya terminated_for_non_payment NO se restaura desde acá,
 //   porque sus turnos fijos pudieron haber sido liberados y requieren control de cupo.
-function cycleHasAnyPayment(cycle) {
-  const billing = cycle?.billing || {};
-  if (clean(billing.status).toLowerCase() === "paid") return true;
-
-  if (asMoney(billing.amountReceived) > 0) return true;
-  if (asMoney(billing.amountPaid) > 0) return true;
-
-  return (Array.isArray(billing.payments) ? billing.payments : []).some(
-    (payment) =>
-      asMoney(payment?.amount) > 0 ||
-      asMoney(payment?.appliedAmount) > 0
-  );
-}
 
 async function keepSubscriptionActiveAfterAnyPayment({
   cycle,
@@ -902,7 +890,7 @@ async function keepSubscriptionActiveAfterAnyPayment({
     return { protected: false, reactivated: false };
   }
 
-  // Una baja día 21 ya ejecutada no se revierte automáticamente.
+  // Una baja día 20 ya ejecutada no se revierte automáticamente.
   if (subscription.status === "terminated_for_non_payment") {
     return {
       protected: true,
@@ -975,6 +963,7 @@ export async function suspendOverdueSubscriptions({ periodKey, now = new Date(),
   });
 
   let suspended = 0;
+  const errors = [];
   let protectedByPayment = 0;
   let reactivatedByPayment = 0;
   for (const cycle of cycles) {
@@ -985,7 +974,10 @@ export async function suspendOverdueSubscriptions({ periodKey, now = new Date(),
         if (!freshCycle || !["pending", "overdue"].includes(freshCycle.billing.status)) return;
 
         const subscription = await ServiceSubscription.findById(freshCycle.subscription).session(session);
-        if (!subscription || isStandaloneFixedService(subscription.serviceKey)) return;
+        if (!subscription || isStandaloneFixedService(subscription.serviceKey) ||
+            subscription.currentPeriodKey !== freshCycle.periodKey ||
+            !["active", "pending_change", "suspended"].includes(subscription.status) ||
+            !(Number(freshCycle.billing?.total) > 0)) return;
 
         const paymentProtection = await keepSubscriptionActiveAfterAnyPayment({
           cycle: freshCycle,
@@ -1018,7 +1010,7 @@ export async function suspendOverdueSubscriptions({ periodKey, now = new Date(),
 
         subscription.status = "suspended";
         subscription.suspendedAt = subscription.suspendedAt || now;
-        subscription.suspensionReason = "Pago mensual pendiente después del día 10.";
+        subscription.suspensionReason = "Pago mensual pendiente desde el día 10.";
         subscription.fixedSlotsProtectedUntil = dates.fixedSlotsProtectedUntil;
         await subscription.save({ session });
 
@@ -1030,7 +1022,7 @@ export async function suspendOverdueSubscriptions({ periodKey, now = new Date(),
           periodKey,
           type: "suspended",
           title: `Servicio ${subscription.serviceKey} suspendido`,
-          message: "El pago del plan está pendiente. Tus horarios fijos se conservan hasta el día 20.",
+          message: "El pago del plan está pendiente. Tus horarios fijos se conservan hasta el día 19 inclusive.",
           action: "pay",
           actionRequired: true,
           metadata: { fixedSlotsProtectedUntil: dates.fixedSlotsProtectedUntil },
@@ -1038,13 +1030,16 @@ export async function suspendOverdueSubscriptions({ periodKey, now = new Date(),
         });
         suspended += 1;
       });
+    } catch (error) {
+      errors.push({ cycleId: String(cycle._id), error: error?.message || String(error) });
     } finally {
       await session.endSession();
     }
   }
 
   return {
-    ok: true,
+    ok: errors.length === 0,
+    errors,
     periodKey,
     cycles: cycles.length,
     suspended,
@@ -1085,6 +1080,7 @@ export async function terminateUnpaidSubscriptions({ periodKey, now = new Date()
   let fixedSchedulesReleased = 0;
   let appointmentsReleased = 0;
   let invalidatedSessions = 0;
+  const errors = [];
   let protectedByPayment = 0;
   let reactivatedByPayment = 0;
 
@@ -1099,7 +1095,10 @@ export async function terminateUnpaidSubscriptions({ periodKey, now = new Date()
         const user = subscription
           ? await User.findById(subscription.user).session(session)
           : null;
-        if (!subscription || !user || isStandaloneFixedService(subscription.serviceKey)) return;
+        if (!subscription || !user || isStandaloneFixedService(subscription.serviceKey) ||
+            subscription.currentPeriodKey !== freshCycle.periodKey ||
+            !["active", "pending_change", "suspended"].includes(subscription.status) ||
+            !(Number(freshCycle.billing?.total) > 0)) return;
 
         const paymentProtection = await keepSubscriptionActiveAfterAnyPayment({
           cycle: freshCycle,
@@ -1159,13 +1158,13 @@ export async function terminateUnpaidSubscriptions({ periodKey, now = new Date()
         freshCycle.billing.status = "overdue";
         freshCycle.lifecycle.planStatus = "terminated";
         freshCycle.lifecycle.terminatedAt = now;
-        freshCycle.lifecycle.terminationReason = "Falta de pago al día 21.";
+        freshCycle.lifecycle.terminationReason = "Falta de pago al día 20.";
         await freshCycle.save({ session });
 
         subscription.status = "terminated_for_non_payment";
         subscription.autoRenew = false;
         subscription.terminatedAt = now;
-        subscription.terminationReason = "Falta de pago al día 21.";
+        subscription.terminationReason = "Falta de pago al día 20.";
         subscription.fixedScheduleIds = [];
         await subscription.save({ session });
 
@@ -1184,13 +1183,16 @@ export async function terminateUnpaidSubscriptions({ periodKey, now = new Date()
         });
         terminated += 1;
       });
+    } catch (error) {
+      errors.push({ cycleId: String(cycle._id), error: error?.message || String(error) });
     } finally {
       await session.endSession();
     }
   }
 
   return {
-    ok: true,
+    ok: errors.length === 0,
+    errors,
     periodKey,
     cycles: cycles.length,
     terminated,
@@ -1382,34 +1384,37 @@ export async function previewSubscriptionLifecycle({ periodKey } = {}) {
 export async function runSubscriptionLifecycleTick({ now = new Date(), force = false } = {}) {
   const currentPeriodKey = monthKeyFromDateArgentina(now);
   const nextPeriodKey = addMonthsToMonthKey(currentPeriodKey, 1);
-  const p = arParts(now);
-
-  const preview = await createRenewalPreviewNotices({
-    targetPeriodKey: nextPeriodKey,
-    now,
-    force,
+  const errors = [];
+  const run = async (stage, task) => {
+    try {
+      const result = await task();
+      if (result?.ok === false || result?.errors?.length || Number(result?.errors) > 0) errors.push({ stage, result });
+      return result;
+    } catch (error) {
+      const result = { ok: false, error: error?.message || String(error) };
+      errors.push({ stage, ...result });
+      return result;
+    }
+  };
+  // Recuperar ciclos anteriores pendientes antes de renovar: evita arrastrar
+  // un plan impago si el servidor estuvo detenido durante el cierre de mes.
+  const periods = await SubscriptionBillingCycle.distinct("periodKey", {
+    periodKey: { $lte: currentPeriodKey },
+    "billing.status": { $in: ["pending", "overdue"] },
+    "lifecycle.planStatus": { $in: ["active", "suspended"] },
   });
-
-  const renew = await renewPeriodSubscriptions({
-    periodKey: currentPeriodKey,
-    now,
-    force: false,
-  });
-
-  // Importante: `force` NO adelanta suspensión ni baja. Esas transiciones
-  // respetan siempre los días 11 y 21 para evitar una baja accidental al
-  // ejecutar manualmente el rollover.
-  const suspend = await suspendOverdueSubscriptions({
-    periodKey: currentPeriodKey,
-    now,
-    force: false,
-  });
-
-  const terminate = await terminateUnpaidSubscriptions({
-    periodKey: currentPeriodKey,
-    now,
-    force: false,
-  });
-
-  return { ok: true, currentPeriodKey, nextPeriodKey, preview, renew, suspend, terminate };
+  const enforcement = [];
+  for (const periodKey of [...new Set([...periods, currentPeriodKey])].sort()) {
+    const suspend = await run(`suspend:${periodKey}`, () => suspendOverdueSubscriptions({ periodKey, now }));
+    const terminate = await run(`terminate:${periodKey}`, () => terminateUnpaidSubscriptions({ periodKey, now }));
+    enforcement.push({ periodKey, suspend, terminate });
+  }
+  // No renovar cuando falló la conciliación: el siguiente tick vuelve a intentar.
+  const renew = errors.length ? { skipped: true, reason: "ENFORCEMENT_FAILED" } :
+    await run("renew", () => renewPeriodSubscriptions({ periodKey: currentPeriodKey, now, force: false }));
+  const preview = await run("preview", () => createRenewalPreviewNotices({ targetPeriodKey: nextPeriodKey, now, force }));
+  // Incluye los ciclos creados por la renovación en este mismo tick.
+  const suspend = await run("suspend", () => suspendOverdueSubscriptions({ periodKey: currentPeriodKey, now }));
+  const terminate = await run("terminate", () => terminateUnpaidSubscriptions({ periodKey: currentPeriodKey, now }));
+  return { ok: errors.length === 0, currentPeriodKey, nextPeriodKey, enforcement, preview, renew, suspend, terminate, errors };
 }

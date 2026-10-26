@@ -20,7 +20,7 @@ import {
 } from "../mail.js";
 import { logActivity, buildUserSubject } from "../lib/activityLogger.js";
 import { syncExtraSessionNoticeForUserService } from "../services/subscriptions/subscriptionExtraSessions.js";
-import { assertSubscriptionServiceAccess } from "../services/subscriptions/subscriptionAccess.js";
+import { getAccountPaymentAccess, assertSubscriptionServiceAccess } from "../services/subscriptions/subscriptionAccess.js";
 import { creditExpiryForDate } from "../utils/creditExpiry.js";
 
 import { ensureServiceCatalogLoaded, serviceMinBookingMinutes, serviceCancellationCutoffHours, allowedTimesForService } from "../services/serviceCatalogRuntime.js";
@@ -2744,6 +2744,9 @@ router.post("/waitlist/claim", async (req, res, next) => {
         throw new Error("WAITLIST_NOT_ACTIVE");
       }
 
+      const paymentAccess = await getAccountPaymentAccess({ userId: entry.user, role: "client", session });
+      if (paymentAccess.frozen) throw Object.assign(new Error("ACCOUNT_PAYMENT_FROZEN"), { paymentAccess });
+
       createdAppointment = await createAppointmentForTargetUser({
         userId: String(entry.user),
         actorReq: {
@@ -2783,6 +2786,8 @@ router.post("/waitlist/claim", async (req, res, next) => {
     console.error("Error en POST /appointments/waitlist/claim (token):", err);
     const msg = String(err?.message || "");
 
+    if (msg === "ACCOUNT_PAYMENT_FROZEN") return res.status(403).json({
+      code: msg, paymentAccess: err.paymentAccess, error: "Cuenta congelada por falta de pago." });
     if (msg === "WAITLIST_TOKEN_INVALID") {
       return res.status(404).json({ error: "El link de la lista de espera es inválido o venció." });
     }
@@ -3144,7 +3149,7 @@ router.get("/me/status", async (req, res) => {
   try {
     const userId = req.user?._id || req.user?.id;
 
-    const user = await syncPastAppointmentsForUserId(userId);
+    const user = req.paymentAccess?.frozen ? await User.findById(userId) : await syncPastAppointmentsForUserId(userId);
     if (!user) {
       return res.status(404).json({ error: "Usuario no encontrado." });
     }
