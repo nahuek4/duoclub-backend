@@ -83,6 +83,16 @@ function normalizeUpdatePayload(update) {
   return next;
 }
 
+// Attendance is independent of billing/completion. Each manual change also serves
+// as a durable in-app notification, atomically stored with the appointment.
+const attendanceEventSchema = new mongoose.Schema({
+  status: { type: String, enum: ["pending", "present", "absent"], required: true },
+  previousStatus: { type: String, enum: ["pending", "present", "absent"], required: true },
+  actor: { type: mongoose.Schema.Types.ObjectId, ref: "User", required: true },
+  createdAt: { type: Date, required: true },
+  readAt: { type: Date, default: null },
+});
+
 const appointmentSchema = new mongoose.Schema(
   {
     user: {
@@ -131,6 +141,12 @@ const appointmentSchema = new mongoose.Schema(
     coach: { type: String, default: "" },
 
     completedAt: { type: Date, default: null },
+
+    attendanceStatus: { type: String, enum: ["pending", "present", "absent"], default: "pending" },
+    attendanceRevision: { type: Number, default: 0 },
+    attendanceRecordedAt: { type: Date, default: null },
+    attendanceRecordedBy: { type: mongoose.Schema.Types.ObjectId, ref: "User", default: null },
+    attendanceEvents: { type: [attendanceEventSchema], default: [], select: false },
 
     creditLotId: {
       type: mongoose.Schema.Types.ObjectId,
@@ -313,6 +329,8 @@ appointmentSchema.index({ createdByUser: 1, createdAt: -1 });
 appointmentSchema.index({ assignedManually: 1, assignedFromWaitlist: 1 });
 appointmentSchema.index({ fixedScheduleId: 1, status: 1, date: 1 });
 appointmentSchema.index({ cancelledAt: 1, cancelledBy: 1 });
+appointmentSchema.index({ user: 1, date: -1, time: -1 });
+appointmentSchema.index({ user: 1, "attendanceEvents.readAt": 1 });
 
 const Appointment =
   mongoose.models.Appointment ||

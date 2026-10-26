@@ -8,7 +8,7 @@ import FixedSchedule from "../models/FixedSchedule.js";
 import ScheduleBlock from "../models/ScheduleBlock.js";
 import CapacityRule from "../models/CapacityRule.js";
 
-import { protect } from "../middleware/auth.js";
+import { protect, adminOnly } from "../middleware/auth.js";
 
 import {
   fireAndForget,
@@ -954,6 +954,9 @@ function serializeAppointment(ap) {
     fixedDebtAmount: Number(json?.fixedDebtAmount || 0),
     fixedScheduleId: json?.fixedScheduleId || null,
     completedAt: json?.completedAt || null,
+    attendanceStatus: json?.attendanceStatus || "pending",
+    attendanceRevision: Number(json?.attendanceRevision || 0),
+    attendanceRecordedAt: json?.attendanceRecordedAt || null,
   };
 }
 
@@ -3030,6 +3033,110 @@ router.post("/admin/backfill-fixed-debt", ensureStaff, async (_req, res) => {
 /* =========================
    GET /appointments/me/status
 ========================= */
+// Exact paths precede generic appointment routes. No client-supplied owner is
+// accepted for notifications; users can only read their own inbox.
+router.get("/me/notifications", async (req, res) => {
+  try {
+    const user = new mongoose.Types.ObjectId(String(req.user._id));
+    const seenThrough = new Date();
+    const [result] = await Appointment.aggregate([
+      { $match: { user, "attendanceEvents.0": { $exists: true } } },
+      { $unwind: "$attendanceEvents" },
+      { $facet: {
+        items: [
+          { $sort: { "attendanceEvents.createdAt": -1, "attendanceEvents._id": -1 } },
+          { $limit: 50 },
+          { $project: { _id: 0, id: "$attendanceEvents._id", appointmentId: "$_id", date: 1, time: 1, service: 1, serviceKey: 1,
+            status: "$attendanceEvents.status", previousStatus: "$attendanceEvents.previousStatus", createdAt: "$attendanceEvents.createdAt", readAt: "$attendanceEvents.readAt" } },
+        ],
+        unread: [{ $match: { "attendanceEvents.readAt": null } }, { $count: "count" }],
+      } },
+    ]);
+    res.set("Cache-Control", "no-store");
+    return res.json({ items: result?.items || [], unreadCount: result?.unread?.[0]?.count || 0, seenThrough });
+  } catch (error) {
+    console.error("Attendance inbox:", error);
+    return res.status(500).json({ error: "No se pudieron cargar las notificaciones." });
+  }
+});
+
+router.post("/me/notifications/read", async (req, res) => {
+  const through = new Date(req.body?.seenThrough);
+  if (!req.body?.seenThrough || !Number.isFinite(+through) || +through > Date.now()) {
+    return res.status(400).json({ error: "Fecha de lectura inválida." });
+  }
+  try {
+    // Only acknowledge the snapshot that was opened, preserving newer arrivals.
+    await Appointment.updateMany(
+      { user: req.user._id, attendanceEvents: { $elemMatch: { readAt: null, createdAt: { $lte: through } } } },
+      { $set: { "attendanceEvents.$[seen].readAt": new Date() } },
+      { arrayFilters: [{ "seen.readAt": null, "seen.createdAt": { $lte: through } }] }
+    );
+    return res.json({ ok: true });
+  } catch (error) {
+    console.error("Attendance read:", error);
+    return res.status(500).json({ error: "No se pudieron marcar las notificaciones como leídas." });
+  }
+});
+
+router.get("/me/attendance", async (req, res) => {
+  try {
+    const requestedUser = String(req.query.userId || req.user._id);
+    if (requestedUser !== String(req.user._id) && !isStaffActor(req)) return res.status(403).json({ error: "No autorizado." });
+    if (!mongoose.isValidObjectId(requestedUser)) return res.status(400).json({ error: "Usuario inválido." });
+    const page = Math.max(1, Math.floor(Number(req.query.page) || 1));
+    if (!Number.isSafeInteger(page) || page > 100000) return res.status(400).json({ error: "Página inválida." });
+    const now = new Date();
+    const parts = Object.fromEntries(new Intl.DateTimeFormat("en-CA", { timeZone: "America/Argentina/Buenos_Aires", year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", hourCycle: "h23" }).formatToParts(now).map(x => [x.type, x.value]));
+    const today = `${parts.year}-${parts.month}-${parts.day}`, time = `${parts.hour}:${parts.minute}`;
+    const match = { user: new mongoose.Types.ObjectId(requestedUser), status: { $in: ["reserved", "completed"] },
+      $or: [{ date: { $lt: today } }, { date: today, time: { $lte: time } }] };
+    const [result] = await Appointment.aggregate([
+      { $match: match },
+      { $facet: {
+        items: [{ $sort: { date: -1, time: -1, _id: -1 } }, { $skip: (page - 1) * 20 }, { $limit: 20 },
+          { $project: { date: 1, time: 1, service: 1, serviceKey: 1, attendanceStatus: { $ifNull: ["$attendanceStatus", "pending"] }, attendanceRecordedAt: 1 } }],
+        summary: [{ $group: { _id: null, total: { $sum: 1 }, present: { $sum: { $cond: [{ $eq: ["$attendanceStatus", "present"] }, 1, 0] } }, absent: { $sum: { $cond: [{ $eq: ["$attendanceStatus", "absent"] }, 1, 0] } } } }],
+      } },
+    ]);
+    const summary = result?.summary?.[0] || { total: 0, present: 0, absent: 0 };
+    return res.json({ items: result?.items || [], page, pages: Math.max(1, Math.ceil(summary.total / 20)), summary: { present: summary.present, absent: summary.absent, pending: summary.total - summary.present - summary.absent, total: summary.total } });
+  } catch (error) {
+    console.error("Attendance history:", error);
+    return res.status(500).json({ error: "No se pudo cargar el historial de asistencia." });
+  }
+});
+
+router.patch("/:id/attendance", adminOnly, async (req, res) => {
+  const { status, expectedRevision } = req.body || {};
+  if (!["pending", "present", "absent"].includes(status) || !Number.isSafeInteger(expectedRevision) || expectedRevision < 0 || !mongoose.isValidObjectId(req.params.id)) {
+    return res.status(400).json({ error: "Datos de asistencia inválidos." });
+  }
+  try {
+    const ap = await Appointment.findById(req.params.id);
+    if (!ap) return res.status(404).json({ error: "Turno no encontrado." });
+    if (!["reserved", "completed"].includes(ap.status)) return res.status(409).json({ error: "No se registra asistencia en un turno cancelado." });
+    const start = new Date(`${ap.date}T${ap.time}:00-03:00`);
+    if (!Number.isFinite(+start) || +start > Date.now()) return res.status(409).json({ error: "Podés registrar asistencia desde la hora de inicio del turno." });
+    if (Number(ap.attendanceRevision || 0) !== expectedRevision) return res.status(409).json({ error: "La asistencia cambió en otra pantalla. Actualizá los datos antes de modificarla.", code: "ATTENDANCE_CONFLICT" });
+    if ((ap.attendanceStatus || "pending") === status) return res.json({ ok: true, changed: false, appointment: serializeAppointment(ap) });
+    const now = new Date();
+    const revisionMatch = expectedRevision === 0 ? { $or: [{ attendanceRevision: 0 }, { attendanceRevision: { $exists: false } }] } : { attendanceRevision: expectedRevision };
+    const updated = await Appointment.findOneAndUpdate(
+      { _id: ap._id, status: { $in: ["reserved", "completed"] }, ...revisionMatch },
+      { $set: { attendanceStatus: status, attendanceRecordedAt: now, attendanceRecordedBy: req.user._id },
+        $inc: { attendanceRevision: 1 },
+        $push: { attendanceEvents: { status, previousStatus: ap.attendanceStatus || "pending", actor: req.user._id, createdAt: now, readAt: null } } },
+      { new: true, runValidators: true }
+    );
+    if (!updated) return res.status(409).json({ error: "El turno cambió. Actualizá los datos antes de modificar la asistencia.", code: "ATTENDANCE_CONFLICT" });
+    return res.json({ ok: true, changed: true, appointment: serializeAppointment(updated) });
+  } catch (error) {
+    console.error("Attendance update:", error);
+    return res.status(500).json({ error: "No se pudo guardar la asistencia." });
+  }
+});
+
 router.get("/me/status", async (req, res) => {
   try {
     const userId = req.user?._id || req.user?.id;
@@ -3595,6 +3702,9 @@ router.get("/", async (req, res) => {
         coach: a?.coach || "",
         creditExpiresAt: a?.creditExpiresAt || null,
         completedAt: a?.completedAt || null,
+        attendanceStatus: a?.attendanceStatus || "pending",
+        attendanceRevision: Number(a?.attendanceRevision || 0),
+        attendanceRecordedAt: a?.attendanceRecordedAt || null,
         userId: String(a?.user || ""),
       }))
     );
