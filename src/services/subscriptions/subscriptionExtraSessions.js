@@ -6,7 +6,7 @@ import mongoose from "mongoose";
 
 import Appointment from "../../models/Appointment.js";
 import FixedSchedule from "../../models/FixedSchedule.js";
-import Order from "../../models/Order.js";
+import Order, { orderStatusAt } from "../../models/Order.js";
 import PricingPlan from "../../models/PricingPlan.js";
 import ScheduleBlock from "../../models/ScheduleBlock.js";
 import ServiceSubscription from "../../models/ServiceSubscription.js";
@@ -26,6 +26,12 @@ import {
 } from "../serviceCatalogRuntime.js";
 
 // STEP3B2_DYNAMIC_EXTRA_SESSIONS
+
+// Reinicio acordado: las diferencias anteriores son solo historial.
+export const EXTRA_SESSIONS_START_PERIOD = "2026-11";
+export function countsTowardExtraSessions(periodKey) {
+  return isValidMonthKey(String(periodKey || "")) && String(periodKey) >= EXTRA_SESSIONS_START_PERIOD;
+}
 
 const ACTIVE_SUBSCRIPTION_STATUSES = ["active", "pending_change", "suspended"];
 const PAID_ORDER_STATUSES = new Set(["paid", "approved"]);
@@ -150,11 +156,11 @@ async function buildPricingOption({ serviceKey, basePlanSessions, payMethod, rem
 async function refreshNoticePendingOrder(notice, { session = null } = {}) {
   if (!notice?.pendingOrder) return notice;
 
-  const orderQuery = Order.findById(notice.pendingOrder).select("status");
+  const orderQuery = Order.findById(notice.pendingOrder).select("status createdAt expiresAt publicPaymentExpiresAt");
   if (session) orderQuery.session(session);
   const order = await orderQuery.lean();
 
-  const status = clean(order?.status).toLowerCase();
+  const status = orderStatusAt(order || {});
   if (!order || CLOSED_ORDER_STATUSES.has(status)) {
     notice.pendingOrder = null;
     notice.status = notice.remainingSessions > 0 ? "pending" : "covered";
@@ -206,6 +212,11 @@ async function calculateExtraSessionStateForUserService({
   }
 
   const periodKey = resolveExtraSessionPeriodKey(subscription, now);
+  if (!countsTowardExtraSessions(periodKey)) return {
+    ok: true, skipped: true, reason: "BEFORE_EXTRA_SESSIONS_START",
+    userId: String(userId), subscriptionId: String(subscription._id),
+    serviceKey: normalizedServiceKey, periodKey, remainingSessions: 0,
+  };
   const range = monthRangeFromKey(periodKey);
 
   const existing = await SubscriptionExtraSessionNotice.findOne({
@@ -471,7 +482,7 @@ export async function serializeExtraSessionNoticeForUser(noticeInput) {
       ? noticeInput
       : await SubscriptionExtraSessionNotice.findById(noticeInput?._id || noticeInput);
 
-  if (!notice) return null;
+  if (!notice || !countsTowardExtraSessions(notice.periodKey)) return null;
   if (!isOperationalServiceKey(notice.serviceKey)) return null;
   await refreshNoticePendingOrder(notice);
 
@@ -499,7 +510,7 @@ export async function serializeExtraSessionNoticeForUser(noticeInput) {
   let pendingOrder = null;
   if (notice.pendingOrder) {
     pendingOrder = await Order.findById(notice.pendingOrder)
-      .select("status payMethod totalFinal total createdAt")
+      .select("status payMethod totalFinal total createdAt expiresAt publicPaymentExpiresAt")
       .lean();
   }
 
@@ -533,7 +544,7 @@ export async function serializeExtraSessionNoticeForUser(noticeInput) {
     pendingOrder: pendingOrder
       ? {
           id: String(pendingOrder._id),
-          status: pendingOrder.status,
+          status: orderStatusAt(pendingOrder),
           payMethod: pendingOrder.payMethod,
           total: Number(pendingOrder.totalFinal ?? pendingOrder.total ?? 0),
           createdAt: pendingOrder.createdAt || null,
@@ -547,6 +558,7 @@ export async function listExtraSessionNoticesForUser(userId) {
   const notices = await SubscriptionExtraSessionNotice.find({
     user: userId,
     status: { $in: ["pending", "order_pending"] },
+    periodKey: { $gte: EXTRA_SESSIONS_START_PERIOD },
   }).sort({ periodKey: 1, serviceKey: 1 });
 
   const serialized = await Promise.all(
@@ -581,6 +593,10 @@ export async function resolveExtraSessionCheckoutItem({
 
   if (!notice) {
     throw createHttpError("El aviso de sesiones adicionales no existe.", 404, "NOTICE_NOT_FOUND");
+  }
+
+  if (!countsTowardExtraSessions(notice.periodKey)) {
+    throw createHttpError("Esta diferencia es anterior al inicio de noviembre y ya no se suma a los pendientes.", 410, "EXTRA_BEFORE_RESET");
   }
 
   if (!isOperationalServiceKey(notice.serviceKey)) {

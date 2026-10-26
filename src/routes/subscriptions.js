@@ -2,7 +2,7 @@
 import express from "express";
 
 import PricingPlan from "../models/PricingPlan.js";
-import Order from "../models/Order.js";
+import Order, { orderStatusAt, orderPreferenceExpiration } from "../models/Order.js";
 import User from "../models/User.js";
 import FixedSchedule from "../models/FixedSchedule.js";
 import ServiceSubscription from "../models/ServiceSubscription.js";
@@ -592,10 +592,11 @@ router.post(
       let order = null;
 
       if (cycle.billing?.order) {
+        await Order.expirePendingOrders({ _id: cycle.billing.order });
         const existingOrder = await Order.findById(cycle.billing.order);
 
         if (existingOrder) {
-          const existingStatus = clean(existingOrder.status).toLowerCase();
+          const existingStatus = orderStatusAt(existingOrder);
           const existingAmount = money(
             existingOrder.totalFinal ??
               existingOrder.total ??
@@ -795,6 +796,7 @@ async function createMpPreferenceForRenewal({ order, user, cycle }) {
         unit_price: amount,
       },
     ],
+    ...orderPreferenceExpiration(order),
     external_reference: String(order._id),
     metadata: {
       orderId: String(order._id),
@@ -1071,10 +1073,11 @@ router.post("/cycles/:cycleId/pay", async (req, res) => {
     }
 
     if (cycle.billing?.order) {
-      const existingOrder = await Order.findById(cycle.billing.order);
+      await Order.expirePendingOrders({ _id: cycle.billing.order });
+        const existingOrder = await Order.findById(cycle.billing.order);
 
       if (existingOrder) {
-        const status = String(existingOrder.status || "").toLowerCase();
+        const status = orderStatusAt(existingOrder);
         const existingAmount = money(
           existingOrder.totalFinal ??
             existingOrder.total ??

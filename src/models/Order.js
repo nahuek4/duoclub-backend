@@ -1,5 +1,27 @@
 import mongoose from "mongoose";
 
+export const ORDER_VALIDITY_MS = 7 * 24 * 60 * 60 * 1000;
+
+export function orderExpiresAt(order = {}) {
+  const dates = [order.expiresAt, order.publicPaymentExpiresAt]
+    .filter(Boolean).map(value => new Date(value).getTime()).filter(Number.isFinite);
+  const created = new Date(order.createdAt || 0).getTime();
+  if (created > 0) dates.push(created + ORDER_VALIDITY_MS);
+  return dates.length ? new Date(Math.min(...dates)) : null;
+}
+
+export function orderStatusAt(order = {}, now = new Date()) {
+  const status = String(order.status || "pending").toLowerCase();
+  const expiry = orderExpiresAt(order);
+  return status === "pending" && expiry && expiry <= now ? "expired" : status;
+}
+
+export function orderPreferenceExpiration(order) {
+  const expiry = orderExpiresAt(order);
+  if (!expiry || expiry <= new Date()) throw new Error("Esta orden venció. Creá un nuevo pedido.");
+  return { expires: true, expiration_date_to: expiry.toISOString() };
+}
+
 const ALLOWED_SERVICE_KEYS = ["PE", "EP", "RA", "RF", "KD", "SYN", "NUT"];
 const ALLOWED_SERVICE_KEY_SET = new Set(ALLOWED_SERVICE_KEYS);
 
@@ -170,6 +192,7 @@ const orderSchema = new mongoose.Schema(
     mpPaidAmount: { type: Number, default: 0, min: 0 },
 
     paidAt: { type: Date, default: null },
+    expiresAt: { type: Date, default: null },
     notes: { type: String, default: "" },
 
     // Links públicos de pago creados por admin
@@ -239,6 +262,9 @@ const orderSchema = new mongoose.Schema(
 );
 
 orderSchema.pre("validate", function () {
+  if (!this.expiresAt) {
+    this.expiresAt = new Date(new Date(this.createdAt || Date.now()).getTime() + ORDER_VALIDITY_MS);
+  }
   // Normalización serviceKey legacy
   this.serviceKey = normalizeServiceKey(this.serviceKey);
 
@@ -330,6 +356,20 @@ orderSchema.pre("validate", function () {
 orderSchema.index({ user: 1, createdAt: -1 });
 orderSchema.index({ createdAt: -1 });
 orderSchema.index({ status: 1, createdAt: -1 });
+orderSchema.index({ status: 1, expiresAt: 1 });
+
+// Actualiza únicamente pendientes. No elimina órdenes, pagos, créditos ni deudas del plan.
+orderSchema.statics.expirePendingOrders = function (scope = {}, now = new Date()) {
+  return this.updateMany({
+    ...scope,
+    status: "pending",
+    $or: [
+      { expiresAt: { $lte: now, $ne: null } },
+      { publicPaymentExpiresAt: { $lte: now, $ne: null } },
+      { createdAt: { $lte: new Date(now.getTime() - ORDER_VALIDITY_MS) } },
+    ],
+  }, { $set: { status: "expired" } });
+};
 orderSchema.index({ serviceKey: 1, createdAt: -1 });
 orderSchema.index({ "items.extraSessionNotice": 1, status: 1, createdAt: -1 });
 orderSchema.index({ "items.subscriptionCycle": 1, status: 1, createdAt: -1 });

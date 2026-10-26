@@ -4,7 +4,7 @@ import crypto from "crypto";
 import mongoose from "mongoose";
 import { protect, adminOnly } from "../middleware/auth.js";
 import PricingPlan from "../models/PricingPlan.js";
-import Order from "../models/Order.js";
+import Order, { orderExpiresAt, orderStatusAt, orderPreferenceExpiration } from "../models/Order.js";
 import User from "../models/User.js";
 import ServiceSubscription from "../models/ServiceSubscription.js";
 
@@ -334,9 +334,7 @@ function buildPublicPaymentUrl(token) {
 }
 
 function addHours(date, hours) {
-  const d = new Date(date || Date.now());
-  d.setHours(d.getHours() + Number(hours || 0));
-  return d;
+  return new Date(new Date(date || Date.now()).getTime() + Number(hours || 0) * 60 * 60 * 1000);
 }
 
 function normalizeMoney(value) {
@@ -434,7 +432,7 @@ function getOrderCustomerPhone(order = {}) {
 }
 
 function publicStatusFor(order = {}) {
-  const st = String(order?.status || "pending").toLowerCase().trim();
+  const st = orderStatusAt(order);
   if (st === "paid" || st === "approved") return "paid";
   if (st === "cancelled" || st === "canceled") return "cancelled";
 
@@ -516,7 +514,7 @@ function serializePublicPaymentOrder(order = {}) {
     title: buildOrderPaymentTitle(obj),
     notes: String(obj?.notes || ""),
     items,
-    expiresAt: obj?.publicPaymentExpiresAt || null,
+    expiresAt: orderExpiresAt(obj),
     createdAt: obj?.createdAt || null,
     paidAt: obj?.paidAt || null,
     manualFulfillmentRequired: Boolean(obj?.manualFulfillmentRequired),
@@ -774,6 +772,7 @@ async function createMpPreference({ order, user = null }) {
         unit_price: amountToCharge,
       },
     ],
+    ...orderPreferenceExpiration(order),
     external_reference: String(order._id),
     metadata,
     back_urls: {
@@ -1316,7 +1315,7 @@ router.post("/admin-payment-link", protect, adminOnly, async (req, res) => {
     }
 
     const token = crypto.randomBytes(24).toString("hex");
-    const expiresAt = addHours(new Date(), 48);
+    const expiresAt = addHours(new Date(), 7 * 24);
     const serviceName = prettyServiceNameFromKey(sk);
     const label = customLabel || `${sessions} ${pluralizeSessions(sessions)} de ${serviceName}`;
     const publicUrl = buildPublicPaymentUrl(token);
@@ -1751,20 +1750,31 @@ router.post("/admin-create", protect, adminOnly, async (req, res) => {
 
 
 router.get("/me", protect, async (req, res) => {
-  const list = await Order.find({ user: req.user._id }).sort({ createdAt: -1 }).lean();
-  res.json(list);
+  try {
+    await Order.expirePendingOrders({ user: req.user._id });
+    const list = await Order.find({ user: req.user._id }).sort({ createdAt: -1 }).lean();
+    res.json(list);
+  } catch (error) {
+    console.error("GET /orders/me", error);
+    res.status(500).json({ error: "No se pudieron consultar las órdenes." });
+  }
 });
 
 /* =======================
    ADMIN
 ======================= */
 router.get("/", protect, adminOnly, async (req, res) => {
-  const list = await Order.find()
-    .populate("user", "name lastName fullName email")
-    .sort({ createdAt: -1 })
-    .lean();
-
-  res.json(list);
+  try {
+    await Order.expirePendingOrders();
+    const list = await Order.find()
+      .populate("user", "name lastName fullName email")
+      .sort({ createdAt: -1 })
+      .lean();
+    res.json(list);
+  } catch (error) {
+    console.error("GET /orders", error);
+    res.status(500).json({ error: "No se pudieron consultar las órdenes." });
+  }
 });
 
 router.patch("/:id/enable-credits", protect, adminOnly, async (req, res) => {
@@ -1775,6 +1785,7 @@ router.patch("/:id/enable-credits", protect, adminOnly, async (req, res) => {
       return res.status(400).json({ error: "ID de orden inválido" });
     }
 
+    await Order.expirePendingOrders({ _id: id });
     const order = await Order.findById(id);
     if (!order) return res.status(404).json({ error: "Orden no encontrada" });
 

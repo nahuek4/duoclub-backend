@@ -5,7 +5,7 @@ import mongoose from "mongoose";
 
 import { protect, adminOnly } from "../middleware/auth.js";
 import ExternalPaymentCard from "../models/ExternalPaymentCard.js";
-import Order from "../models/Order.js";
+import Order, { orderPreferenceExpiration } from "../models/Order.js";
 import User from "../models/User.js";
 import { logActivity, buildUserSubject } from "../lib/activityLogger.js";
 
@@ -173,6 +173,7 @@ async function createMpPreference({ order, card }) {
         unit_price: amountToCharge,
       },
     ],
+    ...orderPreferenceExpiration(order),
     external_reference: String(order._id),
     metadata: {
       orderId: String(order._id),
@@ -486,6 +487,7 @@ router.get("/admin/:id/orders", protect, adminOnly, async (req, res) => {
       return res.status(400).json({ error: "ID inválido." });
     }
 
+    await Order.expirePendingOrders({ externalPaymentCard: id });
     const orders = await Order.find({ externalPaymentCard: id })
       .populate("user", "name lastName fullName email")
       .sort({ createdAt: -1 })
