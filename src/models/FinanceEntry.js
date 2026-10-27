@@ -1,5 +1,23 @@
 import mongoose from "mongoose";
 const financeEntrySchema = new mongoose.Schema({
+  section: {
+    type: String,
+    default: "General",
+    maxlength: 80
+  },
+  paidBy: {
+    type: String,
+    default: "Caja/DUO",
+    maxlength: 80
+  },
+  revision: {
+    type: Number,
+    default: 0
+  },
+  history: {
+    type: [mongoose.Schema.Types.Mixed],
+    default: []
+  },
   type: {
     type: String,
     enum: ["income", "expense"],

@@ -2,14 +2,19 @@ import express from "express";
 import mongoose from "mongoose";
 import { protect, adminOnly } from "../middleware/auth.js";
 import FinanceEntry from "../models/FinanceEntry.js";
+import ServiceDefinition from "../models/ServiceDefinition.js";
 import Order from "../models/Order.js";
 import User from "../models/User.js";
 import Appointment, { effectiveAttendanceStatus } from "../models/Appointment.js";
 import Admission from "../models/Admission.js";
 import ServiceSubscription from "../models/ServiceSubscription.js";
 import { logActivity } from "../lib/activityLogger.js";
+import analyticsRoutes from "./financeAnalytics.js";
+import createWorkRoutes, { laborRows, sector, groupFilter } from "./financeWork.js";
 const router = express.Router();
-router.use(protect, adminOnly);
+router.use(protect, (req, res, next) => ["admin", "staff"].includes(req.user.role) ? next() : res.status(403).json({
+  error: "No autorizado."
+}));
 const TZ = "America/Argentina/Buenos_Aires";
 const DAY = 86400000;
 const fail = (message, status = 400) => Object.assign(new Error(message), {
@@ -55,7 +60,7 @@ export function parseAmountCents(value) {
   return cents;
 }
 const clean = value => String(value ?? "").trim();
-function normalizeEntry(body) {
+export function normalizeEntry(body) {
   const type = clean(body.type),
     date = clean(body.date),
     method = clean(body.method),
@@ -68,6 +73,7 @@ function normalizeEntry(body) {
   if (!["CASH", "TRANSFER", "MP", "OTHER"].includes(method)) throw fail("Elegí un medio válido.");
   if (!category || category.length > 80 || !description || description.length > 500 || reference.length > 120) throw fail("Completá categoría y concepto respetando su longitud máxima.");
   if (!/^[a-zA-Z0-9_-]{16,100}$/.test(requestKey)) throw fail("Falta la identificación del movimiento. Volvé a abrir el formulario.");
+  if (clean(body.section || "General").length > 80 || clean(body.paidBy || "Caja/DUO").length > 80) throw fail("Sección o pagador demasiado largo.");
   if (body.orderId || body.order) throw fail("Los cobros de Órdenes ya se incluyen automáticamente; no los cargues como ingreso manual.");
   return {
     type,
@@ -76,36 +82,45 @@ function normalizeEntry(body) {
     category,
     description,
     reference,
+    section: sector(body.section),
+    paidBy: clean(body.paidBy || "Caja/DUO"),
     requestKey,
     amountCents: parseAmountCents(body.amount)
   };
 }
-const sameEntry = (entry, payload) => ["type", "date", "method", "category", "description", "reference", "amountCents"].every(key => entry[key] === payload[key]);
+const sameEntry = (entry, payload) => ["type", "date", "method", "category", "description", "reference", "amountCents", "section", "paidBy"].every(key => entry[key] === payload[key]);
 const orderCategory = order => order.items?.some(item => item.kind === "SUBSCRIPTION_RENEWAL") ? "Planes mensuales" : order.items?.some(item => item.kind === "SUBSCRIPTION_EXTRA") ? "Sesiones adicionales" : order.externalPaymentCard ? "Cobros externos" : "Sesiones y servicios";
 export async function financeReport(query = {}) {
   const range = resolveFinanceRange(query);
+  const group = clean(query.group);
+  if (group) sector(group);
   const type = clean(query.type),
     source = clean(query.source),
     q = clean(query.q).toLocaleLowerCase("es-AR");
   if (type && !["income", "expense"].includes(type)) throw fail("Filtro de tipo inválido.");
-  if (source && !["orders", "manual"].includes(source)) throw fail("Filtro de origen inválido.");
+  if (source && !["orders", "manual", "labor"].includes(source)) throw fail("Filtro de origen inválido.");
   const page = Math.max(1, Math.floor(Number(query.page) || 1));
-  const [orders, entries] = await Promise.all([source === "manual" || type === "expense" ? [] : Order.find({
+  const [orders, entries] = await Promise.all([source === "manual" || source === "labor" || type === "expense" ? [] : Order.find({
     status: {
       $in: ["paid", "approved"]
     },
     $expr: {
       $and: [{
         $gte: [{
-          $ifNull: ["$paidAt", { $ifNull: ["$approvedAt", "$createdAt"] }]
+          $ifNull: ["$paidAt", {
+            $ifNull: ["$approvedAt", "$createdAt"]
+          }]
         }, range.from]
       }, {
         $lt: [{
-          $ifNull: ["$paidAt", { $ifNull: ["$approvedAt", "$createdAt"] }]
+          $ifNull: ["$paidAt", {
+            $ifNull: ["$approvedAt", "$createdAt"]
+          }]
         }, range.end]
       }]
     }
-  }).select("status paidAt approvedAt createdAt totalFinal total price items.label items.kind payMethod customerName externalPaymentCard label user").populate("user", "name lastName").lean(), source === "orders" ? [] : FinanceEntry.find({
+  }).select("status paidAt approvedAt createdAt totalFinal total price serviceKey items.serviceKey items.price items.label items.kind payMethod customerName externalPaymentCard label user").populate("user", "name lastName").lean(), source === "orders" || source === "labor" ? [] : FinanceEntry.find({
+    ...groupFilter(group),
     date: {
       $gte: range.fromDay,
       $lte: range.toDay
@@ -117,21 +132,54 @@ export async function financeReport(query = {}) {
       type
     } : {})
   }).lean()]);
-  const automatic = orders.map(order => ({
-    id: String(order._id),
-    orderId: String(order._id),
-    source: "orders",
-    type: "income",
-    date: argentinaDay(order.paidAt || order.approvedAt || order.createdAt),
-    sortAt: new Date(order.paidAt || order.approvedAt || order.createdAt).getTime(),
-    dateEstimated: !order.paidAt && !order.approvedAt,
-    amountCents: Math.round(Number(order.totalFinal ?? order.total ?? order.price ?? 0) * 100),
-    category: orderCategory(order),
-    description: clean(order.customerName) || [order.user?.name, order.user?.lastName].filter(Boolean).join(" ") || clean(order.label) || "Cobro de orden",
-    method: order.payMethod || "OTHER",
-    reference: "Orden #" + String(order._id).slice(-8),
-    status: "active"
-  })).filter(row => Number.isSafeInteger(row.amountCents) && row.amountCents > 0);
+  const definitions = await ServiceDefinition.find({}).select("serviceKey capacityGroup").lean();
+  const groups = new Map(definitions.map(d => [d.serviceKey, d.capacityGroup]));
+  const getGroup = key => groups.has(key) ? {
+    TRAINING: "Training",
+    PERFORMANCE: "Performance"
+  }[groups.get(key)] || "General" : {
+    EP: "Training",
+    RA: "Performance",
+    RF: "Performance",
+    SYN: "Performance",
+    KD: "Performance"
+  }[key] || "General";
+  const automatic = orders.flatMap(order => {
+    const total = Math.round(Number(order.totalFinal ?? order.total ?? order.price ?? 0) * 100);
+    const weights = new Map();
+    for (const item of order.items || []) {
+      const section = getGroup(item.serviceKey);
+      weights.set(section, (weights.get(section) || 0) + Math.max(0, Number(item.price) || 0));
+    }
+    const sum = [...weights.values()].reduce((a, b) => a + b, 0);
+    if (!sum) {
+      weights.clear();
+      weights.set(getGroup(order.serviceKey), 1);
+    }
+    const denominator = sum || 1;
+    let assigned = 0;
+    const allocation = [...weights].filter(([, w]) => w > 0);
+    return allocation.map(([section, w], index) => {
+      const cents = index === allocation.length - 1 ? total - assigned : Math.round(total * w / denominator);
+      assigned += cents;
+      return {
+        id: String(order._id) + "-" + section,
+        section,
+        orderId: String(order._id),
+        source: "orders",
+        type: "income",
+        date: argentinaDay(order.paidAt || order.approvedAt || order.createdAt),
+        sortAt: new Date(order.paidAt || order.approvedAt || order.createdAt).getTime(),
+        dateEstimated: !order.paidAt && !order.approvedAt,
+        amountCents: cents,
+        category: orderCategory(order),
+        description: clean(order.customerName) || [order.user?.name, order.user?.lastName].filter(Boolean).join(" ") || clean(order.label) || "Cobro de orden",
+        method: order.payMethod || "OTHER",
+        reference: "Orden #" + String(order._id).slice(-8),
+        status: "active"
+      };
+    });
+  }).filter(row => (!group || row.section === sector(group)) && Number.isSafeInteger(row.amountCents) && row.amountCents > 0);
   const manual = entries.map(entry => ({
     id: String(entry._id),
     source: "manual",
@@ -145,18 +193,24 @@ export async function financeReport(query = {}) {
     reference: entry.reference,
     status: entry.status,
     voidReason: entry.voidReason,
-    voidedAt: entry.voidedAt
+    voidedAt: entry.voidedAt,
+    section: entry.section,
+    paidBy: entry.paidBy,
+    revision: entry.revision || 0
   }));
-  const rows = [...automatic, ...manual].filter(row => !q || [row.description, row.category, row.reference, row.method].join(" ").toLocaleLowerCase("es-AR").includes(q)).sort((a, b) => b.date.localeCompare(a.date) || b.sortAt - a.sortAt || b.id.localeCompare(a.id));
+  const labor = type === "income" || source === "orders" || source === "manual" ? [] : await laborRows(range.fromDay, range.toDay, query.includeVoided === "1", group);
+  const rows = [...automatic, ...manual, ...labor].filter(row => !q || [row.description, row.category, row.reference, row.method].join(" ").toLocaleLowerCase("es-AR").includes(q)).sort((a, b) => b.date.localeCompare(a.date) || b.sortAt - a.sortAt || b.id.localeCompare(a.id));
   const live = rows.filter(row => row.status === "active"),
     stats = {
       incomeCents: 0,
       expenseCents: 0,
       resultCents: 0,
-      movements: live.length,
+      movements: new Set(live.map(row => row.source + ":" + (row.orderId || row.id))).size,
       automaticIncomeCents: 0,
       manualIncomeCents: 0,
-      estimatedDateCount: 0
+      estimatedDateCount: 0,
+      laborCents: 0,
+      unpricedMinutes: 0
     };
   const days = new Map(),
     expenses = new Map(),
@@ -168,14 +222,18 @@ export async function financeReport(query = {}) {
   });
   for (const row of live) {
     const key = row.type === "income" ? "incomeCents" : "expenseCents";
+    if (row.source === "labor") {
+      stats.laborCents += row.amountCents;
+      if (row.unpriced) stats.unpricedMinutes += row.minutes;
+    }
     stats[key] += row.amountCents;
     days.get(row.date)[key] += row.amountCents;
     if (row.type === "expense") expenses.set(row.category, (expenses.get(row.category) || 0) + row.amountCents);else {
       stats[row.source === "orders" ? "automaticIncomeCents" : "manualIncomeCents"] += row.amountCents;
       methods.set(row.method, (methods.get(row.method) || 0) + row.amountCents);
     }
-    if (row.dateEstimated) stats.estimatedDateCount++;
   }
+  stats.estimatedDateCount = new Set(live.filter(row => row.dateEstimated).map(row => row.orderId || row.id)).size;
   stats.resultCents = stats.incomeCents - stats.expenseCents;
   const pages = Math.max(1, Math.ceil(rows.length / 50)),
     safePage = Math.min(page, pages);
@@ -184,6 +242,7 @@ export async function financeReport(query = {}) {
       from: range.fromDay,
       to: range.toDay
     },
+    group: group ? sector(group) : "",
     stats,
     daily: [...days.values()],
     expenseCategories: [...expenses].map(([label, value]) => ({
@@ -205,6 +264,23 @@ export async function financeReport(query = {}) {
     rows
   };
 }
+router.use(createWorkRoutes({
+  argentinaDay,
+  resolveFinanceRange,
+  normalizeEntry
+}));
+router.use("/analytics", analyticsRoutes({
+  financeReport,
+  argentinaDay
+}));
+router.use((req, res, next) => {
+  if (req.user.role === "admin") return next();
+  if (req.method === "POST" && req.path === "/entries") return next();
+  if (req.method === "PATCH" && /^\/entries\/[a-f0-9]{24}\/void$/i.test(req.path)) return next();
+  return res.status(403).json({
+    error: "El staff solo puede gestionar sus movimientos y horas del día."
+  });
+});
 router.get("/overview", async (req, res) => {
   try {
     const range = resolveFinanceRange(req.query),
@@ -330,8 +406,8 @@ router.get("/export", async (req, res) => {
       if (/^[=+@\-\t\r]/.test(v) && !/^-?\d+(?:\.\d+)?$/.test(v)) v = "'" + v;
       return '"' + v.replace(/"/g, '""') + '"';
     };
-    const lines = [["Fecha", "Tipo", "Concepto", "Categoría", "Medio", "Origen", "Importe computable ARS", "Importe original ARS", "Estado", "Referencia"]];
-    for (const row of report.rows) lines.push([row.date, row.type === "income" ? "Ingreso" : "Gasto", row.description, row.category, row.method, row.source === "orders" ? "Orden" : "Manual", ((row.status === "active" ? row.amountCents : 0) * (row.type === "income" ? 1 : -1) / 100).toFixed(2), (row.amountCents / 100).toFixed(2), row.status === "active" ? "Registrado" : "Anulado", row.reference]);
+    const lines = [["Fecha", "Tipo", "Concepto", "Categoría", "Medio", "Origen", "Importe computable ARS", "Importe original ARS", "Estado", "Referencia", "Grupo", "Lo pagó", "Observación"]];
+    for (const row of report.rows) lines.push([row.date, row.type === "income" ? "Ingreso" : "Gasto", row.description, row.category, row.method, row.source === "orders" ? "Orden" : row.source === "labor" ? "Horas" : "Manual", ((row.status === "active" ? row.amountCents : 0) * (row.type === "income" ? 1 : -1) / 100).toFixed(2), (row.amountCents / 100).toFixed(2), row.status === "active" ? "Registrado" : "Anulado", row.reference, row.section || "General", row.paidBy || "", row.unpriced ? "Sin tarifa: costo incompleto" : row.dateEstimated ? "Fecha estimada" : ""]);
     res.setHeader("Content-Type", "text/csv; charset=utf-8");
     res.setHeader("Content-Disposition", `attachment; filename="finanzas-${report.range.from}-${report.range.to}.csv"`);
     return res.send("\uFEFF" + lines.map(line => line.map(esc).join(",")).join("\r\n"));
@@ -357,11 +433,12 @@ router.get("/", async (req, res) => {
 });
 router.post("/entries", async (req, res) => {
   try {
-    const payload = normalizeEntry(req.body || {}),
-      key = {
-        createdBy: req.user._id,
-        requestKey: payload.requestKey
-      };
+    const payload = normalizeEntry(req.body || {});
+    if (req.user.role !== "admin" && payload.date !== argentinaDay()) throw fail("Solo podés registrar movimientos de hoy.", 403);
+    const key = {
+      createdBy: req.user._id,
+      requestKey: payload.requestKey
+    };
     let existing = await FinanceEntry.findOne(key);
     if (existing) {
       if (!sameEntry(existing, payload)) throw fail("Esta identificación ya se usó para otro movimiento.", 409);
@@ -416,7 +493,16 @@ router.patch("/entries/:id/void", async (req, res) => {
     if (!mongoose.isValidObjectId(req.params.id)) throw fail("Movimiento inválido.");
     const reason = clean(req.body?.reason);
     if (reason.length < 3 || reason.length > 300) throw fail("Indicá el motivo de anulación (entre 3 y 300 caracteres).");
+    const today = argentinaDay();
+    const staffFilter = req.user.role === "admin" ? {} : {
+      createdBy: req.user._id,
+      date: today,
+      createdAt: {
+        $gte: new Date(today + "T00:00:00-03:00")
+      }
+    };
     const item = await FinanceEntry.findOneAndUpdate({
+      ...staffFilter,
       _id: req.params.id,
       status: "active"
     }, {
@@ -432,6 +518,7 @@ router.patch("/entries/:id/void", async (req, res) => {
     if (!item) {
       const existing = await FinanceEntry.findById(req.params.id);
       if (!existing) throw fail("Movimiento no encontrado.", 404);
+      if (req.user.role !== "admin" && (String(existing.createdBy) !== String(req.user._id) || existing.date !== today || argentinaDay(existing.createdAt) !== today)) throw fail("Solo podés modificar tus registros de hoy.", 403);
       return res.json({
         ok: true,
         item: existing
