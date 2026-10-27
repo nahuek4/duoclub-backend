@@ -161,6 +161,11 @@ export async function activateSubscriptionsFromPaidOrder({ order, session = null
 
   if (!order?._id || !order?.user) return { ok: true, activated: [], skipped: "ORDER_WITHOUT_USER" };
 
+  const accountQuery = User.findById(order.user).select("accountDeactivated");
+  if (session) accountQuery.session(session);
+  const account = await accountQuery.lean();
+  if (account?.accountDeactivated) return { ok: true, activated: [], skipped: "ACCOUNT_DEACTIVATED" };
+
   // Defensa en profundidad: aunque en el futuro cambie orderCreditItems(),
   // una Order administrativa nunca puede mutar el plan recurrente.
   if (order?.createdByAdmin || order?.publicPaymentLink) {

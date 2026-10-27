@@ -9,6 +9,10 @@ import mongoose from "mongoose";
 
 import User from "../models/User.js";
 import Appointment from "../models/Appointment.js";
+import FixedSchedule from "../models/FixedSchedule.js";
+import ServiceSubscription from "../models/ServiceSubscription.js";
+import WaitlistEntry from "../models/WaitlistEntry.js";
+import Order from "../models/Order.js";
 import { protect, adminOnly, adminOrProfessor } from "../middleware/auth.js";
 
 import multer from "multer";
@@ -37,6 +41,44 @@ import {
   normalizeCatalogServiceKey,
   serviceNameForKey,
 } from "../services/serviceCatalogRuntime.js";
+
+
+// Keep the user record and all financial/attendance history for audit and exports.
+// The same transaction revokes access and releases future operational activity.
+export async function deactivateUserAccount({ id, actorId, reason = "admin", rejected = false }) {
+  let result;
+  const session = await mongoose.startSession();
+  try {
+    await session.withTransaction(async () => {
+      const user = await User.findById(id).session(session);
+      if (!user) { const error = new Error("Usuario no encontrado."); error.status = 404; throw error; }
+      if (String(user.role).toLowerCase() === "admin" || String(user._id) === String(actorId)) {
+        const error = new Error("No se puede dar de baja una cuenta administradora desde esta acción."); error.status = 403; throw error;
+      }
+      const alreadyDeactivated = Boolean(user.accountDeactivated);
+      const now = new Date();
+      const parts = new Intl.DateTimeFormat("en-CA", { timeZone: "America/Argentina/Buenos_Aires", year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", hourCycle: "h23" }).formatToParts(now);
+      const part = type => parts.find(value => value.type === type).value;
+      const day = `${part("year")}-${part("month")}-${part("day")}`, time = `${part("hour")}:${part("minute")}`;
+      user.accountDeactivated = true;
+      user.accountDeactivatedAt = user.accountDeactivatedAt || now;
+      user.accountDeactivatedBy = user.accountDeactivatedBy || actorId;
+      user.accountDeactivatedReason = user.accountDeactivatedReason || reason;
+      user.suspended = true; user.suspendedReason = "account_deactivated"; user.suspendedAt = user.suspendedAt || now;
+      user.passwordResetToken = ""; user.passwordResetExpires = null;
+      if (rejected) user.approvalStatus = "rejected";
+      await user.save({ session });
+      await FixedSchedule.updateMany({ user: id, active: true }, { $set: { active: false } }, { session });
+      await ServiceSubscription.updateMany({ user: id, status: { $in: ["active", "pending_change", "suspended"] } }, { $set: { status: "cancelled", autoRenew: false, pendingChange: null, cancelledAt: now, cancelReason: "Baja de la cuenta", fixedSlotsProtectedUntil: null } }, { session });
+      const future = { $or: [{ date: { $gt: day } }, { date: day, time: { $gte: time } }] };
+      await Appointment.updateMany({ user: id, status: "reserved", ...future }, { $set: { status: "cancelled", cancelledAt: now, cancelledBy: actorId, cancelReason: "Baja de la cuenta" } }, { session });
+      await WaitlistEntry.updateMany({ user: id, status: { $in: ["waiting", "notified"] } }, { $set: { status: "removed", removedAt: now, closedAt: now, closeReason: "SYSTEM_CLEANUP", notifyToken: null, tokenExpiresAt: null } }, { session });
+      await Order.updateMany({ user: id, status: "pending" }, { $set: { status: "cancelled" } }, { session });
+      result = { user, alreadyDeactivated };
+    });
+    return result;
+  } finally { await session.endSession(); }
+}
 
 const router = express.Router();
 
@@ -593,6 +635,8 @@ function stripSensitive(u) {
   if (!u || typeof u !== "object") return u;
   const {
     password,
+    passwordResetToken,
+    passwordResetExpires,
     emailVerificationToken,
     emailVerificationExpires,
     __v,
@@ -1302,7 +1346,9 @@ router.get("/", adminOrProfessor, async (req, res) => {
     const role = String(req.user?.role || "").toLowerCase();
     const isAdmin = role === "admin";
 
-    const list = await User.find().lean();
+    const includeDeactivated = req.query.includeDeactivated === "1";
+    if (includeDeactivated && !isAdmin) return res.status(403).json({ error: "Solo administradores pueden consultar las cuentas dadas de baja." });
+    const list = await User.find(includeDeactivated ? {} : { accountDeactivated: { $ne: true } }).lean();
 
     return res.json(
       list.map((u) =>
@@ -1319,7 +1365,7 @@ router.get("/", adminOrProfessor, async (req, res) => {
 
 router.get("/pending", adminOnly, async (req, res) => {
   try {
-    const pending = await User.find({ approvalStatus: "pending" })
+    const pending = await User.find({ approvalStatus: "pending", accountDeactivated: { $ne: true } })
       .sort({ createdAt: -1 })
       .lean();
 
@@ -1513,27 +1559,9 @@ router.patch("/:id/approval", adminOnly, validateObjectIdParam, async (req, res)
         );
       }
 
-      await Appointment.deleteMany({ user: user._id });
-
-      await logActivity({
-        req,
-        category: "users",
-        action: "user_rejected_deleted",
-        entity: "user",
-        entityId: user._id,
-        title: "Usuario rechazado y eliminado",
-        description: "Un admin rechazó el alta y eliminó al usuario.",
-        subject: buildUserSubject(user),
-        deletedSnapshot: user.toObject(),
-      });
-
-      await user.deleteOne();
-
-      return res.json({
-        ok: true,
-        deleted: true,
-        message: "Usuario rechazado y eliminado. Puede registrarse nuevamente.",
-      });
+      await deactivateUserAccount({ id: user._id, actorId: req.user._id, reason: "registration_rejected", rejected: true });
+      await logActivity({ req, category: "users", action: "user_rejected_deactivated", entity: "user", entityId: user._id, title: "Alta rechazada y cuenta dada de baja", description: "Contacto conservado para exportación.", subject: buildUserSubject(user) });
+      return res.json({ ok: true, deactivated: true, deleted: false, message: "Alta rechazada. Contacto conservado en Dados de baja." });
     }
 
     user.approvalStatus = "approved";
@@ -1960,36 +1988,12 @@ router.patch("/:id", adminOnly, validateObjectIdParam, async (req, res) => {
 
 router.delete("/:id", adminOnly, validateObjectIdParam, async (req, res) => {
   try {
-    const { id } = req.params;
-
-    const user = await User.findById(id);
-    if (!user) return res.status(404).json({ error: "Usuario no encontrado." });
-
-    await Appointment.deleteMany({ user: id });
-
-    await logActivity({
-      req,
-      category: "users",
-      action: "user_deleted",
-      entity: "user",
-      entityId: user._id,
-      title: "Usuario eliminado",
-      description: "Un admin eliminó un usuario.",
-      subject: buildUserSubject(user),
-      deletedSnapshot: user.toObject(),
-    });
-
-    await user.deleteOne();
-
-    return res.json({
-      ok: true,
-      message: "Usuario y turnos asociados eliminados correctamente.",
-    });
-  } catch (err) {
-    console.error("Error en DELETE /users/:id:", err);
-    return res
-      .status(500)
-      .json({ error: "Error al eliminar usuario y sus turnos." });
+    const { user, alreadyDeactivated } = await deactivateUserAccount({ id: req.params.id, actorId: req.user._id });
+    if (!alreadyDeactivated) await logActivity({ req, category: "users", action: "user_deactivated", entity: "user", entityId: user._id, title: "Cuenta dada de baja", description: "Acceso desactivado. Contacto e historial conservados para consulta y exportación.", subject: buildUserSubject(user) });
+    return res.json({ ok: true, deactivated: true, message: "Cuenta dada de baja. El correo y el historial se conservan para exportar.", user: decorateUserForResponse(user.toObject()) });
+  } catch (error) {
+    console.error("DELETE /users/:id", error);
+    return res.status(error.status || 500).json({ error: error.status ? error.message : "No se pudo dar de baja la cuenta." });
   }
 });
 

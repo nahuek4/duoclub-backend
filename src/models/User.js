@@ -384,6 +384,10 @@ const userSchema = new mongoose.Schema(
     passwordResetToken: { type: String, default: "" },
     passwordResetExpires: { type: Date, default: null },
 
+    accountDeactivated: { type: Boolean, default: false, index: true },
+    accountDeactivatedAt: { type: Date, default: null },
+    accountDeactivatedBy: { type: mongoose.Schema.Types.ObjectId, ref: "User", default: null },
+    accountDeactivatedReason: { type: String, default: "", trim: true },
     suspended: { type: Boolean, default: false },
     suspendedReason: { type: String, default: "", trim: true },
     suspendedAt: { type: Date, default: null },

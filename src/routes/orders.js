@@ -1582,7 +1582,7 @@ router.get("/admin-users", protect, adminOnly, async (req, res) => {
         }
       : {};
 
-    const users = await User.find(filter)
+    const users = await User.find({ ...filter, accountDeactivated: { $ne: true } })
       .select("name lastName fullName email phone active isApproved createdAt")
       .sort({ name: 1, lastName: 1, email: 1 })
       .limit(q ? 80 : 500)

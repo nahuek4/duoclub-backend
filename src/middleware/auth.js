@@ -56,6 +56,9 @@ export async function protect(req, res, next) {
       return res.status(401).json({ error: "Usuario no encontrado" });
     }
 
+    if (user.accountDeactivated) {
+      return res.status(401).json({ code: "ACCOUNT_DEACTIVATED", error: "Esta cuenta fue dada de baja. Contactá al administrador." });
+    }
     req.user = user;
 
     const role = String(user.role || "").toLowerCase().trim();

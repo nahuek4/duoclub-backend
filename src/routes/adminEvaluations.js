@@ -4,6 +4,7 @@ import crypto from "crypto";
 import bcrypt from "bcryptjs";
 
 import User from "../models/User.js";
+import { deactivateUserAccount } from "./users.js";
 import Evaluation from "../models/Evaluation.js";
 import { protect, adminOnly, adminOrProfessor } from "../middleware/auth.js";
 import { logActivity, buildUserSubject, buildDiff } from "../lib/activityLogger.js";
@@ -87,7 +88,7 @@ router.get("/users", protect, adminOrProfessor, async (req, res) => {
     const limit = Math.min(200, Math.max(5, safeInt(req.query.limit, 50)));
     const skip = (page - 1) * limit;
 
-    const query = { role: "client" };
+    const query = { role: "client", accountDeactivated: { $ne: true } };
 
     if (q) {
       query.$or = [
@@ -161,7 +162,7 @@ router.get("/guests", protect, adminOrProfessor, async (req, res) => {
     const q = (req.query.q || "").trim();
     const limit = Math.min(500, Math.max(1, safeInt(req.query.limit, 200)));
 
-    const query = { role: "guest" };
+    const query = { role: "guest", accountDeactivated: { $ne: true } };
 
     if (q) {
       query.$or = [
@@ -310,7 +311,7 @@ router.delete("/guest/:id", protect, adminOnly, async (req, res) => {
       });
     }
 
-    await Promise.all([Evaluation.deleteMany({ user: id }), User.findByIdAndDelete(id)]);
+    await deactivateUserAccount({ id, actorId: req.user._id, reason: "guest_deactivated" });
 
     await logActivity({
       req,
@@ -318,8 +319,8 @@ router.delete("/guest/:id", protect, adminOnly, async (req, res) => {
       action: "user_deleted",
       entity: "user",
       entityId: guest._id,
-      title: "Invitado eliminado",
-      description: "Se eliminó un usuario invitado.",
+      title: "Invitado dado de baja",
+      description: "Invitado dado de baja. Contacto y evaluaciones conservados para consulta y exportación.",
       subject: buildUserSubject(guest),
       deletedSnapshot: {
         name: guest.name || "",

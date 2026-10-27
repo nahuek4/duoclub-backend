@@ -5,6 +5,7 @@ import bcrypt from "bcryptjs";
 import jwt from "jsonwebtoken";
 import crypto from "crypto";
 import User from "../models/User.js";
+import { deactivateUserAccount } from "./users.js";
 import Appointment from "../models/Appointment.js";
 import { protect } from "../middleware/auth.js";
 
@@ -468,6 +469,10 @@ router.post("/login", async (req, res) => {
         .json({ error: "Usuario invitado. Acceso no permitido." });
     }
 
+    if (user.accountDeactivated) {
+      return res.status(403).json({ code: "ACCOUNT_DEACTIVATED", error: "Esta cuenta fue dada de baja. Contactá al administrador." });
+    }
+
     const match = await passwordMatches(password, user.password);
     if (!match) {
       return res
@@ -635,7 +640,7 @@ router.post("/forgot-password", async (req, res) => {
       "Si el email existe, te enviamos un link para restablecer la contraseña.";
 
     const user = await User.findOne({ email: emailLower });
-    if (!user || String(user.role || "").toLowerCase() === "guest") {
+    if (!user || user.accountDeactivated || String(user.role || "").toLowerCase() === "guest") {
       return res.json({ ok: true, message: okMessage });
     }
 
@@ -929,11 +934,10 @@ router.get("/admin-approval", async (req, res) => {
         );
       }
 
-      await Appointment.deleteMany({ user: user._id });
-      await user.deleteOne();
+      await deactivateUserAccount({ id: user._id, actorId: null, reason: "registration_rejected", rejected: true });
 
       return res.send(
-        "✅ Usuario rechazado y eliminado. Puede registrarse nuevamente."
+        "✅ Alta rechazada. Contacto conservado en Dados de baja, sin acceso a la app."
       );
     }
 

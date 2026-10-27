@@ -3,6 +3,7 @@ import fs from "fs";
 import path from "path";
 
 import User from "../models/User.js";
+import { deactivateUserAccount } from "../routes/users.js";
 import Appointment from "../models/Appointment.js";
 import { sendUserWelcomeEmail } from "../mail.js";
 
@@ -231,12 +232,11 @@ export async function deleteUser(req, res) {
     const user = await User.findById(id);
     if (!user) return res.status(404).json({ error: "Usuario no encontrado" });
 
-    await Appointment.deleteMany({ user: id });
-    await user.deleteOne();
+    await deactivateUserAccount({ id, actorId: req.user._id });
 
     return res.json({
       ok: true,
-      message: "Usuario y turnos asociados eliminados correctamente",
+      message: "Cuenta dada de baja. Contacto e historial conservados para exportar.",
     });
   } catch (err) {
     console.error("Error al eliminar usuario:", err);
