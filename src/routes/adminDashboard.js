@@ -1,4 +1,5 @@
 import express from "express";
+import adminFinanceRoutes from "./adminFinance.js";
 import mongoose from "mongoose";
 
 import { protect, adminOnly } from "../middleware/auth.js";
@@ -9,6 +10,7 @@ import User from "../models/User.js";
 import Evaluation from "../models/Evaluation.js";
 
 const router = express.Router();
+router.use("/finance", adminFinanceRoutes);
 router.use(protect, adminOnly);
 
 function parseDateStart(v) {
