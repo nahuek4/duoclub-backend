@@ -1,3 +1,4 @@
+import { dashboardFixedDifferences } from "./adminPlans.js";
 import express from "express";
 import mongoose from "mongoose";
 import { protect, adminOnly } from "../middleware/auth.js";
@@ -319,7 +320,7 @@ router.get("/overview", async (req, res) => {
       from: range.fromDay,
       to: range.toDay
     })]);
-    const [activePlans, newClients, todayRows] = await Promise.all([ServiceSubscription.countDocuments({
+    const [activePlans, newClients, todayRows, differences] = await Promise.all([ServiceSubscription.countDocuments({
       user: {
         $in: clientIds
       },
@@ -335,7 +336,7 @@ router.get("/overview", async (req, res) => {
       }
     }), today >= range.fromDay && today <= range.toDay ? appointments.filter(row => row.date === today) : Appointment.find({
       date: today
-    }).select("date time status attendanceStatus serviceKey").lean()]);
+    }).select("date time status attendanceStatus serviceKey").lean(), dashboardFixedDifferences()]);
     const live = appointments.filter(row => row.status !== "cancelled"),
       services = new Map();
     let present = 0,
@@ -346,6 +347,11 @@ router.get("/overview", async (req, res) => {
       if (attendance === "absent") absent++;
       services.set(row.serviceKey, (services.get(row.serviceKey) || 0) + 1);
     }
+    const weekdays = ["Lun", "Mar", "Mié", "Jue", "Vie", "Sáb", "Dom"].map(label => ({label, count: 0, days: 0, average: 0}));
+    const weekdayIndex = date => (new Date(date + "T12:00:00Z").getUTCDay() + 6) % 7;
+    for (let stamp = Date.parse(range.fromDay + "T12:00:00Z"); stamp <= Date.parse(range.toDay + "T12:00:00Z"); stamp += DAY) weekdays[(new Date(stamp).getUTCDay() + 6) % 7].days++;
+    for (const row of live) weekdays[weekdayIndex(row.date)].count++;
+    for (const row of weekdays) row.average = row.days ? row.count / row.days : 0;
     const upcoming = todayRows.filter(row => row.status === "reserved" && new Date(row.date + "T" + row.time + ":00-03:00") > now),
       slots = new Map();
     for (const row of upcoming) {
@@ -364,6 +370,8 @@ router.get("/overview", async (req, res) => {
         to: range.toDay
       },
       computedAt: now,
+      weekdays,
+      differences,
       today: {
         date: today,
         reservations: todayRows.filter(row => row.status !== "cancelled").length,

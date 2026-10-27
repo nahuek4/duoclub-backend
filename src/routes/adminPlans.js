@@ -1,3 +1,4 @@
+import { EXTRA_SESSIONS_START_PERIOD, countsTowardExtraSessions } from "../services/subscriptions/subscriptionExtraSessions.js";
 import { cycleHasAnyPayment } from "../services/subscriptions/subscriptionAccess.js";
 import express from "express";
 import mongoose from "mongoose";
@@ -133,6 +134,19 @@ function serializePendingChange(pending) {
     autoRenew: pending.autoRenew !== false,
     reason: pending.reason || "",
   };
+}
+
+export function serializeMonthlyPayment(cycle, periodKey) {
+  if (!cycle || cycle.periodKey !== periodKey) return { periodKey, state: "no_cycle", hasAnyPayment: false, amountReceived: 0 };
+  const billing = cycle.billing || {};
+  const total = asMoney(billing.total);
+  const payments = Array.isArray(billing.payments) ? billing.payments : [];
+  const amountReceived = Math.max(asMoney(billing.amountReceived), asMoney(billing.amountPaid),
+    payments.reduce((sum, p) => sum + Math.max(asMoney(p?.amount), asMoney(p?.appliedAmount)), 0),
+    billing.status === "paid" ? total : 0);
+  const hasAnyPayment = cycleHasAnyPayment(cycle);
+  const state = ["cancelled", "written_off"].includes(billing.status) ? "void" : total <= 0 ? "free" : hasAnyPayment ? "paid" : "unpaid";
+  return { periodKey, state, hasAnyPayment, amountReceived, amountDue: asMoney(billing.balanceDue), total, orderId: billing.order ? String(billing.order) : null };
 }
 
 function serializeCycle(cycle) {
@@ -299,7 +313,9 @@ function serializeExtra(extra, orderById = new Map(), bootstrap = null) {
   // La diferencia histórica puede haberse reducido porque se canceló/eliminó
   // un turno. "released" conserva esa historia sin seguir cobrando algo que ya
   // no corresponde al estado actual.
-  const remaining = Math.max(0, currentRequired - purchased);
+  const archivedBeforeReset = !countsTowardExtraSessions(periodKey);
+  const historicalOutstanding = Math.max(0, currentRequired - purchased);
+  const remaining = archivedBeforeReset ? 0 : historicalOutstanding;
   const released = Math.max(
     0,
     historicalRequired - Math.max(currentRequired, purchased)
@@ -316,6 +332,8 @@ function serializeExtra(extra, orderById = new Map(), bootstrap = null) {
     else if (released > 0 && purchased > 0) paymentState = "covered_mixed";
     else paymentState = "covered";
   }
+
+  if (archivedBeforeReset) paymentState = "before_reset";
 
   const linkedOrders = [...purchasedIds]
     .map((id) => {
@@ -374,6 +392,8 @@ function serializeExtra(extra, orderById = new Map(), bootstrap = null) {
     bootstrapPurchasedApplied,
     inferredFromBootstrap: Boolean(bootstrapPurchasedApplied > 0),
     historicalOnly,
+    archivedBeforeReset,
+    historicalOutstanding,
   };
 }
 
@@ -402,7 +422,7 @@ function buildExtraHistory(subscription, rawExtras = [], orderById = new Map()) 
 
 function serializeSubscription(
   subscription,
-  { latestCycle = null, extra = null, fixed = null, coverageHistory = [] } = {}
+  { latestCycle = null, monthlyCycle = null, extra = null, fixed = null, coverageHistory = [] } = {}
 ) {
   const pricingPlan =
     subscription.pricingPlan && typeof subscription.pricingPlan === "object"
@@ -413,7 +433,7 @@ function serializeSubscription(
       ? subscription.user
       : null;
 
-  const history = Array.isArray(coverageHistory) ? coverageHistory : [];
+  const history = (Array.isArray(coverageHistory) ? coverageHistory : []).filter(row => !row.archivedBeforeReset);
   const pendingSessions = history.reduce(
     (sum, row) => sum + asInt(row?.remaining),
     0
@@ -462,6 +482,7 @@ function serializeSubscription(
     pendingChange: serializePendingChange(subscription.pendingChange),
     fixedSchedules: fixed || { schedules: 0, weeklySlots: 0 },
     latestCycle: serializeCycle(latestCycle),
+    paymentThisMonth: serializeMonthlyPayment(monthlyCycle, monthKeyFromDateArgentina()),
     extra,
     differenceSummary: {
       periods: history.length,
@@ -562,9 +583,12 @@ async function loadOverviewData(subscriptions) {
   const orderById = await loadOrdersForExtras({ extras, subscriptions });
 
   const cycleBySubscription = new Map();
+  const monthlyCycleBySubscription = new Map();
+  const paymentPeriodKey = monthKeyFromDateArgentina();
   for (const cycle of cycles) {
     const key = String(cycle.subscription);
     if (!cycleBySubscription.has(key)) cycleBySubscription.set(key, cycle);
+    if (cycle.periodKey === paymentPeriodKey) monthlyCycleBySubscription.set(key, cycle);
   }
 
   const extrasBySubscription = new Map();
@@ -584,13 +608,43 @@ async function loadOverviewData(subscriptions) {
     fixedByPair.set(key, current);
   }
 
-  return { cycleBySubscription, extrasBySubscription, fixedByPair, orderById };
+  return { cycleBySubscription, monthlyCycleBySubscription, extrasBySubscription, fixedByPair, orderById };
+}
+
+// Read-only dashboard summary: shares the same paid/released/reset rules as Planes.
+export async function dashboardFixedDifferences() {
+  const subscriptions = await ServiceSubscription.find({}).populate("pricingPlan", "credits price").lean();
+  const ids = subscriptions.map(s => s._id);
+  const extras = await SubscriptionExtraSessionNotice.find({subscription: {$in: ids}}).lean();
+  const orderById = await loadOrdersForExtras({extras, subscriptions});
+  const bySubscription = new Map();
+  for (const row of extras) {
+    const key = String(row.subscription);
+    if (!bySubscription.has(key)) bySubscription.set(key, []);
+    bySubscription.get(key).push(row);
+  }
+  const users = new Set();
+  let sessions = 0, estimatedCents = 0, unpricedSessions = 0;
+  for (const sub of subscriptions) {
+    const history = buildExtraHistory(sub, bySubscription.get(String(sub._id)) || [], orderById);
+    const remaining = history.filter(row => !row.archivedBeforeReset).reduce((sum, row) => sum + asInt(row.remaining), 0);
+    if (!remaining) continue;
+    if (sub.user) users.add(String(sub.user));
+    sessions += remaining;
+    const base = Number(sub.monthlySessions || sub.pricingPlan?.credits);
+    const price = Number(sub.price ?? sub.pricingPlan?.price);
+    if (base > 0 && Number.isFinite(price) && price >= 0) estimatedCents += Math.round(remaining * price * 100 / base);
+    else unpricedSessions += remaining;
+  }
+  return {users: users.size, sessions, estimatedCents, unpricedSessions, startPeriod: EXTRA_SESSIONS_START_PERIOD};
 }
 
 function buildSummary(items) {
   const summary = {
     total: items.length,
     active: 0,
+    withPaymentThisMonth: 0,
+    withoutPaymentThisMonth: 0,
     pendingChange: 0,
     suspended: 0,
     cancelled: 0,
@@ -608,6 +662,8 @@ function buildSummary(items) {
   };
 
   for (const item of items) {
+    if (item.paymentThisMonth?.state === "paid") summary.withPaymentThisMonth += 1;
+    if (item.paymentThisMonth?.state === "unpaid") summary.withoutPaymentThisMonth += 1;
     if (item.status === "active") summary.active += 1;
     if (item.status === "pending_change") summary.pendingChange += 1;
     if (item.status === "suspended") summary.suspended += 1;
@@ -679,7 +735,7 @@ router.get("/", async (req, res) => {
       .limit(750)
       .lean();
 
-    const { cycleBySubscription, extrasBySubscription, fixedByPair, orderById } =
+    const { cycleBySubscription, monthlyCycleBySubscription, extrasBySubscription, fixedByPair, orderById } =
       await loadOverviewData(subscriptions);
 
     let items = subscriptions.map((subscription) => {
@@ -690,12 +746,13 @@ router.get("/", async (req, res) => {
         orderById
       );
       const extra =
-        coverageHistory.find((row) => row.remaining > 0) ||
-        coverageHistory[0] ||
+        coverageHistory.find((row) => !row.archivedBeforeReset && row.remaining > 0) ||
+        coverageHistory.find(row => !row.archivedBeforeReset) ||
         null;
 
       return serializeSubscription(subscription, {
         latestCycle: cycleBySubscription.get(String(subscription._id)) || null,
+        monthlyCycle: monthlyCycleBySubscription.get(String(subscription._id)) || null,
         extra,
         coverageHistory,
         fixed: fixedByPair.get(`${String(userId)}:${subscription.serviceKey}`) || {
@@ -728,6 +785,8 @@ router.get("/", async (req, res) => {
       summary: buildSummary(items),
       filters: { q, serviceKey, status, billingStatus },
       generatedAt: new Date().toISOString(),
+      differencesStartPeriod: EXTRA_SESSIONS_START_PERIOD,
+      paymentPeriodKey: monthKeyFromDateArgentina(),
     });
   } catch (error) {
     console.error("GET /admin/plans", error);
@@ -772,13 +831,14 @@ router.get("/:id", async (req, res) => {
     const coverageHistory = buildExtraHistory(subscription, extras, orderById);
     const latestCycle = cycles[0] || null;
     const extra =
-      coverageHistory.find((item) => item.remaining > 0) ||
-      coverageHistory[0] ||
+      coverageHistory.find((item) => !item.archivedBeforeReset && item.remaining > 0) ||
+      coverageHistory.find(item => !item.archivedBeforeReset) ||
       null;
 
     return res.json({
       item: serializeSubscription(subscription, {
         latestCycle,
+        monthlyCycle: cycles.find(cycle => cycle.periodKey === monthKeyFromDateArgentina()) || null,
         extra,
         coverageHistory,
         fixed: {
