@@ -7,6 +7,7 @@ import WaitlistEntry from "../models/WaitlistEntry.js";
 import FixedSchedule from "../models/FixedSchedule.js";
 import ScheduleBlock from "../models/ScheduleBlock.js";
 import CapacityRule from "../models/CapacityRule.js";
+import BookingSlotLock from "../models/BookingSlotLock.js";
 
 import { protect, adminOnly } from "../middleware/auth.js";
 
@@ -175,9 +176,12 @@ function buildSlotDate(dateStr, timeStr) {
   return new Date(year, month - 1, day, hour || 0, minute || 0, 0, 0);
 }
 
-function validateBookingWindow(slotDate) {
+function validateBookingWindow(slotDate, { currentMonthOnly = true } = {}) {
   const now = new Date();
   const max = addDays(now, MAX_ADVANCE_DAYS);
+  if (currentMonthOnly && ymdAR(slotDate).slice(0, 7) !== ymdAR(now).slice(0, 7)) {
+    return {ok: false, error: "Solo podés reservar o modificar turnos dentro del mes actual."};
+  }
 
   if (slotDate.getTime() < now.getTime()) {
     return { ok: false, error: "No se puede reservar un turno pasado." };
@@ -1440,6 +1444,23 @@ async function findActiveScheduleBlock({ date, time, serviceKey, session = null 
 }
 
 async function assertSlotNotBlocked({ date, time, serviceKey, session = null }) {
+  // All services share a slot lock because capacity can be pooled by salon.
+  // The write makes concurrent transactions retry before inspecting availability.
+  if (session) {
+    const key = `${date}:${String(time).slice(0, 5)}`;
+    try {
+      await BookingSlotLock.updateOne({_id: key}, {$setOnInsert: {revision: 0}}, {upsert: true});
+    } catch (error) {
+      if (error?.code !== 11000) throw error;
+    }
+    const locked = await BookingSlotLock.updateOne({_id: key}, {$inc: {revision: 1}}, {session});
+    if (locked.matchedCount !== 1) {
+      // A lock created after the transaction snapshot is invisible until retry.
+      const error = new mongoose.mongo.MongoServerError({message: "Refresh booking slot snapshot"});
+      error.addErrorLabel("TransientTransactionError");
+      throw error;
+    }
+  }
   const block = await findActiveScheduleBlock({ date, time, serviceKey, session });
   if (!block) return null;
 
@@ -2146,7 +2167,7 @@ async function reverseFixedAppointmentBillingForPlanDelete({ user, appointment, 
 /* =========================
    Helpers: validación de item
 ========================= */
-function validateBasicSlotRules({ date, time, service, serviceKey }) {
+function validateBasicSlotRules({ date, time, service, serviceKey, currentMonthOnly = true }) {
   const identity = normalizeServiceIdentity({ service, serviceKey });
 
   if (!date || !time || !identity?.serviceKey) {
@@ -2177,7 +2198,7 @@ const timeNorm = String(time).slice(0, 5);
   const slotDate = buildSlotDate(date, timeNorm);
   if (!slotDate) return { ok: false, error: "Fecha/hora inválida." };
 
-  const w = validateBookingWindow(slotDate);
+  const w = validateBookingWindow(slotDate, { currentMonthOnly });
   if (!w.ok) return w;
 
   const adv = validateMinAdvance(slotDate, normalizedServiceKey);
@@ -2230,7 +2251,7 @@ const timeNorm = String(time).slice(0, 5);
   if (!slotDate) return { ok: false, error: "Fecha/hora inválida." };
 
   if (!bypassWindow) {
-    const w = validateBookingWindow(slotDate);
+    const w = validateBookingWindow(slotDate, {currentMonthOnly: false});
     if (!w.ok) return w;
 
     const adv = validateMinAdvance(slotDate, normalizedServiceKey);
@@ -2332,7 +2353,21 @@ function buildOccurrencesForFixedSchedule({ startDate, months, items }) {
   });
 }
 
-async function createAppointmentForTargetUser({
+async function createAppointmentForTargetUser(params) {
+  if (params.session) return createAppointmentForTargetUserInTransaction(params);
+  const bookingSession = await mongoose.startSession();
+  try {
+    let result;
+    await bookingSession.withTransaction(async () => {
+      result = await createAppointmentForTargetUserInTransaction({...params, session: bookingSession});
+    });
+    return result;
+  } finally {
+    await bookingSession.endSession();
+  }
+}
+
+async function createAppointmentForTargetUserInTransaction({
   userId,
   actorReq,
   date,
@@ -2747,6 +2782,9 @@ router.post("/waitlist/claim", async (req, res, next) => {
       const paymentAccess = await getAccountPaymentAccess({ userId: entry.user, role: "client", session });
       if (paymentAccess.frozen) throw Object.assign(new Error("ACCOUNT_PAYMENT_FROZEN"), { paymentAccess });
 
+      if (String(entry.date || "").slice(0, 7) !== ymdAR(new Date()).slice(0, 7)) {
+        throw new Error("BOOKING_MONTH_CLOSED");
+      }
       createdAppointment = await createAppointmentForTargetUser({
         userId: String(entry.user),
         actorReq: {
@@ -2762,6 +2800,7 @@ router.post("/waitlist/claim", async (req, res, next) => {
         serviceKey: entry.serviceKey || "EP",
         notes: entry.notes || "",
         bypassWindow: true,
+        session,
       });
 
       entry.status = "claimed";
@@ -2788,6 +2827,7 @@ router.post("/waitlist/claim", async (req, res, next) => {
 
     if (msg === "ACCOUNT_PAYMENT_FROZEN") return res.status(403).json({
       code: msg, paymentAccess: err.paymentAccess, error: "Cuenta congelada por falta de pago." });
+    if (msg === "BOOKING_MONTH_CLOSED") return res.status(400).json({error: "Solo podés reservar dentro del mes actual.", code: msg});
     if (msg === "WAITLIST_TOKEN_INVALID") {
       return res.status(404).json({ error: "El link de la lista de espera es inválido o venció." });
     }
@@ -4544,6 +4584,8 @@ router.post("/batch", async (req, res) => {
     const userId = req.user?._id || req.user?.id;
 
     await session.withTransaction(async () => {
+      responseItems = []; // A transaction retry must discard results from aborted attempts.
+
       let user = await User.findById(userId).session(session);
       if (!user) throw new Error("USER_NOT_FOUND");
 
@@ -4736,6 +4778,7 @@ router.post("/batch", async (req, res) => {
     }
   } catch (err) {
     console.error("Error en POST /appointments/batch:", err);
+    if (err?.http === 400) return res.status(400).json({ error: err.message });
     const msg = String(err?.message || "");
 
     if (msg === "USER_NOT_FOUND") {
@@ -4845,6 +4888,7 @@ router.post("/:id/reschedule", async (req, res) => {
         time,
         service: ap.service,
         serviceKey: ap.serviceKey,
+        currentMonthOnly: !isStaff,
       });
 
       if (!basic.ok) {
@@ -4862,6 +4906,12 @@ router.post("/:id/reschedule", async (req, res) => {
           message: "El turno ya estaba en ese día y horario.",
         };
         return;
+      }
+
+      if (!isStaff) {
+        const cutoff = Number(getCancellationPolicyForService(ap.serviceKey || ap.service)?.refundCutoffHours || 0);
+        const hoursToStart = (oldSlotDate.getTime() - Date.now()) / 3600000;
+        if (!Number.isFinite(hoursToStart) || hoursToStart < cutoff) throw new Error("RESCHEDULE_WINDOW_CLOSED");
       }
 
       await assertSlotNotBlocked({
@@ -5013,6 +5063,9 @@ router.post("/:id/reschedule", async (req, res) => {
       return res.status(409).json({ error: "Ese horario ya no tiene cupo disponible." });
     }
 
+    if (msg === "RESCHEDULE_WINDOW_CLOSED") {
+      return res.status(409).json({error: "Ya pasó el plazo para modificar este turno. Comunicate con administración.", code: msg});
+    }
     return res.status(500).json({ error: "No se pudo modificar el turno." });
   } finally {
     await session.endSession();
@@ -5660,6 +5713,7 @@ router.post("/waitlist/claim", ensureStaff, async (req, res) => {
         serviceKey: entry.serviceKey || "EP",
         notes: entry.notes || "",
         bypassWindow: true,
+        session,
       });
 
       entry.status = "claimed";
