@@ -87,8 +87,8 @@ export function isAllowedDuringPaymentFreeze(req) {
   const path = String(req.originalUrl || req.url || "").split("?")[0].replace(/^\/api(?=\/)/, "");
   const method = String(req.method || "GET").toUpperCase();
   if (method === "GET") return ["/auth/me", "/pricing", "/services", "/appointments/me/status",
-    "/subscription-extras/me", "/orders/me"].includes(path);
-  if (method === "POST") return ["/auth/force-change-password", "/orders", "/orders/checkout"].includes(path) ||
+    "/subscription-extras/me", "/orders/me", "/appointments/me/notifications"].includes(path);
+  if (method === "POST") return ["/auth/force-change-password", "/orders", "/orders/checkout", "/appointments/me/notifications/read"].includes(path) ||
     /^\/subscriptions\/cycles\/[a-fA-F0-9]{24}\/pay$/.test(path);
   return false;
 }

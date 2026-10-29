@@ -8,6 +8,7 @@ import FixedSchedule from "../models/FixedSchedule.js";
 import ScheduleBlock from "../models/ScheduleBlock.js";
 import CapacityRule from "../models/CapacityRule.js";
 import BookingSlotLock from "../models/BookingSlotLock.js";
+import SubscriptionLifecycleNotice from "../models/SubscriptionLifecycleNotice.js";
 
 import { protect, adminOnly } from "../middleware/auth.js";
 
@@ -3084,7 +3085,7 @@ router.get("/me/notifications", async (req, res) => {
   try {
     const user = new mongoose.Types.ObjectId(String(req.user._id));
     const seenThrough = new Date();
-    const [result] = await Appointment.aggregate([
+    const [result] = req.paymentAccess?.frozen ? [] : await Appointment.aggregate([
       { $match: { user, "attendanceEvents.0": { $exists: true } } },
       { $unwind: "$attendanceEvents" },
       { $facet: {
@@ -3097,8 +3098,16 @@ router.get("/me/notifications", async (req, res) => {
         unread: [{ $match: { "attendanceEvents.readAt": null } }, { $count: "count" }],
       } },
     ]);
+    const [planItems, planUnread] = await Promise.all([
+      SubscriptionLifecycleNotice.find({user, status:{$in:["unread","read"]}}).sort({createdAt:-1,_id:-1}).limit(50).lean(),
+      SubscriptionLifecycleNotice.countDocuments({user,status:"unread"}),
+    ]);
+    const items = [
+      ...(result?.items || []).map(item=>({...item,kind:"attendance"})),
+      ...planItems.map(item=>({id:`plan-${item._id}`,kind:"plan",type:item.type,serviceKey:item.serviceKey,periodKey:item.periodKey,metadata:item.metadata || {},status:item.status,readAt:item.readAt,createdAt:item.createdAt})),
+    ].sort((a,b)=>new Date(b.createdAt)-new Date(a.createdAt)||String(b.id).localeCompare(String(a.id))).slice(0,50);
     res.set("Cache-Control", "no-store");
-    return res.json({ items: result?.items || [], unreadCount: result?.unread?.[0]?.count || 0, seenThrough });
+    return res.json({ items, unreadCount: (result?.unread?.[0]?.count || 0)+planUnread, attendanceAvailable:!req.paymentAccess?.frozen, seenThrough });
   } catch (error) {
     console.error("Attendance inbox:", error);
     return res.status(500).json({ error: "No se pudieron cargar las notificaciones." });
@@ -3112,10 +3121,15 @@ router.post("/me/notifications/read", async (req, res) => {
   }
   try {
     // Only acknowledge the snapshot that was opened, preserving newer arrivals.
-    await Appointment.updateMany(
+    if (!req.paymentAccess?.frozen) await Appointment.updateMany(
       { user: req.user._id, attendanceEvents: { $elemMatch: { readAt: null, createdAt: { $lte: through } } } },
       { $set: { "attendanceEvents.$[seen].readAt": new Date() } },
       { arrayFilters: [{ "seen.readAt": null, "seen.createdAt": { $lte: through } }] }
+    );
+    await SubscriptionLifecycleNotice.updateMany(
+      {user:req.user._id,status:"unread",createdAt:{$lte:through}},
+      {$set:{status:"read",readAt:new Date()}},
+      {timestamps:false}
     );
     return res.json({ ok: true });
   } catch (error) {
@@ -3131,6 +3145,10 @@ router.get("/me/attendance", async (req, res) => {
     if (!mongoose.isValidObjectId(requestedUser)) return res.status(400).json({ error: "Usuario inválido." });
     const page = Math.max(1, Math.floor(Number(req.query.page) || 1));
     if (!Number.isSafeInteger(page) || page > 100000) return res.status(400).json({ error: "Página inválida." });
+    const limit = req.query.limit === undefined ? 20 : Number(req.query.limit);
+    const month = String(req.query.month || ""), attendance = String(req.query.attendance || "");
+    if (!Number.isInteger(limit) || limit < 1 || limit > 50 || (month && !/^\d{4}-(0[1-9]|1[0-2])$/.test(month)) || (attendance && !["present", "absent"].includes(attendance))) return res.status(400).json({error: "Filtros de asistencia inválidos."});
+    const historyFilter = {...(month ? {date: {$regex: `^${month}-`}} : {}), ...(attendance ? {attendanceStatus: attendance} : {})};
     const now = new Date();
     const parts = Object.fromEntries(new Intl.DateTimeFormat("en-CA", { timeZone: "America/Argentina/Buenos_Aires", year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", hourCycle: "h23" }).formatToParts(now).map(x => [x.type, x.value]));
     const today = `${parts.year}-${parts.month}-${parts.day}`, time = `${parts.hour}:${parts.minute}`;
@@ -3140,13 +3158,15 @@ router.get("/me/attendance", async (req, res) => {
       { $match: match },
       { $set: { attendanceStatus: { $cond: [{ $eq: ["$attendanceStatus", "absent"] }, "absent", "present"] } } },
       { $facet: {
-        items: [{ $sort: { date: -1, time: -1, _id: -1 } }, { $skip: (page - 1) * 20 }, { $limit: 20 },
+        items: [{ $match: historyFilter }, { $sort: { date: -1, time: -1, _id: -1 } }, { $skip: (page - 1) * limit }, { $limit: limit },
           { $project: { date: 1, time: 1, service: 1, serviceKey: 1, attendanceStatus: { $ifNull: ["$attendanceStatus", "pending"] }, attendanceRecordedAt: 1 } }],
         summary: [{ $group: { _id: null, total: { $sum: 1 }, present: { $sum: { $cond: [{ $eq: ["$attendanceStatus", "present"] }, 1, 0] } }, absent: { $sum: { $cond: [{ $eq: ["$attendanceStatus", "absent"] }, 1, 0] } } } }],
+        filtered: [{ $match: historyFilter }, {$count: "total"}],
       } },
     ]);
     const summary = result?.summary?.[0] || { total: 0, present: 0, absent: 0 };
-    return res.json({ items: result?.items || [], page, pages: Math.max(1, Math.ceil(summary.total / 20)), summary: { present: summary.present, absent: summary.absent, pending: summary.total - summary.present - summary.absent, total: summary.total } });
+    const total = result?.filtered?.[0]?.total || 0;
+    return res.json({ items: result?.items || [], page, limit, total, pages: Math.max(1, Math.ceil(total / limit)), summary: { present: summary.present, absent: summary.absent, pending: summary.total - summary.present - summary.absent, total: summary.total } });
   } catch (error) {
     console.error("Attendance history:", error);
     return res.status(500).json({ error: "No se pudo cargar el historial de asistencia." });
