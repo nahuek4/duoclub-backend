@@ -1,5 +1,7 @@
+import { MANUAL_TRANSFERS, manualPaymentResponse } from "../lib/manualPayments.js";
 // backend/src/routes/orders.js
 import express from "express";
+import ExternalPaymentCard from "../models/ExternalPaymentCard.js";
 import crypto from "crypto";
 import mongoose from "mongoose";
 import { protect, adminOnly } from "../middleware/auth.js";
@@ -507,6 +509,7 @@ function serializePublicPaymentOrder(order = {}) {
     id: String(obj?._id || ""),
     status: publicStatusFor(obj),
     payMethod: String(obj?.payMethod || "MP").toUpperCase(),
+    paymentChannel: obj.paymentChannel || "",
     total: Number(obj?.totalFinal ?? obj?.total ?? obj?.price ?? 0),
     customerName: getOrderCustomerName(obj),
     customerEmail: getOrderCustomerEmail(obj),
@@ -721,7 +724,7 @@ async function applyOrderIfNeeded(order) {
   if (!order.subscriptionCycleApplied) {
     await applySubscriptionRenewalFromOrder({
       order,
-      paymentProvider: order.payMethod,
+      paymentProvider: order.paymentChannel === "TRANSFER" ? "TRANSFER" : order.payMethod,
       paymentId: order.mpPaymentId || "",
       paidAt: order.paidAt || new Date(),
     });
@@ -738,6 +741,7 @@ async function applyOrderIfNeeded(order) {
    MercadoPago
 ======================= */
 async function createMpPreference({ order, user = null }) {
+  return {ok: false, error: "Mercado Pago está desactivado. Usá Efectivo o Transferencia."};
   const accessToken = process.env.MP_ACCESS_TOKEN;
   if (!accessToken) {
     return { ok: false, error: "MP_ACCESS_TOKEN no configurado." };
@@ -1107,10 +1111,11 @@ router.post("/checkout", protect, async (req, res) => {
       },
     });
 
-    if (pm === "CASH") {
+    if (pm === "CASH" || order.paymentChannel === "TRANSFER") {
       res.status(201).json({
         ok: true,
         status: "pending",
+        ...manualPaymentResponse(order),
         totalFinal,
         discountPercent,
         discountAmount,
@@ -1255,8 +1260,8 @@ router.post("/", protect, async (req, res) => {
       },
     });
 
-    if (pm === "CASH") {
-      res.status(201).json({ ok: true, status: "pending" });
+    if (pm === "CASH" || order.paymentChannel === "TRANSFER") {
+      res.status(201).json({ ok: true, ...manualPaymentResponse(order), status: "pending" });
 
       fireAndForget(() => notifyAdminIfNeeded(order), "MAIL_ADMIN_NEW_ORDER_LEGACY_CASH");
       fireAndForget(async () => {
@@ -1444,6 +1449,10 @@ router.post("/public-payment/:token/pay", async (req, res) => {
     if (status === "cancelled") {
       return res.status(409).json({ error: "Esta orden fue cancelada." });
     }
+
+    order.paymentChannel = "TRANSFER";
+    await order.save();
+    return res.json({ok: true, ...manualPaymentResponse(order)});
 
     const mp = await createMpPreference({ order, user: null });
     if (!mp.ok) {
@@ -1790,7 +1799,7 @@ router.patch("/:id/enable-credits", protect, adminOnly, async (req, res) => {
     if (!order) return res.status(404).json({ error: "Orden no encontrada" });
 
     const pm = String(order.payMethod || "").toUpperCase();
-    if (pm !== "CASH") {
+    if (pm !== "CASH" && order.paymentChannel !== "TRANSFER") {
       return res.status(400).json({ error: "Solo CASH permite habilitar créditos sin pago" });
     }
 
@@ -1841,7 +1850,7 @@ router.patch("/:id/mark-paid", protect, adminOnly, async (req, res) => {
 
     const pm = String(order.payMethod || "").toUpperCase();
     const isPublicManualLink = Boolean(order.publicPaymentLink && order.manualFulfillmentRequired);
-    if (pm !== "CASH" && !isPublicManualLink) {
+    if (pm !== "CASH" && order.paymentChannel !== "TRANSFER" && !isPublicManualLink) {
       return res.status(400).json({ error: "Solo CASH o links públicos manuales pueden marcarse manualmente" });
     }
 
@@ -1859,6 +1868,14 @@ router.patch("/:id/mark-paid", protect, adminOnly, async (req, res) => {
       if (!applied.ok) {
         return res.status(500).json({ error: applied.error || "No se pudo aplicar." });
       }
+    }
+
+    if (order.externalPaymentCard) {
+      const [totals] = await Order.aggregate([
+        {$match: {externalPaymentCard: order.externalPaymentCard, status: "paid"}},
+        {$group: {_id: null, count: {$sum: 1}, amount: {$sum: {$ifNull: ["$totalFinal", "$total"]}}}}
+      ]);
+      if (totals) await ExternalPaymentCard.updateOne({_id: order.externalPaymentCard}, {$max: {approvedPaymentsCount: totals.count, totalApprovedAmount: totals.amount}});
     }
 
     if (!wasPaid) {

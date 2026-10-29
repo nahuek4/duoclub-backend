@@ -438,8 +438,8 @@ async function applyApprovedOrderOnce({ orderId, paymentInfo }) {
         order.notes = appendNote(
           order.notes,
           isExternalPaymentOrder(order)
-            ? "Pago externo aprobado por Mercado Pago. Requiere gestión manual o vinculación; no se acreditaron créditos automáticamente."
-            : "Pago aprobado por Mercado Pago. Requiere gestión manual. No se acreditaron créditos automáticamente."
+            ? "Pago online externo anterior aprobado. Requiere gestión manual o vinculación; no se acreditaron créditos automáticamente."
+            : "Pago online anterior aprobado. Requiere gestión manual. No se acreditaron créditos automáticamente."
         );
         await order.save({ session });
         result = { ok: true, manual: true, orderId: String(order._id) };
@@ -476,10 +476,10 @@ async function applyApprovedOrderOnce({ orderId, paymentInfo }) {
       user.history = Array.isArray(user.history) ? user.history : [];
       user.history.push({
         action: "order_applied_mp",
-        title: "Se acreditó una orden pagada por Mercado Pago.",
+        title: "Se acreditó una orden de pago online anterior.",
         date: ymd(new Date()),
         time: hm(new Date()),
-        service: "MercadoPago",
+        service: "Pago online (histórico)",
         mpPaymentId: paymentInfo.paymentId || "",
         orderId: order._id,
         createdAt: new Date(),

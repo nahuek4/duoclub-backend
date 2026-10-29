@@ -1,3 +1,4 @@
+import { MANUAL_TRANSFERS, manualPaymentResponse } from "../lib/manualPayments.js";
 // backend/src/routes/subscriptions.js
 import express from "express";
 
@@ -611,7 +612,7 @@ router.post(
           ) {
             return res.status(409).json({
               error:
-                "Existe un pago de Mercado Pago pendiente por otro importe. Eliminá/cancelá esa orden antes de cargar un importe distinto.",
+                "Existe un pago online anterior pendiente por otro importe. Eliminá/cancelá esa orden antes de cargar un importe distinto.",
               code: "SUBSCRIPTION_PENDING_MP_ORDER_EXISTS",
               pendingOrderId: String(existingOrder._id),
               pendingAmount: existingAmount,
@@ -778,6 +779,7 @@ function getFrontBaseUrl() {
 }
 
 async function createMpPreferenceForRenewal({ order, user, cycle }) {
+  throw new Error("Mercado Pago está desactivado. Usá Efectivo o Transferencia.");
   const accessToken = process.env.MP_ACCESS_TOKEN;
   if (!accessToken) throw new Error("MP_ACCESS_TOKEN no configurado.");
 
@@ -840,7 +842,8 @@ function renewalOrderResponse(order) {
     status: order.status,
     payMethod: order.payMethod,
     amount: Number(order.totalFinal ?? order.total ?? 0),
-    init_point: order.mpInitPoint || "",
+    init_point: order.paymentChannel === "TRANSFER" ? "" : order.mpInitPoint || "",
+    ...manualPaymentResponse(order),
   };
 }
 
@@ -1045,7 +1048,7 @@ router.post("/cycles/:cycleId/pay", async (req, res) => {
     if (requestedMethod !== expectedMethod) {
       return res.status(400).json({
         error: `Este plan se renueva mediante ${
-          expectedMethod === "MP" ? "Mercado Pago" : "efectivo/transferencia"
+          expectedMethod === "MP" ? "Transferencia" : "Efectivo"
         }. Para cambiar el medio de pago, modificá el plan del próximo período.`,
       });
     }
@@ -1112,14 +1115,15 @@ router.post("/cycles/:cycleId/pay", async (req, res) => {
         }
 
         if (status === "pending") {
+          if (expectedMethod === "MP") { existingOrder.paymentChannel = "TRANSFER"; await existingOrder.save(); }
           if (existingAmount !== requestedAmount) {
             if (
-              expectedMethod === "MP" &&
+              !MANUAL_TRANSFERS && expectedMethod === "MP" &&
               existingOrder.mpPreferenceId
             ) {
               return res.status(409).json({
                 error:
-                  `Ya existe un pago de Mercado Pago pendiente por $${existingAmount}. No vamos a generar otro por un monto distinto para evitar un doble cobro.`,
+                  `Ya existe un pago online anterior pendiente por $${existingAmount}. No vamos a generar otro por un monto distinto para evitar un doble cobro.`,
                 code: "SUBSCRIPTION_PENDING_MP_ORDER_EXISTS",
                 pendingOrderId: String(existingOrder._id),
                 pendingAmount: existingAmount,
@@ -1139,7 +1143,7 @@ router.post("/cycles/:cycleId/pay", async (req, res) => {
             cycle.billing.order = null;
             await cycle.save();
           } else {
-            if (expectedMethod === "MP" && !existingOrder.mpInitPoint) {
+            if (!MANUAL_TRANSFERS && expectedMethod === "MP" && !existingOrder.mpInitPoint) {
               const user = await User.findById(uid).lean();
               const mp = await createMpPreferenceForRenewal({
                 order: existingOrder,
@@ -1188,7 +1192,7 @@ router.post("/cycles/:cycleId/pay", async (req, res) => {
     cycle.billing.order = order._id;
     await cycle.save();
 
-    if (expectedMethod === "MP") {
+    if (!MANUAL_TRANSFERS && expectedMethod === "MP") {
       try {
         const user = await User.findById(uid).lean();
         const mp = await createMpPreferenceForRenewal({ order, user, cycle });

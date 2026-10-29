@@ -67,8 +67,8 @@ function dateAR(value) {
 
 function payMethodLabel(value) {
   return clean(value).toUpperCase() === "MP"
-    ? "Mercado Pago"
-    : "Efectivo / transferencia";
+    ? "Transferencia"
+    : "Efectivo";
 }
 
 function serviceLabel(serviceKey, fallback = "") {

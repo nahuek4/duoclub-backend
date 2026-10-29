@@ -68,7 +68,7 @@ function orderSummary(order = {}, user = null) {
 
   const uEmail = user?.email || order?.email || "-";
 
-  const pm = String(order?.payMethod || "").toUpperCase() || "-";
+  const pm = String(order?.paymentChannel || order?.payMethod || "").toUpperCase() || "-";
   const statusRaw = String(order?.status || "pending").toLowerCase();
 
   const totalFinal =
@@ -110,9 +110,11 @@ function paymentMethodLabel(raw = "") {
   const v = String(raw || "").trim().toUpperCase();
   if (!v || v === "-") return "-";
   if (v === "EFECTIVO") return "Efectivo";
-  if (v === "MERCADOPAGO") return "Mercado Pago";
+  if (["MP", "MERCADOPAGO", "CHECKOUT_PRO"].includes(v)) return "Pago online (histórico)";
+  if (v === "CASH") return "Efectivo";
+  if (v === "TRANSFER") return "Transferencia";
   if (v === "TRANSFERENCIA") return "Transferencia";
-  if (v === "CHECKOUT_PRO") return "Checkout Pro";
+
   return v.charAt(0) + v.slice(1).toLowerCase();
 }
 

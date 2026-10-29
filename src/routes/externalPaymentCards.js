@@ -1,3 +1,4 @@
+import { manualPaymentResponse } from "../lib/manualPayments.js";
 // backend/src/routes/externalPaymentCards.js
 import express from "express";
 import crypto from "crypto";
@@ -155,6 +156,7 @@ function buildOrderPaymentTitleFromCard(card = {}) {
 }
 
 async function createMpPreference({ order, card }) {
+  return {ok: false, error: "Mercado Pago está desactivado. Usá Transferencia."};
   const accessToken = process.env.MP_ACCESS_TOKEN;
   if (!accessToken) return { ok: false, error: "MP_ACCESS_TOKEN no configurado." };
 
@@ -645,11 +647,13 @@ router.post("/public/:slug/pay", async (req, res) => {
       externalPaymentMatchedUser: matchedUser?._id || null,
 
       notes: canAutoApply
-        ? `Pago externo reutilizable. Si MP aprueba, acredita ${sessions} sesión(es) de ${serviceName}.`
+        ? `Pago externo reutilizable. Al confirmar la transferencia, acredita ${sessions} sesión(es) de ${serviceName}.`
         : card.addsCredits
           ? "Pago externo reutilizable. No se encontró usuario por email o la asignación es manual; requiere gestión manual."
           : "Pago externo reutilizable. No acredita sesiones automáticamente.",
     });
+
+    return res.status(201).json({ok: true, ...manualPaymentResponse(order), manualFulfillmentRequired: Boolean(order.manualFulfillmentRequired), autoApply: false});
 
     const mp = await createMpPreference({ order, card });
     if (!mp.ok) {

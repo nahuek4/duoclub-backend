@@ -137,6 +137,7 @@ const orderSchema = new mongoose.Schema(
   {
     user: { type: mongoose.Schema.Types.ObjectId, ref: "User", default: null, index: true },
 
+    paymentChannel: {type: String, enum: ["", "CASH", "TRANSFER"], default: ""},
     payMethod: {
       type: String,
       required: true,
@@ -262,6 +263,7 @@ const orderSchema = new mongoose.Schema(
 );
 
 orderSchema.pre("validate", function () {
+  if (this.isNew && !this.paymentChannel) this.paymentChannel = this.payMethod === "MP" ? "TRANSFER" : "CASH";
   if (!this.expiresAt) {
     this.expiresAt = new Date(new Date(this.createdAt || Date.now()).getTime() + ORDER_VALIDITY_MS);
   }

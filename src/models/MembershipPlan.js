@@ -80,7 +80,7 @@ membershipPlanSchema.pre("validate", function normalizeMembershipPlan() {
 
   if (!this.label) {
     const tierLabel = this.tier === "PLUS" ? "DUO+ mensual" : "Membresía";
-    const payLabel = this.payMethod === "MP" ? "Mercado Pago" : "Efectivo";
+    const payLabel = this.payMethod === "MP" ? "Transferencia" : "Efectivo";
     this.label = `${tierLabel} - ${payLabel}`;
   }
 

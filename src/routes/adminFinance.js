@@ -120,7 +120,7 @@ export async function financeReport(query = {}) {
         }, range.end]
       }]
     }
-  }).select("status paidAt approvedAt createdAt totalFinal total price serviceKey items.serviceKey items.price items.label items.kind payMethod customerName externalPaymentCard label user").populate("user", "name lastName").lean(), source === "orders" || source === "labor" ? [] : FinanceEntry.find({
+  }).select("status paidAt approvedAt createdAt totalFinal total price serviceKey items.serviceKey items.price items.label items.kind payMethod paymentChannel customerName externalPaymentCard label user").populate("user", "name lastName").lean(), source === "orders" || source === "labor" ? [] : FinanceEntry.find({
     ...groupFilter(group),
     date: {
       $gte: range.fromDay,
@@ -175,7 +175,7 @@ export async function financeReport(query = {}) {
         amountCents: cents,
         category: orderCategory(order),
         description: clean(order.customerName) || [order.user?.name, order.user?.lastName].filter(Boolean).join(" ") || clean(order.label) || "Cobro de orden",
-        method: order.payMethod || "OTHER",
+        method: order.paymentChannel === "TRANSFER" ? "TRANSFER" : order.payMethod || "OTHER",
         reference: "Orden #" + String(order._id).slice(-8),
         status: "active"
       };
