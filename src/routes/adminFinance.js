@@ -1,3 +1,4 @@
+import {workingGroupScope,workingGroupUsers} from "../lib/workingGroup.js";
 import { dashboardFixedDifferences } from "./adminPlans.js";
 import express from "express";
 import mongoose from "mongoose";
@@ -284,15 +285,19 @@ router.use((req, res, next) => {
 });
 router.get("/overview", async (req, res) => {
   try {
+    const scope=await workingGroupScope(req.query.group);
+    const serviceScope=scope.group?{serviceKey:{$in:scope.keys}}:{};
     const range = resolveFinanceRange(req.query),
       now = new Date(),
       today = argentinaDay(now),
       active = {
+        ...(scope.group?{$and:[workingGroupUsers(scope)]}:{}),
         accountDeactivated: {
           $ne: true
         }
       };
     const [appointments, clientIds, pendingUsers, aptoReview, admissions, finance] = await Promise.all([Appointment.find({
+      ...serviceScope,
       date: {
         $gte: range.fromDay,
         $lte: range.toDay
@@ -313,14 +318,17 @@ router.get("/overview", async (req, res) => {
         aptoStatus: "pending_review"
       }]
     }), Admission.countDocuments({
+      ...(scope.group?{"step1.formType":scope.group==="PERFORMANCE"?{$regex:"^PERFORMANCE$",$options:"i"}:{$not:/^PERFORMANCE$/i}}:{}),
       syncedToUser: {
         $ne: true
       }
     }), financeReport({
       from: range.fromDay,
-      to: range.toDay
+      to: range.toDay,
+      group:req.query.group
     })]);
     const [activePlans, newClients, todayRows, differences] = await Promise.all([ServiceSubscription.countDocuments({
+      ...serviceScope,
       user: {
         $in: clientIds
       },
@@ -335,8 +343,9 @@ router.get("/overview", async (req, res) => {
         $lt: range.end
       }
     }), today >= range.fromDay && today <= range.toDay ? appointments.filter(row => row.date === today) : Appointment.find({
+      ...serviceScope,
       date: today
-    }).select("date time status attendanceStatus serviceKey").lean(), dashboardFixedDifferences()]);
+    }).select("date time status attendanceStatus serviceKey").lean(), dashboardFixedDifferences(scope.group?scope.keys:null)]);
     const live = appointments.filter(row => row.status !== "cancelled"),
       services = new Map();
     let present = 0,
@@ -365,6 +374,7 @@ router.get("/overview", async (req, res) => {
       slots.set(key, slot);
     }
     return res.json({
+      group:req.query.group||"",
       range: {
         from: range.fromDay,
         to: range.toDay

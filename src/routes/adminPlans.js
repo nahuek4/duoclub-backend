@@ -1,3 +1,4 @@
+import {workingGroupScope,workingGroupUsers} from "../lib/workingGroup.js";
 import { EXTRA_SESSIONS_START_PERIOD, countsTowardExtraSessions } from "../services/subscriptions/subscriptionExtraSessions.js";
 import { cycleHasAnyPayment } from "../services/subscriptions/subscriptionAccess.js";
 import express from "express";
@@ -612,8 +613,8 @@ async function loadOverviewData(subscriptions) {
 }
 
 // Read-only dashboard summary: shares the same paid/released/reset rules as Planes.
-export async function dashboardFixedDifferences() {
-  const subscriptions = await ServiceSubscription.find({}).populate("pricingPlan", "credits price").lean();
+export async function dashboardFixedDifferences(serviceKeys=null) {
+  const subscriptions = await ServiceSubscription.find(serviceKeys ? {serviceKey:{$in:serviceKeys}} : {}).populate("pricingPlan", "credits price").lean();
   const ids = subscriptions.map(s => s._id);
   const extras = await SubscriptionExtraSessionNotice.find({subscription: {$in: ids}}).lean();
   const orderById = await loadOrdersForExtras({extras, subscriptions});
@@ -719,6 +720,7 @@ router.get("/catalog", async (req, res) => {
 
 router.get("/", async (req, res) => {
   try {
+    const scope=await workingGroupScope(req.query.group);
     const query = {};
     const serviceKey = assertServiceKey(req.query?.serviceKey, true);
     const status = assertSubscriptionStatus(req.query?.status);
@@ -726,6 +728,7 @@ router.get("/", async (req, res) => {
     const q = clean(req.query?.q).toLowerCase();
 
     if (serviceKey) query.serviceKey = serviceKey;
+    else if(scope.group) query.serviceKey={$in:scope.keys};
     if (status) query.status = status;
 
     const subscriptions = await ServiceSubscription.find(query)

@@ -1,3 +1,4 @@
+import {workingGroupScope,workingGroupUsers} from "../lib/workingGroup.js";
 import express from "express";
 import mongoose from "mongoose";
 import crypto from "crypto";
@@ -90,6 +91,9 @@ router.get("/users", protect, adminOrProfessor, async (req, res) => {
 
     const query = { role: "client", accountDeactivated: { $ne: true } };
 
+    const scope=await workingGroupScope(req.query.group);
+    if(scope.group)query.$and=[workingGroupUsers(scope)];
+
     if (q) {
       query.$or = [
         { name: new RegExp(q, "i") },
@@ -150,7 +154,7 @@ router.get("/users", protect, adminOrProfessor, async (req, res) => {
     });
   } catch (err) {
     console.error("GET /admin/evaluations/users error:", err);
-    return res.status(500).json({ error: "Error al listar usuarios." });
+    return res.status(err.status || 500).json({ error: err.status ? err.message : "Error al listar usuarios." });
   }
 });
 
