@@ -1,3 +1,4 @@
+import { blockPublicMedicalUploads } from "./middleware/privateUploads.js";
 import express from "express";
 import dotenv from "dotenv";
 import path from "path";
@@ -155,6 +156,7 @@ app.use(["/appointments", "/waitlist", "/api/appointments", "/api/waitlist"], ap
 const uploadsDir = path.join(__dirname, "..", "uploads");
 fs.mkdirSync(uploadsDir, { recursive: true });
 
+app.use(["/uploads", "/api/uploads"], blockPublicMedicalUploads);
 app.use("/uploads", express.static(uploadsDir));
 app.use("/api/uploads", express.static(uploadsDir));
 

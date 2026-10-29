@@ -13,6 +13,12 @@ import {
 } from "../mail.js";
 import { logActivity, buildUserSubject } from "../lib/activityLogger.js";
 
+function safeAdmissionUser(user) {
+  if (!user) return user;
+  const {password, passwordResetToken, passwordResetExpires, emailVerificationToken, emailVerificationExpires, ...safe} = user;
+  return safe;
+}
+
 const router = express.Router();
 
 const TRAINING_ADMISSION_EMAIL = String(
@@ -342,7 +348,7 @@ router.post("/step1", async (req, res) => {
     const payload = req.body || {};
     const email = normEmail(payload?.email);
 
-    if (!email) {
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
       return res.status(400).json({
         ok: false,
         error: "Email requerido.",
@@ -688,7 +694,7 @@ router.post("/admin/:id/create-user", protect, adminOnly, async (req, res) => {
     if (!user) {
       const { name, lastName } = splitFullName(fullName);
 
-      tempPassword = Math.random().toString(36).slice(2, 10);
+      tempPassword = crypto.randomBytes(12).toString("base64url");
       const hashed = await bcrypt.hash(tempPassword, 10);
 
       user = await User.create({
@@ -755,7 +761,7 @@ router.post("/admin/:id/create-user", protect, adminOnly, async (req, res) => {
       ok: true,
       created,
       tempPassword: created ? tempPassword : undefined,
-      user: updatedUser,
+      user: safeAdmissionUser(updatedUser),
       admissionId: adm._id,
     });
   } catch (err) {
@@ -838,7 +844,7 @@ router.post("/admin/:id/link-user", protect, adminOnly, async (req, res) => {
 
     return res.json({
       ok: true,
-      user: updatedUser,
+      user: safeAdmissionUser(updatedUser),
       admissionId: adm._id,
     });
   } catch (err) {

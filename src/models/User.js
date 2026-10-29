@@ -494,9 +494,10 @@ userSchema.pre("validate", function () {
   }
 
   const aptoStatus = String(this.aptoStatus || "").toLowerCase().trim();
-  const hasLegacyCompletedApto = !!this.aptoCompletedAt || String(this.aptoPath || "") === "ADMIN_COMPLETED_APTO";
+  const explicitMedicalReview = ["pending_review", "rejected", "suspended"].includes(this.medicalClearance.status) || ["pending_review", "rejected", "suspended"].includes(aptoStatus);
+  const hasLegacyCompletedApto = !explicitMedicalReview && (!!this.aptoCompletedAt || String(this.aptoPath || "") === "ADMIN_COMPLETED_APTO");
 
-  if ((aptoStatus === "approved" || hasLegacyCompletedApto) && this.medicalClearance.status !== "approved") {
+  if (!explicitMedicalReview && (aptoStatus === "approved" || hasLegacyCompletedApto) && this.medicalClearance.status !== "approved") {
     this.medicalClearance.status = "approved";
     this.medicalClearance.approvedAt = this.medicalClearance.approvedAt || this.aptoCompletedAt || new Date();
   }
@@ -547,7 +548,7 @@ userSchema.index(
   { email: 1 },
   {
     unique: true,
-    partialFilterExpression: { email: { $type: "string", $ne: "" } },
+    partialFilterExpression: { email: { $type: "string", $gt: "" } },
   }
 );
 

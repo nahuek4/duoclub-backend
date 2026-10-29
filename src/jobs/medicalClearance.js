@@ -67,6 +67,7 @@ function isApproved(user) {
     .toLowerCase()
     .trim();
 
+  if (["pending_review", "rejected", "suspended"].includes(st)) return false;
   return (
     st === "approved" ||
     !!user?.medicalClearance?.approvedAt ||
@@ -124,8 +125,9 @@ async function suspendForMedicalClearance(user, now) {
   mc.suspendedAt = mc.suspendedAt || now;
   mc.lastCheckedAt = now;
 
+  const preserveManualSuspension = user.suspended && String(user.suspendedReason || "") !== "medical_clearance";
   user.suspended = true;
-  user.suspendedReason = "medical_clearance";
+  if (!preserveManualSuspension) user.suspendedReason = "medical_clearance";
   user.suspendedAt = user.suspendedAt || now;
 
   user.history = Array.isArray(user.history) ? user.history : [];

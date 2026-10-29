@@ -536,6 +536,10 @@ router.post("/register", async (req, res) => {
       });
     }
 
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(em)) {
+      return res.status(400).json({error: "Ingresá un email válido."});
+    }
+
     if (cleanPassword.length < 8) {
       return res.status(400).json({
         error: "La contraseña debe tener al menos 8 caracteres.",

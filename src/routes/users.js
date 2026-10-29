@@ -87,6 +87,16 @@ router.use(async (req, res, next) => {
   next();
 });
 
+async function ownOrAdminUpload(req, res, next) {
+  if (req.user?.role !== "admin" && String(req.user?._id) !== String(req.params.id)) {
+    return res.status(403).json({error: "No tenés permisos para cargar archivos de este usuario."});
+  }
+  try {
+    if (!await User.exists({_id: req.params.id})) return res.status(404).json({error: "Usuario no encontrado."});
+    return next();
+  } catch (error) { return next(error); }
+}
+
 const APTO_DEBUG_VERSION = "APTO_UPLOAD_FIX_V17_DIRECT_2026-07-02";
 
 /* ============================================
@@ -243,7 +253,7 @@ const aptoStorage = multer.diskStorage({
   destination: (req, file, cb) => cb(null, aptosDir),
   filename: (req, file, cb) => {
     const ext = path.extname(file.originalname) || ".pdf";
-    const base = "apto-" + req.params.id + "-" + Date.now();
+    const base = "apto-" + req.params.id + "-" + Date.now() + "-" + crypto.randomBytes(6).toString("hex");
     cb(null, base + ext);
   },
 });
@@ -735,6 +745,7 @@ function setMedicalClearanceStatus(user, status, { notes = "", actor = "admin" }
   }
 
   mc.status = st;
+  if (st !== "approved") { mc.approvedAt = null; user.aptoCompletedAt = null; }
   if (notes) mc.notes = String(notes || "").trim();
   mc.lastCheckedAt = now;
 
@@ -1255,14 +1266,19 @@ router.post("/", adminOnly, async (req, res) => {
       });
     }
 
-    const plainPassword =
-      password && String(password).trim().length >= 4
-        ? String(password).trim()
-        : Math.random().toString(36).slice(2, 10);
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(em)) return res.status(400).json({error: "Ingresá un email válido."});
+    const initialCredits = Number(credits ?? 0);
+    if (!Number.isSafeInteger(initialCredits) || initialCredits < 0) return res.status(400).json({error: "Las sesiones iniciales deben ser un número entero, igual o mayor a cero."});
+    if (initialCredits > 0 && (!canonicalServiceKeyFromValue(initialServiceKey) || !isServiceEnabledFor(canonicalServiceKeyFromValue(initialServiceKey), "active"))) return res.status(400).json({error: "Elegí un servicio activo para las sesiones iniciales."});
+    if (password !== undefined && String(password).trim().length < 8) return res.status(400).json({error: "La contraseña debe tener al menos 8 caracteres."});
+    if (dni && !/^\d{6,10}$/.test(String(dni).trim())) return res.status(400).json({error: "DNI inválido."});
+    if (age !== undefined && age !== null && (!Number.isInteger(Number(age)) || Number(age) < 0 || Number(age) > 130)) return res.status(400).json({error: "Edad inválida."});
+    if (weight !== undefined && weight !== null && (!Number.isFinite(Number(weight)) || Number(weight) <= 0)) return res.status(400).json({error: "Peso inválido."});
+    const plainPassword = password !== undefined ? String(password).trim() : crypto.randomBytes(12).toString("base64url");
 
     const hashed = await bcrypt.hash(plainPassword, 10);
 
-    const user = await User.create({
+    const user = new User({
       name: n,
       lastName: ln,
       email: em,
@@ -1289,15 +1305,15 @@ router.post("/", adminOnly, async (req, res) => {
       firstEvaluationCompletedAt: null,
     });
 
-    const initialCredits = Number(credits ?? 0);
     if (initialCredits > 0) {
       await addCreditLot(user, {
         amount: initialCredits,
         serviceKey: initialServiceKey,
         source: "admin-create",
       });
-      await user.save();
     }
+    // Save the account and its initial lot together: invalid input leaves no partial account.
+    await user.save();
 
     fireAndForget(
       async () => {
@@ -1337,7 +1353,7 @@ router.post("/", adminOnly, async (req, res) => {
         .status(400)
         .json({ error: "Ya existe un usuario con ese email." });
     }
-    return res.status(500).json({ error: "Error al crear usuario." });
+    return res.status(err?.status || (err?.name === "ValidationError" ? 400 : 500)).json({ error: err?.name === "ValidationError" ? "Revisá los datos del usuario." : err?.status ? err.message : "Error al crear usuario." });
   }
 });
 
@@ -2105,12 +2121,15 @@ router.post(
    CRÉDITOS
 ============================================ */
 async function updateCredits(req, res) {
+  const session = await mongoose.startSession();
+  let result, activityPayload, emailPayload;
   try {
+    await session.withTransaction(async () => {
     const { id } = req.params;
     const { credits, delta, serviceKey, items, source } = req.body || {};
 
-    const user = await User.findById(id);
-    if (!user) return res.status(404).json({ error: "Usuario no encontrado." });
+    const user = await User.findById(id).session(session);
+    if (!user) throw Object.assign(new Error("Usuario no encontrado."), {status: 404});
 
     recalcUserCredits(user);
     const beforeCredits = buildCreditsByService(user);
@@ -2228,11 +2247,11 @@ async function updateCredits(req, res) {
     }
 
     recalcUserCredits(user);
-    await user.save();
+    await user.save({session});
 
     const creditsByService = buildCreditsByService(user);
 
-    await logActivity({
+    activityPayload = ({
       req,
       category: "users",
       action: "credits_updated",
@@ -2250,7 +2269,7 @@ async function updateCredits(req, res) {
       },
     });
 
-    queueCreditsEmails({
+    emailPayload = ({
       req,
       updatedUser: user.toObject ? user.toObject() : user,
       items:
@@ -2261,17 +2280,23 @@ async function updateCredits(req, res) {
 
     const decorated = decorateUserForResponse(user.toObject());
 
-    return res.json({
+    result = ({
       ok: true,
       credits: Number(user.credits || 0),
       creditsByService,
       creditLots: user.creditLots || [],
       ...decorated,
     });
+    });
+    await logActivity(activityPayload);
+    queueCreditsEmails(emailPayload);
+    return res.json(result);
   } catch (err) {
     console.error("Error en créditos:", err);
     const status = err?.status || 500;
     return res.status(status).json({ error: err?.message || "Error interno." });
+  } finally {
+    await session.endSession();
   }
 }
 router.patch("/:id/credits", adminOnly, validateObjectIdParam, updateCredits);
@@ -2354,7 +2379,8 @@ router.patch("/:id/suspend", adminOnly, validateObjectIdParam, async (req, res) 
 /* ============================================
    APTO
 ============================================ */
-router.post("/:id/apto", validateObjectIdParam, uploadAptoSingle, async (req, res) => {
+router.post("/:id/apto", validateObjectIdParam, ownOrAdminUpload, uploadAptoSingle, async (req, res) => {
+  let uploadPersisted = false;
   try {
     res.setHeader("X-Duo-Apto-Debug", APTO_DEBUG_VERSION);
     const { id } = req.params;
@@ -2392,9 +2418,7 @@ router.post("/:id/apto", validateObjectIdParam, uploadAptoSingle, async (req, re
     const user = await User.findById(id);
     if (!user) return res.status(404).json({ error: "Usuario no encontrado." });
 
-    if (user.aptoPath) {
-      safeUnlink(absFromPublicUploadsPath(user.aptoPath));
-    }
+    const previousAptoPath = user.aptoPath || "";
 
     const newPath = "/uploads/aptos/" + uploadedAptoFile.filename;
     const historyStart = Array.isArray(user.history) ? user.history.length : 0;
@@ -2454,6 +2478,8 @@ router.post("/:id/apto", validateObjectIdParam, uploadAptoSingle, async (req, re
       });
     }
 
+    uploadPersisted = true;
+    if (previousAptoPath && previousAptoPath !== updated.aptoPath) safeUnlink(absFromPublicUploadsPath(previousAptoPath));
     fireAndForget(
       () => sendAptoStatusEmail(updated, "pending_review"),
       "MAIL_APTO_PENDING_REVIEW"
@@ -2469,6 +2495,7 @@ router.post("/:id/apto", validateObjectIdParam, uploadAptoSingle, async (req, re
       user: decorateUserForResponse(updated),
     });
   } catch (err) {
+    if (!uploadPersisted) { const file = getUploadedAptoFile(req); if (file?.filename) safeUnlink(path.join(aptosDir, file.filename)); }
     console.error("Error en POST /users/:id/apto:", err);
     return res.status(500).json({
       debugVersion: APTO_DEBUG_VERSION,
@@ -2515,9 +2542,7 @@ router.delete("/:id/apto", validateObjectIdParam, async (req, res) => {
     const user = await User.findById(id);
     if (!user) return res.status(404).json({ error: "Usuario no encontrado." });
 
-    if (user.aptoPath) {
-      safeUnlink(absFromPublicUploadsPath(user.aptoPath));
-    }
+    const previousAptoPath = user.aptoPath || "";
 
     const historyStart = Array.isArray(user.history) ? user.history.length : 0;
 
@@ -2554,6 +2579,7 @@ router.delete("/:id/apto", validateObjectIdParam, async (req, res) => {
       runValidators: false,
     }).lean();
 
+    if (updated && previousAptoPath) safeUnlink(absFromPublicUploadsPath(previousAptoPath));
     return res.json({
       ok: true,
       message: "Apto eliminado correctamente.",
@@ -2604,9 +2630,6 @@ router.patch("/:id/apto/status", adminOnly, validateObjectIdParam, async (req, r
     }
 
     if (status === "rejected") {
-      if (previousAptoPath) {
-        safeUnlink(absFromPublicUploadsPath(previousAptoPath));
-      }
 
       user.aptoPath = "";
       user.aptoStatus = "rejected";
@@ -2623,14 +2646,12 @@ router.patch("/:id/apto/status", adminOnly, validateObjectIdParam, async (req, r
     }
 
     if (status === "not_submitted") {
-      if (previousAptoPath) {
-        safeUnlink(absFromPublicUploadsPath(previousAptoPath));
-      }
       user.aptoPath = "";
       user.aptoCompletedAt = null;
     }
 
     await user.save();
+    if (previousAptoPath && user.aptoPath !== previousAptoPath) safeUnlink(absFromPublicUploadsPath(previousAptoPath));
 
     const savedLean = (await User.findById(id).lean()) || user.toObject?.() || user;
 
@@ -2693,7 +2714,7 @@ router.patch("/:id/apto/status", adminOnly, validateObjectIdParam, async (req, r
 /* ============================================
    FOTO (AVATAR)
 ============================================ */
-router.post("/:id/photo", validateObjectIdParam, avatarUploadSingle, async (req, res) => {
+router.post("/:id/photo", validateObjectIdParam, ownOrAdminUpload, avatarUploadSingle, async (req, res) => {
   try {
     const { id } = req.params;
 
