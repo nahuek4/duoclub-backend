@@ -875,21 +875,19 @@ async function resolveCreditsItem({ serviceKey, credits, payMethod, planCode, la
     plan = await PricingPlan.findOne({
       _id: planId,
       serviceKey: sk,
-      payMethod: pm,
       credits: cr,
       active: true,
     }).lean();
   }
 
   // Planes estándar: compatibilidad con el checkout anterior.
-  if (!plan) {
+  if (!plan || !plan.isCustom) {
     plan = await PricingPlan.findOne({
       serviceKey: sk,
-      payMethod: pm,
       credits: cr,
       active: true,
       isCustom: { $ne: true },
-    }).lean();
+    }).sort({payMethod:1,_id:1}).lean();
   }
 
   if (!plan) throw new Error(`Plan inválido (${sk} ${cr} ${pm}).`);
@@ -1120,7 +1118,7 @@ router.post("/checkout", protect, async (req, res) => {
         discountPercent,
         discountAmount,
         discountReason,
-        message: "Pedido generado correctamente. Coordiná el pago con el staff.",
+        message: pm === "CASH" ? "Pedido realizado. Aboná en efectivo en el local." : "Pedido realizado. Transferí al alias indicado y enviá el comprobante.",
       });
 
       fireAndForget(() => notifyAdminIfNeeded(order), "MAIL_ADMIN_NEW_ORDER_CASH");
@@ -1191,11 +1189,10 @@ router.post("/", protect, async (req, res) => {
 
     const plan = await PricingPlan.findOne({
       serviceKey: sk,
-      payMethod: pm,
       credits: cr,
       active: true,
       isCustom: { $ne: true },
-    }).lean();
+    }).sort({payMethod:1,_id:1}).lean();
 
     if (!plan) return res.status(404).json({ error: "Plan inválido." });
 
