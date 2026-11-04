@@ -9,23 +9,47 @@ import {randomUUID} from 'node:crypto';
 const DAY = 86400000;
 const fields = ['role','approvalStatus','accountDeactivated','accountDeactivatedAt',
   'suspended','suspendedReason','suspendedAt','aptoStatus','aptoPath','aptoCompletedAt',
-  'medicalClearance','createdAt','updatedAt','welcomeApprovedEmailSentAt'];
+  'medicalClearance','createdAt','updatedAt','welcomeApprovedEmailSentAt','history'];
 export const projection = Object.fromEntries(['_id','name','lastName','email',...fields].map(key=>[key,1]));
 const validDate = value => value ? Number.isFinite(new Date(value).getTime()) ? new Date(value) : null : null;
+
+// Los bloqueos históricos sin motivo sólo se incluyen con prueba médica en
+// el historial y consulta explícita de la auditoría de cambios manuales.
+export async function withSuspensionAudit(db, rows) {
+  const legacy=rows.filter(user=>user.suspended && !String(user.suspendedReason || '').trim());
+  if(!legacy.length) return rows;
+  const ids=legacy.map(user=>String(user._id));
+  const legacyIds=new Set(ids);
+  const logs=await db.collection('activitylogs').find({action:'user_suspend_updated',
+    $or:[{entityId:{$in:[...ids,...legacy.map(user=>user._id)]}},{'subject.id':{$in:ids}}]
+  },{projection:{entityId:1,'subject.id':1}}).toArray();
+  const manual=new Set(logs.flatMap(log=>[String(log.entityId || ''),String(log.subject?.id || '')]));
+  return rows.map(user=>legacyIds.has(String(user._id))
+    ? {...user,_resetAudit:{hasManualChange:manual.has(String(user._id))}}
+    : user);
+}
 
 export function planReset(user, now = new Date()) {
   if (user.role !== 'client' || user.approvalStatus !== 'approved' || user.accountDeactivated || user.accountDeactivatedAt)
     return {eligible:false,reason:'Cuenta no activa/aprobada de cliente'};
   const mc = user.medicalClearance || {};
+  const legacyMedical=Boolean(user.suspended && !String(user.suspendedReason || '').trim()
+    && user._resetAudit?.hasManualChange===false
+    && Array.isArray(user.history) && user.history.some(item=>item.action==='medical_clearance_auto_suspended'));
+  const onlyMedicalSuspension=Boolean(user.suspended && (user.suspendedReason==='medical_clearance' || legacyMedical));
+  if(mc.status==='approved' && user.aptoStatus==='approved' && onlyMedicalSuspension)
+    return {eligible:true,kind:'unlock_approved',set:{suspended:false,suspendedReason:'',suspendedAt:null,updatedAt:new Date(now)}};
   if (mc.status === 'approved' || user.aptoStatus === 'approved' || mc.approvedAt || user.aptoCompletedAt || user.aptoPath === 'ADMIN_COMPLETED_APTO')
     return {eligible:false,reason:'Apto aprobado o con aprobación previa: revisar aparte si hay contradicción'};
   if (mc.status === 'rejected' || user.aptoStatus === 'rejected' || (mc.rejectedAt && !['uploaded','pending_review'].includes(user.aptoStatus) && mc.status !== 'pending_review'))
     return {eligible:false,reason:'Rechazo médico: requiere revisión individual'};
-  if (user.suspended && user.suspendedReason !== 'medical_clearance')
-    return {eligible:false,reason:'Suspensión por otro motivo'};
+  if (user.suspended && !onlyMedicalSuspension)
+    return {eligible:false,reason:!String(user.suspendedReason || '').trim()
+      ? 'Suspensión sin motivo: evidencia médica insuficiente o con cambio manual'
+      : 'Suspensión por otro motivo'};
   const start = validDate(mc.startedAt) || validDate(user.welcomeApprovedEmailSentAt) || validDate(user.createdAt);
   const due = validDate(mc.dueAt);
-  const medicalBlock = mc.status === 'suspended' || (user.suspended && user.suspendedReason === 'medical_clearance');
+  const medicalBlock = mc.status === 'suspended' || onlyMedicalSuspension;
   if (!medicalBlock && !(start && now.getTime()-start.getTime() >= 30*DAY) && !(due && due <= now))
     return {eligible:false,reason:'Plazo todavía vigente o fecha no comprobable'};
   const pending = mc.status === 'pending_review' || ['uploaded','pending_review'].includes(user.aptoStatus) || Boolean(user.aptoPath);
@@ -44,10 +68,10 @@ export function planReset(user, now = new Date()) {
     aptoStatus:status,
     updatedAt:new Date(now)
   };
-  if (user.suspended && user.suspendedReason === 'medical_clearance') {
+  if (onlyMedicalSuspension) {
     set.suspended=false; set.suspendedReason=''; set.suspendedAt=null;
   }
-  return {eligible:true,set};
+  return {eligible:true,kind:'restart_grace',set};
 }
 
 export function unchangedFilter(user) {
@@ -73,8 +97,11 @@ export async function applyResets(collection, rows, {now=new Date(),runId,backup
     const plan=planReset(user,now);
     const result=await collection.updateOne(unchangedFilter(user),{
       $set:plan.set,
-      $push:{history:{action:'medical_clearance_grace_reset',title:'Nuevo plazo para presentar apto físico',
-        message:`Se otorgaron 30 días desde ${now.toISOString()} para presentar el apto físico. Operación ${runId}.`,createdAt:new Date(now)}}
+      $push:{history:plan.kind==='unlock_approved'
+        ? {action:'medical_clearance_legacy_unblocked',title:'Cuenta habilitada con apto aprobado',
+          message:`Se levantó la suspensión por apto físico ya aprobado. Operación ${runId}.`,createdAt:new Date(now)}
+        : {action:'medical_clearance_grace_reset',title:'Nuevo plazo para presentar apto físico',
+          message:`Se otorgaron 30 días desde ${now.toISOString()} para presentar el apto físico. Operación ${runId}.`,createdAt:new Date(now)}}
     });
     if (result.modifiedCount===1) updated++; else conflicts++;
   }
@@ -119,7 +146,8 @@ export async function main({runPM2=(args,options)=>execFileSync('pm2',args,optio
     }
     const now=new Date();
     const collection=mongoose.connection.collection('users');
-    const rows=await collection.find({role:'client',approvalStatus:'approved'},{projection}).toArray();
+    const rows=await withSuspensionAudit(mongoose.connection,
+      await collection.find({role:'client',approvalStatus:'approved'},{projection}).toArray());
     const selected=rows.filter(user=>planReset(user,now).eligible);
     const runId=now.toISOString().replace(/[:.]/g,'-')+'-'+randomUUID().slice(0,8);
     const dir=path.resolve('backups','medical-grace-reset');
@@ -127,12 +155,17 @@ export async function main({runPM2=(args,options)=>execFileSync('pm2',args,optio
     const previewFile=path.join(dir,'preview-'+runId+'.json');
     const excluded={};
     for(const user of rows){const plan=planReset(user,now);if(!plan.eligible)excluded[plan.reason]=(excluded[plan.reason]||0)+1;}
-    const preview={dbName,createdAt:now,newDueAt:new Date(now.getTime()+30*DAY),totalCandidates:selected.length,excluded,
+    const counts={newGracePeriod:selected.filter(user=>planReset(user,now).kind==='restart_grace').length,
+      unlockApproved:selected.filter(user=>planReset(user,now).kind==='unlock_approved').length};
+    const preview={version:2,dbName,createdAt:now,newDueAt:new Date(now.getTime()+30*DAY),totalCandidates:selected.length,...counts,excluded,
       users:selected.map(user=>({id:String(user._id),name:[user.name,user.lastName].filter(Boolean).join(' '),email:user.email,
-        previousMedical:user.medicalClearance,newMedicalStatus:planReset(user,now).set['medicalClearance.status'],
-        medicalSuspensionLifted:Boolean(user.suspended && user.suspendedReason==='medical_clearance')}))};
+        previousMedical:user.medicalClearance,operation:planReset(user,now).kind,
+        newMedicalStatus:planReset(user,now).set['medicalClearance.status'] || user.medicalClearance?.status,
+        medicalSuspensionLifted:planReset(user,now).set.suspended===false}))};
     fs.writeFileSync(previewFile,JSON.stringify(preview,null,2),{flag:'wx',mode:0o600});
     console.log('Cuentas elegibles:',selected.length);
+    console.log('Nuevo plazo de 30 días:',counts.newGracePeriod);
+    console.log('Desbloquear conservando apto aprobado:',counts.unlockApproved);
     console.log('Vista previa:',previewFile);
     console.log('Exclusiones:',JSON.stringify(excluded));
     if(!options.apply){
