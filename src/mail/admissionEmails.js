@@ -1,5 +1,6 @@
+import { agendaBase, MAIL_IMAGE_BASE as MAIL_ASSET_BASE } from "../config/siteUrls.js";
 // backend/src/mail/admissionEmails.js
-import { ADMIN_EMAIL, BRAND_NAME, BRAND_URL, sendMail } from "./core.js";
+import { ADMIN_EMAIL, BRAND_NAME, sendMail } from "./core.js";
 import { escapeHtml } from "./helpers.js";
 import { buildEmailLayout } from "./layout.js";
 import {
@@ -12,7 +13,6 @@ import {
   renderUnifiedMailFooter,
 } from "./ui.js";
 
-const MAIL_ASSET_BASE = `${BRAND_URL.replace(/\/$/, "")}/images`;
 const MAIL_LOGO_URL = `${MAIL_ASSET_BASE}/logo.png`;
 const MAIL_CHECK_URL = `${MAIL_ASSET_BASE}/iconocheck.png`;
 const MAIL_WORDMARK_URL = `${MAIL_ASSET_BASE}/duohealthclub.png`;
@@ -785,7 +785,7 @@ export async function sendUserApprovedEmail({
     cleanStr(user?.fullName, "") ||
     "Hola";
 
-  const url = cleanStr(loginUrl || `${BRAND_URL}/login`, `${BRAND_URL}/login`);
+  const url = cleanStr(loginUrl || `${agendaBase()}/login`, `${agendaBase()}/login`);
   const hasPass = !!String(password || "").trim();
 
   console.log("[MAIL][APPROVAL] send approved ->", {

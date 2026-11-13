@@ -1,7 +1,7 @@
+import { MAIL_IMAGE_BASE as IMG_BASE } from "../config/siteUrls.js";
 // backend/src/mail/ui.js
 import { EMAIL_FONT, escapeHtml } from "./helpers.js";
 
-const IMG_BASE = "https://api.duoclub.ar/images";
 
 const SOCIAL_LINKS = {
   instagram: process.env.DUO_INSTAGRAM_URL || "https://www.instagram.com/duoclub.ar/",

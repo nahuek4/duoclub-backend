@@ -1,3 +1,4 @@
+import { SITE_URL } from "../config/siteUrls.js";
 // backend/src/mail/core.js
 import nodemailer from "nodemailer";
 
@@ -13,9 +14,7 @@ export const ADMIN_EMAIL = String(
 
 export const BRAND_NAME = String(process.env.BRAND_NAME || "DUO").trim();
 
-export const BRAND_URL = String(
-  process.env.BRAND_URL || "https://duoclub.ar"
-).trim();
+export const BRAND_URL = SITE_URL;
 
 /* =========================================================
    Helpers ENV

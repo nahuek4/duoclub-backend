@@ -1,3 +1,4 @@
+import { agendaBase } from "../config/siteUrls.js";
 import { MANUAL_TRANSFERS, manualPaymentResponse } from "../lib/manualPayments.js";
 // backend/src/routes/orders.js
 import express from "express";
@@ -328,7 +329,7 @@ function buildOrderHistoryTitle(order) {
 
 
 function getFrontBaseUrl() {
-  return String(process.env.FRONT_BASE_URL || "https://app.duoclub.ar").replace(/\/+$/, "");
+  return agendaBase(process.env.FRONT_BASE_URL || process.env.FRONTEND_URL);
 }
 
 function buildPublicPaymentUrl(token) {

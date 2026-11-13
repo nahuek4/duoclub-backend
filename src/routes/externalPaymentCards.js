@@ -1,3 +1,4 @@
+import { agendaBase } from "../config/siteUrls.js";
 import { manualPaymentResponse } from "../lib/manualPayments.js";
 // backend/src/routes/externalPaymentCards.js
 import express from "express";
@@ -78,7 +79,7 @@ function normalizeEmail(value) {
 }
 
 function getFrontBaseUrl() {
-  return String(process.env.FRONT_BASE_URL || "https://app.duoclub.ar").replace(/\/+$/, "");
+  return agendaBase(process.env.FRONT_BASE_URL || process.env.FRONTEND_URL);
 }
 
 function buildExternalPaymentUrl(slug) {

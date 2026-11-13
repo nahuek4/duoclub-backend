@@ -1,3 +1,4 @@
+import { agendaBase } from "../config/siteUrls.js";
 // backend/src/routes/waitlist.js
 import crypto from "crypto";
 
@@ -126,9 +127,7 @@ function resolveCapacity(rules, serviceKey, date, time) {
 }
 
 function buildClaimUrl(token) {
-  const frontend = String(process.env.FRONTEND_URL || "").replace(/\/+$/, "");
-  if (!frontend) return "";
-  return `${frontend}/waitlist/claim?token=${encodeURIComponent(token)}`;
+  return `${agendaBase()}/waitlist/claim?token=${encodeURIComponent(token)}`;
 }
 
 export async function notifyWaitlistForSlot({

@@ -1,3 +1,4 @@
+import { agendaBase } from "../config/siteUrls.js";
 import express from "express";
 import path from "path";
 import fs from "fs";
@@ -26,7 +27,7 @@ import {
   sendUserCreditsAssignedEmail,
   sendMedicalClearanceStatusEmail,
 } from "../mail.js";
-import { BRAND_URL, sendMail } from "../mail/core.js";
+import { sendMail } from "../mail/core.js";
 import { sendVerifyEmail } from "../mail/authEmails.js";
 import {
   logActivity,
@@ -1504,16 +1505,7 @@ router.post("/:id/resend-verification", adminOnly, validateObjectIdParam, async 
 
     await user.save();
 
-    const baseUrl = String(
-      process.env.BRAND_URL ||
-        process.env.FRONTEND_URL ||
-        BRAND_URL ||
-        "https://duoclub.ar"
-    )
-      .trim()
-      .replace(/\/+$/, "");
-
-    const verifyUrl = `${baseUrl}/agenda/verificar-email?token=${encodeURIComponent(token)}`;
+    const verifyUrl = `${agendaBase()}/verificar-email?token=${encodeURIComponent(token)}`;
 
     await sendVerifyEmail(user, verifyUrl);
 

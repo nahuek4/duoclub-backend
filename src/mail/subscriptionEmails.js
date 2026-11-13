@@ -1,11 +1,11 @@
+import { MAIL_IMAGE_BASE as IMG_BASE, agendaBase } from "../config/siteUrls.js";
 // backend/src/mail/subscriptionEmails.js
-import { BRAND_NAME, BRAND_URL, sendMail } from "./core.js";
+import { BRAND_NAME, sendMail } from "./core.js";
 import { escapeHtml } from "./helpers.js";
 import { buildEmailLayout } from "./layout.js";
 import { renderUnifiedMailFooter } from "./ui.js";
 
 const TZ = "America/Argentina/Buenos_Aires";
-const IMG_BASE = "https://api.duoclub.ar/images";
 
 const SERVICE_LABELS = {
   EP: "Entrenamiento Personal",
@@ -81,8 +81,7 @@ function firstName(user = {}) {
 }
 
 function miPlanUrl() {
-  const root = clean(BRAND_URL || "https://duoclub.ar").replace(/\/+$/, "");
-  return `${root}/agenda/mi-plan`;
+  return `${agendaBase()}/mi-plan`;
 }
 
 function duoFont() {

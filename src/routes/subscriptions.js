@@ -1,3 +1,4 @@
+import { agendaBase } from "../config/siteUrls.js";
 import { MANUAL_TRANSFERS, manualPaymentResponse } from "../lib/manualPayments.js";
 // backend/src/routes/subscriptions.js
 import express from "express";
@@ -770,12 +771,7 @@ router.post(
    HELPERS DE PAGO
 ============================================ */
 function getFrontBaseUrl() {
-  return String(
-    process.env.FRONTEND_URL ||
-      process.env.FRONT_BASE_URL ||
-      process.env.APP_URL ||
-      "https://duoclub.ar"
-  ).replace(/\/+$/, "");
+  return agendaBase(process.env.FRONTEND_URL || process.env.FRONT_BASE_URL || process.env.APP_URL);
 }
 
 async function createMpPreferenceForRenewal({ order, user, cycle }) {

@@ -1,10 +1,10 @@
+import { MAIL_IMAGE_BASE as IMG_BASE, agendaBase } from "../config/siteUrls.js";
 // backend/src/mail/fixedScheduleRenewalEmails.js
-import { BRAND_NAME, BRAND_URL, sendMail } from "./core.js";
+import { BRAND_NAME, sendMail } from "./core.js";
 import { escapeHtml } from "./helpers.js";
 import { buildEmailLayout } from "./layout.js";
 import { renderUnifiedMailFooter } from "./ui.js";
 
-const IMG_BASE = "https://api.duoclub.ar/images";
 const FONT = "'Helvetica Neue', Helvetica, Arial, sans-serif";
 const TZ = "America/Argentina/Buenos_Aires";
 
@@ -28,7 +28,7 @@ export async function sendFixedScheduleRenewalEmail({
 
   const name = String(user?.name || "").trim() || "Usuario";
   const service = String(serviceName || "").trim();
-  const url = `${String(BRAND_URL).replace(/\/+$/, "")}/agenda`;
+  const url = agendaBase();
   const subject = `${BRAND_NAME} · Se renovaron tus turnos fijos`;
 
   const rows = [...appointments]

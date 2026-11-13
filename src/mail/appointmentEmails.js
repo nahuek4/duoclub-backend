@@ -1,3 +1,4 @@
+import { MAIL_IMAGE_BASE as IMG_BASE, agendaBase } from "../config/siteUrls.js";
 import { BRAND_NAME, BRAND_URL, sendMail } from "./core.js";
 import { escapeHtml, prettyDateAR } from "./helpers.js";
 import { buildEmailLayout } from "./layout.js";
@@ -12,7 +13,6 @@ import {
 } from "./ui.js";
 import { adminRecipientsForAppointment } from "./recipients.js";
 
-const IMG_BASE = "https://api.duoclub.ar/images";
 
 
 
@@ -1208,7 +1208,7 @@ export async function sendWaitlistSlotAvailableEmail(user, ap, meta = {}) {
   const svc = getServiceName(ap);
 
   const link = token
-    ? `${BRAND_URL}/?waitlist=${encodeURIComponent(token)}`
+    ? `${agendaBase()}/waitlist/claim?token=${encodeURIComponent(token)}`
     : BRAND_URL;
 
   const text = [

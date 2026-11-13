@@ -1,3 +1,4 @@
+import { agendaBase, BACKEND_URL } from "../config/siteUrls.js";
 import { getAccountPaymentAccess } from "../services/subscriptions/subscriptionAccess.js";
 // backend/src/routes/auth.js
 import express from "express";
@@ -77,29 +78,14 @@ async function passwordMatches(input, hashedPassword) {
   return false;
 }
 
-function getFrontendAppBase() {
-  const raw = String(
-    process.env.FRONTEND_URL ||
-      process.env.BRAND_URL ||
-      "https://duoclub.ar/agenda"
-  )
-    .trim()
-    .replace(/\/+$/, "");
-
-  if (!raw) return "https://duoclub.ar/agenda";
-  if (/\/agenda$/i.test(raw)) return raw;
-  if (/^https?:\/\/(www\.)?duoclub\.ar$/i.test(raw)) return `${raw}/agenda`;
-  return raw;
-}
-
 function buildVerifyEmailUrl(rawToken) {
-  return `${getFrontendAppBase()}/verificar-email?token=${encodeURIComponent(
+  return `${agendaBase()}/verificar-email?token=${encodeURIComponent(
     rawToken
   )}`;
 }
 
 function buildPasswordResetUrl(rawToken) {
-  return `${getFrontendAppBase()}/login?resetToken=${encodeURIComponent(
+  return `${agendaBase()}/login?resetToken=${encodeURIComponent(
     rawToken
   )}`;
 }
@@ -147,23 +133,6 @@ async function sendPasswordResetEmail(user, resetUrl) {
   `;
 
   return sendMail(to, subject, text, html);
-}
-
-function getBackendBase(req) {
-  const env = String(process.env.BACKEND_URL || "").trim();
-  if (env) return env.replace(/\/+$/, "");
-
-  const proto = (req.headers["x-forwarded-proto"] || req.protocol || "https")
-    .toString()
-    .split(",")[0]
-    .trim();
-
-  const host = (req.headers["x-forwarded-host"] || req.get("host") || "")
-    .toString()
-    .split(",")[0]
-    .trim();
-
-  return `${proto}://${host}`;
 }
 
 function stripAccents(s) {
@@ -587,7 +556,6 @@ router.post("/register", async (req, res) => {
 
     await sendUserRegistrationReceivedEmail(user, verifyUrl);
 
-    const backendBase = getBackendBase(req);
     const secret = process.env.JWT_SECRET || "dev_secret";
 
     const approveToken = jwt.sign(
@@ -602,10 +570,10 @@ router.post("/register", async (req, res) => {
       { expiresIn: "14d" }
     );
 
-    const approveUrl = `${backendBase}/auth/admin-approval?t=${encodeURIComponent(
+    const approveUrl = `${BACKEND_URL}/auth/admin-approval?t=${encodeURIComponent(
       approveToken
     )}`;
-    const rejectUrl = `${backendBase}/auth/admin-approval?t=${encodeURIComponent(
+    const rejectUrl = `${BACKEND_URL}/auth/admin-approval?t=${encodeURIComponent(
       rejectToken
     )}`;
 

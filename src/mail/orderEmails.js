@@ -1,3 +1,4 @@
+import { MAIL_IMAGE_BASE as IMG_BASE } from "../config/siteUrls.js";
 // backend/src/mail/orderEmails.js
 import { BRAND_NAME, BRAND_URL, sendMail } from "./core.js";
 import { escapeHtml, moneyARS } from "./helpers.js";
@@ -14,7 +15,6 @@ import {
 import { adminRecipientsForOrder } from "./recipients.js";
 
 
-const IMG_BASE = "https://api.duoclub.ar/images";
 
 
 

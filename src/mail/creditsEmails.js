@@ -1,3 +1,4 @@
+import { MAIL_IMAGE_BASE as IMG_BASE } from "../config/siteUrls.js";
 // backend/src/mail/creditsEmails.js
 import { BRAND_NAME, sendMail } from "./core.js";
 import { escapeHtml } from "./helpers.js";
@@ -12,7 +13,6 @@ import {
 } from "./ui.js";
 import { adminRecipientsForServiceItems } from "./recipients.js";
 
-const IMG_BASE = "https://api.duoclub.ar/images";
 
 
 
@@ -224,7 +224,7 @@ function buildCreditsAdminVisualEmail({
                         <td style="padding:0 0 14px;">
                           <table role="presentation" cellpadding="0" cellspacing="0" width="100%" style="border-collapse:collapse;">
                             <tr>
-                              <td valign="middle" style="width:24px; padding:0 10px 0 0;"><img src="https://api.duoclub.ar/images/sesionesActualizas.png" alt="Sesiones actualizadas" width="28" height="28" style="display:block; width:28px; height:28px; border:0; outline:none; text-decoration:none;" /></td>
+                              <td valign="middle" style="width:24px; padding:0 10px 0 0;"><img src="${IMG_BASE}/sesionesActualizas.png" alt="Sesiones actualizadas" width="28" height="28" style="display:block; width:28px; height:28px; border:0; outline:none; text-decoration:none;" /></td>
                               <td class="duo-admin-heading" valign="middle" style="font-size:24px; line-height:28px; font-weight:750; color:#111111; letter-spacing:-0.6px;">${escapeHtml(heading)}</td>
                             </tr>
                           </table>

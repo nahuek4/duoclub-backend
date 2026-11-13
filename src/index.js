@@ -1,6 +1,5 @@
 import { blockPublicMedicalUploads } from "./middleware/privateUploads.js";
 import express from "express";
-import dotenv from "dotenv";
 import path from "path";
 import fs from "fs";
 import { fileURLToPath } from "url";
@@ -36,8 +35,6 @@ import { startMonthlyRolloverScheduler } from "./jobs/monthlyRollover.js";
 import { startMedicalClearanceScheduler } from "./jobs/medicalClearance.js";
 import { startUserNotificationsScheduler } from "./jobs/userNotifications.js";
 import { startFixedScheduleBillingScheduler } from "./jobs/fixedScheduleBilling.js";
-
-dotenv.config();
 
 const app = express();
 
@@ -102,6 +99,8 @@ app.use(express.json({ limit: "2mb" }));
 const allowedOrigins = [
   "http://localhost:5173",
   "http://127.0.0.1:5173",
+  "https://damianvillaverde.com",
+  "https://www.damianvillaverde.com",
   "https://duoclub.ar",
   "https://www.duoclub.ar",
   "https://app.duoclub.ar",
