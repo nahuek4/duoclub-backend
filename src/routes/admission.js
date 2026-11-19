@@ -343,6 +343,42 @@ function getHttpStatusFromError(err, fallback = 500) {
 /* =========================================================
    PUBLIC: guardar step1
 ========================================================= */
+router.post("/advanced", async (req, res) => {
+  try {
+    const { branch, answers, accepted } = req.body || {};
+    if (!["recovery", "performance", "individual", "team"].includes(branch) ||
+        !answers || typeof answers !== "object" || Array.isArray(answers) ||
+        (branch !== "team" && accepted !== true)) {
+      return res.status(400).json({ error: "Revisá el formulario y la declaración antes de enviar." });
+    }
+    const rows = Object.values(answers);
+    if (rows.length > 100 || rows.some(row => !row || typeof row !== "object" ||
+        typeof row.label !== "string" || typeof row.section !== "string" ||
+        row.label.length > 300 || row.section.length > 150 ||
+        JSON.stringify(row).length > 12000)) {
+      return res.status(400).json({ error: "Las respuestas tienen un formato inválido." });
+    }
+    const fullName = String(answers["0-0"]?.answer || "").trim();
+    const email = branch === "team" ? "" : normEmail(answers["0-6"]?.answer);
+    if (!fullName || (branch !== "team" && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email))) {
+      return res.status(400).json({ error: "Completá el nombre y un mail válido. En planteles se requiere el nombre del responsable." });
+    }
+    const doc = await Admission.create({
+      publicId: crypto.randomBytes(16).toString("hex"),
+      step1Completed: true,
+      step2Completed: true,
+      step1: { fullName, email, phone: String(answers[branch === "team" ? "0-2" : "0-4"]?.answer || ""), formType: "DAMIAN", performanceGoal: branch.toUpperCase() },
+      advanced: { version: 1, branch, answers, accepted: accepted === true, submittedAt: new Date().toISOString() },
+      ip: getClientIp(req),
+      userAgent: req.headers["user-agent"] || "",
+    });
+    return res.status(201).json({ ok: true, publicId: doc.publicId });
+  } catch (error) {
+    console.error("Error al guardar admisión avanzada:", error.name);
+    return res.status(500).json({ error: "No se pudo guardar el formulario. Intentá nuevamente." });
+  }
+});
+
 router.post("/step1", async (req, res) => {
   try {
     const payload = req.body || {};

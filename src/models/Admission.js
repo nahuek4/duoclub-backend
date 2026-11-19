@@ -26,6 +26,7 @@ const admissionSchema = new mongoose.Schema(
     },
 
     syncedToUser: { type: Boolean, default: false },
+    advanced: { type: mongoose.Schema.Types.Mixed, default: null },
     syncedAt: { type: Date, default: null },
 
     step1Completed: { type: Boolean, default: false },
